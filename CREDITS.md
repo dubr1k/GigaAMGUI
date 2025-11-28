@@ -93,3 +93,4 @@ URL: https://huggingface.co/ai-sage/GigaAM-v3
 **Версия документа:** 1.0  
 **Дата:** 28.11.2025
 
+

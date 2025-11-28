@@ -1,0 +1,34 @@
+[Unit]
+Description=GigaAM v3 Transcriber API
+After=network.target
+Documentation=https://github.com/salute-developers/GigaAM
+
+[Service]
+Type=simple
+User=dubr1k
+Group=dubr1k
+WorkingDirectory=/mnt/storage10tb/syncthing/development/GigaAMv3
+Environment="PATH=/mnt/storage10tb/anaconda/envs/gigaam/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/mnt/storage10tb/anaconda/envs/gigaam/bin/python -m uvicorn api:app --host 127.0.0.1 --port 8000 --workers 2 --log-level info
+
+# Автоматический перезапуск при сбое
+Restart=always
+RestartSec=10
+
+# Ограничения ресурсов (опционально)
+# LimitNOFILE=65535
+# MemoryLimit=8G
+# CPUQuota=400%
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gigaam-api
+
+# Безопасность
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
