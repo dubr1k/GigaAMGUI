@@ -1,0 +1,156 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Environments (but keep .env.example)
+.env
+.env.local
+!.env.example
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+
+# Caches
+.cache/
+__pycache__/
+*.pyc
+
+# HuggingFace cache
+.cache/huggingface/
+transformers_cache/
+
+# PyTorch cache
+.cache/torch/
+
+# Model files (will be downloaded)
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Output files
+*.txt
+!requirements.txt
+!requirements_macos.txt
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flac
+*.ogg
+*.wma
+*.m4a
+
+# Except documentation
+!docs/*.txt
+
+# Statistics
+processing_stats.json
+
+# Logs
+*.log
+logs/
+
+# Reports (internal documentation, not for Git)
+*_REPORT.md
+LOGGING_UPDATE_REPORT.md
+PROJECT_CLEANUP_REPORT.md
+INSTALLATION_REPORT.md
+MPS_TEST_REPORT.md
+
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# Test files
+test_*.py
+!tests/
+
+# FFmpeg builds (Windows)
+ffmpeg/
+ffmpeg.exe
+ffprobe.exe
+
+# Conda
+*.conda
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# IPython
+profile_default/
+ipython_config.py
