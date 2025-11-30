@@ -163,3 +163,6 @@ dmypy.json
 # IPython
 profile_default/
 ipython_config.py
+
+# GitHub Actions workflows (не нужны для этого проекта)
+.github/workflows/
