@@ -47,6 +47,17 @@ env/
 .env.local
 !.env.example
 
+# API Keys (секретные ключи API)
+.api_keys
+
+# User Settings (персональные настройки пользователя)
+user_settings.json
+
+# Project directories (документация, конфигурация развертывания, Postman коллекции)
+postman/
+deploy/
+docs/
+
 # Distribution / packaging
 .Python
 build/
@@ -89,9 +100,6 @@ checkpoints/
 *.wma
 *.m4a
 
-# Except documentation
-!docs/*.txt
-
 # Statistics
 processing_stats.json
 
@@ -121,6 +129,7 @@ tmp/
 
 # Test files
 test_*.py
+scripts/test_*.py
 !tests/
 
 # FFmpeg builds (Windows)

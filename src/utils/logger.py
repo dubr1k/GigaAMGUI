@@ -194,3 +194,18 @@ class LoggerAdapter:
         """Логирует DEBUG сообщение"""
         self(message, "debug")
 
+
+def setup_logger(base_dir: str = None) -> logging.Logger:
+    """
+    Быстрая функция для создания логгера
+    Используется в CLI и API
+    
+    Args:
+        base_dir: базовая директория проекта
+        
+    Returns:
+        logging.Logger: настроенный логгер
+    """
+    app_logger = AppLogger(base_dir=base_dir)
+    app_logger.log_session_start()
+    return app_logger.get_logger()

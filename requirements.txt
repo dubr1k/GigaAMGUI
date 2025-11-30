@@ -136,6 +136,9 @@ urllib3==2.5.0
 yarl==1.22.0
 zipp==3.23.0
 
+# Environment variables
+python-dotenv==1.0.0
+
 # GigaAM (установлен из git репозитория)
 -e git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam
 
@@ -144,3 +147,4 @@ zipp==3.23.0
 # - Для установки используйте: pip install -r requirements.txt
 # - FFmpeg должен быть установлен отдельно в системе
 # - Требуется HuggingFace токен для доступа к pyannote/segmentation-3.0
+# - Все секреты и настройки должны быть в файле .env (см. .env.example)

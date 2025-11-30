@@ -44,6 +44,7 @@ class TranscriptionProcessor:
                      output_dir: str,
                      file_index: int,
                      total_files: int,
+                     original_filename: Optional[str] = None,
                      estimated_conversion_ratio: float = 0.05,
                      estimated_transcription_ratio: float = 0.95) -> Dict:
         """
@@ -54,6 +55,7 @@ class TranscriptionProcessor:
             output_dir: папка для сохранения результатов
             file_index: индекс файла (для логирования)
             total_files: общее количество файлов
+            original_filename: оригинальное имя файла (если отличается от filepath)
             estimated_conversion_ratio: доля времени на конвертацию (0-1)
             estimated_transcription_ratio: доля времени на транскрибацию (0-1)
             
@@ -67,7 +69,8 @@ class TranscriptionProcessor:
                 - transcription_time: float
         """
         file_start_time = time.time()
-        filename = os.path.basename(filepath)
+        # Используем оригинальное имя если передано, иначе берем из пути
+        filename = original_filename if original_filename else os.path.basename(filepath)
         name_without_ext = os.path.splitext(filename)[0]
         file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
         
@@ -121,28 +124,86 @@ class TranscriptionProcessor:
             self._update_progress('transcription', 0.0)
             
             # Транскрибация (обновляем прогресс постепенно)
-            utterances = self.model_loader.transcribe_longform(temp_audio)
+            try:
+                utterances = self.model_loader.transcribe_longform(temp_audio)
+            except ValueError as e:
+                # Ошибка VAD (обычно связана с токеном)
+                error_msg = str(e)
+                if "HF_TOKEN" in error_msg:
+                    self.logger(f"ОШИБКА VAD: {error_msg}")
+                    self.logger("Проверьте токен HF_TOKEN в .env файле и убедитесь, что приняли условия доступа:")
+                    self.logger("https://huggingface.co/pyannote/segmentation-3.0")
+                else:
+                    self.logger(f"ОШИБКА VAD: {error_msg}")
+                result['transcription_time'] = time.time() - transcription_start
+                result['total_time'] = time.time() - file_start_time
+                return result
+            except Exception as e:
+                # Другие ошибки транскрибации
+                self.logger(f"ОШИБКА при транскрибации: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                result['transcription_time'] = time.time() - transcription_start
+                result['total_time'] = time.time() - file_start_time
+                return result
             
             result['transcription_time'] = time.time() - transcription_start
             self._update_progress('transcription', 1.0)
             
-            # Формирование результатов
-            full_text_lines = []
-            timecoded_lines = []
+            # Логирование результатов транскрибации для отладки
+            self.logger(f"Транскрибация завершена. Получено сегментов: {len(utterances) if utterances else 0}")
+            if utterances and len(utterances) > 0:
+                # Показываем структуру первого сегмента для отладки
+                first_utt = utterances[0]
+                self.logger(f"Пример структуры сегмента: keys={list(first_utt.keys())}, "
+                           f"has_transcription={'transcription' in first_utt}, "
+                           f"has_boundaries={'boundaries' in first_utt}")
             
-            for utt in utterances:
-                text = utt['transcription']
-                start, end = utt['boundaries']
+            # Проверка результатов транскрибации
+            if not utterances or len(utterances) == 0:
+                error_msg = (
+                    f"ПРЕДУПРЕЖДЕНИЕ: VAD (Voice Activity Detection) не нашел сегментов речи в файле {filename}.\n"
+                    f"Возможные причины:\n"
+                    f"  1. В файле нет речи или очень тихая речь\n"
+                    f"  2. Проблема с токеном HuggingFace для pyannote/segmentation-3.0\n"
+                    f"  3. Проблема с сегментацией аудио\n"
+                    f"Проверьте токен HF_TOKEN в src/config.py и убедитесь, что приняли условия доступа:\n"
+                    f"https://huggingface.co/pyannote/segmentation-3.0"
+                )
+                self.logger(error_msg)
+                # Сохраняем пустые файлы, но логируем предупреждение
+                full_text = ""
+                timecoded_lines = []
+            else:
+                self.logger(f"Найдено сегментов речи: {len(utterances)}")
                 
-                full_text_lines.append(text)
+                # Формирование результатов
+                full_text_lines = []
+                timecoded_lines = []
                 
-                # Таймкоды
-                ts_str = (f"[{self.time_formatter.format_timestamp(start)} - "
-                         f"{self.time_formatter.format_timestamp(end)}] {text}")
-                timecoded_lines.append(ts_str)
-            
-            # Собираем полный текст (каждая фраза с новой строки)
-            full_text = "\n".join(full_text_lines)
+                for utt in utterances:
+                    text = utt.get('transcription', '')
+                    boundaries = utt.get('boundaries', (0.0, 0.0))
+                    
+                    # Проверка на пустой текст
+                    if not text or not text.strip():
+                        self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Пустой текст в сегменте {boundaries}")
+                        continue
+                    
+                    start, end = boundaries
+                    
+                    full_text_lines.append(text)
+                    
+                    # Таймкоды
+                    ts_str = (f"[{self.time_formatter.format_timestamp(start)} - "
+                             f"{self.time_formatter.format_timestamp(end)}] {text}")
+                    timecoded_lines.append(ts_str)
+                
+                # Собираем полный текст (каждая фраза с новой строки)
+                full_text = "\n".join(full_text_lines)
+                
+                if not full_text.strip():
+                    self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Все сегменты имеют пустой текст транскрипции")
             
             # Сохранение
             path_txt = os.path.join(output_dir, f"{name_without_ext}.txt")
@@ -153,6 +214,20 @@ class TranscriptionProcessor:
             
             with open(path_ts, "w", encoding="utf-8") as f:
                 f.write("\n".join(timecoded_lines))
+            
+            # Проверка сохраненных данных
+            text_length = len(full_text)
+            timecoded_length = len("\n".join(timecoded_lines))
+            
+            if text_length == 0:
+                self.logger(f"ОШИБКА: Файл {os.path.basename(path_txt)} сохранен пустым (0 символов)")
+            else:
+                self.logger(f"Сохранено символов в текстовый файл: {text_length}")
+            
+            if timecoded_length == 0:
+                self.logger(f"ОШИБКА: Файл {os.path.basename(path_ts)} сохранен пустым (0 символов)")
+            else:
+                self.logger(f"Сохранено символов в файл с таймкодами: {timecoded_length}")
             
             # Успех
             result['success'] = True

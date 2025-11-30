@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 
 from ..config import APP_TITLE, APP_GEOMETRY, SUPPORTED_FORMATS, STATS_FILE
 from ..core import ModelLoader, TranscriptionProcessor
-from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, LoggerAdapter
+from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, LoggerAdapter, UserSettings
 
 
 class GigaTranscriberApp(ctk.CTk):
@@ -34,8 +34,10 @@ class GigaTranscriberApp(ctk.CTk):
         self.file_estimates = {}
         self.total_estimated_time = 0
         self.time_spent = 0
-        self.current_file_progress = 0.0  # Прогресс текущего файла (0-1)
         self.current_file_start_time = 0
+        self.progress_update_timer = None  # Таймер для периодического обновления прогресса
+        self.current_stage = None  # Текущий этап обработки ('conversion' или 'transcription')
+        self.current_stage_progress = 0.0  # Прогресс текущего этапа
         
         # Инициализация системы логирования
         self.app_logger = AppLogger()
@@ -45,9 +47,24 @@ class GigaTranscriberApp(ctk.CTk):
         self.model_loader = ModelLoader()
         self.stats = ProcessingStats(STATS_FILE)
         self.time_formatter = TimeFormatter()
+        self.user_settings = UserSettings()
+
+        # Загружаем сохраненный путь для сохранения результатов
+        saved_output_dir = self.user_settings.get_last_output_dir()
+        if saved_output_dir:
+            self.output_dir = saved_output_dir
+            display_path = saved_output_dir if len(saved_output_dir) < 50 else f"...{saved_output_dir[-50:]}"
+            # Обновим метку после создания виджетов
 
         # Элементы интерфейса
         self._create_widgets()
+        
+        # Обновляем метку папки сохранения, если путь был загружен
+        if saved_output_dir:
+            self.lbl_folder_path.configure(
+                text=display_path,
+                text_color=("black", "white")
+            )
         
         # Очистка старых логов (старше 30 дней)
         self.app_logger.cleanup_old_logs()
@@ -150,19 +167,29 @@ class GigaTranscriberApp(ctk.CTk):
     
     def destroy(self):
         """Переопределяем метод закрытия для логирования завершения сессии"""
+        # Сохраняем текущий путь для сохранения перед закрытием
+        if self.output_dir:
+            self.user_settings.set_last_output_dir(self.output_dir)
         self.app_logger.log_session_end()
         super().destroy()
 
     def select_files(self):
         """Обработчик выбора файлов"""
+        # Получаем последний использованный путь для выбора файлов
+        initialdir = self.user_settings.get_last_files_dir()
+        
         files = filedialog.askopenfilenames(
             parent=self,
             title="Выберите аудио или видео файлы",
-            filetypes=(SUPPORTED_FORMATS, ('All files', '*.*'))
+            filetypes=(SUPPORTED_FORMATS, ('All files', '*.*')),
+            initialdir=initialdir
         )
         if files:
             self.files_to_process = list(files)
             count = len(self.files_to_process)
+            # Сохраняем путь первого выбранного файла для следующего раза
+            if files:
+                self.user_settings.set_last_files_dir(files[0])
             self.lbl_files_count.configure(
                 text=f"Выбрано файлов: {count}", 
                 text_color=("black", "white")
@@ -173,14 +200,22 @@ class GigaTranscriberApp(ctk.CTk):
 
     def select_folder(self):
         """Обработчик выбора папки сохранения"""
+        # Получаем последний использованный путь для сохранения
+        initialdir = self.user_settings.get_last_output_dir()
+        if not initialdir and self.output_dir:
+            initialdir = self.output_dir
+        
         # Явно указываем родительское окно для правильной работы на macOS
         folder = filedialog.askdirectory(
             parent=self,
             title="Выберите папку для сохранения результатов",
-            mustexist=True
+            mustexist=True,
+            initialdir=initialdir
         )
         if folder:
             self.output_dir = folder
+            # Сохраняем выбранный путь для следующего запуска
+            self.user_settings.set_last_output_dir(folder)
             display_path = folder if len(folder) < 50 else f"...{folder[-50:]}"
             self.lbl_folder_path.configure(
                 text=display_path, 
@@ -219,55 +254,111 @@ class GigaTranscriberApp(ctk.CTk):
     
     def on_file_progress(self, stage: str, stage_progress: float):
         """
-        Callback для обновления прогресса внутри файла
+        Callback для обновления прогресса внутри файла (используется только для информации)
         
         Args:
             stage: 'conversion' или 'transcription'
             stage_progress: прогресс этапа от 0.0 до 1.0
         """
-        # Получаем веса этапов для текущего файла
-        if not self.files_to_process:
-            return
-        
-        current_filepath = self.files_to_process[self.files_processed] if self.files_processed < len(self.files_to_process) else None
-        if not current_filepath:
-            return
-        
-        conv_weight, trans_weight = self.get_file_stage_weights(current_filepath)
-        
-        # Вычисляем прогресс текущего файла
-        if stage == 'conversion':
-            self.current_file_progress = stage_progress * conv_weight
-        elif stage == 'transcription':
-            self.current_file_progress = conv_weight + (stage_progress * trans_weight)
-        
-        self.update_progress_display()
+        # Сохраняем информацию о текущем этапе для отображения
+        self.current_stage = stage
+        self.current_stage_progress = stage_progress
     
     def update_progress_display(self):
-        """Обновляет отображение прогресса на основе текущего состояния"""
-        if self.total_estimated_time <= 0:
+        """Обновляет отображение прогресса на основе количества файлов и реального времени"""
+        if not self.is_processing or self.total_files == 0:
             return
         
-        # Время, уже потраченное на завершенные файлы
-        completed_time = self.time_spent
+        # Реальное время, прошедшее с начала обработки
+        total_elapsed = time.time() - self.start_time
         
-        # Добавляем прогресс текущего файла
-        if self.files_processed < len(self.files_to_process):
+        # Базовый прогресс на основе количества обработанных файлов
+        files_progress = self.files_processed / self.total_files
+        
+        # Прогресс текущего файла на основе времени
+        current_file_progress = 0.0
+        if self.files_processed < len(self.files_to_process) and self.current_file_start_time > 0:
             current_filepath = self.files_to_process[self.files_processed]
-            estimated_current = self.file_estimates.get(current_filepath, 30)
-            current_progress_time = estimated_current * self.current_file_progress
-            total_progress_time = completed_time + current_progress_time
-        else:
-            total_progress_time = completed_time
+            current_elapsed = time.time() - self.current_file_start_time
+            
+            # Получаем ожидаемое время обработки текущего файла
+            estimated_time = self.file_estimates.get(current_filepath, 30)
+            
+            if estimated_time > 0:
+                # Прогресс = прошедшее время / ожидаемое время (но не больше 1.0)
+                # Используем более консервативный подход: считаем, что файл обрабатывается быстрее
+                # чем ожидалось, только если прошло больше 80% от ожидаемого времени
+                if current_elapsed >= estimated_time * 0.8:
+                    # Если прошло больше 80% от ожидаемого времени, считаем прогресс близким к завершению
+                    current_file_progress = min(0.95, current_elapsed / estimated_time)
+                else:
+                    # Используем более консервативную оценку: прогресс растет медленнее
+                    # Это предотвращает завышение прогресса в начале обработки
+                    current_file_progress = min(0.9, (current_elapsed / estimated_time) * 0.8)
+            else:
+                # Если нет оценки, используем простую линейную зависимость
+                # Но ограничиваем максимальный прогресс до 90%, пока файл не завершен
+                current_file_progress = min(0.9, current_elapsed / 60.0)  # Предполагаем 60 секунд по умолчанию
         
-        # Общий прогресс
-        progress = min(total_progress_time / self.total_estimated_time, 0.99)
-        self.progress_bar.set(progress)
-        percent = int(progress * 100)
+        # Общий прогресс = прогресс файлов + прогресс текущего файла / общее количество файлов
+        overall_progress = files_progress + (current_file_progress / self.total_files)
+        
+        # Ограничиваем прогресс до 99%, пока обработка не завершена
+        overall_progress = min(0.99, overall_progress)
+        
+        self.progress_bar.set(overall_progress)
+        percent = int(overall_progress * 100)
+        
+        # Рассчитываем оставшееся время на основе реальной скорости
+        remaining_time = 0
+        if self.files_processed < len(self.files_to_process):
+            # Осталось файлов (включая текущий)
+            remaining_files_count = len(self.files_to_process) - self.files_processed
+            
+            # Оставшееся время для текущего файла
+            if self.current_file_start_time > 0:
+                current_elapsed = time.time() - self.current_file_start_time
+                estimated_current = self.file_estimates.get(
+                    self.files_to_process[self.files_processed], 
+                    max(current_elapsed * 1.5, 30)  # Минимум 30 секунд или 1.5x от текущего времени
+                )
+                
+                # Если реальное время уже превысило оценку, экстраполируем
+                if current_elapsed >= estimated_current:
+                    # Файл обрабатывается дольше - используем текущую скорость
+                    if current_file_progress > 0.1:  # Если есть хотя бы 10% прогресса
+                        # Экстраполируем: оставшееся время = текущее время * (1 - прогресс) / прогресс
+                        remaining_current = current_elapsed * ((1 - current_file_progress) / max(current_file_progress, 0.1))
+                    else:
+                        # Если прогресс мал, используем оценку
+                        remaining_current = max(0, estimated_current - current_elapsed)
+                else:
+                    # Используем оценку, скорректированную на реальное время
+                    remaining_current = max(0, estimated_current - current_elapsed)
+            else:
+                # Файл еще не начат
+                estimated_current = self.file_estimates.get(
+                    self.files_to_process[self.files_processed], 
+                    30
+                )
+                remaining_current = estimated_current
+            
+            # Средняя скорость обработки на основе реального времени
+            if self.files_processed > 0:
+                # Используем среднее время на уже обработанные файлы
+                avg_time_per_file = self.time_spent / self.files_processed
+            elif self.current_file_start_time > 0:
+                # Если обрабатывается первый файл, используем его текущую скорость
+                current_elapsed = time.time() - self.current_file_start_time
+                avg_time_per_file = current_elapsed
+            else:
+                # Если нет данных, используем оценку
+                avg_time_per_file = estimated_current
+            
+            # Оставшееся время = оставшееся время текущего файла + среднее время * оставшиеся файлы
+            remaining_time = remaining_current + (avg_time_per_file * (remaining_files_count - 1))
         
         # Оставшееся время
-        remaining_time = max(0, self.total_estimated_time - total_progress_time)
-        
         if remaining_time > 0:
             time_info = f"Осталось: ~{self.time_formatter.format_duration(remaining_time)}"
             self.update_progress_label(percent, time_info)
@@ -281,9 +372,35 @@ class GigaTranscriberApp(ctk.CTk):
         Args:
             current_file_index: индекс текущего файла
         """
-        self.current_file_progress = 0.0
+        self.current_file_start_time = time.time()
+        self.current_stage = None
+        self.current_stage_progress = 0.0
         self.update_progress_display()
+        
+        # Запускаем периодическое обновление прогресса на основе реального времени
+        self._start_progress_updates()
 
+    def _start_progress_updates(self):
+        """Запускает периодическое обновление прогресса на основе реального времени"""
+        def update_periodically():
+            if self.is_processing:
+                self.update_progress_display()
+                # Обновляем каждую секунду
+                self.progress_update_timer = self.after(1000, update_periodically)
+        
+        # Останавливаем предыдущий таймер, если есть
+        if self.progress_update_timer:
+            self.after_cancel(self.progress_update_timer)
+        
+        # Запускаем обновления
+        update_periodically()
+    
+    def _stop_progress_updates(self):
+        """Останавливает периодическое обновление прогресса"""
+        if self.progress_update_timer:
+            self.after_cancel(self.progress_update_timer)
+            self.progress_update_timer = None
+    
     def start_processing_thread(self):
         """Запускает обработку в отдельном потоке"""
         if self.is_processing:
@@ -298,6 +415,8 @@ class GigaTranscriberApp(ctk.CTk):
         if not self.output_dir:
             if self.files_to_process:
                 self.output_dir = os.path.dirname(self.files_to_process[0])
+                # Сохраняем автоматически выбранный путь для следующего раза
+                self.user_settings.set_last_output_dir(self.output_dir)
                 self.log(f"Папка не выбрана. Использую директорию первого файла: {self.output_dir}")
         
         self.is_processing = True
@@ -305,6 +424,9 @@ class GigaTranscriberApp(ctk.CTk):
         self.files_processed = 0
         self.total_files = len(self.files_to_process)
         self.time_spent = 0
+        self.current_file_start_time = 0
+        self.current_stage = None
+        self.current_stage_progress = 0.0
         
         # Получаем длительность файлов для точной оценки времени
         self.log("Анализ файлов и оценка времени обработки...")
@@ -349,6 +471,7 @@ class GigaTranscriberApp(ctk.CTk):
             # Загружаем модель
             if not self.model_loader.load_model(self.log):
                 self.is_processing = False
+                self._stop_progress_updates()
                 self.btn_start.configure(
                     state="normal", 
                     text="ЗАПУСТИТЬ ОБРАБОТКУ", 
@@ -367,7 +490,6 @@ class GigaTranscriberApp(ctk.CTk):
             # Обрабатываем каждый файл
             for i, filepath in enumerate(self.files_to_process):
                 try:
-                    self.current_file_start_time = time.time()
                     self.update_progress(i)
                     
                     # Получаем веса этапов для точной передачи процессору
@@ -396,7 +518,19 @@ class GigaTranscriberApp(ctk.CTk):
                     if result['success']:
                         self.files_processed += 1
                     
+                    # Используем реальное время из результата
                     self.time_spent += result['total_time']
+                    
+                    # Обновляем оценку времени для следующего файла на основе реального времени
+                    # Это поможет улучшить прогнозы для следующих файлов
+                    if result['total_time'] > 0:
+                        # Обновляем оценку для этого типа файла
+                        current_filepath = self.files_to_process[i]
+                        # Если реальное время сильно отличается от оценки, корректируем
+                        estimated = self.file_estimates.get(current_filepath, result['total_time'])
+                        if abs(result['total_time'] - estimated) > estimated * 0.3:  # Разница больше 30%
+                            # Обновляем оценку на основе реального времени
+                            self.file_estimates[current_filepath] = result['total_time']
                     
                 except Exception as e:
                     error_msg = f"Ошибка при обработке файла {os.path.basename(filepath)}: {str(e)}"
@@ -409,12 +543,16 @@ class GigaTranscriberApp(ctk.CTk):
             self.log(error_msg)
             self.app_logger.get_logger().error(error_msg, exc_info=True)
             self.is_processing = False
+            self._stop_progress_updates()
             self.btn_start.configure(
                 state="normal", 
                 text="ЗАПУСТИТЬ ОБРАБОТКУ", 
                 fg_color="#2CC985"
             )
             return
+        
+        # Останавливаем периодическое обновление прогресса
+        self._stop_progress_updates()
         
         # Финальное обновление прогресса
         self.progress_bar.set(1.0)

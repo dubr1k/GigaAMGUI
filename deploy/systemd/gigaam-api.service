@@ -8,8 +8,13 @@ Type=simple
 User=dubr1k
 Group=dubr1k
 WorkingDirectory=/mnt/storage10tb/syncthing/development/GigaAMv3
+
+# Переменные окружения
 Environment="PATH=/mnt/storage10tb/anaconda/envs/gigaam/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/mnt/storage10tb/anaconda/envs/gigaam/bin/python -m uvicorn api:app --host 127.0.0.1 --port 8000 --workers 2 --log-level info
+EnvironmentFile=/mnt/storage10tb/syncthing/development/GigaAMv3/.env
+
+# Запуск с параметрами из .env
+ExecStart=/mnt/storage10tb/anaconda/envs/gigaam/bin/python api.py
 
 # Автоматический перезапуск при сбое
 Restart=always

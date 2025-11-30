@@ -10,6 +10,8 @@ import uuid
 import time
 import asyncio
 import shutil
+import zipfile
+import io
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -20,7 +22,7 @@ from fastapi import (
     FastAPI, File, UploadFile, HTTPException, Depends,
     BackgroundTasks, status, Header, Request
 )
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -44,20 +46,35 @@ apply_pyannote_patch()
 
 # ==================== КОНФИГУРАЦИЯ ====================
 
-# API ключи (в продакшене использовать .env или базу данных)
-API_KEYS_FILE = Path(__file__).parent / ".api_keys"
+# Загрузка конфигурации из .env
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения из .env файла
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path, override=False)
+
+# API ключи
+API_KEYS_FILE = Path(__file__).parent / os.getenv("API_KEYS_FILE", ".api_keys")
 VALID_API_KEYS = set()
 
 # Директории
-UPLOAD_DIR = Path(__file__).parent / "uploads"
-RESULTS_DIR = Path(__file__).parent / "results"
+UPLOAD_DIR = Path(__file__).parent / os.getenv("UPLOAD_DIR", "uploads")
+RESULTS_DIR = Path(__file__).parent / os.getenv("RESULTS_DIR", "results")
 UPLOAD_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
 
-# Ограничения
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
-MAX_CONCURRENT_TASKS = 3
-TASK_CLEANUP_HOURS = 24
+# Ограничения (из .env или значения по умолчанию)
+MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(2 * 1024 * 1024 * 1024)))  # 2GB
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
+TASK_CLEANUP_HOURS = int(os.getenv("TASK_CLEANUP_HOURS", "24"))
+
+# API настройки
+API_HOST = os.getenv("API_HOST", "127.0.0.1")
+API_PORT = int(os.getenv("API_PORT", "8000"))
+API_WORKERS = int(os.getenv("API_WORKERS", "2"))
 
 # Глобальные переменные
 model_loader = None
@@ -105,6 +122,13 @@ class UploadResponse(BaseModel):
     filename: str
     file_size: int
     estimated_time: Optional[str] = None
+
+
+class BatchUploadResponse(BaseModel):
+    """Ответ на множественную загрузку файлов"""
+    tasks: List[UploadResponse]
+    total_files: int
+    message: str
 
 
 class APIKeyCreate(BaseModel):
@@ -162,6 +186,60 @@ def is_supported_format(filename: str) -> bool:
     extensions = SUPPORTED_FORMATS[1].split()
     file_ext = Path(filename).suffix.lower()
     return any(file_ext == ext.replace('*', '') for ext in extensions)
+
+
+def restore_tasks_from_results():
+    """Восстанавливает информацию о задачах из существующих результатов при запуске API"""
+    if not RESULTS_DIR.exists():
+        return
+    
+    restored_count = 0
+    for task_dir in RESULTS_DIR.iterdir():
+        if not task_dir.is_dir():
+            continue
+        
+        task_id = task_dir.name
+        
+        # Ищем любой txt файл для определения имени оригинального файла
+        txt_files = list(task_dir.glob("*.txt"))
+        if not txt_files:
+            continue
+        
+        # Берем первый файл (не timecodes)
+        result_file = None
+        for f in txt_files:
+            if not f.name.endswith('_timecodes.txt'):
+                result_file = f
+                break
+        
+        if not result_file:
+            continue
+        
+        # Определяем оригинальное имя файла
+        filename_base = result_file.stem
+        # Предполагаем что это был аудио файл (можем использовать .ogg как fallback)
+        original_filename = filename_base + '.ogg'
+        
+        # Получаем время создания файла
+        created_timestamp = datetime.fromtimestamp(result_file.stat().st_ctime)
+        
+        # Восстанавливаем запись о задаче
+        tasks_storage[task_id] = {
+            'task_id': task_id,
+            'status': 'completed',
+            'created_at': created_timestamp.isoformat(),
+            'started_at': created_timestamp.isoformat(),
+            'completed_at': created_timestamp.isoformat(),
+            'progress': 100,
+            'filename': original_filename,
+            'file_size': 0,  # Неизвестно
+            'message': 'Задача восстановлена из результатов при запуске API'
+        }
+        
+        restored_count += 1
+    
+    if restored_count > 0:
+        logger.info(f"Восстановлено {restored_count} задач из существующих результатов")
 
 
 async def cleanup_old_tasks():
@@ -233,11 +311,13 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 str(file_path),
                 str(output_dir),
                 0,
-                1
+                1,
+                filename  # Передаем оригинальное имя файла
             )
             
             if result['success']:
                 # Читаем результаты
+                # Файлы сохраняются с оригинальным именем
                 text_file = output_dir / f"{Path(filename).stem}.txt"
                 timecode_file = output_dir / f"{Path(filename).stem}_timecodes.txt"
                 
@@ -303,6 +383,9 @@ async def lifespan(app: FastAPI):
     logger = setup_logger()
     logger.info("API сервер запускается...")
     
+    # Восстановление задач из существующих результатов
+    restore_tasks_from_results()
+    
     # Проверка токена
     if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
         logger.error("HuggingFace токен не настроен!")
@@ -365,19 +448,37 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    """Корневой эндпоинт"""
+    """Корневой эндпоинт - информация о сервисе"""
     return {
         "service": "GigaAM v3 Transcriber API",
         "version": "3.0.0",
         "status": "running",
+        "description": "REST API для транскрибации аудио и видео файлов на русском языке",
         "endpoints": {
+            "docs": {
+                "swagger": "/docs",
+                "redoc": "/redoc"
+            },
             "health": "/health",
-            "upload": "/api/v1/transcribe",
-            "status": "/api/v1/tasks/{task_id}",
-            "result": "/api/v1/tasks/{task_id}/result",
-            "download": "/api/v1/tasks/{task_id}/download",
-            "tasks": "/api/v1/tasks",
-            "docs": "/docs"
+            "transcription": {
+                "upload_single": "POST /api/v1/transcribe",
+                "upload_batch": "POST /api/v1/transcribe/batch"
+            },
+            "tasks": {
+                "list_all": "GET /api/v1/tasks",
+                "get_status": "GET /api/v1/tasks/{task_id}",
+                "get_result": "GET /api/v1/tasks/{task_id}/result",
+                "delete": "DELETE /api/v1/tasks/{task_id}",
+                "delete_all": "DELETE /api/v1/tasks?status=completed|failed|all"
+            },
+            "progress": {
+                "single": "GET /api/v1/tasks/{task_id}",
+                "batch": "GET /api/v1/tasks/progress/batch?task_ids=id1,id2,id3"
+            },
+            "download": {
+                "single": "GET /api/v1/tasks/{task_id}/download?format=txt|timecodes",
+                "batch": "GET /api/v1/download-batch?task_ids=id1,id2&format=txt|timecodes"
+            }
         }
     }
 
@@ -392,6 +493,8 @@ async def health_check():
         "total_tasks": len(tasks_storage),
         "uptime": "running"
     }
+
+
 
 
 @app.post(
@@ -481,6 +584,148 @@ async def upload_file(
     )
 
 
+@app.post(
+    "/api/v1/transcribe/batch",
+    response_model=BatchUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(verify_api_key)]
+)
+@limiter.limit("5/minute")  # Ограничение на множественную загрузку
+async def upload_files_batch(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(..., description="Список аудио или видео файлов")
+):
+    """
+    Загрузить несколько файлов для транскрибации
+
+    - **files**: Список аудио или видео файлов (mp3, wav, m4a, mp4, avi, mov, mkv, webm, flac, ogg, wma)
+    - Максимум 10 файлов за раз
+    - Максимальный размер каждого файла: 2GB
+    - Требуется заголовок X-API-Key
+
+    Возвращает список task_id для проверки статуса каждого файла.
+    """
+
+    # Проверка количества файлов
+    if len(files) > 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Максимум 10 файлов за раз"
+        )
+
+    if len(files) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Необходимо загрузить хотя бы один файл"
+        )
+
+    uploaded_tasks = []
+
+    for file in files:
+        # Проверка формата
+        if not is_supported_format(file.filename):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Неподдерживаемый формат файла {file.filename}. Поддерживаемые: {SUPPORTED_FORMATS[1]}"
+            )
+
+        # Генерируем ID задачи
+        task_id = uuid.uuid4().hex
+
+        # Сохраняем файл
+        file_path = UPLOAD_DIR / f"{task_id}_{file.filename}"
+        file_size = 0
+
+        try:
+            async with aiofiles.open(file_path, 'wb') as f:
+                while chunk := await file.read(8192):
+                    file_size += len(chunk)
+
+                    # Проверка размера
+                    if file_size > MAX_FILE_SIZE:
+                        await f.close()
+                        file_path.unlink()
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=f"Файл {file.filename} слишком большой (макс. {MAX_FILE_SIZE/1024/1024/1024:.1f} GB)"
+                        )
+
+                    await f.write(chunk)
+
+        except Exception as e:
+            if file_path.exists():
+                file_path.unlink()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Ошибка сохранения файла {file.filename}: {str(e)}"
+            )
+
+        # Создаем задачу
+        tasks_storage[task_id] = {
+            'task_id': task_id,
+            'status': 'pending',
+            'created_at': datetime.now().isoformat(),
+            'started_at': None,
+            'completed_at': None,
+            'progress': 0,
+            'filename': file.filename,
+            'file_size': file_size,
+            'message': 'Задача в очереди на обработку'
+        }
+
+        # Запускаем обработку в фоне
+        background_tasks.add_task(process_transcription, task_id, file_path, file.filename)
+
+        logger.info(f"Создана задача {task_id}: {file.filename} ({file_size/1024/1024:.1f} MB)")
+
+        uploaded_tasks.append(UploadResponse(
+            task_id=task_id,
+            message="Файл успешно загружен и отправлен на обработку",
+            filename=file.filename,
+            file_size=file_size,
+            estimated_time="Оценка будет доступна после начала обработки"
+        ))
+
+    return BatchUploadResponse(
+        tasks=uploaded_tasks,
+        total_files=len(uploaded_tasks),
+        message=f"Успешно загружено {len(uploaded_tasks)} файлов для обработки"
+    )
+
+
+@app.get(
+    "/api/v1/tasks",
+    dependencies=[Depends(verify_api_key)]
+)
+async def list_tasks(
+    status_filter: Optional[str] = None,
+    limit: int = 100
+):
+    """
+    Получить список задач
+    
+    - **status_filter**: фильтр по статусу (pending, processing, completed, failed)
+    - **limit**: максимальное количество задач (по умолчанию 100)
+    """
+    tasks = list(tasks_storage.values())
+    
+    # Фильтрация
+    if status_filter:
+        tasks = [t for t in tasks if t['status'] == status_filter]
+    
+    # Сортировка по дате создания (новые первыми)
+    tasks.sort(key=lambda x: x['created_at'], reverse=True)
+    
+    # Ограничение
+    tasks = tasks[:limit]
+    
+    return {
+        "total": len(tasks),
+        "tasks": tasks
+    }
+
+
 @app.get(
     "/api/v1/tasks/{task_id}",
     response_model=TaskStatus,
@@ -506,6 +751,66 @@ async def get_task_status(task_id: str):
     
     task = tasks_storage[task_id]
     return TaskStatus(**task)
+
+
+@app.get(
+    "/api/v1/tasks/progress/batch",
+    dependencies=[Depends(verify_api_key)]
+)
+async def get_batch_progress(task_ids: str):
+    """
+    Получить прогресс нескольких задач одновременно
+    
+    - **task_ids**: Список ID задач через запятую (task_id1,task_id2,task_id3)
+    
+    Возвращает статус и прогресс для каждой задачи.
+    Полезно для отображения прогресса в Postman/клиенте.
+    """
+    # Парсим список task_id
+    try:
+        task_id_list = [tid.strip() for tid in task_ids.split(',') if tid.strip()]
+    except:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный формат списка task_id. Используйте: task_id1,task_id2,task_id3"
+        )
+    
+    if len(task_id_list) > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Максимум 50 задач за раз"
+        )
+    
+    if len(task_id_list) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Необходимо указать хотя бы один task_id. Получено: '{task_ids}'. Убедитесь, что переменные task_id установлены в Postman или укажите ID вручную."
+        )
+    
+    # Собираем информацию о задачах
+    results = []
+    not_found = []
+    
+    for task_id in task_id_list:
+        if task_id in tasks_storage:
+            task = tasks_storage[task_id]
+            results.append({
+                "task_id": task_id,
+                "status": task['status'],
+                "progress": task.get('progress', 0),
+                "filename": task.get('filename', ''),
+                "message": task.get('message', ''),
+                "error": task.get('error')
+            })
+        else:
+            not_found.append(task_id)
+    
+    return {
+        "total_requested": len(task_id_list),
+        "found": len(results),
+        "not_found": not_found,
+        "tasks": results
+    }
 
 
 @app.get(
@@ -548,6 +853,114 @@ async def get_task_result(task_id: str):
 
 
 @app.get(
+    "/api/v1/download-batch",
+    dependencies=[Depends(verify_api_key)]
+)
+async def download_batch_results(task_ids: str, format: str = "txt"):
+    """
+    Скачать результаты нескольких задач в ZIP архиве
+
+    - **task_ids**: Список ID задач через запятую (task_id1,task_id2,task_id3)
+    - **format**: формат файлов (txt или timecodes)
+    """
+
+    # Парсим список task_id
+    try:
+        task_id_list = [tid.strip() for tid in task_ids.split(',') if tid.strip()]
+    except:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный формат списка task_id. Используйте: task_id1,task_id2,task_id3"
+        )
+
+    if len(task_id_list) > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Максимум 20 задач за раз"
+        )
+
+    if len(task_id_list) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Необходимо указать хотя бы один task_id. Получено: '{task_ids}'. Убедитесь, что переменные task_id установлены в Postman или укажите ID вручную."
+        )
+
+    # Проверяем все задачи
+    valid_tasks = []
+    not_found_ids = []
+    not_completed_ids = []
+    
+    for task_id in task_id_list:
+        if task_id not in tasks_storage:
+            not_found_ids.append(task_id)
+            continue
+        
+        task = tasks_storage[task_id]
+        if task['status'] != 'completed':
+            not_completed_ids.append(f"{task_id} (status: {task['status']})")
+            continue
+        
+        valid_tasks.append(task)
+    
+    if not_found_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Задачи не найдены: {', '.join(not_found_ids)}. Всего задач в системе: {len(tasks_storage)}. Используйте GET /api/v1/tasks для получения списка доступных task_id."
+        )
+    
+    if not_completed_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Некоторые задачи еще не завершены: {', '.join(not_completed_ids)}"
+        )
+
+    # Создаем ZIP архив в памяти
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for task in valid_tasks:
+            task_id = task['task_id']
+            result_dir = RESULTS_DIR / task_id
+            filename_base = Path(task['filename']).stem
+
+            # Используем оригинальное имя файла (без task_id префикса)
+            if format == "timecodes":
+                file_path = result_dir / f"{filename_base}_timecodes.txt"
+                zip_name = f"{filename_base}_timecodes.txt"
+            else:
+                file_path = result_dir / f"{filename_base}.txt"
+                zip_name = f"{filename_base}.txt"
+
+            # Логируем для отладки
+            logger.debug(f"Batch download: ищем файл {file_path}")
+            
+            if file_path.exists():
+                zip_file.write(file_path, zip_name)
+                logger.debug(f"Batch download: добавлен файл {zip_name}")
+            else:
+                # Если файл не найден, создаем пустой файл с сообщением
+                error_msg = f"Результаты для файла {task['filename']} не найдены\n"
+                error_msg += f"Искали: {file_path}\n"
+                error_msg += f"Папка существует: {result_dir.exists()}\n"
+                if result_dir.exists():
+                    error_msg += f"Файлы в папке: {list(result_dir.iterdir())}"
+                zip_file.writestr(zip_name, error_msg)
+                logger.warning(f"Batch download: файл не найден {file_path}")
+
+    zip_buffer.seek(0)
+
+    # Возвращаем ZIP файл
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"transcription_results_{timestamp}.zip"
+
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.get(
     "/api/v1/tasks/{task_id}/download",
     dependencies=[Depends(verify_api_key)]
 )
@@ -576,6 +989,7 @@ async def download_result(task_id: str, format: str = "txt"):
     result_dir = RESULTS_DIR / task_id
     filename_base = Path(task['filename']).stem
     
+    # Используем оригинальное имя файла (без task_id префикса)
     if format == "timecodes":
         file_path = result_dir / f"{filename_base}_timecodes.txt"
     else:
@@ -592,38 +1006,6 @@ async def download_result(task_id: str, format: str = "txt"):
         filename=file_path.name,
         media_type="text/plain"
     )
-
-
-@app.get(
-    "/api/v1/tasks",
-    dependencies=[Depends(verify_api_key)]
-)
-async def list_tasks(
-    status_filter: Optional[str] = None,
-    limit: int = 100
-):
-    """
-    Получить список задач
-    
-    - **status_filter**: фильтр по статусу (pending, processing, completed, failed)
-    - **limit**: максимальное количество задач (по умолчанию 100)
-    """
-    tasks = list(tasks_storage.values())
-    
-    # Фильтрация
-    if status_filter:
-        tasks = [t for t in tasks if t['status'] == status_filter]
-    
-    # Сортировка по дате создания (новые первыми)
-    tasks.sort(key=lambda x: x['created_at'], reverse=True)
-    
-    # Ограничение
-    tasks = tasks[:limit]
-    
-    return {
-        "total": len(tasks),
-        "tasks": tasks
-    }
 
 
 @app.delete(
@@ -667,6 +1049,95 @@ async def delete_task(task_id: str):
     return {"message": "Задача успешно удалена"}
 
 
+@app.delete(
+    "/api/v1/tasks",
+    dependencies=[Depends(verify_api_key)]
+)
+async def delete_all_tasks(status_filter: Optional[str] = None):
+    """
+    Удалить все задачи (массовое удаление)
+    
+    - **status_filter**: фильтр по статусу для удаления (completed, failed, pending, all)
+      - Если не указан, по умолчанию удаляются только завершенные задачи (completed, failed)
+      - Используйте "all" для удаления всех задач включая pending
+      - Задачи со статусом "processing" НИКОГДА не удаляются
+    
+    Примеры:
+    - DELETE /api/v1/tasks - удалит все completed и failed задачи
+    - DELETE /api/v1/tasks?status_filter=completed - удалит только completed
+    - DELETE /api/v1/tasks?status_filter=all - удалит все кроме processing
+    """
+    
+    # Определяем какие статусы удалять
+    if status_filter == "all":
+        # Удаляем все кроме processing
+        statuses_to_delete = ['pending', 'completed', 'failed']
+    elif status_filter in ['completed', 'failed', 'pending']:
+        # Удаляем только указанный статус
+        statuses_to_delete = [status_filter]
+    elif status_filter is None:
+        # По умолчанию удаляем completed и failed
+        statuses_to_delete = ['completed', 'failed']
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Неверный статус фильтра. Используйте: completed, failed, pending, all"
+        )
+    
+    # Собираем задачи для удаления
+    tasks_to_delete = []
+    for task_id, task in tasks_storage.items():
+        if task['status'] in statuses_to_delete:
+            tasks_to_delete.append(task_id)
+    
+    if len(tasks_to_delete) == 0:
+        return {
+            "message": "Нет задач для удаления",
+            "deleted_count": 0,
+            "filter": status_filter or "completed, failed (default)"
+        }
+    
+    # Удаляем задачи и их файлы
+    deleted_count = 0
+    errors = []
+    
+    for task_id in tasks_to_delete:
+        try:
+            task = tasks_storage[task_id]
+            
+            # Удаляем загруженный файл
+            upload_path = UPLOAD_DIR / f"{task_id}_{task['filename']}"
+            if upload_path.exists():
+                upload_path.unlink()
+            
+            # Удаляем результаты
+            result_dir = RESULTS_DIR / task_id
+            if result_dir.exists():
+                shutil.rmtree(result_dir)
+            
+            # Удаляем из хранилища
+            del tasks_storage[task_id]
+            deleted_count += 1
+            
+        except Exception as e:
+            errors.append(f"{task_id}: {str(e)}")
+            logger.error(f"Ошибка при удалении задачи {task_id}: {str(e)}")
+    
+    logger.info(f"Массовое удаление: удалено {deleted_count} задач (фильтр: {status_filter or 'default'})")
+    
+    response = {
+        "message": f"Успешно удалено задач: {deleted_count}",
+        "deleted_count": deleted_count,
+        "filter": status_filter or "completed, failed (default)"
+    }
+    
+    if errors:
+        response["errors"] = errors
+        response["message"] += f" (с ошибками: {len(errors)})"
+    
+    return response
+
+
 # ==================== ЗАПУСК ====================
 
 if __name__ == "__main__":
@@ -674,8 +1145,8 @@ if __name__ == "__main__":
     
     uvicorn.run(
         "api:app",
-        host="127.0.0.1",
-        port=8000,
+        host=API_HOST,
+        port=API_PORT,
         reload=False,
         log_level="info"
     )

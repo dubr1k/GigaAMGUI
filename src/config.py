@@ -5,18 +5,19 @@
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Загрузка переменных из .env файла
 def load_env():
     """Загружает переменные окружения из .env файла"""
     env_path = Path(__file__).parent.parent / '.env'
     if env_path.exists():
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    os.environ[key.strip()] = value.strip()
+        load_dotenv(env_path, override=False)
+    else:
+        # Пытаемся загрузить из корня проекта
+        root_env = Path(__file__).parent.parent.parent / '.env'
+        if root_env.exists():
+            load_dotenv(root_env, override=False)
 
 # Загружаем переменные окружения
 load_env()
@@ -27,7 +28,7 @@ HF_TOKEN = os.getenv("HF_TOKEN", "")
 # Проверка и установка токена
 if HF_TOKEN and HF_TOKEN.startswith("hf_"):
     os.environ["HF_TOKEN"] = HF_TOKEN
-    print(f"Токен HuggingFace установлен: {HF_TOKEN[:10]}...")
+    print("Токен HuggingFace загружен из .env файла")
 else:
     print("ВНИМАНИЕ: Токен HuggingFace не установлен или неверный!")
     print("Пожалуйста, установите ваш токен в файле .env")
