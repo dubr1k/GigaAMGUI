@@ -46,3 +46,4 @@ python3 test_transcription_fix.py
 - Тестовые скрипты написаны на чистом Python без внешних зависимостей
 - Скрипты совместимы с Linux/macOS
 
+
