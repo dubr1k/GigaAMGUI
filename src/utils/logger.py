@@ -39,7 +39,23 @@ class AppLogger:
         
         # Путь: logs/dd-mm-yyyy/HH-MM-SS/
         self.session_dir = self.logs_dir / date_folder / time_folder
-        self.session_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Создаем директории с обработкой ошибок
+        try:
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            # Если не удалось создать директорию, выводим ошибку в консоль
+            print(f"ОШИБКА: Не удалось создать директорию для логов: {self.session_dir}")
+            print(f"Причина: {e}")
+            print(f"Базовая директория: {self.base_dir}")
+            print(f"Директория логов: {self.logs_dir}")
+            # Пытаемся создать хотя бы базовую директорию логов
+            try:
+                self.logs_dir.mkdir(parents=True, exist_ok=True)
+                self.session_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e2:
+                print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось создать директорию логов даже после повторной попытки: {e2}")
+                raise
         
         # Файлы логов
         self.main_log = self.session_dir / "app.log"

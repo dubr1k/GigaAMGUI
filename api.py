@@ -102,6 +102,7 @@ class TaskStatus(BaseModel):
     file_size: int
     message: Optional[str] = None
     error: Optional[str] = None
+    error_details: Optional[str] = None  # Полный traceback для отладки
 
 
 class TaskResult(BaseModel):
@@ -279,6 +280,75 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
     """
     async with processing_semaphore:
         try:
+            # Проверяем существование файла перед обработкой
+            # Используем оригинальный путь и resolved путь для надежности
+            file_path_original = file_path
+            file_path_resolved = file_path.resolve()
+            
+            # Логируем оба пути для отладки
+            logger.debug(f"[{task_id}] Проверка файла:")
+            logger.debug(f"[{task_id}]   Оригинальный путь: {file_path_original}")
+            logger.debug(f"[{task_id}]   Resolved путь: {file_path_resolved}")
+            logger.debug(f"[{task_id}]   Оригинальный существует: {file_path_original.exists()}")
+            logger.debug(f"[{task_id}]   Resolved существует: {file_path_resolved.exists()}")
+            
+            # Проверяем оба варианта пути
+            actual_file_path = None
+            if file_path_resolved.exists():
+                actual_file_path = file_path_resolved
+            elif file_path_original.exists():
+                actual_file_path = file_path_original
+            else:
+                # Пробуем найти файл по имени в директории uploads
+                filename_only = file_path_original.name
+                alternative_path = UPLOAD_DIR / filename_only
+                logger.debug(f"[{task_id}]   Альтернативный путь: {alternative_path}")
+                logger.debug(f"[{task_id}]   Альтернативный существует: {alternative_path.exists()}")
+                
+                if alternative_path.exists():
+                    actual_file_path = alternative_path
+                else:
+                    # КРИТИЧНО: Пробуем найти файл через glob, так как файл может еще не полностью записан на диск
+                    # и exists() может вернуть False, но glob все равно найдет файл
+                    try:
+                        files_in_dir = list(UPLOAD_DIR.glob(f"*{task_id}*"))
+                        logger.debug(f"[{task_id}] Файлы с task_id в директории uploads (через glob): {[str(f) for f in files_in_dir]}")
+                        
+                        if files_in_dir:
+                            # Используем первый найденный файл
+                            found_file = files_in_dir[0]
+                            logger.debug(f"[{task_id}] Найден файл через glob: {found_file}")
+                            logger.debug(f"[{task_id}] Файл существует (проверка после glob): {found_file.exists()}")
+                            
+                            # Даже если exists() возвращает False, пробуем использовать файл
+                            # Возможно, файл еще записывается, но уже доступен через glob
+                            actual_file_path = found_file
+                            logger.info(f"[{task_id}] Используем файл, найденный через glob (может быть еще записывается)")
+                        else:
+                            error_msg = f"Файл не найден ни по одному из путей:\n  - {file_path_original}\n  - {file_path_resolved}\n  - {alternative_path}"
+                            logger.error(f"[{task_id}] {error_msg}")
+                            
+                            tasks_storage[task_id].update({
+                                'status': 'failed',
+                                'completed_at': datetime.now().isoformat(),
+                                'error': error_msg,
+                                'message': 'Файл не найден'
+                            })
+                            return
+                    except Exception as e:
+                        logger.debug(f"[{task_id}] Не удалось прочитать директорию uploads: {e}")
+                        error_msg = f"Ошибка при поиске файла: {str(e)}"
+                        logger.error(f"[{task_id}] {error_msg}")
+                        tasks_storage[task_id].update({
+                            'status': 'failed',
+                            'completed_at': datetime.now().isoformat(),
+                            'error': error_msg,
+                            'message': 'Ошибка при поиске файла'
+                        })
+                        return
+            
+            logger.debug(f"[{task_id}] Используемый путь к файлу: {actual_file_path}")
+            
             # Обновляем статус
             tasks_storage[task_id]['status'] = 'processing'
             tasks_storage[task_id]['started_at'] = datetime.now().isoformat()
@@ -303,12 +373,51 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 progress_callback=progress_callback
             )
             
+            # Финальная проверка файла перед обработкой
+            # Если файл был найден через glob, он может еще записываться
+            # Пробуем несколько раз с небольшой задержкой
+            file_found = False
+            for attempt in range(3):
+                if actual_file_path.exists():
+                    file_found = True
+                    break
+                else:
+                    logger.debug(f"[{task_id}] Попытка {attempt + 1}/3: файл еще не доступен, ждем 0.5 сек...")
+                    await asyncio.sleep(0.5)
+            
+            if not file_found:
+                # Последняя попытка через glob
+                files_in_dir = list(UPLOAD_DIR.glob(f"*{task_id}*"))
+                if files_in_dir:
+                    actual_file_path = files_in_dir[0]
+                    logger.info(f"[{task_id}] Файл найден через glob после ожидания: {actual_file_path}")
+                    file_found = True
+            
+            if not file_found:
+                error_msg = f"Файл недоступен после ожидания: {actual_file_path}"
+                logger.error(f"[{task_id}] {error_msg}")
+                tasks_storage[task_id].update({
+                    'status': 'failed',
+                    'completed_at': datetime.now().isoformat(),
+                    'error': error_msg,
+                    'message': 'Файл недоступен после ожидания'
+                })
+                return
+            
+            logger.debug(f"[{task_id}] Файл подтвержден перед обработкой: {actual_file_path}")
+            try:
+                file_size = actual_file_path.stat().st_size
+                logger.debug(f"[{task_id}] Размер файла: {file_size} байт")
+            except Exception as e:
+                logger.warning(f"[{task_id}] Не удалось получить размер файла: {e}")
+            
             # Обработка в синхронном коде через executor
+            # Используем найденный путь к файлу
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
                 processor.process_file,
-                str(file_path),
+                str(actual_file_path),
                 str(output_dir),
                 0,
                 1,
@@ -350,18 +459,42 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 raise Exception("Обработка не удалась")
                 
         except Exception as e:
-            logger.error(f"Ошибка при обработке задачи {task_id}: {str(e)}")
+            import traceback
+            error_traceback = traceback.format_exc()
+            error_msg = str(e)
+            logger.error(f"Ошибка при обработке задачи {task_id}: {error_msg}")
+            logger.debug(f"Traceback для задачи {task_id}:\n{error_traceback}")
             tasks_storage[task_id].update({
                 'status': 'failed',
                 'completed_at': datetime.now().isoformat(),
-                'error': str(e),
-                'message': f'Ошибка обработки: {str(e)}'
+                'error': error_msg,
+                'error_details': error_traceback,  # Добавляем полный traceback для отладки
+                'message': f'Ошибка обработки: {error_msg}'
             })
         
         finally:
-            # Удаляем загруженный файл
-            if file_path.exists():
-                file_path.unlink()
+            # Удаляем загруженный файл только после успешной обработки
+            # НЕ удаляем файл, если обработка не удалась - файл может понадобиться для повторной попытки
+            task_status = tasks_storage.get(task_id, {}).get('status', 'unknown')
+            if task_status == 'completed':
+                # Удаляем файл только после успешной обработки
+                paths_to_check = []
+                if 'actual_file_path' in locals():
+                    paths_to_check.append(actual_file_path)
+                paths_to_check.append(file_path)
+                if hasattr(file_path, 'resolve'):
+                    paths_to_check.append(file_path.resolve())
+                
+                for path_to_check in paths_to_check:
+                    if path_to_check and Path(path_to_check).exists():
+                        try:
+                            Path(path_to_check).unlink()
+                            logger.debug(f"[{task_id}] Удален файл после успешной обработки: {path_to_check}")
+                            break
+                        except Exception as e:
+                            logger.debug(f"[{task_id}] Не удалось удалить файл {path_to_check}: {e}")
+            else:
+                logger.debug(f"[{task_id}] Файл не удален (статус: {task_status}), может понадобиться для повторной попытки")
 
 
 # ==================== LIFESPAN ====================
@@ -548,6 +681,26 @@ async def upload_file(
                     )
                 
                 await f.write(chunk)
+        
+        # Убеждаемся, что файл полностью записан на диск
+        # Синхронизируем файловую систему
+        file_fd = os.open(str(file_path), os.O_RDONLY)
+        try:
+            os.fsync(file_fd)  # Синхронизируем файл
+        finally:
+            os.close(file_fd)
+        
+        # Финальная проверка, что файл существует и имеет правильный размер
+        if not file_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Файл не был сохранен на диск"
+            )
+        
+        actual_size = file_path.stat().st_size
+        if actual_size != file_size:
+            logger.warning(f"Размер файла не совпадает: ожидалось {file_size}, получено {actual_size}")
+            # Не критично, но логируем
     
     except Exception as e:
         if file_path.exists():
@@ -652,6 +805,26 @@ async def upload_files_batch(
                         )
 
                     await f.write(chunk)
+            
+            # Убеждаемся, что файл полностью записан на диск
+            # Синхронизируем файловую систему
+            import os
+            file_fd = os.open(str(file_path), os.O_RDONLY)
+            try:
+                os.fsync(file_fd)  # Синхронизируем файл
+            finally:
+                os.close(file_fd)
+            
+            # Финальная проверка, что файл существует и имеет правильный размер
+            if not file_path.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Файл {file.filename} не был сохранен на диск"
+                )
+            
+            actual_size = file_path.stat().st_size
+            if actual_size != file_size:
+                logger.warning(f"Размер файла {file.filename} не совпадает: ожидалось {file_size}, получено {actual_size}")
 
         except Exception as e:
             if file_path.exists():
@@ -934,16 +1107,68 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
             # Логируем для отладки
             logger.debug(f"Batch download: ищем файл {file_path}")
             
+            # Пробуем найти файл
+            found_file = None
             if file_path.exists():
-                zip_file.write(file_path, zip_name)
-                logger.debug(f"Batch download: добавлен файл {zip_name}")
+                found_file = file_path
+                logger.debug(f"Batch download: файл найден напрямую {file_path}")
+            else:
+                # Если файл не найден напрямую, пробуем найти через glob
+                # Это помогает, если есть проблемы с кодировкой или нормализацией Unicode
+                logger.debug(f"Batch download: файл не найден напрямую, ищем через glob")
+                
+                # Ищем все .txt файлы в директории
+                txt_files = list(result_dir.glob("*.txt"))
+                logger.debug(f"Batch download: найдено .txt файлов в директории: {len(txt_files)}")
+                
+                # Ищем файл по базовому имени (без расширения)
+                for txt_file in txt_files:
+                    file_stem = txt_file.stem
+                    # Убираем _timecodes из имени, если это файл с таймкодами
+                    if file_stem.endswith("_timecodes"):
+                        file_stem = file_stem[:-10]  # Убираем "_timecodes"
+                    
+                    # Сравниваем базовое имя
+                    if file_stem == filename_base:
+                        found_file = txt_file
+                        logger.debug(f"Batch download: файл найден через glob: {txt_file}")
+                        break
+                
+                # Если не нашли по имени, пробуем найти по паттерну
+                if not found_file:
+                    pattern_files = list(result_dir.glob(f"*{filename_base}*"))
+                    if pattern_files:
+                        # Берем первый подходящий файл
+                        for pf in pattern_files:
+                            if pf.suffix == ".txt":
+                                if format == "timecodes" and "_timecodes" in pf.name:
+                                    found_file = pf
+                                    break
+                                elif format != "timecodes" and "_timecodes" not in pf.name:
+                                    found_file = pf
+                                    break
+                        
+                        if found_file:
+                            logger.debug(f"Batch download: файл найден по паттерну: {found_file}")
+            
+            if found_file and found_file.exists():
+                try:
+                    zip_file.write(found_file, zip_name)
+                    logger.debug(f"Batch download: добавлен файл {zip_name} из {found_file}")
+                except Exception as e:
+                    logger.error(f"Batch download: ошибка при добавлении файла {found_file}: {e}")
+                    error_msg = f"Ошибка при чтении файла: {str(e)}"
+                    zip_file.writestr(zip_name, error_msg)
             else:
                 # Если файл не найден, создаем пустой файл с сообщением
                 error_msg = f"Результаты для файла {task['filename']} не найдены\n"
                 error_msg += f"Искали: {file_path}\n"
                 error_msg += f"Папка существует: {result_dir.exists()}\n"
                 if result_dir.exists():
-                    error_msg += f"Файлы в папке: {list(result_dir.iterdir())}"
+                    all_files = list(result_dir.iterdir())
+                    error_msg += f"Файлы в папке: {all_files}\n"
+                    error_msg += f"Базовое имя файла: {filename_base}\n"
+                    error_msg += f"Формат: {format}"
                 zip_file.writestr(zip_name, error_msg)
                 logger.warning(f"Batch download: файл не найден {file_path}")
 
@@ -995,15 +1220,58 @@ async def download_result(task_id: str, format: str = "txt"):
     else:
         file_path = result_dir / f"{filename_base}.txt"
     
-    if not file_path.exists():
+    # Пробуем найти файл
+    found_file = None
+    if file_path.exists():
+        found_file = file_path
+    else:
+        # Если файл не найден напрямую, пробуем найти через glob
+        logger.debug(f"Download: файл не найден напрямую {file_path}, ищем через glob")
+        
+        # Ищем все .txt файлы в директории
+        txt_files = list(result_dir.glob("*.txt"))
+        
+        # Ищем файл по базовому имени
+        for txt_file in txt_files:
+            file_stem = txt_file.stem
+            # Убираем _timecodes из имени, если это файл с таймкодами
+            if file_stem.endswith("_timecodes"):
+                file_stem = file_stem[:-10]
+            
+            # Сравниваем базовое имя
+            if file_stem == filename_base:
+                if format == "timecodes" and "_timecodes" in txt_file.name:
+                    found_file = txt_file
+                    break
+                elif format != "timecodes" and "_timecodes" not in txt_file.name:
+                    found_file = txt_file
+                    break
+        
+        # Если не нашли по имени, пробуем найти по паттерну
+        if not found_file:
+            pattern_files = list(result_dir.glob(f"*{filename_base}*"))
+            for pf in pattern_files:
+                if pf.suffix == ".txt":
+                    if format == "timecodes" and "_timecodes" in pf.name:
+                        found_file = pf
+                        break
+                    elif format != "timecodes" and "_timecodes" not in pf.name:
+                        found_file = pf
+                        break
+    
+    if not found_file or not found_file.exists():
+        error_detail = f"Файл результата не найден. Искали: {file_path}"
+        if result_dir.exists():
+            all_files = list(result_dir.iterdir())
+            error_detail += f". Файлы в папке: {all_files}"
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Файл результата не найден"
+            detail=error_detail
         )
     
     return FileResponse(
-        path=file_path,
-        filename=file_path.name,
+        path=found_file,
+        filename=found_file.name,
         media_type="text/plain"
     )
 

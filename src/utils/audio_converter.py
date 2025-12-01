@@ -103,16 +103,35 @@ class AudioConverter:
         Returns:
             str: путь к конвертированному WAV файлу или None при ошибке
         """
+        # Нормализуем путь (решает проблемы с относительными путями и символическими ссылками)
+        input_path = os.path.abspath(os.path.expanduser(input_path))
+        
+        # Проверяем существование файла
+        if not os.path.exists(input_path):
+            self.logger(f"ОШИБКА: Файл не найден: {input_path}")
+            return None
+        
+        if not os.path.isfile(input_path):
+            self.logger(f"ОШИБКА: Путь не является файлом: {input_path}")
+            return None
+        
         # Создаем временный файл в папке вывода
         temp_filename = f"temp_{os.path.basename(input_path)}.wav"
         temp_wav = os.path.join(output_dir, temp_filename)
         
         self.logger(f"Конвертация {os.path.basename(input_path)} -> 16kHz WAV...")
         
+        # Логируем реальный путь для отладки
+        self.logger(f"DEBUG: Абсолютный путь к файлу: {input_path}")
+        self.logger(f"DEBUG: Файл существует: {os.path.exists(input_path)}")
+        
         try:
             # FFmpeg: -i input -ar 16000 (Hz) -ac 1 (mono) -y (overwrite)
+            # Используем абсолютный путь для надежности
+            # Убеждаемся, что путь - это строка (не Path объект)
+            input_path_str = str(input_path) if not isinstance(input_path, str) else input_path
             command = [
-                "ffmpeg", "-i", input_path,
+                "ffmpeg", "-i", input_path_str,
                 "-ar", str(AUDIO_SAMPLE_RATE),
                 "-ac", str(AUDIO_CHANNELS),
                 "-vn",  # убираем видео поток
@@ -120,23 +139,47 @@ class AudioConverter:
                 temp_wav
             ]
             
+            # Логируем команду для отладки (без полного пути для краткости)
+            self.logger(f"DEBUG: Команда FFmpeg: ffmpeg -i [файл] -ar {AUDIO_SAMPLE_RATE} -ac {AUDIO_CHANNELS} -vn -y [выход]")
+            
             startupinfo = None
             if os.name == 'nt':
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             
-            subprocess.run(
+            result = subprocess.run(
                 command,
-                check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                text=True,
                 startupinfo=startupinfo
             )
+            
+            if result.returncode != 0:
+                # Выводим детальную информацию об ошибке FFmpeg
+                self.logger(f"Ошибка FFmpeg: Command '{' '.join(command)}' returned non-zero exit status {result.returncode}.")
+                if result.stderr:
+                    # Логируем последние строки stderr для диагностики
+                    error_lines = result.stderr.strip().split('\n')
+                    # Берем последние 5 строк ошибки
+                    relevant_errors = error_lines[-5:] if len(error_lines) > 5 else error_lines
+                    for line in relevant_errors:
+                        if line.strip():
+                            self.logger(f"  FFmpeg: {line}")
+                return None
             
             return temp_wav
             
         except subprocess.CalledProcessError as e:
-            self.logger(f"Ошибка FFmpeg: {e}")
+            # Fallback для случая, если все же возникло исключение
+            error_details = e.stderr if isinstance(e.stderr, str) else (e.stderr.decode('utf-8', errors='ignore') if e.stderr else '')
+            self.logger(f"Ошибка FFmpeg (код {e.returncode}): {e}")
+            if error_details:
+                error_lines = error_details.strip().split('\n')
+                relevant_errors = error_lines[-5:] if len(error_lines) > 5 else error_lines
+                for line in relevant_errors:
+                    if line.strip():
+                        self.logger(f"  FFmpeg: {line}")
             return None
             
         except FileNotFoundError:
