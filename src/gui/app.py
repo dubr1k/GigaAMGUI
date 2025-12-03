@@ -22,11 +22,12 @@ class GigaTranscriberApp(ctk.CTk):
         self.title(APP_TITLE)
         self.geometry(APP_GEOMETRY)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(4, weight=1)
+        self.grid_rowconfigure(5, weight=1)
 
         # Переменные
         self.files_to_process = []
         self.output_dir = ""
+        self.input_dir = ""  # Папка для выбора файлов
         self.is_processing = False
         self.start_time = None
         self.files_processed = 0
@@ -49,35 +50,30 @@ class GigaTranscriberApp(ctk.CTk):
         self.time_formatter = TimeFormatter()
         self.user_settings = UserSettings()
 
-        # Загружаем сохраненный путь для сохранения результатов
+        # Загружаем сохраненные пути для входной и выходной папок
         saved_output_dir = self.user_settings.get_last_output_dir()
+        saved_input_dir = self.user_settings.get_last_files_dir()
+        
         if saved_output_dir:
             self.output_dir = saved_output_dir
-            display_output_path = saved_output_dir if len(saved_output_dir) < 50 else f"...{saved_output_dir[-50:]}"
-            # Обновим метку после создания виджетов
+        
+        if saved_input_dir:
+            self.input_dir = saved_input_dir
 
         # Элементы интерфейса
         self._create_widgets()
 
-        # Обновляем метку папки сохранения, если путь был загружен
+        # Обновляем метки папок, если пути были загружены
         if saved_output_dir:
+            display_output_path = saved_output_dir if len(saved_output_dir) < 50 else f"...{saved_output_dir[-50:]}"
             self.lbl_folder_path.configure(
                 text=display_output_path,
                 text_color=("black", "white")
             )
-
-        saved_input_dir = self.user_settings.get_last_files_dir()
+        
         if saved_input_dir:
-            self.saved_input_dir = saved_input_dir
             display_input_path = saved_input_dir if len(saved_input_dir) < 50 else f"...{saved_input_dir[-50:]}"
-            # Обновим метку после создания виджетов
-
-        # Элементы интерфейса
-        self._create_widgets()
-
-        # Обновляем метку папки откуда берем файлы, если путь был загружен
-        if saved_input_dir:
-            self.lbl_output_folder_path.configure(
+            self.lbl_input_folder_path.configure(
                 text=display_input_path,
                 text_color=("black", "white")
             )
@@ -95,56 +91,63 @@ class GigaTranscriberApp(ctk.CTk):
         )
         self.label_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
-        # Блок настроек
-        self.frame_controls = ctk.CTkFrame(self)
-        self.frame_controls.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-        self.frame_controls.grid_columnconfigure(1, weight=1)
+        # Блок настроек - выбор файлов
+        self.frame_files = ctk.CTkFrame(self)
+        self.frame_files.grid(row=1, column=0, padx=20, pady=(10, 5), sticky="ew")
+        self.frame_files.grid_columnconfigure(1, weight=1)
+        self.frame_files.grid_columnconfigure(3, weight=1)
 
         # Кнопка выбора файлов
         self.btn_files = ctk.CTkButton(
-            self.frame_controls,
+            self.frame_files,
             text="1.1. Выбрать файлы",
             command=self.select_files,
-            width=200
+            width=180
         )
-        self.btn_files.grid(row=0, column=0, padx=10, pady=10)
+        self.btn_files.grid(row=0, column=0, padx=(10, 5), pady=10)
 
         self.lbl_files_count = ctk.CTkLabel(
-            self.frame_controls,
+            self.frame_files,
             text="Файлы не выбраны",
             text_color="gray"
         )
-        self.lbl_files_count.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+        self.lbl_files_count.grid(row=0, column=1, padx=5, pady=10, sticky="w")
 
+        # Кнопка выбора папки с файлами
         self.btn_folder_input = ctk.CTkButton(
-            self.frame_controls,
+            self.frame_files,
             text="1.2. Выбрать папку с файлами",
             command=self.select_files_folder,
-            width=200
+            width=180
         )
-        self.btn_folder_input.grid(row=0, column=2, padx=10, pady=10)
+        self.btn_folder_input.grid(row=0, column=2, padx=(10, 5), pady=10)
 
-        self.lbl_output_folder_path = ctk.CTkLabel(
-            self.frame_controls,
+        self.lbl_input_folder_path = ctk.CTkLabel(
+            self.frame_files,
             text="Папка не выбрана",
             text_color="gray"
         )
-        self.lbl_output_folder_path.grid(row=0, column=3, padx=10, pady=10, sticky="w")
+        self.lbl_input_folder_path.grid(row=0, column=3, padx=5, pady=10, sticky="w")
+
+        # Блок настроек - папка сохранения
+        self.frame_output = ctk.CTkFrame(self)
+        self.frame_output.grid(row=2, column=0, padx=20, pady=(5, 10), sticky="ew")
+        self.frame_output.grid_columnconfigure(1, weight=1)
 
         self.btn_folder = ctk.CTkButton(
-            self.frame_controls,
+            self.frame_output,
             text="2. Папка сохранения",
             command=self.select_folder,
-            width=200
+            width=180
         )
-        self.btn_folder.grid(row=1, column=0, padx=10, pady=10)
+        self.btn_folder.grid(row=0, column=0, padx=(10, 5), pady=10)
 
         self.lbl_folder_path = ctk.CTkLabel(
-            self.frame_controls,
+            self.frame_output,
             text="Папка не выбрана (по умолчанию - рядом с файлом)",
             text_color="gray"
         )
-        self.lbl_folder_path.grid(row=1, column=1, padx=10, pady=10, sticky="w")
+        self.lbl_folder_path.grid(row=0, column=1, padx=5, pady=10, sticky="w")
 
         # Кнопка старта
         self.btn_start = ctk.CTkButton(
@@ -156,11 +159,11 @@ class GigaTranscriberApp(ctk.CTk):
             height=50,
             font=("Roboto", 16, "bold")
         )
-        self.btn_start.grid(row=2, column=0, padx=20, pady=20, sticky="ew")
+        self.btn_start.grid(row=3, column=0, padx=20, pady=20, sticky="ew")
 
         # Прогресс-бар и информация
         self.frame_progress = ctk.CTkFrame(self)
-        self.frame_progress.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
+        self.frame_progress.grid(row=4, column=0, padx=20, pady=(0, 10), sticky="ew")
         self.frame_progress.grid_columnconfigure(0, weight=1)
 
         self.progress_bar = ctk.CTkProgressBar(self.frame_progress, height=20)
@@ -181,11 +184,11 @@ class GigaTranscriberApp(ctk.CTk):
             height=250,
             font=("Consolas", 12)
         )
-        self.textbox_log.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        self.textbox_log.grid(row=5, column=0, padx=20, pady=(0, 10), sticky="nsew")
         self.textbox_log.configure(state="disabled")
 
         self.frame_file_buttons = ctk.CTkFrame(self)
-        self.frame_file_buttons.grid(row=5, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.frame_file_buttons.grid(row=6, column=0, padx=20, pady=(0, 20), sticky="ew")
         self.frame_file_buttons.grid_columnconfigure((0, 1), weight=1)
 
         # Кнопка очистки выбора
@@ -214,9 +217,11 @@ class GigaTranscriberApp(ctk.CTk):
 
     def destroy(self):
         """Переопределяем метод закрытия для логирования завершения сессии"""
-        # Сохраняем текущий путь для сохранения перед закрытием
+        # Сохраняем текущие пути для входной и выходной папок перед закрытием
         if self.output_dir:
             self.user_settings.set_last_output_dir(self.output_dir)
+        if self.input_dir:
+            self.user_settings.set_last_files_dir(self.input_dir)
         self.app_logger.log_session_end()
         super().destroy()
 
@@ -224,6 +229,8 @@ class GigaTranscriberApp(ctk.CTk):
         """Обработчик выбора файлов"""
         # Получаем последний использованный путь для выбора файлов
         initialdir = self.user_settings.get_last_files_dir()
+        if not initialdir and self.input_dir:
+            initialdir = self.input_dir
 
         files = filedialog.askopenfilenames(
             parent=self,
@@ -236,6 +243,8 @@ class GigaTranscriberApp(ctk.CTk):
             count = len(self.files_to_process)
             # Сохраняем путь первого выбранного файла для следующего раза
             if files:
+                file_dir = os.path.dirname(files[0])
+                self.input_dir = file_dir
                 self.user_settings.set_last_files_dir(files[0])
             self.lbl_files_count.configure(
                 text=f"Выбрано файлов: {count}",
@@ -246,7 +255,13 @@ class GigaTranscriberApp(ctk.CTk):
                 self.log(f" + {os.path.basename(f)}")
 
     def select_files_folder(self):
-        initial_dir = self.user_settings.get_last_files_dir() or os.path.expanduser("~")
+        """Обработчик выбора папки с файлами"""
+        # Получаем последний использованный путь для выбора файлов
+        initial_dir = self.user_settings.get_last_files_dir()
+        if not initial_dir and self.input_dir:
+            initial_dir = self.input_dir
+        if not initial_dir:
+            initial_dir = os.path.expanduser("~")
 
         folder = filedialog.askdirectory(
             parent=self,
@@ -255,10 +270,12 @@ class GigaTranscriberApp(ctk.CTk):
             mustexist=True
         )
         if folder:
+            self.input_dir = folder
+            # Сохраняем выбранный путь для следующего запуска
             self.user_settings.set_last_files_dir(folder)
 
             display_path = folder if len(folder) < 50 else f"...{folder[-50:]}"
-            self.lbl_output_folder_path.configure(
+            self.lbl_input_folder_path.configure(
                 text=display_path,
                 text_color=("black", "white")
             )
