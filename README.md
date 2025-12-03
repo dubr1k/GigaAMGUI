@@ -80,7 +80,7 @@ curl -X POST "http://localhost:8000/api/v1/transcribe" \
 - 10 GB свободного места на диске
 - NVIDIA GPU с CUDA (опционально, для ускорения)
 
-### macOS
+### macOS(только Apple Silicon)
 - macOS 11.0 или выше (Big Sur+)
 - Python 3.10 или выше
 - 8 GB RAM (рекомендуется 16 GB)
@@ -129,7 +129,7 @@ brew install python@3.10 ffmpeg
 conda create -n gigaam python=3.10 -y
 conda activate gigaam
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements_macos.txt
+pip install -r requirements.txt
 cd GigaAM
 pip install -e .
 ```

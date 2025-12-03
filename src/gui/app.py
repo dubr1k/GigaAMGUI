@@ -15,7 +15,7 @@ from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, L
 
 class GigaTranscriberApp(ctk.CTk):
     """Главное окно приложения для транскрибации"""
-    
+
     def __init__(self):
         super().__init__()
 
@@ -38,11 +38,11 @@ class GigaTranscriberApp(ctk.CTk):
         self.progress_update_timer = None  # Таймер для периодического обновления прогресса
         self.current_stage = None  # Текущий этап обработки ('conversion' или 'transcription')
         self.current_stage_progress = 0.0  # Прогресс текущего этапа
-        
+
         # Инициализация системы логирования
         self.app_logger = AppLogger()
         self.app_logger.log_session_start()
-        
+
         # Инициализация модулей
         self.model_loader = ModelLoader()
         self.stats = ProcessingStats(STATS_FILE)
@@ -53,19 +53,35 @@ class GigaTranscriberApp(ctk.CTk):
         saved_output_dir = self.user_settings.get_last_output_dir()
         if saved_output_dir:
             self.output_dir = saved_output_dir
-            display_path = saved_output_dir if len(saved_output_dir) < 50 else f"...{saved_output_dir[-50:]}"
+            display_output_path = saved_output_dir if len(saved_output_dir) < 50 else f"...{saved_output_dir[-50:]}"
             # Обновим метку после создания виджетов
 
         # Элементы интерфейса
         self._create_widgets()
-        
+
         # Обновляем метку папки сохранения, если путь был загружен
         if saved_output_dir:
             self.lbl_folder_path.configure(
-                text=display_path,
+                text=display_output_path,
                 text_color=("black", "white")
             )
-        
+
+        saved_input_dir = self.user_settings.get_last_files_dir()
+        if saved_input_dir:
+            self.saved_input_dir = saved_input_dir
+            display_input_path = saved_input_dir if len(saved_input_dir) < 50 else f"...{saved_input_dir[-50:]}"
+            # Обновим метку после создания виджетов
+
+        # Элементы интерфейса
+        self._create_widgets()
+
+        # Обновляем метку папки откуда берем файлы, если путь был загружен
+        if saved_input_dir:
+            self.lbl_output_folder_path.configure(
+                text=display_input_path,
+                text_color=("black", "white")
+            )
+
         # Очистка старых логов (старше 30 дней)
         self.app_logger.cleanup_old_logs()
 
@@ -73,8 +89,8 @@ class GigaTranscriberApp(ctk.CTk):
         """Создание элементов интерфейса"""
         # Заголовок
         self.label_title = ctk.CTkLabel(
-            self, 
-            text="GigaAM v3: Транскрибация (Аудио/Видео -> Текст)", 
+            self,
+            text="GigaAM v3: Транскрибация (Аудио/Видео -> Текст)",
             font=("Roboto", 22, "bold")
         )
         self.label_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
@@ -86,44 +102,58 @@ class GigaTranscriberApp(ctk.CTk):
 
         # Кнопка выбора файлов
         self.btn_files = ctk.CTkButton(
-            self.frame_controls, 
-            text="1. Выбрать файлы", 
-            command=self.select_files, 
+            self.frame_controls,
+            text="1.1. Выбрать файлы",
+            command=self.select_files,
             width=200
         )
         self.btn_files.grid(row=0, column=0, padx=10, pady=10)
 
         self.lbl_files_count = ctk.CTkLabel(
-            self.frame_controls, 
-            text="Файлы не выбраны", 
+            self.frame_controls,
+            text="Файлы не выбраны",
             text_color="gray"
         )
         self.lbl_files_count.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
-        # Кнопка выбора папки
+        self.btn_folder_input = ctk.CTkButton(
+            self.frame_controls,
+            text="1.2. Выбрать папку с файлами",
+            command=self.select_files_folder,
+            width=200
+        )
+        self.btn_folder_input.grid(row=0, column=2, padx=10, pady=10)
+
+        self.lbl_output_folder_path = ctk.CTkLabel(
+            self.frame_controls,
+            text="Папка не выбрана",
+            text_color="gray"
+        )
+        self.lbl_output_folder_path.grid(row=0, column=3, padx=10, pady=10, sticky="w")
+
         self.btn_folder = ctk.CTkButton(
-            self.frame_controls, 
-            text="2. Папка сохранения", 
-            command=self.select_folder, 
+            self.frame_controls,
+            text="2. Папка сохранения",
+            command=self.select_folder,
             width=200
         )
         self.btn_folder.grid(row=1, column=0, padx=10, pady=10)
 
         self.lbl_folder_path = ctk.CTkLabel(
-            self.frame_controls, 
-            text="Папка не выбрана (по умолчанию - рядом с файлом)", 
+            self.frame_controls,
+            text="Папка не выбрана (по умолчанию - рядом с файлом)",
             text_color="gray"
         )
         self.lbl_folder_path.grid(row=1, column=1, padx=10, pady=10, sticky="w")
 
         # Кнопка старта
         self.btn_start = ctk.CTkButton(
-            self, 
-            text="ЗАПУСТИТЬ ОБРАБОТКУ", 
+            self,
+            text="ЗАПУСТИТЬ ОБРАБОТКУ",
             command=self.start_processing_thread,
-            fg_color="#2CC985", 
+            fg_color="#2CC985",
             hover_color="#26AB72",
-            height=50, 
+            height=50,
             font=("Roboto", 16, "bold")
         )
         self.btn_start.grid(row=2, column=0, padx=20, pady=20, sticky="ew")
@@ -132,27 +162,44 @@ class GigaTranscriberApp(ctk.CTk):
         self.frame_progress = ctk.CTkFrame(self)
         self.frame_progress.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
         self.frame_progress.grid_columnconfigure(0, weight=1)
-        
+
         self.progress_bar = ctk.CTkProgressBar(self.frame_progress, height=20)
         self.progress_bar.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
         self.progress_bar.set(0)
-        
+
         self.lbl_progress = ctk.CTkLabel(
-            self.frame_progress, 
-            text="Готов к работе", 
+            self.frame_progress,
+            text="Готов к работе",
             font=("Roboto", 12)
         )
         self.lbl_progress.grid(row=1, column=0, padx=10, pady=(0, 10))
 
         # Лог
         self.textbox_log = ctk.CTkTextbox(
-            self, 
-            width=800, 
-            height=250, 
+            self,
+            width=800,
+            height=250,
             font=("Consolas", 12)
         )
         self.textbox_log.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="nsew")
         self.textbox_log.configure(state="disabled")
+
+        self.frame_file_buttons = ctk.CTkFrame(self)
+        self.frame_file_buttons.grid(row=5, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.frame_file_buttons.grid_columnconfigure((0, 1), weight=1)
+
+        # Кнопка очистки выбора
+        self.btn_clear_all = ctk.CTkButton(
+            self.frame_file_buttons,
+            text="Очистить все",
+            command=self.clear_all,
+            fg_color="#f44336",
+            hover_color="#cc0000",
+            width=1000,
+            height=50,
+            font=("Roboto", 16, "bold")
+        )
+        self.btn_clear_all.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
 
     def log(self, message):
         """Добавляет сообщение в лог (GUI и файл)"""
@@ -161,10 +208,10 @@ class GigaTranscriberApp(ctk.CTk):
         self.textbox_log.insert("end", f">> {message}\n")
         self.textbox_log.see("end")
         self.textbox_log.configure(state="disabled")
-        
+
         # Логирование в файл
         self.app_logger.get_logger().info(message)
-    
+
     def destroy(self):
         """Переопределяем метод закрытия для логирования завершения сессии"""
         # Сохраняем текущий путь для сохранения перед закрытием
@@ -177,7 +224,7 @@ class GigaTranscriberApp(ctk.CTk):
         """Обработчик выбора файлов"""
         # Получаем последний использованный путь для выбора файлов
         initialdir = self.user_settings.get_last_files_dir()
-        
+
         files = filedialog.askopenfilenames(
             parent=self,
             title="Выберите аудио или видео файлы",
@@ -191,12 +238,52 @@ class GigaTranscriberApp(ctk.CTk):
             if files:
                 self.user_settings.set_last_files_dir(files[0])
             self.lbl_files_count.configure(
-                text=f"Выбрано файлов: {count}", 
+                text=f"Выбрано файлов: {count}",
                 text_color=("black", "white")
             )
             self.log(f"Добавлено в очередь: {count} файлов")
             for f in files:
                 self.log(f" + {os.path.basename(f)}")
+
+    def select_files_folder(self):
+        initial_dir = self.user_settings.get_last_files_dir() or os.path.expanduser("~")
+
+        folder = filedialog.askdirectory(
+            parent=self,
+            title="Выберите папку с аудио/видео файлами",
+            initialdir=initial_dir,
+            mustexist=True
+        )
+        if folder:
+            self.user_settings.set_last_files_dir(folder)
+
+            display_path = folder if len(folder) < 50 else f"...{folder[-50:]}"
+            self.lbl_output_folder_path.configure(
+                text=display_path,
+                text_color=("black", "white")
+            )
+
+            ext_str = SUPPORTED_FORMATS[1]
+            extensions = [ext.replace('*', '').lower() for ext in ext_str.split()]
+
+            files = [
+                os.path.join(folder, f)
+                for f in os.listdir(folder)
+                if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(tuple(extensions))
+            ]
+
+            if files:
+                self.files_to_process = files
+                count = len(files)
+                self.lbl_files_count.configure(
+                    text=f"Выбрано файлов: {count}",
+                    text_color=("black", "white")
+                )
+                self.log(f"Добавлено из папки: {count} файлов")
+                for f in files:
+                    self.log(f" + {os.path.basename(f)}")
+            else:
+                messagebox.showinfo("Информация", "В выбранной папке нет поддерживаемых файлов")
 
     def select_folder(self):
         """Обработчик выбора папки сохранения"""
@@ -204,7 +291,7 @@ class GigaTranscriberApp(ctk.CTk):
         initialdir = self.user_settings.get_last_output_dir()
         if not initialdir and self.output_dir:
             initialdir = self.output_dir
-        
+
         # Явно указываем родительское окно для правильной работы на macOS
         folder = filedialog.askdirectory(
             parent=self,
@@ -218,10 +305,17 @@ class GigaTranscriberApp(ctk.CTk):
             self.user_settings.set_last_output_dir(folder)
             display_path = folder if len(folder) < 50 else f"...{folder[-50:]}"
             self.lbl_folder_path.configure(
-                text=display_path, 
+                text=display_path,
                 text_color=("black", "white")
             )
-            self.log(f"Папка для сохранения: {folder}")
+            self.log(f"Папка для сохранения: {folder} (установлена как папка по умолчанию)")
+
+    def clear_all(self):
+        self.textbox_log.configure(state="normal")
+        self.textbox_log.delete("0.0", "end")
+        self.textbox_log.configure(state="disabled")
+        self.textbox_log.clipboard_clear()
+        self.files_to_process = []
 
     def update_progress_label(self, percent, extra_info=""):
         """Обновляет текст прогресса"""
@@ -233,12 +327,12 @@ class GigaTranscriberApp(ctk.CTk):
     def get_file_stage_weights(self, filepath: str) -> tuple:
         """
         Определяет веса этапов обработки на основе статистики
-        
+
         Returns:
             tuple: (conversion_weight, transcription_weight)
         """
         file_ext = os.path.splitext(filepath)[1].lower()
-        
+
         # Получаем статистику для этого типа файла
         summary = self.stats.stats.get("summary", {})
         if file_ext in summary:
@@ -246,16 +340,16 @@ class GigaTranscriberApp(ctk.CTk):
             conv_time = ext_stats.get("avg_conversion_sec", 3)
             trans_time = ext_stats.get("avg_transcription_sec", 90)
             total = conv_time + trans_time
-            
+
             return (conv_time / total, trans_time / total)
-        
+
         # Дефолтные веса: конвертация ~5%, транскрибация ~95%
         return (0.05, 0.95)
-    
+
     def on_file_progress(self, stage: str, stage_progress: float):
         """
         Callback для обновления прогресса внутри файла (используется только для информации)
-        
+
         Args:
             stage: 'conversion' или 'transcription'
             stage_progress: прогресс этапа от 0.0 до 1.0
@@ -263,27 +357,27 @@ class GigaTranscriberApp(ctk.CTk):
         # Сохраняем информацию о текущем этапе для отображения
         self.current_stage = stage
         self.current_stage_progress = stage_progress
-    
+
     def update_progress_display(self):
         """Обновляет отображение прогресса на основе количества файлов и реального времени"""
         if not self.is_processing or self.total_files == 0:
             return
-        
+
         # Реальное время, прошедшее с начала обработки
         total_elapsed = time.time() - self.start_time
-        
+
         # Базовый прогресс на основе количества обработанных файлов
         files_progress = self.files_processed / self.total_files
-        
+
         # Прогресс текущего файла на основе времени
         current_file_progress = 0.0
         if self.files_processed < len(self.files_to_process) and self.current_file_start_time > 0:
             current_filepath = self.files_to_process[self.files_processed]
             current_elapsed = time.time() - self.current_file_start_time
-            
+
             # Получаем ожидаемое время обработки текущего файла
             estimated_time = self.file_estimates.get(current_filepath, 30)
-            
+
             if estimated_time > 0:
                 # Прогресс = прошедшее время / ожидаемое время (но не больше 1.0)
                 # Используем более консервативный подход: считаем, что файл обрабатывается быстрее
@@ -299,30 +393,30 @@ class GigaTranscriberApp(ctk.CTk):
                 # Если нет оценки, используем простую линейную зависимость
                 # Но ограничиваем максимальный прогресс до 90%, пока файл не завершен
                 current_file_progress = min(0.9, current_elapsed / 60.0)  # Предполагаем 60 секунд по умолчанию
-        
+
         # Общий прогресс = прогресс файлов + прогресс текущего файла / общее количество файлов
         overall_progress = files_progress + (current_file_progress / self.total_files)
-        
+
         # Ограничиваем прогресс до 99%, пока обработка не завершена
         overall_progress = min(0.99, overall_progress)
-        
+
         self.progress_bar.set(overall_progress)
         percent = int(overall_progress * 100)
-        
+
         # Рассчитываем оставшееся время на основе реальной скорости
         remaining_time = 0
         if self.files_processed < len(self.files_to_process):
             # Осталось файлов (включая текущий)
             remaining_files_count = len(self.files_to_process) - self.files_processed
-            
+
             # Оставшееся время для текущего файла
             if self.current_file_start_time > 0:
                 current_elapsed = time.time() - self.current_file_start_time
                 estimated_current = self.file_estimates.get(
-                    self.files_to_process[self.files_processed], 
+                    self.files_to_process[self.files_processed],
                     max(current_elapsed * 1.5, 30)  # Минимум 30 секунд или 1.5x от текущего времени
                 )
-                
+
                 # Если реальное время уже превысило оценку, экстраполируем
                 if current_elapsed >= estimated_current:
                     # Файл обрабатывается дольше - используем текущую скорость
@@ -338,11 +432,11 @@ class GigaTranscriberApp(ctk.CTk):
             else:
                 # Файл еще не начат
                 estimated_current = self.file_estimates.get(
-                    self.files_to_process[self.files_processed], 
+                    self.files_to_process[self.files_processed],
                     30
                 )
                 remaining_current = estimated_current
-            
+
             # Средняя скорость обработки на основе реального времени
             if self.files_processed > 0:
                 # Используем среднее время на уже обработанные файлы
@@ -354,21 +448,21 @@ class GigaTranscriberApp(ctk.CTk):
             else:
                 # Если нет данных, используем оценку
                 avg_time_per_file = estimated_current
-            
+
             # Оставшееся время = оставшееся время текущего файла + среднее время * оставшиеся файлы
             remaining_time = remaining_current + (avg_time_per_file * (remaining_files_count - 1))
-        
+
         # Оставшееся время
         if remaining_time > 0:
             time_info = f"Осталось: ~{self.time_formatter.format_duration(remaining_time)}"
             self.update_progress_label(percent, time_info)
         else:
             self.update_progress_label(percent, "Завершение...")
-    
+
     def update_progress(self, current_file_index):
         """
         Обновляет прогресс-бар (вызывается при начале обработки файла)
-        
+
         Args:
             current_file_index: индекс текущего файла
         """
@@ -376,7 +470,7 @@ class GigaTranscriberApp(ctk.CTk):
         self.current_stage = None
         self.current_stage_progress = 0.0
         self.update_progress_display()
-        
+
         # Запускаем периодическое обновление прогресса на основе реального времени
         self._start_progress_updates()
 
@@ -387,30 +481,30 @@ class GigaTranscriberApp(ctk.CTk):
                 self.update_progress_display()
                 # Обновляем каждую секунду
                 self.progress_update_timer = self.after(1000, update_periodically)
-        
+
         # Останавливаем предыдущий таймер, если есть
         if self.progress_update_timer:
             self.after_cancel(self.progress_update_timer)
-        
+
         # Запускаем обновления
         update_periodically()
-    
+
     def _stop_progress_updates(self):
         """Останавливает периодическое обновление прогресса"""
         if self.progress_update_timer:
             self.after_cancel(self.progress_update_timer)
             self.progress_update_timer = None
-    
+
     def start_processing_thread(self):
         """Запускает обработку в отдельном потоке"""
         if self.is_processing:
             return
-        
+
         if not self.files_to_process:
             self.app_logger.get_logger().warning("Попытка запустить обработку без выбранных файлов")
             messagebox.showwarning("Внимание", "Выберите хотя бы один файл для обработки!")
             return
-        
+
         # Если папка не выбрана, используем директорию первого файла
         if not self.output_dir:
             if self.files_to_process:
@@ -418,7 +512,7 @@ class GigaTranscriberApp(ctk.CTk):
                 # Сохраняем автоматически выбранный путь для следующего раза
                 self.user_settings.set_last_output_dir(self.output_dir)
                 self.log(f"Папка не выбрана. Использую директорию первого файла: {self.output_dir}")
-        
+
         self.is_processing = True
         self.start_time = time.time()
         self.files_processed = 0
@@ -427,7 +521,7 @@ class GigaTranscriberApp(ctk.CTk):
         self.current_file_start_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
-        
+
         # Получаем длительность файлов для точной оценки времени
         self.log("Анализ файлов и оценка времени обработки...")
         files_with_durations = []
@@ -445,23 +539,23 @@ class GigaTranscriberApp(ctk.CTk):
             except Exception as e:
                 self.log(f"  {os.path.basename(filepath)}: ошибка определения длительности")
                 files_with_durations.append((filepath, 60))
-        
+
         # Получаем оценки времени обработки
         batch_estimate = self.stats.estimate_batch_time(files_with_durations)
         self.file_estimates = batch_estimate["per_file"]
         self.total_estimated_time = batch_estimate["total_seconds"]
-        
+
         estimate_str = self.time_formatter.format_duration(self.total_estimated_time)
         self.log(f"Ожидаемое время обработки: ~{estimate_str}")
-        
+
         self.btn_start.configure(
-            state="disabled", 
-            text="ИДЕТ ОБРАБОТКА...", 
+            state="disabled",
+            text="ИДЕТ ОБРАБОТКА...",
             fg_color="gray"
         )
         self.progress_bar.set(0)
         self.update_progress_label(0, f"Оценка: ~{estimate_str}")
-        
+
         thread = threading.Thread(target=self.process_files)
         thread.start()
 
@@ -473,12 +567,12 @@ class GigaTranscriberApp(ctk.CTk):
                 self.is_processing = False
                 self._stop_progress_updates()
                 self.btn_start.configure(
-                    state="normal", 
-                    text="ЗАПУСТИТЬ ОБРАБОТКУ", 
+                    state="normal",
+                    text="ЗАПУСТИТЬ ОБРАБОТКУ",
                     fg_color="#2CC985"
                 )
                 return
-            
+
             # Создаем процессор с callback для прогресса
             processor = TranscriptionProcessor(
                 self.model_loader,
@@ -486,15 +580,15 @@ class GigaTranscriberApp(ctk.CTk):
                 self.log,
                 progress_callback=self.on_file_progress
             )
-            
+
             # Обрабатываем каждый файл
             for i, filepath in enumerate(self.files_to_process):
                 try:
                     self.update_progress(i)
-                    
+
                     # Получаем веса этапов для точной передачи процессору
                     conv_weight, trans_weight = self.get_file_stage_weights(filepath)
-                    
+
                     result = processor.process_file(
                         filepath,
                         self.output_dir,
@@ -503,7 +597,7 @@ class GigaTranscriberApp(ctk.CTk):
                         estimated_conversion_ratio=conv_weight,
                         estimated_transcription_ratio=trans_weight
                     )
-                    
+
                     # Сохраняем статистику обработки
                     self.stats.add_processing_record(
                         file_path=result['file_path'],
@@ -513,14 +607,14 @@ class GigaTranscriberApp(ctk.CTk):
                         transcription_time=result['transcription_time'],
                         success=result['success']
                     )
-                    
+
                     # Обновляем счетчики
                     if result['success']:
                         self.files_processed += 1
-                    
+
                     # Используем реальное время из результата
                     self.time_spent += result['total_time']
-                    
+
                     # Обновляем оценку времени для следующего файла на основе реального времени
                     # Это поможет улучшить прогнозы для следующих файлов
                     if result['total_time'] > 0:
@@ -531,13 +625,13 @@ class GigaTranscriberApp(ctk.CTk):
                         if abs(result['total_time'] - estimated) > estimated * 0.3:  # Разница больше 30%
                             # Обновляем оценку на основе реального времени
                             self.file_estimates[current_filepath] = result['total_time']
-                    
+
                 except Exception as e:
                     error_msg = f"Ошибка при обработке файла {os.path.basename(filepath)}: {str(e)}"
                     self.log(error_msg)
                     self.app_logger.get_logger().error(error_msg, exc_info=True)
                     continue
-                
+
         except Exception as e:
             error_msg = f"Критическая ошибка в процессе обработки: {str(e)}"
             self.log(error_msg)
@@ -545,45 +639,45 @@ class GigaTranscriberApp(ctk.CTk):
             self.is_processing = False
             self._stop_progress_updates()
             self.btn_start.configure(
-                state="normal", 
-                text="ЗАПУСТИТЬ ОБРАБОТКУ", 
+                state="normal",
+                text="ЗАПУСТИТЬ ОБРАБОТКУ",
                 fg_color="#2CC985"
             )
             return
-        
+
         # Останавливаем периодическое обновление прогресса
         self._stop_progress_updates()
-        
+
         # Финальное обновление прогресса
         self.progress_bar.set(1.0)
         total_elapsed = time.time() - self.start_time
-        
+
         self.log("=== ВСЕ ФАЙЛЫ ОБРАБОТАНЫ ===")
         self.log(f"Общее время обработки: {self.time_formatter.format_duration(total_elapsed)}")
         self.log(f"Ожидалось: ~{self.time_formatter.format_duration(self.total_estimated_time)}")
         self.log(f"Обработано файлов: {self.files_processed}/{self.total_files}")
         self.log("")
         self.log("Статистика сохранена. Следующие обработки будут иметь более точные прогнозы.")
-        
+
         self.update_progress_label(
-            100, 
+            100,
             f"Завершено за {self.time_formatter.format_duration(total_elapsed)}"
         )
-        
+
         self.is_processing = False
         self.btn_start.configure(
-            state="normal", 
-            text="ЗАПУСТИТЬ ОБРАБОТКУ", 
+            state="normal",
+            text="ЗАПУСТИТЬ ОБРАБОТКУ",
             fg_color="#2CC985"
         )
-        
+
         # Логируем завершение
         self.app_logger.get_logger().info(
             f"Обработка завершена. Обработано файлов: {self.files_processed}/{self.total_files}. "
             f"Время: {self.time_formatter.format_duration(total_elapsed)}"
         )
-        
+
         messagebox.showinfo(
-            "Готово", 
+            "Готово",
             f"Обработка завершена!\nВремя: {self.time_formatter.format_duration(total_elapsed)}"
         )
