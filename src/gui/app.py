@@ -328,11 +328,69 @@ class GigaTranscriberApp(ctk.CTk):
             self.log(f"Папка для сохранения: {folder} (установлена как папка по умолчанию)")
 
     def clear_all(self):
+        """Сбрасывает все выбранные файлы, папки и состояние интерфейса"""
+        # Предупреждение, если идет обработка
+        if self.is_processing:
+            if not messagebox.askyesno(
+                "Внимание",
+                "Идет обработка файлов. Вы уверены, что хотите сбросить все настройки?"
+            ):
+                return
+        
+        # Останавливаем обработку, если она идет
+        if self.is_processing:
+            self.is_processing = False
+            self._stop_progress_updates()
+            self.btn_start.configure(
+                state="normal",
+                text="ЗАПУСТИТЬ ОБРАБОТКУ",
+                fg_color="#2CC985"
+            )
+        
+        # Очищаем список файлов
+        self.files_to_process = []
+        
+        # Сбрасываем папки (но сохраняем последние использованные в настройках)
+        self.output_dir = ""
+        self.input_dir = ""
+        
+        # Сбрасываем состояние обработки
+        self.files_processed = 0
+        self.total_files = 0
+        self.time_spent = 0
+        self.current_file_start_time = 0
+        self.start_time = None
+        self.file_estimates = {}
+        self.total_estimated_time = 0
+        self.current_stage = None
+        self.current_stage_progress = 0.0
+        
+        # Очищаем лог
         self.textbox_log.configure(state="normal")
         self.textbox_log.delete("0.0", "end")
         self.textbox_log.configure(state="disabled")
         self.textbox_log.clipboard_clear()
-        self.files_to_process = []
+        
+        # Сбрасываем прогресс-бар
+        self.progress_bar.set(0)
+        self.update_progress_label(0, "")
+        
+        # Обновляем метки интерфейса
+        self.lbl_files_count.configure(
+            text="Файлы не выбраны",
+            text_color="gray"
+        )
+        self.lbl_input_folder_path.configure(
+            text="Папка не выбрана",
+            text_color="gray"
+        )
+        self.lbl_folder_path.configure(
+            text="Папка не выбрана (по умолчанию - рядом с файлом)",
+            text_color="gray"
+        )
+        
+        # Логируем сброс
+        self.log("Все настройки сброшены")
 
     def update_progress_label(self, percent, extra_info=""):
         """Обновляет текст прогресса"""
