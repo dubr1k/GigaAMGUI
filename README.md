@@ -102,6 +102,18 @@ curl -X POST "http://localhost:8000/api/v1/transcribe" \
 
 ### Windows
 
+> ⚠️ **ВАЖНО: Пути с кириллицей**
+> 
+> Если ваше имя пользователя Windows содержит кириллицу (например, `C:\Users\Иван`),
+> это может вызвать проблемы с загрузкой моделей HuggingFace.
+> 
+> **Решение:** Создайте папку для кэша в корне диска и установите переменную окружения:
+> ```cmd
+> mkdir C:\HuggingFaceCache
+> set HF_HOME=C:\HuggingFaceCache
+> ```
+> Или добавьте `HF_HOME=C:\HuggingFaceCache` в файл `.env`
+
 1. Установите Python 3.10 или выше с [python.org](https://www.python.org/downloads/)
 2. Установите FFmpeg:
    - Скачайте с [ffmpeg.org](https://ffmpeg.org/download.html)
@@ -471,11 +483,71 @@ GigaAMv3/
 
 ## Решение проблем
 
+### Ошибка PyTorch 2.6+ (weights_only)
+```
+Weights only load failed... Unsupported global: GLOBAL torch.torch_version.TorchVersion
+```
+**Причина:** PyTorch 2.6+ по умолчанию использует `weights_only=True` для безопасной загрузки моделей, но некоторые старые модели несовместимы с этим режимом.
+
+**Решение:** Патч применяется автоматически при запуске приложения. Если проблема сохраняется, убедитесь что вы запускаете приложение через `app.py`, `cli.py` или `api.py`.
+
 ### Ошибка импорта pyannote.audio
 ```
 AttributeError: `np.NaN` was removed in the NumPy 2.0 release
 ```
 Патч применяется автоматически при запуске.
+
+### Проблемы с HuggingFace cache на Windows
+
+**Симптомы:**
+- Символьные ссылки вместо файлов
+- Файлы `tokenizer.model` не скачиваются
+- Ошибки с правами доступа
+
+**Причина:** Windows требует права администратора для создания символьных ссылок.
+
+**Решение:**
+1. Создайте папку для кэша в корне диска:
+```cmd
+mkdir C:\HuggingFaceCache
+```
+2. Установите переменную окружения:
+```cmd
+set HF_HOME=C:\HuggingFaceCache
+```
+Или добавьте в файл `.env`:
+```
+HF_HOME=C:\HuggingFaceCache
+```
+
+### Пути с кириллицей (Windows)
+
+**Симптомы:**
+- Ошибки при загрузке моделей
+- `UnicodeEncodeError` или `UnicodeDecodeError`
+- Файлы не находятся в кэше
+
+**Причина:** Путь к профилю пользователя содержит кириллицу (например, `C:\Users\Иван`).
+
+**Решение:** Установите переменную `HF_HOME` на путь без кириллицы:
+```cmd
+set HF_HOME=C:\HuggingFaceCache
+```
+
+### Ошибка доступа к pyannote/segmentation-3.0
+
+**Симптом:**
+```
+401 Client Error: Unauthorized for url: .../pyannote/segmentation-3.0/...
+```
+
+**Причина:** Не приняты условия использования модели.
+
+**Решение:**
+1. Перейдите на страницу модели: https://huggingface.co/pyannote/segmentation-3.0
+2. Войдите в свой аккаунт HuggingFace
+3. Нажмите "Accept" для принятия условий лицензии
+4. Убедитесь, что ваш токен в `.env` имеет право "read"
 
 ### FFmpeg не найден
 Убедитесь, что FFmpeg установлен и добавлен в PATH:

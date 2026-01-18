@@ -9,6 +9,15 @@ import os
 # Добавляем путь к пакету gigaam
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src', 'gigaam'))
 
+# Применяем патч для PyTorch 2.6+ (weights_only=False)
+# Это должно быть ПЕРЕД импортом gigaam и torch
+try:
+    from src.utils.torch_patch import apply_torch_load_patch
+    apply_torch_load_patch()
+except ImportError:
+    # Патч не критичен, продолжаем без него
+    pass
+
 try:
     import gigaam
     from gigaam import load_model

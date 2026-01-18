@@ -1,10 +1,18 @@
 """
 Monkey patching для pyannote.audio чтобы использовать soundfile вместо torchcodec на Windows
+
+Также включает патч для PyTorch 2.6+ (weights_only=False)
 """
 
 import os
 import warnings
 import numpy as np
+
+# ВАЖНО: Применяем патч для torch.load ДО импорта других библиотек
+from .torch_patch import apply_torch_load_patch
+
+# Применяем патч сразу при импорте модуля
+apply_torch_load_patch()
 
 
 def apply_pyannote_patch():
