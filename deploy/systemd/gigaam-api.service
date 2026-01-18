@@ -7,11 +7,11 @@ Documentation=https://github.com/salute-developers/GigaAM
 Type=simple
 User=dubr1k
 Group=dubr1k
-WorkingDirectory=/mnt/storage10tb/syncthing/development/GigaAMv3
+WorkingDirectory=/mnt/storage10tb/docker-volumes/syncthing/data/Development/GigaAMv3
 
 # Переменные окружения
 Environment="PATH=/mnt/storage10tb/anaconda/envs/gigaam/bin:/usr/local/bin:/usr/bin:/bin"
-EnvironmentFile=/mnt/storage10tb/syncthing/development/GigaAMv3/.env
+EnvironmentFile=/mnt/storage10tb/docker-volumes/syncthing/data/Development/GigaAMv3/.env
 
 # Запуск с параметрами из .env
 ExecStart=/mnt/storage10tb/anaconda/envs/gigaam/bin/python api.py

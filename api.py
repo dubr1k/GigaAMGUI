@@ -1014,12 +1014,48 @@ async def get_task_result(task_id: str):
             detail=f"Задача еще не завершена (статус: {task['status']})"
         )
     
+    # Проверяем что результаты есть в tasks_storage
+    # Если нет - пробуем прочитать из файлов (для восстановленных задач)
+    transcription = task.get('transcription')
+    transcription_timecoded = task.get('transcription_timecoded')
+    
+    # Если результатов нет в памяти, читаем из файлов
+    if not transcription or not transcription_timecoded:
+        result_dir = RESULTS_DIR / task_id
+        if not result_dir.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Директория с результатами не найдена"
+            )
+        
+        filename_base = Path(task['filename']).stem
+        
+        # Ищем файлы напрямую в списке файлов директории
+        text_file = None
+        timecode_file = None
+        
+        for file in result_dir.iterdir():
+            if file.suffix == '.txt':
+                if file.stem == filename_base:
+                    text_file = file
+                elif file.stem == f"{filename_base}_timecodes":
+                    timecode_file = file
+        
+        # Читаем файлы если нашли
+        if text_file and text_file.exists():
+            async with aiofiles.open(text_file, 'r', encoding='utf-8') as f:
+                transcription = await f.read()
+        
+        if timecode_file and timecode_file.exists():
+            async with aiofiles.open(timecode_file, 'r', encoding='utf-8') as f:
+                transcription_timecoded = await f.read()
+    
     return TaskResult(
         task_id=task_id,
         status=task['status'],
         filename=task['filename'],
-        transcription=task.get('transcription'),
-        transcription_with_timecodes=task.get('transcription_timecoded'),
+        transcription=transcription,
+        transcription_with_timecodes=transcription_timecoded,
         processing_time=task.get('processing_time'),
         media_duration=task.get('media_duration')
     )
@@ -1094,83 +1130,66 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
         for task in valid_tasks:
             task_id = task['task_id']
             result_dir = RESULTS_DIR / task_id
+            
+            # Проверяем что директория существует
+            if not result_dir.exists():
+                error_msg = f"Директория с результатами не найдена для задачи {task_id}\n"
+                error_msg += f"Файл: {task['filename']}"
+                zip_name = f"{Path(task['filename']).stem}.txt"
+                zip_file.writestr(zip_name, error_msg)
+                logger.warning(f"Batch download: директория не найдена {result_dir}")
+                continue
+            
             filename_base = Path(task['filename']).stem
-
-            # Используем оригинальное имя файла (без task_id префикса)
+            
+            # Определяем имя файла в архиве
             if format == "timecodes":
-                file_path = result_dir / f"{filename_base}_timecodes.txt"
                 zip_name = f"{filename_base}_timecodes.txt"
             else:
-                file_path = result_dir / f"{filename_base}.txt"
                 zip_name = f"{filename_base}.txt"
-
-            # Логируем для отладки
-            logger.debug(f"Batch download: ищем файл {file_path}")
             
-            # Пробуем найти файл
+            # Ищем файл напрямую в списке файлов директории
+            # Это надежный способ, работающий с кириллицей
             found_file = None
-            if file_path.exists():
-                found_file = file_path
-                logger.debug(f"Batch download: файл найден напрямую {file_path}")
-            else:
-                # Если файл не найден напрямую, пробуем найти через glob
-                # Это помогает, если есть проблемы с кодировкой или нормализацией Unicode
-                logger.debug(f"Batch download: файл не найден напрямую, ищем через glob")
-                
-                # Ищем все .txt файлы в директории
-                txt_files = list(result_dir.glob("*.txt"))
-                logger.debug(f"Batch download: найдено .txt файлов в директории: {len(txt_files)}")
-                
-                # Ищем файл по базовому имени (без расширения)
-                for txt_file in txt_files:
-                    file_stem = txt_file.stem
-                    # Убираем _timecodes из имени, если это файл с таймкодами
-                    if file_stem.endswith("_timecodes"):
-                        file_stem = file_stem[:-10]  # Убираем "_timecodes"
-                    
-                    # Сравниваем базовое имя
-                    if file_stem == filename_base:
-                        found_file = txt_file
-                        logger.debug(f"Batch download: файл найден через glob: {txt_file}")
-                        break
-                
-                # Если не нашли по имени, пробуем найти по паттерну
-                if not found_file:
-                    pattern_files = list(result_dir.glob(f"*{filename_base}*"))
-                    if pattern_files:
-                        # Берем первый подходящий файл
-                        for pf in pattern_files:
-                            if pf.suffix == ".txt":
-                                if format == "timecodes" and "_timecodes" in pf.name:
-                                    found_file = pf
-                                    break
-                                elif format != "timecodes" and "_timecodes" not in pf.name:
-                                    found_file = pf
-                                    break
-                        
-                        if found_file:
-                            logger.debug(f"Batch download: файл найден по паттерну: {found_file}")
             
-            if found_file and found_file.exists():
-                try:
-                    zip_file.write(found_file, zip_name)
-                    logger.debug(f"Batch download: добавлен файл {zip_name} из {found_file}")
-                except Exception as e:
-                    logger.error(f"Batch download: ошибка при добавлении файла {found_file}: {e}")
-                    error_msg = f"Ошибка при чтении файла: {str(e)}"
+            try:
+                for file in result_dir.iterdir():
+                    # Пропускаем не-txt файлы и временные файлы
+                    if file.suffix != '.txt' or file.name.startswith('temp_'):
+                        continue
+                    
+                    # Определяем тип файла и базовое имя
+                    is_timecoded = file.stem.endswith('_timecodes')
+                    file_base = file.stem[:-10] if is_timecoded else file.stem
+                    
+                    # Проверяем совпадение
+                    if file_base == filename_base:
+                        # Если нужен файл с таймкодами
+                        if format == "timecodes" and is_timecoded:
+                            found_file = file
+                            break
+                        # Если нужен обычный файл
+                        elif format != "timecodes" and not is_timecoded:
+                            found_file = file
+                            break
+                
+                # Добавляем файл в архив
+                if found_file and found_file.exists():
+                    zip_file.write(str(found_file), zip_name)
+                    logger.info(f"Batch download: добавлен файл {zip_name} для задачи {task_id}")
+                else:
+                    # Файл не найден - добавляем сообщение об ошибке
+                    all_files = [f.name for f in result_dir.iterdir()]
+                    error_msg = f"Результат не найден для файла: {task['filename']}\n"
+                    error_msg += f"Искали: {filename_base}{'_timecodes' if format == 'timecodes' else ''}.txt\n"
+                    error_msg += f"Файлы в папке: {', '.join(all_files)}"
                     zip_file.writestr(zip_name, error_msg)
-            else:
-                # Если файл не найден, создаем пустой файл с сообщением
-                error_msg = f"Результаты для файла {task['filename']} не найдены\n"
-                error_msg += f"Искали: {file_path}\n"
-                error_msg += f"Папка существует: {result_dir.exists()}\n"
-                if result_dir.exists():
-                    all_files = list(result_dir.iterdir())
-                    error_msg += f"Файлы в папке: {all_files}\n"
-                    error_msg += f"Базовое имя файла: {filename_base}\n"
-                    error_msg += f"Формат: {format}"
+                    logger.warning(f"Batch download: файл не найден для задачи {task_id}")
+                    
+            except Exception as e:
+                logger.error(f"Batch download: ошибка при обработке задачи {task_id}: {e}")
+                error_msg = f"Ошибка при обработке файла {task['filename']}: {str(e)}"
                 zip_file.writestr(zip_name, error_msg)
-                logger.warning(f"Batch download: файл не найден {file_path}")
 
     zip_buffer.seek(0)
 
@@ -1210,69 +1229,73 @@ async def download_result(task_id: str, format: str = "txt"):
             detail=f"Задача еще не завершена (статус: {task['status']})"
         )
     
-    # Определяем файл
+    # Проверяем директорию с результатами
     result_dir = RESULTS_DIR / task_id
+    if not result_dir.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Директория с результатами не найдена: {result_dir}"
+        )
+    
+    # Получаем базовое имя файла
     filename_base = Path(task['filename']).stem
     
-    # Используем оригинальное имя файла (без task_id префикса)
-    if format == "timecodes":
-        file_path = result_dir / f"{filename_base}_timecodes.txt"
-    else:
-        file_path = result_dir / f"{filename_base}.txt"
-    
-    # Пробуем найти файл
+    # Ищем нужный файл напрямую в списке файлов директории
+    # Это решает проблему с кириллицей в именах файлов
     found_file = None
-    if file_path.exists():
-        found_file = file_path
-    else:
-        # Если файл не найден напрямую, пробуем найти через glob
-        logger.debug(f"Download: файл не найден напрямую {file_path}, ищем через glob")
-        
-        # Ищем все .txt файлы в директории
-        txt_files = list(result_dir.glob("*.txt"))
-        
-        # Ищем файл по базовому имени
-        for txt_file in txt_files:
-            file_stem = txt_file.stem
-            # Убираем _timecodes из имени, если это файл с таймкодами
-            if file_stem.endswith("_timecodes"):
-                file_stem = file_stem[:-10]
-            
-            # Сравниваем базовое имя
-            if file_stem == filename_base:
-                if format == "timecodes" and "_timecodes" in txt_file.name:
-                    found_file = txt_file
-                    break
-                elif format != "timecodes" and "_timecodes" not in txt_file.name:
-                    found_file = txt_file
-                    break
-        
-        # Если не нашли по имени, пробуем найти по паттерну
-        if not found_file:
-            pattern_files = list(result_dir.glob(f"*{filename_base}*"))
-            for pf in pattern_files:
-                if pf.suffix == ".txt":
-                    if format == "timecodes" and "_timecodes" in pf.name:
-                        found_file = pf
-                        break
-                    elif format != "timecodes" and "_timecodes" not in pf.name:
-                        found_file = pf
-                        break
     
-    if not found_file or not found_file.exists():
-        error_detail = f"Файл результата не найден. Искали: {file_path}"
-        if result_dir.exists():
-            all_files = list(result_dir.iterdir())
-            error_detail += f". Файлы в папке: {all_files}"
+    try:
+        for file in result_dir.iterdir():
+            # Пропускаем не-txt файлы и временные файлы
+            if file.suffix != '.txt' or file.name.startswith('temp_'):
+                continue
+            
+            # Определяем тип файла и базовое имя
+            is_timecoded = file.stem.endswith('_timecodes')
+            file_base = file.stem[:-10] if is_timecoded else file.stem
+            
+            # Проверяем совпадение
+            if file_base == filename_base:
+                # Если нужен файл с таймкодами
+                if format == "timecodes" and is_timecoded:
+                    found_file = file
+                    break
+                # Если нужен обычный файл
+                elif format != "timecodes" and not is_timecoded:
+                    found_file = file
+                    break
+    except Exception as e:
+        logger.error(f"Ошибка при поиске файла в {result_dir}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при поиске файла: {str(e)}"
+        )
+    
+    # Если файл не найден, возвращаем детальную ошибку
+    if not found_file:
+        all_files = [f.name for f in result_dir.iterdir()]
+        error_detail = f"Файл результата не найден. "
+        error_detail += f"Искали: {filename_base}{'_timecodes' if format == 'timecodes' else ''}.txt. "
+        error_detail += f"Файлы в папке: {all_files}"
+        
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=error_detail
         )
     
+    # Финальная проверка что файл существует и читаем
+    if not found_file.exists() or not found_file.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Найденный файл недоступен: {found_file.name}"
+        )
+    
+    logger.info(f"Download: отправляем файл {found_file.name} для задачи {task_id}")
+    
     return FileResponse(
-        path=found_file,
+        path=str(found_file),  # Используем строку для надежности
         filename=found_file.name,
-        media_type="text/plain"
+        media_type="text/plain; charset=utf-8"
     )
 
 
