@@ -4,9 +4,11 @@
 
 import os
 import time
+import warnings
 from typing import Dict, Callable, Optional
 from ..utils.audio_converter import AudioConverter
 from ..utils.time_formatter import TimeFormatter
+from ..utils.diarization import DiarizationManager
 from ..config import HF_TOKEN
 
 
@@ -27,7 +29,21 @@ class TranscriptionProcessor:
         self.progress_callback = progress_callback
         self.audio_converter = AudioConverter(self.logger)
         self.time_formatter = TimeFormatter()
+        self._diarization_manager = None
         
+    @property
+    def diarization_manager(self) -> Optional[DiarizationManager]:
+        """Ленивая загрузка менеджера диаризации"""
+        if self._diarization_manager is None and HF_TOKEN:
+            try:
+                self._diarization_manager = DiarizationManager(
+                    hf_token=HF_TOKEN,
+                    device="auto"
+                )
+            except Exception as e:
+                self.logger(f"Не удалось инициализировать менеджер диаризации: {e}")
+        return self._diarization_manager
+    
     def _update_progress(self, stage: str, progress: float):
         """
         Обновляет прогресс через callback
@@ -46,7 +62,10 @@ class TranscriptionProcessor:
                      total_files: int,
                      original_filename: Optional[str] = None,
                      estimated_conversion_ratio: float = 0.05,
-                     estimated_transcription_ratio: float = 0.95) -> Dict:
+                     estimated_transcription_ratio: float = 0.95,
+                     enable_diarization: bool = False,
+                     num_speakers: Optional[int] = None,
+                     output_formats: Optional[list] = None) -> Dict:
         """
         Обрабатывает один файл
         
@@ -55,9 +74,12 @@ class TranscriptionProcessor:
             output_dir: папка для сохранения результатов
             file_index: индекс файла (для логирования)
             total_files: общее количество файлов
+            output_formats: список форматов вывода ('txt', 'md', 'srt', 'vtt')
             original_filename: оригинальное имя файла (если отличается от filepath)
             estimated_conversion_ratio: доля времени на конвертацию (0-1)
             estimated_transcription_ratio: доля времени на транскрибацию (0-1)
+            enable_diarization: включить диаризацию спикеров
+            num_speakers: количество спикеров (если известно)
             
         Returns:
             dict: результаты обработки с ключами:
@@ -159,6 +181,23 @@ class TranscriptionProcessor:
                            f"has_transcription={'transcription' in first_utt}, "
                            f"has_boundaries={'boundaries' in first_utt}")
             
+            # Применение диаризации, если включена
+            if enable_diarization and utterances and len(utterances) > 0:
+                self.logger("Применение диаризации спикеров...")
+                try:
+                    utterances = self._apply_diarization(
+                        temp_audio,
+                        utterances,
+                        num_speakers=num_speakers
+                    )
+                    self.logger(f"Диаризация завершена. Найдено спикеров: {len(set(u.get('speaker', 'Неизвестный спикер') for u in utterances))}")
+                except Exception as e:
+                    self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Ошибка при диаризации: {e}")
+                    self.logger("Продолжаем без диаризации...")
+                    # Добавляем дефолтное имя спикера
+                    for utt in utterances:
+                        utt['speaker'] = "Спикер №1"
+            
             # Проверка результатов транскрибации
             if not utterances or len(utterances) == 0:
                 error_msg = (
@@ -180,10 +219,12 @@ class TranscriptionProcessor:
                 # Формирование результатов
                 full_text_lines = []
                 timecoded_lines = []
+                current_speaker = None  # Для группировки реплик одного спикера
                 
                 for utt in utterances:
                     text = utt.get('transcription', '')
                     boundaries = utt.get('boundaries', (0.0, 0.0))
+                    speaker = utt.get('speaker', None)
                     
                     # Проверка на пустой текст
                     if not text or not text.strip():
@@ -192,11 +233,26 @@ class TranscriptionProcessor:
                     
                     start, end = boundaries
                     
-                    full_text_lines.append(text)
+                    # Обычный текст (с информацией о спикере, если есть)
+                    if speaker:
+                        # Добавляем имя спикера, если он изменился
+                        if speaker != current_speaker:
+                            # Добавляем пустую строку между спикерами для читаемости (кроме первого)
+                            if current_speaker is not None:
+                                full_text_lines.append("")
+                            full_text_lines.append(f"[{speaker}]")
+                            current_speaker = speaker
+                        full_text_lines.append(text)
+                    else:
+                        full_text_lines.append(text)
                     
-                    # Таймкоды
-                    ts_str = (f"[{self.time_formatter.format_timestamp(start)} - "
-                             f"{self.time_formatter.format_timestamp(end)}] {text}")
+                    # Таймкоды (с информацией о спикере, если есть)
+                    if speaker:
+                        ts_str = (f"[{self.time_formatter.format_timestamp(start)} - "
+                                 f"{self.time_formatter.format_timestamp(end)}] {speaker}: {text}")
+                    else:
+                        ts_str = (f"[{self.time_formatter.format_timestamp(start)} - "
+                                 f"{self.time_formatter.format_timestamp(end)}] {text}")
                     timecoded_lines.append(ts_str)
                 
                 # Собираем полный текст (каждая фраза с новой строки)
@@ -205,36 +261,64 @@ class TranscriptionProcessor:
                 if not full_text.strip():
                     self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Все сегменты имеют пустой текст транскрипции")
             
-            # Сохранение
-            path_txt = os.path.join(output_dir, f"{name_without_ext}.txt")
-            path_ts = os.path.join(output_dir, f"{name_without_ext}_timecodes.txt")
+            # Определяем форматы вывода (по умолчанию txt)
+            if output_formats is None:
+                output_formats = ['txt']
             
-            with open(path_txt, "w", encoding="utf-8") as f:
-                f.write(full_text)
+            # Сохранение в выбранных форматах
+            saved_files = []
             
-            with open(path_ts, "w", encoding="utf-8") as f:
-                f.write("\n".join(timecoded_lines))
+            for fmt in output_formats:
+                if fmt == 'txt':
+                    # Обычный текстовый файл
+                    path_txt = os.path.join(output_dir, f"{name_without_ext}.txt")
+                    with open(path_txt, "w", encoding="utf-8") as f:
+                        f.write(full_text)
+                    saved_files.append(path_txt)
+                    
+                    # Файл с таймкодами (всегда сохраняем вместе с txt)
+                    path_ts = os.path.join(output_dir, f"{name_without_ext}_timecodes.txt")
+                    with open(path_ts, "w", encoding="utf-8") as f:
+                        f.write("\n".join(timecoded_lines))
+                    saved_files.append(path_ts)
+                    
+                elif fmt == 'md':
+                    # Markdown формат
+                    path_md = os.path.join(output_dir, f"{name_without_ext}.md")
+                    md_content = self._generate_markdown(utterances, filename)
+                    with open(path_md, "w", encoding="utf-8") as f:
+                        f.write(md_content)
+                    saved_files.append(path_md)
+                    
+                elif fmt == 'srt':
+                    # SRT субтитры
+                    path_srt = os.path.join(output_dir, f"{name_without_ext}.srt")
+                    srt_content = self._generate_srt(utterances)
+                    with open(path_srt, "w", encoding="utf-8") as f:
+                        f.write(srt_content)
+                    saved_files.append(path_srt)
+                    
+                elif fmt == 'vtt':
+                    # VTT субтитры
+                    path_vtt = os.path.join(output_dir, f"{name_without_ext}.vtt")
+                    vtt_content = self._generate_vtt(utterances)
+                    with open(path_vtt, "w", encoding="utf-8") as f:
+                        f.write(vtt_content)
+                    saved_files.append(path_vtt)
             
             # Проверка сохраненных данных
-            text_length = len(full_text)
-            timecoded_length = len("\n".join(timecoded_lines))
-            
-            if text_length == 0:
-                self.logger(f"ОШИБКА: Файл {os.path.basename(path_txt)} сохранен пустым (0 символов)")
+            if not full_text.strip():
+                self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Текст транскрипции пустой")
             else:
-                self.logger(f"Сохранено символов в текстовый файл: {text_length}")
-            
-            if timecoded_length == 0:
-                self.logger(f"ОШИБКА: Файл {os.path.basename(path_ts)} сохранен пустым (0 символов)")
-            else:
-                self.logger(f"Сохранено символов в файл с таймкодами: {timecoded_length}")
+                self.logger(f"Сохранено символов: {len(full_text)}")
             
             # Успех
             result['success'] = True
             result['total_time'] = time.time() - file_start_time
             
-            self.logger(f"Сохранено: {os.path.basename(path_txt)}")
-            self.logger(f"Сохранено: {os.path.basename(path_ts)}")
+            # Логируем сохраненные файлы
+            for saved_file in saved_files:
+                self.logger(f"Сохранено: {os.path.basename(saved_file)}")
             self.logger(f"Время обработки: {self.time_formatter.format_duration(result['total_time'])} " +
                        f"(Конверсия: {round(result['conversion_time'], 1)}с, " +
                        f"Транскрибация: {round(result['transcription_time'], 1)}с)")
@@ -256,3 +340,204 @@ class TranscriptionProcessor:
                     pass
         
         return result
+    
+    def _apply_diarization(
+        self,
+        audio_path: str,
+        utterances: list,
+        num_speakers: Optional[int] = None
+    ) -> list:
+        """
+        Применяет диаризацию к сегментам транскрипции.
+        
+        Args:
+            audio_path: путь к аудио файлу
+            utterances: список сегментов транскрипции
+            num_speakers: количество спикеров (если известно)
+            
+        Returns:
+            list: utterances с добавленной информацией о спикерах
+        """
+        # Проверяем, доступен ли менеджер диаризации
+        if not self.diarization_manager:
+            self.logger("ПРЕДУПРЕЖДЕНИЕ: Менеджер диаризации недоступен. Проверьте HF_TOKEN.")
+            # Добавляем дефолтное имя спикера
+            for utt in utterances:
+                utt['speaker'] = "Спикер №1"
+            return utterances
+        
+        try:
+            # Выполняем диаризацию
+            kwargs = {}
+            if num_speakers is not None:
+                kwargs['num_speakers'] = num_speakers
+            
+            speaker_segments = self.diarization_manager.diarize(
+                audio_path,
+                **kwargs
+            )
+            
+            # Сопоставляем спикеров с сегментами транскрипции
+            utterances = self.diarization_manager.map_speakers_to_transcription(
+                utterances,
+                speaker_segments
+            )
+            
+            return utterances
+            
+        except Exception as e:
+            self.logger(f"Ошибка при применении диаризации: {e}")
+            # В случае ошибки добавляем дефолтное имя спикера
+            for utt in utterances:
+                if 'speaker' not in utt:
+                    utt['speaker'] = "Спикер №1"
+            return utterances
+    
+    def _format_srt_timestamp(self, seconds: float) -> str:
+        """
+        Форматирует время в формат SRT (HH:MM:SS,mmm)
+        
+        Args:
+            seconds: время в секундах
+            
+        Returns:
+            str: отформатированное время
+        """
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds - int(seconds)) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+    
+    def _format_vtt_timestamp(self, seconds: float) -> str:
+        """
+        Форматирует время в формат VTT (HH:MM:SS.mmm)
+        
+        Args:
+            seconds: время в секундах
+            
+        Returns:
+            str: отформатированное время
+        """
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds - int(seconds)) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+    
+    def _generate_srt(self, utterances: list) -> str:
+        """
+        Генерирует контент в формате SRT субтитров
+        
+        Args:
+            utterances: список сегментов транскрипции
+            
+        Returns:
+            str: контент в формате SRT
+        """
+        lines = []
+        index = 1
+        
+        for utt in utterances:
+            text = utt.get('transcription', '')
+            if not text or not text.strip():
+                continue
+                
+            boundaries = utt.get('boundaries', (0.0, 0.0))
+            start, end = boundaries
+            speaker = utt.get('speaker', None)
+            
+            lines.append(str(index))
+            lines.append(f"{self._format_srt_timestamp(start)} --> {self._format_srt_timestamp(end)}")
+            
+            # Добавляем имя спикера, если есть
+            if speaker:
+                lines.append(f"<{speaker}> {text}")
+            else:
+                lines.append(text)
+            
+            lines.append("")  # Пустая строка между субтитрами
+            index += 1
+        
+        return "\n".join(lines)
+    
+    def _generate_vtt(self, utterances: list) -> str:
+        """
+        Генерирует контент в формате VTT субтитров
+        
+        Args:
+            utterances: список сегментов транскрипции
+            
+        Returns:
+            str: контент в формате VTT
+        """
+        lines = ["WEBVTT", ""]  # Заголовок VTT
+        
+        for utt in utterances:
+            text = utt.get('transcription', '')
+            if not text or not text.strip():
+                continue
+                
+            boundaries = utt.get('boundaries', (0.0, 0.0))
+            start, end = boundaries
+            speaker = utt.get('speaker', None)
+            
+            lines.append(f"{self._format_vtt_timestamp(start)} --> {self._format_vtt_timestamp(end)}")
+            
+            # Добавляем имя спикера, если есть
+            if speaker:
+                lines.append(f"<v {speaker}>{text}")
+            else:
+                lines.append(text)
+            
+            lines.append("")  # Пустая строка между субтитрами
+        
+        return "\n".join(lines)
+    
+    def _generate_markdown(self, utterances: list, filename: str) -> str:
+        """
+        Генерирует контент в формате Markdown
+        
+        Args:
+            utterances: список сегментов транскрипции
+            filename: имя исходного файла
+            
+        Returns:
+            str: контент в формате Markdown
+        """
+        lines = [
+            f"# Транскрипция: {filename}",
+            "",
+            f"*Создано с помощью GigaAM v3 Transcriber*",
+            "",
+            "---",
+            ""
+        ]
+        
+        current_speaker = None
+        
+        for utt in utterances:
+            text = utt.get('transcription', '')
+            if not text or not text.strip():
+                continue
+                
+            boundaries = utt.get('boundaries', (0.0, 0.0))
+            start, end = boundaries
+            speaker = utt.get('speaker', None)
+            
+            # Форматируем время
+            time_str = f"`{self.time_formatter.format_timestamp(start)} - {self.time_formatter.format_timestamp(end)}`"
+            
+            if speaker:
+                # Если спикер изменился, добавляем заголовок
+                if speaker != current_speaker:
+                    lines.append("")
+                    lines.append(f"### {speaker}")
+                    lines.append("")
+                    current_speaker = speaker
+                
+                lines.append(f"- {time_str} {text}")
+            else:
+                lines.append(f"- {time_str} {text}")
+        
+        return "\n".join(lines)

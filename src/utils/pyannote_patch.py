@@ -20,10 +20,19 @@ def apply_pyannote_patch():
     try:
         import soundfile as sf
         import torch
+        import sys
         
-        # Патч для совместимости numpy 2.x с pyannote.audio (использует устаревший np.NaN)
+        # Патч для совместимости numpy 2.x с pyannote.audio
+        # pyannote использует устаревшие np.NaN и np.NAN которые удалены в NumPy 2.0
+        # ВАЖНО: Применяем ДО импорта pyannote
         if not hasattr(np, 'NaN'):
             np.NaN = np.nan
+        if not hasattr(np, 'NAN'):
+            np.NAN = np.nan
+        
+        # Также добавляем в атрибуты модуля numpy напрямую
+        setattr(np, 'NaN', np.nan)
+        setattr(np, 'NAN', np.nan)
         
         # Подавляем предупреждения о torchcodec
         warnings.filterwarnings("ignore", message=".*torchcodec.*")

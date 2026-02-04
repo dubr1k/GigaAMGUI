@@ -8,7 +8,7 @@ import time
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
-from ..config import APP_TITLE, APP_GEOMETRY, SUPPORTED_FORMATS, STATS_FILE
+from ..config import APP_TITLE, APP_GEOMETRY, SUPPORTED_FORMATS, STATS_FILE, OUTPUT_FORMATS
 from ..core import ModelLoader, TranscriptionProcessor
 from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, LoggerAdapter, UserSettings
 
@@ -22,7 +22,7 @@ class GigaTranscriberApp(ctk.CTk):
         self.title(APP_TITLE)
         self.geometry(APP_GEOMETRY)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(5, weight=1)
+        self.grid_rowconfigure(7, weight=1)  # Лог растягивается при изменении размера окна
 
         # Переменные
         self.files_to_process = []
@@ -39,6 +39,13 @@ class GigaTranscriberApp(ctk.CTk):
         self.progress_update_timer = None  # Таймер для периодического обновления прогресса
         self.current_stage = None  # Текущий этап обработки ('conversion' или 'transcription')
         self.current_stage_progress = 0.0  # Прогресс текущего этапа
+        
+        # Настройки диаризации
+        self.enable_diarization = False
+        self.num_speakers = None
+        
+        # Настройки выходных форматов (по умолчанию txt)
+        self.output_formats = {'txt': True, 'md': False, 'srt': False, 'vtt': False}
 
         # Инициализация системы логирования
         self.app_logger = AppLogger()
@@ -148,6 +155,69 @@ class GigaTranscriberApp(ctk.CTk):
             text_color="gray"
         )
         self.lbl_folder_path.grid(row=0, column=1, padx=5, pady=10, sticky="w")
+        
+        # Блок настроек - диаризация
+        self.frame_diarization = ctk.CTkFrame(self)
+        self.frame_diarization.grid(row=3, column=0, padx=20, pady=(5, 10), sticky="ew")
+        self.frame_diarization.grid_columnconfigure(1, weight=1)
+        
+        self.checkbox_diarization = ctk.CTkCheckBox(
+            self.frame_diarization,
+            text="3. Включить диаризацию спикеров",
+            command=self.toggle_diarization,
+            width=180
+        )
+        self.checkbox_diarization.grid(row=0, column=0, padx=(10, 5), pady=10)
+        
+        self.lbl_diarization_info = ctk.CTkLabel(
+            self.frame_diarization,
+            text="Автоматическое определение спикеров (требуется HF_TOKEN)",
+            text_color="gray"
+        )
+        self.lbl_diarization_info.grid(row=0, column=1, padx=5, pady=10, sticky="w")
+        
+        # Поле для ввода количества спикеров
+        self.lbl_num_speakers = ctk.CTkLabel(
+            self.frame_diarization,
+            text="Количество спикеров (опционально):",
+            text_color="gray"
+        )
+        self.lbl_num_speakers.grid(row=1, column=0, padx=(10, 5), pady=(0, 10), sticky="w")
+        
+        self.entry_num_speakers = ctk.CTkEntry(
+            self.frame_diarization,
+            placeholder_text="Оставьте пустым для автоопределения",
+            width=250,
+            state="disabled"
+        )
+        self.entry_num_speakers.grid(row=1, column=1, padx=5, pady=(0, 10), sticky="w")
+        
+        # Блок настроек - выходные форматы
+        self.frame_formats = ctk.CTkFrame(self)
+        self.frame_formats.grid(row=4, column=0, padx=20, pady=(5, 10), sticky="ew")
+        
+        self.lbl_formats = ctk.CTkLabel(
+            self.frame_formats,
+            text="4. Форматы вывода:",
+            font=("Roboto", 12)
+        )
+        self.lbl_formats.grid(row=0, column=0, padx=(10, 10), pady=10, sticky="w")
+        
+        # Чекбоксы для форматов
+        self.format_checkboxes = {}
+        col = 1
+        for fmt, label in OUTPUT_FORMATS.items():
+            var = ctk.BooleanVar(value=(fmt == 'txt'))  # txt по умолчанию включен
+            cb = ctk.CTkCheckBox(
+                self.frame_formats,
+                text=label,
+                variable=var,
+                command=lambda f=fmt: self.toggle_format(f),
+                width=140
+            )
+            cb.grid(row=0, column=col, padx=5, pady=10)
+            self.format_checkboxes[fmt] = {'checkbox': cb, 'var': var}
+            col += 1
 
         # Кнопка старта
         self.btn_start = ctk.CTkButton(
@@ -159,23 +229,90 @@ class GigaTranscriberApp(ctk.CTk):
             height=50,
             font=("Roboto", 16, "bold")
         )
-        self.btn_start.grid(row=3, column=0, padx=20, pady=20, sticky="ew")
+        self.btn_start.grid(row=5, column=0, padx=20, pady=20, sticky="ew")
 
         # Прогресс-бар и информация
         self.frame_progress = ctk.CTkFrame(self)
-        self.frame_progress.grid(row=4, column=0, padx=20, pady=(0, 10), sticky="ew")
+        self.frame_progress.grid(row=6, column=0, padx=20, pady=(0, 10), sticky="ew")
         self.frame_progress.grid_columnconfigure(0, weight=1)
-
-        self.progress_bar = ctk.CTkProgressBar(self.frame_progress, height=20)
-        self.progress_bar.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        
+        # Заголовок блока прогресса
+        self.lbl_progress_title = ctk.CTkLabel(
+            self.frame_progress,
+            text="Прогресс обработки",
+            font=("Roboto", 14, "bold")
+        )
+        self.lbl_progress_title.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
+        
+        # Общий прогресс (все файлы)
+        self.frame_total_progress = ctk.CTkFrame(self.frame_progress, fg_color="transparent")
+        self.frame_total_progress.grid(row=1, column=0, padx=10, pady=(5, 2), sticky="ew")
+        self.frame_total_progress.grid_columnconfigure(1, weight=1)
+        
+        self.lbl_total_progress = ctk.CTkLabel(
+            self.frame_total_progress,
+            text="Всего:",
+            font=("Roboto", 12),
+            width=80,
+            anchor="w"
+        )
+        self.lbl_total_progress.grid(row=0, column=0, padx=(0, 5), sticky="w")
+        
+        self.progress_bar = ctk.CTkProgressBar(self.frame_total_progress, height=20)
+        self.progress_bar.grid(row=0, column=1, padx=(0, 10), sticky="ew")
         self.progress_bar.set(0)
-
+        
+        self.lbl_total_percent = ctk.CTkLabel(
+            self.frame_total_progress,
+            text="0%",
+            font=("Roboto", 12, "bold"),
+            width=50
+        )
+        self.lbl_total_percent.grid(row=0, column=2, padx=(5, 0), sticky="e")
+        
+        # Прогресс текущего файла
+        self.frame_file_progress = ctk.CTkFrame(self.frame_progress, fg_color="transparent")
+        self.frame_file_progress.grid(row=2, column=0, padx=10, pady=(2, 5), sticky="ew")
+        self.frame_file_progress.grid_columnconfigure(1, weight=1)
+        
+        self.lbl_file_progress = ctk.CTkLabel(
+            self.frame_file_progress,
+            text="Файл:",
+            font=("Roboto", 12),
+            width=80,
+            anchor="w"
+        )
+        self.lbl_file_progress.grid(row=0, column=0, padx=(0, 5), sticky="w")
+        
+        self.progress_bar_file = ctk.CTkProgressBar(self.frame_file_progress, height=14)
+        self.progress_bar_file.grid(row=0, column=1, padx=(0, 10), sticky="ew")
+        self.progress_bar_file.set(0)
+        self.progress_bar_file.configure(progress_color="#5DADE2")  # Другой цвет для текущего файла
+        
+        self.lbl_file_percent = ctk.CTkLabel(
+            self.frame_file_progress,
+            text="0%",
+            font=("Roboto", 11),
+            width=50
+        )
+        self.lbl_file_percent.grid(row=0, column=2, padx=(5, 0), sticky="e")
+        
+        # Информация о текущем файле
+        self.lbl_current_file = ctk.CTkLabel(
+            self.frame_progress,
+            text="",
+            font=("Roboto", 11),
+            text_color="gray"
+        )
+        self.lbl_current_file.grid(row=3, column=0, padx=10, pady=(0, 2), sticky="w")
+        
+        # Статус и время
         self.lbl_progress = ctk.CTkLabel(
             self.frame_progress,
             text="Готов к работе",
             font=("Roboto", 12)
         )
-        self.lbl_progress.grid(row=1, column=0, padx=10, pady=(0, 10))
+        self.lbl_progress.grid(row=4, column=0, padx=10, pady=(2, 10))
 
         # Лог
         self.textbox_log = ctk.CTkTextbox(
@@ -184,11 +321,11 @@ class GigaTranscriberApp(ctk.CTk):
             height=250,
             font=("Consolas", 12)
         )
-        self.textbox_log.grid(row=5, column=0, padx=20, pady=(0, 10), sticky="nsew")
+        self.textbox_log.grid(row=7, column=0, padx=20, pady=(0, 10), sticky="nsew")
         self.textbox_log.configure(state="disabled")
 
         self.frame_file_buttons = ctk.CTkFrame(self)
-        self.frame_file_buttons.grid(row=6, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.frame_file_buttons.grid(row=8, column=0, padx=20, pady=(0, 20), sticky="ew")
         self.frame_file_buttons.grid_columnconfigure((0, 1), weight=1)
 
         # Кнопка очистки выбора
@@ -327,6 +464,35 @@ class GigaTranscriberApp(ctk.CTk):
             )
             self.log(f"Папка для сохранения: {folder} (установлена как папка по умолчанию)")
 
+    def toggle_diarization(self):
+        """Обработчик изменения состояния чекбокса диаризации"""
+        self.enable_diarization = self.checkbox_diarization.get()
+        
+        # Активируем/деактивируем поле ввода количества спикеров
+        if self.enable_diarization:
+            self.entry_num_speakers.configure(state="normal")
+            self.log("Диаризация спикеров: ВКЛЮЧЕНА")
+        else:
+            self.entry_num_speakers.configure(state="disabled")
+            self.entry_num_speakers.delete(0, "end")
+            self.log("Диаризация спикеров: ВЫКЛЮЧЕНА")
+    
+    def toggle_format(self, fmt: str):
+        """Обработчик изменения состояния чекбокса формата"""
+        if fmt in self.format_checkboxes:
+            self.output_formats[fmt] = self.format_checkboxes[fmt]['var'].get()
+            
+            # Проверяем, что хотя бы один формат выбран
+            if not any(self.output_formats.values()):
+                # Возвращаем txt по умолчанию
+                self.output_formats['txt'] = True
+                self.format_checkboxes['txt']['var'].set(True)
+                self.log("ПРЕДУПРЕЖДЕНИЕ: Выбран хотя бы один формат по умолчанию (txt)")
+    
+    def get_selected_formats(self) -> list:
+        """Возвращает список выбранных форматов"""
+        return [fmt for fmt, enabled in self.output_formats.items() if enabled]
+    
     def clear_all(self):
         """Сбрасывает все выбранные файлы, папки и состояние интерфейса"""
         # Предупреждение, если идет обработка
@@ -371,9 +537,13 @@ class GigaTranscriberApp(ctk.CTk):
         self.textbox_log.configure(state="disabled")
         self.textbox_log.clipboard_clear()
         
-        # Сбрасываем прогресс-бар
+        # Сбрасываем прогресс-бары
         self.progress_bar.set(0)
-        self.update_progress_label(0, "")
+        self.progress_bar_file.set(0)
+        self.lbl_total_percent.configure(text="0%")
+        self.lbl_file_percent.configure(text="0%")
+        self.lbl_current_file.configure(text="")
+        self.lbl_progress.configure(text="Готов к работе")
         
         # Обновляем метки интерфейса
         self.lbl_files_count.configure(
@@ -446,6 +616,7 @@ class GigaTranscriberApp(ctk.CTk):
 
         # Прогресс текущего файла на основе времени
         current_file_progress = 0.0
+        current_filepath = ""
         if self.files_processed < len(self.files_to_process) and self.current_file_start_time > 0:
             current_filepath = self.files_to_process[self.files_processed]
             current_elapsed = time.time() - self.current_file_start_time
@@ -475,8 +646,32 @@ class GigaTranscriberApp(ctk.CTk):
         # Ограничиваем прогресс до 99%, пока обработка не завершена
         overall_progress = min(0.99, overall_progress)
 
+        # Обновляем общий прогресс-бар
         self.progress_bar.set(overall_progress)
         percent = int(overall_progress * 100)
+        self.lbl_total_percent.configure(text=f"{percent}%")
+        
+        # Обновляем прогресс текущего файла
+        file_percent = int(current_file_progress * 100)
+        self.progress_bar_file.set(current_file_progress)
+        self.lbl_file_percent.configure(text=f"{file_percent}%")
+        
+        # Обновляем информацию о текущем файле
+        if current_filepath:
+            filename = os.path.basename(current_filepath)
+            # Определяем текущий этап
+            stage_text = ""
+            if self.current_stage == 'conversion':
+                stage_text = " (конвертация)"
+            elif self.current_stage == 'transcription':
+                stage_text = " (транскрибация)"
+            
+            # Показываем имя файла и номер
+            file_info = f"Файл {self.files_processed + 1}/{self.total_files}: {filename}{stage_text}"
+            # Обрезаем, если слишком длинное
+            if len(file_info) > 80:
+                file_info = f"Файл {self.files_processed + 1}/{self.total_files}: ...{filename[-40:]}{stage_text}"
+            self.lbl_current_file.configure(text=file_info)
 
         # Рассчитываем оставшееся время на основе реальной скорости
         remaining_time = 0
@@ -628,8 +823,13 @@ class GigaTranscriberApp(ctk.CTk):
             text="ИДЕТ ОБРАБОТКА...",
             fg_color="gray"
         )
+        # Инициализируем прогресс-бары
         self.progress_bar.set(0)
-        self.update_progress_label(0, f"Оценка: ~{estimate_str}")
+        self.progress_bar_file.set(0)
+        self.lbl_total_percent.configure(text="0%")
+        self.lbl_file_percent.configure(text="0%")
+        self.lbl_current_file.configure(text="Подготовка...")
+        self.lbl_progress.configure(text=f"Оценка: ~{estimate_str}")
 
         thread = threading.Thread(target=self.process_files)
         thread.start()
@@ -655,6 +855,19 @@ class GigaTranscriberApp(ctk.CTk):
                 self.log,
                 progress_callback=self.on_file_progress
             )
+            
+            # Получаем параметры диаризации
+            num_speakers = None
+            if self.enable_diarization:
+                try:
+                    speakers_text = self.entry_num_speakers.get().strip()
+                    if speakers_text:
+                        num_speakers = int(speakers_text)
+                        self.log(f"Количество спикеров: {num_speakers}")
+                    else:
+                        self.log("Количество спикеров: автоопределение")
+                except ValueError:
+                    self.log("ПРЕДУПРЕЖДЕНИЕ: Некорректное значение количества спикеров. Используется автоопределение.")
 
             # Обрабатываем каждый файл
             for i, filepath in enumerate(self.files_to_process):
@@ -670,7 +883,10 @@ class GigaTranscriberApp(ctk.CTk):
                         i,
                         self.total_files,
                         estimated_conversion_ratio=conv_weight,
-                        estimated_transcription_ratio=trans_weight
+                        estimated_transcription_ratio=trans_weight,
+                        enable_diarization=self.enable_diarization,
+                        num_speakers=num_speakers,
+                        output_formats=self.get_selected_formats()
                     )
 
                     # Сохраняем статистику обработки

@@ -20,6 +20,11 @@
 ```
 Запускает графический интерфейс пользователя.
 
+**Windows:** используйте `run_gui.bat` — он активирует окружение conda `gigaam` и запускает `app.py`. Чтобы создать ярлык на рабочем столе, выполните один раз:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\create_desktop_shortcut.ps1
+```
+
 ## Скрипты тестирования
 
 ### Проверка настройки API
@@ -44,6 +49,6 @@ python3 test_transcription_fix.py
 
 - Все скрипты запуска используют conda окружение `gigaam`
 - Тестовые скрипты написаны на чистом Python без внешних зависимостей
-- Скрипты совместимы с Linux/macOS
+- Скрипты совместимы с Linux/macOS; для Windows предусмотрены `run_gui.bat` и `create_desktop_shortcut.ps1`
 
 

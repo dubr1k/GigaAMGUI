@@ -125,8 +125,16 @@ APP_THEME = os.getenv("APP_THEME", "blue")
 # Файл статистики
 STATS_FILE = os.getenv("STATS_FILE", "processing_stats.json")
 
-# Поддерживаемые форматы файлов
+# Поддерживаемые форматы файлов (входные)
 SUPPORTED_FORMATS = (
     'Media files',
-    '*.mp3 *.wav *.m4a *.mp4 *.avi *.mov *.mkv *.webm *.flac *.ogg *.wma'
+    '*.mp3 *.wav *.m4a *.aac *.mp4 *.avi *.mov *.mkv *.webm *.flac *.ogg *.wma *.qta'
 )
+
+# Поддерживаемые форматы выходных файлов
+OUTPUT_FORMATS = {
+    'txt': 'Текст (.txt)',
+    'md': 'Markdown (.md)',
+    'srt': 'Субтитры SRT (.srt)',
+    'vtt': 'Субтитры VTT (.vtt)'
+}
