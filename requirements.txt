@@ -139,6 +139,9 @@ zipp==3.23.0
 # Environment variables
 python-dotenv==1.0.0
 
+# GUI (PyQt6 - строгий профессиональный интерфейс)
+PyQt6>=6.10.0
+
 # GigaAM (установлен из git репозитория)
 -e git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam
 

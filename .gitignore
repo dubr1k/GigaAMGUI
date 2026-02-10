@@ -1,5 +1,9 @@
 # Python
 __pycache__/
+icns/
+GigaAM/
+GigaAMv3.workflow/
+scripts/
 *.py[cod]
 *$py.class
 *.so

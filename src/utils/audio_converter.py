@@ -158,14 +158,19 @@ class AudioConverter:
             if result.returncode != 0:
                 # Выводим детальную информацию об ошибке FFmpeg
                 self.logger(f"Ошибка FFmpeg: Command '{' '.join(command)}' returned non-zero exit status {result.returncode}.")
+                stderr_text = (result.stderr or "").strip()
                 if result.stderr:
                     # Логируем последние строки stderr для диагностики
-                    error_lines = result.stderr.strip().split('\n')
-                    # Берем последние 5 строк ошибки
+                    error_lines = stderr_text.split('\n')
                     relevant_errors = error_lines[-5:] if len(error_lines) > 5 else error_lines
                     for line in relevant_errors:
                         if line.strip():
                             self.logger(f"  FFmpeg: {line}")
+                # Понятное сообщение для типичных ошибок MP4
+                if "moov atom not found" in stderr_text or "Invalid data found when processing input" in stderr_text:
+                    self.logger("")
+                    self.logger("Возможная причина: файл повреждён или загружен не до конца (в MP4 метаданные «moov» в конце — если файл обрезан, FFmpeg не может его прочитать).")
+                    self.logger("Что попробовать: перезаписать/скачать файл заново, открыть в другом плеере и пересохранить, либо взять другой файл.")
                 return None
             
             return temp_wav
