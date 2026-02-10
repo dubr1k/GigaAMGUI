@@ -171,3 +171,4 @@ ipython_config.py
 # GitHub Actions workflows (не нужны для этого проекта)
 .github/workflows/
 scripts/create_desktop_shortcut.ps1
+GIT_SETUP.md
