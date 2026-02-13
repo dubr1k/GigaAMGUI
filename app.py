@@ -1,11 +1,11 @@
 """
-Точка входа приложения GigaAM v3 Transcriber
+Точка входа GUI приложения GigaAM v3 Transcriber (PyQt6)
 """
 
 import warnings
-import customtkinter as ctk
+
 from src.utils.pyannote_patch import apply_pyannote_patch
-from src.gui import GigaTranscriberApp
+from src.gui import run_qt_app
 
 # Подавляем предупреждения от зависимостей
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
@@ -17,15 +17,10 @@ warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.
 # Применяем патч для pyannote.audio перед запуском
 apply_pyannote_patch()
 
-# Настройка внешнего вида
-ctk.set_appearance_mode("System")
-ctk.set_default_color_theme("blue")
-
 
 def main():
     """Главная функция запуска приложения"""
-    app = GigaTranscriberApp()
-    app.mainloop()
+    run_qt_app()
 
 
 if __name__ == "__main__":

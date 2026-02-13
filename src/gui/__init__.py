@@ -1,7 +1,7 @@
 """
-GUI модули приложения
+GUI модули приложения (PyQt6)
 """
 
-from .app import GigaTranscriberApp
+from .app_qt import GigaTranscriberQtApp, run_qt_app
 
-__all__ = ['GigaTranscriberApp']
+__all__ = ['GigaTranscriberQtApp', 'run_qt_app']

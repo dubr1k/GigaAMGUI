@@ -213,13 +213,19 @@ class TranscriptionProcessor:
                 # Сохраняем пустые файлы, но логируем предупреждение
                 full_text = ""
                 timecoded_lines = []
+                full_text_diarized = ""
+                timecoded_lines_diarized = []
             else:
                 self.logger(f"Найдено сегментов речи: {len(utterances)}")
                 
-                # Формирование результатов
-                full_text_lines = []
-                timecoded_lines = []
-                current_speaker = None  # Для группировки реплик одного спикера
+                # Формирование результатов: обычный текст и диаризованный (если включена диаризация)
+                # Обычный текст — всегда без меток спикеров
+                full_text_lines_plain = []
+                timecoded_lines_plain = []
+                # Диаризованный текст — с метками спикеров (только при enable_diarization)
+                full_text_lines_diarized = []
+                timecoded_lines_diarized = []
+                current_speaker = None
                 
                 for utt in utterances:
                     text = utt.get('transcription', '')
@@ -233,30 +239,35 @@ class TranscriptionProcessor:
                     
                     start, end = boundaries
                     
-                    # Обычный текст (с информацией о спикере, если есть)
-                    if speaker:
-                        # Добавляем имя спикера, если он изменился
-                        if speaker != current_speaker:
-                            # Добавляем пустую строку между спикерами для читаемости (кроме первого)
-                            if current_speaker is not None:
-                                full_text_lines.append("")
-                            full_text_lines.append(f"[{speaker}]")
-                            current_speaker = speaker
-                        full_text_lines.append(text)
-                    else:
-                        full_text_lines.append(text)
+                    # Обычный текст — всегда без спикеров
+                    full_text_lines_plain.append(text)
+                    ts_str_plain = (f"[{self.time_formatter.format_timestamp(start)} - "
+                                    f"{self.time_formatter.format_timestamp(end)}] {text}")
+                    timecoded_lines_plain.append(ts_str_plain)
                     
-                    # Таймкоды (с информацией о спикере, если есть)
-                    if speaker:
-                        ts_str = (f"[{self.time_formatter.format_timestamp(start)} - "
-                                 f"{self.time_formatter.format_timestamp(end)}] {speaker}: {text}")
+                    # Диаризованный текст — с метками спикеров (если диаризация включена)
+                    if enable_diarization and speaker:
+                        if speaker != current_speaker:
+                            if current_speaker is not None:
+                                full_text_lines_diarized.append("")
+                            full_text_lines_diarized.append(f"[{speaker}]")
+                            current_speaker = speaker
+                        full_text_lines_diarized.append(text)
+                        ts_str_diarized = (f"[{self.time_formatter.format_timestamp(start)} - "
+                                           f"{self.time_formatter.format_timestamp(end)}] {speaker}: {text}")
+                        timecoded_lines_diarized.append(ts_str_diarized)
                     else:
-                        ts_str = (f"[{self.time_formatter.format_timestamp(start)} - "
-                                 f"{self.time_formatter.format_timestamp(end)}] {text}")
-                    timecoded_lines.append(ts_str)
+                        full_text_lines_diarized.append(text)
+                        ts_str_diarized = (f"[{self.time_formatter.format_timestamp(start)} - "
+                                           f"{self.time_formatter.format_timestamp(end)}] {text}")
+                        timecoded_lines_diarized.append(ts_str_diarized)
                 
-                # Собираем полный текст (каждая фраза с новой строки)
-                full_text = "\n".join(full_text_lines)
+                # Обычный текст — всегда основной для .txt и _timecodes.txt
+                full_text = "\n".join(full_text_lines_plain)
+                timecoded_lines = timecoded_lines_plain
+                
+                # Диаризованный текст — для _diarize.txt и _diarize_timecodes.txt (при enable_diarization)
+                full_text_diarized = "\n".join(full_text_lines_diarized)
                 
                 if not full_text.strip():
                     self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Все сегменты имеют пустой текст транскрипции")
@@ -270,17 +281,29 @@ class TranscriptionProcessor:
             
             for fmt in output_formats:
                 if fmt == 'txt':
-                    # Обычный текстовый файл
+                    # Обычный текстовый файл (всегда без диаризации)
                     path_txt = os.path.join(output_dir, f"{name_without_ext}.txt")
                     with open(path_txt, "w", encoding="utf-8") as f:
                         f.write(full_text)
                     saved_files.append(path_txt)
                     
-                    # Файл с таймкодами (всегда сохраняем вместе с txt)
+                    # Файл с таймкодами (всегда вместе с txt, без меток спикеров)
                     path_ts = os.path.join(output_dir, f"{name_without_ext}_timecodes.txt")
                     with open(path_ts, "w", encoding="utf-8") as f:
                         f.write("\n".join(timecoded_lines))
                     saved_files.append(path_ts)
+                    
+                    # Диаризованные файлы (только при включённой диаризации)
+                    if enable_diarization and full_text_diarized.strip():
+                        path_diarize = os.path.join(output_dir, f"{name_without_ext}_diarize.txt")
+                        with open(path_diarize, "w", encoding="utf-8") as f:
+                            f.write(full_text_diarized)
+                        saved_files.append(path_diarize)
+                        
+                        path_diarize_ts = os.path.join(output_dir, f"{name_without_ext}_diarize_timecodes.txt")
+                        with open(path_diarize_ts, "w", encoding="utf-8") as f:
+                            f.write("\n".join(timecoded_lines_diarized))
+                        saved_files.append(path_diarize_ts)
                     
                 elif fmt == 'md':
                     # Markdown формат

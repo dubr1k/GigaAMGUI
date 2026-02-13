@@ -1,5 +1,12 @@
 # GigaAM v3 - Requirements
-# Точный список установленных пакетов из окружения gigaam
+# Универсальный файл зависимостей: CPU / MPS (macOS) / CUDA (Linux, Windows)
+#
+# Как это работает:
+# - macOS: CUDA-wheels не существуют для macOS, pip берёт torch из PyPI → MPS поддержка
+# - Linux/Windows с NVIDIA GPU: pip находит CUDA-wheels в extra-index → GPU ускорение
+# - Linux/Windows без GPU: CUDA-build работает и на CPU (просто тяжелее по размеру)
+
+--extra-index-url https://download.pytorch.org/whl/cu124
 
 accelerate==1.12.0
 aiohappyeyeballs==2.6.1
@@ -19,9 +26,7 @@ coloredlogs==15.0.1
 colorlog==6.10.1
 contourpy==1.3.2
 coverage==7.12.0
-customtkinter==5.2.2
 cycler==0.12.1
-darkdetect==0.8.0
 decorator==5.2.1
 einops==0.8.1
 exceptiongroup==1.3.1
@@ -121,13 +126,13 @@ tensorboardX==2.6.4
 threadpoolctl==3.6.0
 tokenizers==0.22.1
 tomli==2.3.0
-torch==2.6.0+cu124
+torch>=2.6.0
 torch-audiomentations==0.12.0
 torch_pitch_shift==1.2.5
-torchaudio==2.6.0+cu124
+torchaudio>=2.6.0
 torchcodec==0.7.0
 torchmetrics==1.8.2
-torchvision==0.21.0+cu124
+torchvision>=0.21.0
 tqdm==4.67.1
 transformers==4.57.3
 typing_extensions==4.15.0
@@ -150,8 +155,7 @@ PyQt6>=6.10.0
 # pyannote.audio>=3.1.0
 
 # Примечания:
-# - PyTorch установлен с поддержкой CUDA 12.4
-# - Для установки используйте: pip install -r requirements.txt
+# - Установка: pip install -r requirements.txt (автоматически выберет правильную версию torch)
 # - FFmpeg должен быть установлен отдельно в системе
 # - Требуется HuggingFace токен для доступа к pyannote/segmentation-3.0
 # - Все секреты и настройки должны быть в файле .env (см. .env.example)

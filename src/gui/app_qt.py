@@ -118,7 +118,7 @@ class GigaTranscriberQtApp(QMainWindow):
         main_layout.setSpacing(6)
         
         # Заголовок
-        title_label = QLabel("GigaAM v3: Транскрибация (Аудио/Видео → Текст)")
+        title_label = QLabel("GigaAM v3: Транскрибация")
         title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_label.setFixedHeight(40)
@@ -731,12 +731,30 @@ class GigaTranscriberQtApp(QMainWindow):
         # Запускаем таймер обновления прогресса
         self.progress_timer.start(1000)  # Обновление каждую секунду
         
+        # Считываем параметры диаризации из виджета в main thread (Qt thread-safety)
+        num_speakers = None
+        if self.enable_diarization:
+            try:
+                speakers_text = self.entry_num_speakers.text().strip()
+                if speakers_text:
+                    num_speakers = int(speakers_text)
+            except ValueError:
+                pass
+        
         # Запускаем обработку в отдельном потоке
-        thread = threading.Thread(target=self._process_files, daemon=True)
+        thread = threading.Thread(
+            target=self._process_files,
+            args=(num_speakers,),
+            daemon=True
+        )
         thread.start()
 
-    def _process_files(self):
-        """Основной процесс обработки файлов (выполняется в отдельном потоке)"""
+    def _process_files(self, num_speakers: int = None):
+        """Основной процесс обработки файлов (выполняется в отдельном потоке)
+        
+        Args:
+            num_speakers: Количество спикеров (считано из виджета в main thread)
+        """
         try:
             # Загружаем модель
             if not self.model_loader.load_model(self.log):
@@ -751,18 +769,12 @@ class GigaTranscriberQtApp(QMainWindow):
                 progress_callback=self._on_file_progress
             )
             
-            # Получаем параметры диаризации
-            num_speakers = None
+            # Логируем параметры диаризации
             if self.enable_diarization:
-                try:
-                    speakers_text = self.entry_num_speakers.text().strip()
-                    if speakers_text:
-                        num_speakers = int(speakers_text)
-                        self.log(f"Количество спикеров: {num_speakers}")
-                    else:
-                        self.log("Количество спикеров: автоопределение")
-                except ValueError:
-                    self.log("ПРЕДУПРЕЖДЕНИЕ: Некорректное значение количества спикеров. Используется автоопределение.")
+                if num_speakers is not None:
+                    self.log(f"Количество спикеров: {num_speakers}")
+                else:
+                    self.log("Количество спикеров: автоопределение")
             
             # Обрабатываем файлы
             for i, filepath in enumerate(self.files_to_process):

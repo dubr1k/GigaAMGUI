@@ -32,7 +32,13 @@ class ModelLoader:
             logger("Это может занять несколько минут при первом запуске (скачивание весов).")
         
         try:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            # Определение устройства: CUDA > MPS (Apple Silicon) > CPU
+            if torch.cuda.is_available():
+                self.device = "cuda"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                self.device = "mps"
+            else:
+                self.device = "cpu"
             if logger:
                 logger(f"Устройство вычисления: {self.device.upper()}")
             

@@ -58,11 +58,16 @@ class DiarizationManager:
         self._pipeline = None
     
     def _resolve_device(self, device: str) -> str:
-        """Определение устройства."""
+        """Определение устройства: CUDA > MPS (Apple Silicon) > CPU."""
         if device == "auto":
             try:
                 import torch
-                return "cuda" if torch.cuda.is_available() else "cpu"
+                if torch.cuda.is_available():
+                    return "cuda"
+                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    return "mps"
+                else:
+                    return "cpu"
             except ImportError:
                 return "cpu"
         return device
