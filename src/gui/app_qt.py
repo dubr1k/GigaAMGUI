@@ -16,9 +16,9 @@ from PyQt6.QtWidgets import (
     QMessageBox, QCheckBox, QLineEdit, QGroupBox, QFrame
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QPalette, QColor
+from PyQt6.QtGui import QFont, QPalette, QColor, QDragEnterEvent, QDropEvent
 
-from ..config import APP_TITLE, SUPPORTED_FORMATS, STATS_FILE, OUTPUT_FORMATS
+from ..config import APP_TITLE, SUPPORTED_FORMATS, STATS_FILE, OUTPUT_FORMATS, MEDIA_EXTENSIONS
 from ..core import ModelLoader, TranscriptionProcessor
 from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, UserSettings
 
@@ -93,6 +93,8 @@ class GigaTranscriberQtApp(QMainWindow):
         
         # Инициализация интерфейса
         self._init_ui()
+        # Включаем приём перетаскивания файлов (на всё окно, в т.ч. на кнопку «Выбрать файлы»)
+        self.setAcceptDrops(True)
         
         # Обновляем метки папок
         if saved_output_dir:
@@ -328,6 +330,7 @@ class GigaTranscriberQtApp(QMainWindow):
         row1 = QHBoxLayout()
         row1.setSpacing(12)
         btn_select_files = QPushButton("Выбрать файлы")
+        btn_select_files.setToolTip("Или перетащите файлы сюда")
         btn_select_files.clicked.connect(self._select_files)
         btn_select_files.setMinimumWidth(220)
         btn_select_files.setFixedHeight(36)
@@ -522,24 +525,55 @@ class GigaTranscriberQtApp(QMainWindow):
             self,
             "Выберите аудио или видео файлы",
             initial_dir,
-            "Медиа файлы (*.mp3 *.wav *.m4a *.flac *.ogg *.mp4 *.avi *.mkv *.mov);;Все файлы (*.*)"
+            "Медиа файлы (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.avi *.mov *.mkv *.webm *.wma *.qta);;Все файлы (*.*)"
         )
         
         if files:
-            self.files_to_process = files
-            count = len(files)
-            
-            if files:
-                file_dir = os.path.dirname(files[0])
-                self.input_dir = file_dir
-                self.user_settings.set_last_files_dir(files[0])
-            
-            self.lbl_files_count.setText(f"Выбрано файлов: {count}")
-            self.lbl_files_count.setStyleSheet("color: #dcdcdc;")
-            
-            self.log(f"Добавлено в очередь: {count} файлов")
-            for f in files:
-                self.log(f" + {os.path.basename(f)}")
+            self._apply_dropped_or_selected_files(files)
+
+    def _apply_dropped_or_selected_files(self, files: list):
+        """Применяет список выбранных/перетащенных файлов: обновляет очередь, метки и лог"""
+        if not files:
+            return
+        self.files_to_process = files
+        count = len(files)
+        file_dir = os.path.dirname(files[0])
+        self.input_dir = file_dir
+        self.user_settings.set_last_files_dir(files[0])
+        self.lbl_files_count.setText(f"Выбрано файлов: {count}")
+        self.lbl_files_count.setStyleSheet("color: #dcdcdc;")
+        self.log(f"Добавлено в очередь: {count} файлов")
+        for f in files:
+            self.log(f" + {os.path.basename(f)}")
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Принимаем перетаскивание, если это ссылки на файлы"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        """Обработка сброса файлов: фильтруем по расширению и добавляем в очередь"""
+        urls = event.mimeData().urls()
+        if not urls:
+            event.acceptProposedAction()
+            return
+        files = []
+        for url in urls:
+            path = url.toLocalFile()
+            if not path:
+                continue
+            if os.path.isfile(path) and path.lower().endswith(MEDIA_EXTENSIONS):
+                files.append(path)
+        if files:
+            self._apply_dropped_or_selected_files(files)
+        elif urls:
+            # Были сброшены файлы, но ни один не подошёл по формату
+            QMessageBox.information(
+                self,
+                "Неподдерживаемый формат",
+                "Сброшенные файлы не являются поддерживаемыми медиа (mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, qta)."
+            )
+        event.acceptProposedAction()
 
     def _select_files_folder(self):
         """Обработчик выбора папки с файлами"""
@@ -557,11 +591,10 @@ class GigaTranscriberQtApp(QMainWindow):
             self._update_input_dir_label(folder)
             
             # Собираем файлы из папки
-            extensions = ('.mp3', '.wav', '.m4a', '.flac', '.ogg', '.mp4', '.avi', '.mkv', '.mov')
             files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(extensions)
+                if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(MEDIA_EXTENSIONS)
             ]
             
             if files:

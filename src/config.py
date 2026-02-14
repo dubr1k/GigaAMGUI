@@ -131,6 +131,12 @@ SUPPORTED_FORMATS = (
     '*.mp3 *.wav *.m4a *.aac *.mp4 *.avi *.mov *.mkv *.webm *.flac *.ogg *.wma *.qta'
 )
 
+# Список расширений для фильтрации (один источник правды для GUI и drag-and-drop)
+MEDIA_EXTENSIONS = (
+    '.mp3', '.wav', '.m4a', '.aac', '.mp4', '.avi', '.mov', '.mkv', '.webm',
+    '.flac', '.ogg', '.wma', '.qta'
+)
+
 # Поддерживаемые форматы выходных файлов
 OUTPUT_FORMATS = {
     'txt': 'Текст (.txt)',
