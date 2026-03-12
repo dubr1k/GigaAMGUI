@@ -13,6 +13,17 @@ class ModelLoader:
     def __init__(self):
         self.model = None
         self.device = None
+
+    def _select_device(self) -> str:
+        """Выбирает устройство вычисления в порядке приоритета."""
+        # Приоритет: CUDA (NVIDIA) > XPU (Intel) > MPS (Apple) > CPU
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return "xpu"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
         
     def load_model(self, logger=None):
         """
@@ -32,13 +43,8 @@ class ModelLoader:
             logger("Это может занять несколько минут при первом запуске (скачивание весов).")
         
         try:
-            # Определение устройства: CUDA > MPS (Apple Silicon) > CPU
-            if torch.cuda.is_available():
-                self.device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                self.device = "mps"
-            else:
-                self.device = "cpu"
+            # Определение устройства: CUDA > XPU (Intel) > MPS (Apple) > CPU
+            self.device = self._select_device()
             if logger:
                 logger(f"Устройство вычисления: {self.device.upper()}")
             
@@ -49,11 +55,24 @@ class ModelLoader:
             if HF_TOKEN and HF_TOKEN.startswith("hf_"):
                 model_kwargs["token"] = HF_TOKEN
             
-            self.model = AutoModel.from_pretrained(
+            loaded_model = AutoModel.from_pretrained(
                 MODEL_NAME,
                 revision=MODEL_REVISION,
                 **model_kwargs
-            ).to(self.device)
+            )
+
+            try:
+                self.model = loaded_model.to(self.device)
+            except Exception as device_error:
+                # Безопасный откат: если выбранный ускоритель недоступен для части графа,
+                # запускаем на CPU, чтобы приложение не падало.
+                if logger:
+                    logger(
+                        f"ПРЕДУПРЕЖДЕНИЕ: Не удалось перенести модель на {self.device.upper()}: "
+                        f"{device_error}. Переключаюсь на CPU."
+                    )
+                self.device = "cpu"
+                self.model = loaded_model.to(self.device)
             
             if logger:
                 logger("Модель успешно загружена!")

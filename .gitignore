@@ -172,3 +172,4 @@ ipython_config.py
 .github/workflows/
 scripts/create_desktop_shortcut.ps1
 GIT_SETUP.md
+gigaam-gui.desktop
