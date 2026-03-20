@@ -281,30 +281,39 @@ class TranscriptionProcessor:
             
             for fmt in output_formats:
                 if fmt == 'txt':
-                    # Обычный текстовый файл (всегда без диаризации)
+                    # Чистый текст без таймкодов и меток спикеров
                     path_txt = os.path.join(output_dir, f"{name_without_ext}.txt")
                     with open(path_txt, "w", encoding="utf-8") as f:
                         f.write(full_text)
                     saved_files.append(path_txt)
-                    
-                    # Файл с таймкодами (всегда вместе с txt, без меток спикеров)
+
+                elif fmt == 'txt_timecodes':
+                    # Текст с таймкодами, без меток спикеров
                     path_ts = os.path.join(output_dir, f"{name_without_ext}_timecodes.txt")
                     with open(path_ts, "w", encoding="utf-8") as f:
                         f.write("\n".join(timecoded_lines))
                     saved_files.append(path_ts)
-                    
-                    # Диаризованные файлы (только при включённой диаризации)
+
+                elif fmt == 'txt_diarize':
+                    # Текст с метками спикеров (только при включённой диаризации)
                     if enable_diarization and full_text_diarized.strip():
                         path_diarize = os.path.join(output_dir, f"{name_without_ext}_diarize.txt")
                         with open(path_diarize, "w", encoding="utf-8") as f:
                             f.write(full_text_diarized)
                         saved_files.append(path_diarize)
-                        
+                    elif enable_diarization:
+                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Текст диаризации пустой, _diarize.txt не создан")
+
+                elif fmt == 'txt_diarize_timecodes':
+                    # Текст с метками спикеров и таймкодами (только при включённой диаризации)
+                    if enable_diarization and timecoded_lines_diarized:
                         path_diarize_ts = os.path.join(output_dir, f"{name_without_ext}_diarize_timecodes.txt")
                         with open(path_diarize_ts, "w", encoding="utf-8") as f:
                             f.write("\n".join(timecoded_lines_diarized))
                         saved_files.append(path_diarize_ts)
-                    
+                    elif enable_diarization:
+                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Данные диаризации пусты, _diarize_timecodes.txt не создан")
+
                 elif fmt == 'md':
                     # Markdown формат
                     path_md = os.path.join(output_dir, f"{name_without_ext}.md")

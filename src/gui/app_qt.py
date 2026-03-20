@@ -58,8 +58,16 @@ class GigaTranscriberQtApp(QMainWindow):
         self.enable_diarization = False
         self.num_speakers = None
         
-        # Настройки выходных форматов
-        self.output_formats = {'txt': True, 'md': False, 'srt': False, 'vtt': False}
+        # Настройки выходных форматов (txt и txt_timecodes включены по умолчанию)
+        self.output_formats = {
+            'txt': True,
+            'txt_timecodes': True,
+            'txt_diarize': False,
+            'txt_diarize_timecodes': False,
+            'md': False,
+            'srt': False,
+            'vtt': False,
+        }
         
         # Инициализация модулей
         self.app_logger = AppLogger()
@@ -419,19 +427,42 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_formats_group(self) -> QGroupBox:
         """Создает блок выбора форматов вывода"""
         group = QGroupBox("4. Форматы вывода")
-        layout = QHBoxLayout()
+        layout = QVBoxLayout()
         layout.setContentsMargins(12, 20, 12, 10)
-        layout.setSpacing(20)
-        
+        layout.setSpacing(6)
+
         self.format_checkboxes = {}
-        for fmt, label in OUTPUT_FORMATS.items():
+
+        # Первый ряд: четыре текстовых варианта
+        row1 = QHBoxLayout()
+        row1.setSpacing(20)
+        txt_fmts = ['txt', 'txt_timecodes', 'txt_diarize', 'txt_diarize_timecodes']
+        for fmt in txt_fmts:
+            label = OUTPUT_FORMATS[fmt]
             cb = QCheckBox(label)
-            cb.setChecked(fmt == 'txt')  # txt по умолчанию
+            cb.setChecked(fmt in ('txt', 'txt_timecodes'))
+            # Диаризационные варианты недоступны пока диаризация выключена
+            if fmt in ('txt_diarize', 'txt_diarize_timecodes'):
+                cb.setEnabled(False)
             cb.stateChanged.connect(lambda state, f=fmt: self._toggle_format(f))
-            layout.addWidget(cb)
+            row1.addWidget(cb)
             self.format_checkboxes[fmt] = cb
-        
-        layout.addStretch()
+        row1.addStretch()
+        layout.addLayout(row1)
+
+        # Второй ряд: дополнительные форматы
+        row2 = QHBoxLayout()
+        row2.setSpacing(20)
+        for fmt in ('md', 'srt', 'vtt'):
+            label = OUTPUT_FORMATS[fmt]
+            cb = QCheckBox(label)
+            cb.setChecked(False)
+            cb.stateChanged.connect(lambda state, f=fmt: self._toggle_format(f))
+            row2.addWidget(cb)
+            self.format_checkboxes[fmt] = cb
+        row2.addStretch()
+        layout.addLayout(row2)
+
         group.setLayout(layout)
         return group
 
@@ -525,7 +556,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self,
             "Выберите аудио или видео файлы",
             initial_dir,
-            "Медиа файлы (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.avi *.mov *.mkv *.webm *.wma *.qta);;Все файлы (*.*)"
+            "Медиа файлы (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.avi *.mov *.mkv *.webm *.wma *.qta *.3gp);;Все файлы (*.*)"
         )
         
         if files:
@@ -552,7 +583,7 @@ class GigaTranscriberQtApp(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
-        """Обработка сброса файлов: фильтруем по расширению и добавляем в очередь"""
+        """Обработка сброса файлов/папок: фильтруем по расширению и добавляем в очередь"""
         urls = event.mimeData().urls()
         if not urls:
             event.acceptProposedAction()
@@ -562,16 +593,23 @@ class GigaTranscriberQtApp(QMainWindow):
             path = url.toLocalFile()
             if not path:
                 continue
-            if os.path.isfile(path) and path.lower().endswith(MEDIA_EXTENSIONS):
+            if os.path.isdir(path):
+                # Рекурсивно сканируем папку
+                for root, _dirs, filenames in os.walk(path):
+                    for f in filenames:
+                        if f.lower().endswith(MEDIA_EXTENSIONS):
+                            files.append(os.path.join(root, f))
+            elif os.path.isfile(path) and path.lower().endswith(MEDIA_EXTENSIONS):
                 files.append(path)
         if files:
             self._apply_dropped_or_selected_files(files)
         elif urls:
-            # Были сброшены файлы, но ни один не подошёл по формату
+            # Были сброшены объекты, но ни один не подошёл по формату
             QMessageBox.information(
                 self,
                 "Неподдерживаемый формат",
-                "Сброшенные файлы не являются поддерживаемыми медиа (mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, qta)."
+                "Сброшенные файлы не являются поддерживаемыми медиа "
+                "(mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, qta, 3gp)."
             )
         event.acceptProposedAction()
 
@@ -589,25 +627,27 @@ class GigaTranscriberQtApp(QMainWindow):
             self.input_dir = folder
             self.user_settings.set_last_files_dir(folder)
             self._update_input_dir_label(folder)
-            
-            # Собираем файлы из папки
-            files = [
-                os.path.join(folder, f)
-                for f in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(MEDIA_EXTENSIONS)
-            ]
-            
+
+            # Рекурсивно собираем файлы из папки и всех подпапок
+            files = []
+            for root, _dirs, filenames in os.walk(folder):
+                for f in filenames:
+                    if f.lower().endswith(MEDIA_EXTENSIONS):
+                        files.append(os.path.join(root, f))
+
             if files:
                 self.files_to_process = files
                 count = len(files)
                 self.lbl_files_count.setText(f"Выбрано файлов: {count}")
                 self.lbl_files_count.setStyleSheet("color: #dcdcdc;")
-                
-                self.log(f"Добавлено из папки: {count} файлов")
+
+                self.log(f"Добавлено из папки (включая подпапки): {count} файлов")
                 for f in files:
-                    self.log(f" + {os.path.basename(f)}")
+                    # Показываем относительный путь для читаемости
+                    rel = os.path.relpath(f, folder)
+                    self.log(f" + {rel}")
             else:
-                QMessageBox.information(self, "Информация", "В выбранной папке нет поддерживаемых файлов")
+                QMessageBox.information(self, "Информация", "В выбранной папке и подпапках нет поддерживаемых файлов")
 
     def _select_output_folder(self):
         """Обработчик выбора папки сохранения"""
@@ -641,7 +681,13 @@ class GigaTranscriberQtApp(QMainWindow):
         """Обработчик изменения состояния диаризации"""
         self.enable_diarization = (state == Qt.CheckState.Checked.value)
         self.entry_num_speakers.setEnabled(self.enable_diarization)
-        
+
+        # Активируем/деактивируем чекбоксы диаризованных форматов
+        for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
+            cb = self.format_checkboxes.get(fmt)
+            if cb:
+                cb.setEnabled(self.enable_diarization)
+
         if self.enable_diarization:
             self.log("Диаризация спикеров: ВКЛЮЧЕНА")
         else:
@@ -716,11 +762,9 @@ class GigaTranscriberQtApp(QMainWindow):
             QMessageBox.warning(self, "Внимание", "Выберите хотя бы один файл для обработки!")
             return
         
-        # Если папка не выбрана, используем директорию первого файла
-        if not self.output_dir and self.files_to_process:
-            self.output_dir = os.path.dirname(self.files_to_process[0])
-            self.user_settings.set_last_output_dir(self.output_dir)
-            self.log(f"Папка не выбрана. Использую директорию первого файла: {self.output_dir}")
+        # Если папка не выбрана — результаты сохраняются рядом с каждым исходным файлом
+        if not self.output_dir:
+            self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
         
         self.is_processing = True
         self.start_time = time.time()
@@ -820,9 +864,12 @@ class GigaTranscriberQtApp(QMainWindow):
                         f"Файл {i + 1}/{self.total_files}: {os.path.basename(filepath)}"
                     )
                     
+                    # Если глобальная папка не выбрана — сохраняем рядом с исходным файлом
+                    file_output_dir = self.output_dir if self.output_dir else os.path.dirname(filepath)
+
                     result = processor.process_file(
                         filepath,
-                        self.output_dir,
+                        file_output_dir,
                         i,
                         self.total_files,
                         enable_diarization=self.enable_diarization,

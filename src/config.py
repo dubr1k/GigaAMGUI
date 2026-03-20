@@ -128,19 +128,23 @@ STATS_FILE = os.getenv("STATS_FILE", "processing_stats.json")
 # Поддерживаемые форматы файлов (входные)
 SUPPORTED_FORMATS = (
     'Media files',
-    '*.mp3 *.wav *.m4a *.aac *.mp4 *.avi *.mov *.mkv *.webm *.flac *.ogg *.wma *.qta'
+    '*.mp3 *.wav *.m4a *.aac *.mp4 *.avi *.mov *.mkv *.webm *.flac *.ogg *.wma *.qta *.3gp'
 )
 
 # Список расширений для фильтрации (один источник правды для GUI и drag-and-drop)
 MEDIA_EXTENSIONS = (
     '.mp3', '.wav', '.m4a', '.aac', '.mp4', '.avi', '.mov', '.mkv', '.webm',
-    '.flac', '.ogg', '.wma', '.qta'
+    '.flac', '.ogg', '.wma', '.qta', '.3gp'
 )
 
-# Поддерживаемые форматы выходных файлов
+# Поддерживаемые форматы выходных файлов.
+# Ключи txt_* управляют отдельными текстовыми файлами; md/srt/vtt — самостоятельные форматы.
 OUTPUT_FORMATS = {
-    'txt': 'Текст (.txt)',
-    'md': 'Markdown (.md)',
-    'srt': 'Субтитры SRT (.srt)',
-    'vtt': 'Субтитры VTT (.vtt)'
+    'txt':                  'Текст (.txt)',
+    'txt_timecodes':        'Таймкоды (_timecodes.txt)',
+    'txt_diarize':          'Диаризация (_diarize.txt)',
+    'txt_diarize_timecodes': 'Диар.+тайм. (_diarize_timecodes.txt)',
+    'md':                   'Markdown (.md)',
+    'srt':                  'SRT (.srt)',
+    'vtt':                  'VTT (.vtt)',
 }
