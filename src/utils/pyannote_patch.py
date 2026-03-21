@@ -2,6 +2,8 @@
 Monkey patching для pyannote.audio чтобы использовать soundfile вместо torchcodec на Windows
 
 Также включает патч для PyTorch 2.6+ (weights_only=False)
+и патч для совместимости с PyTorch 2.10+ (RTX 5090 / Blackwell),
+где из torchaudio удалены устаревшие функции backend-а.
 """
 
 import os
@@ -13,6 +15,75 @@ from .torch_patch import apply_torch_load_patch
 
 # Применяем патч сразу при импорте модуля
 apply_torch_load_patch()
+
+
+def apply_torchaudio_backend_patch():
+    """
+    Патч для совместимости с PyTorch/torchaudio 2.10+.
+
+    В torchaudio >= 2.10 (требуется для RTX 5090 / Blackwell sm_120) удалены
+    устаревшие функции backend-а:
+        - torchaudio.set_audio_backend()
+        - torchaudio.get_audio_backend()
+        - модуль torchaudio.backend
+
+    Эти функции используются внутри pyannote.audio и speechbrain.
+    Патч добавляет no-op заглушки, чтобы импорт и вызовы не падали с AttributeError.
+    """
+    try:
+        import torchaudio
+        import types
+
+        # Проверяем, нужен ли патч (функции отсутствуют начиная с torchaudio 2.10)
+        needs_patch = not hasattr(torchaudio, 'set_audio_backend') or \
+                      not hasattr(torchaudio, 'get_audio_backend')
+
+        if not needs_patch:
+            return  # Старая версия torchaudio — патч не нужен
+
+        # --- Заглушки для функций верхнего уровня ---
+        if not hasattr(torchaudio, 'set_audio_backend'):
+            def set_audio_backend(backend):
+                """No-op stub: set_audio_backend удалён в torchaudio 2.10+."""
+                pass
+            torchaudio.set_audio_backend = set_audio_backend
+
+        if not hasattr(torchaudio, 'get_audio_backend'):
+            def get_audio_backend():
+                """No-op stub: get_audio_backend удалён в torchaudio 2.10+. Возвращает 'soundfile'."""
+                return 'soundfile'
+            torchaudio.get_audio_backend = get_audio_backend
+
+        if not hasattr(torchaudio, 'list_audio_backends'):
+            def list_audio_backends():
+                """No-op stub."""
+                return ['soundfile']
+            torchaudio.list_audio_backends = list_audio_backends
+
+        # --- Заглушка для модуля torchaudio.backend ---
+        if not hasattr(torchaudio, 'backend') or \
+                not hasattr(torchaudio.backend, 'set_audio_backend'):
+            backend_stub = types.ModuleType('torchaudio.backend')
+            backend_stub.set_audio_backend = torchaudio.set_audio_backend
+            backend_stub.get_audio_backend = torchaudio.get_audio_backend
+            # Классы-заглушки, которые может искать speechbrain/pyannote
+            backend_stub.NoBackend = type('NoBackend', (), {})
+            backend_stub.Sox = type('Sox', (), {})
+            backend_stub.Soundfile = type('Soundfile', (), {})
+            import sys
+            sys.modules['torchaudio.backend'] = backend_stub
+            torchaudio.backend = backend_stub
+
+        print("torchaudio backend патч применён (совместимость с torchaudio 2.10+ / RTX 5090)")
+
+    except ImportError:
+        pass  # torchaudio не установлен — ничего не делаем
+    except Exception as e:
+        warnings.warn(f"Не удалось применить torchaudio backend патч: {e}")
+
+
+# Применяем torchaudio патч сразу при импорте модуля
+apply_torchaudio_backend_patch()
 
 
 def apply_pyannote_patch():

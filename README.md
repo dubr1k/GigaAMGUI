@@ -1,8 +1,8 @@
 # GigaAM v3 Transcriber
 
-Приложение для транскрибации аудио и видео файлов с использованием модели **GigaAM-v3** от **Sber**.
+Приложение для транскрибации аудио и видео файлов с использованием модели **GigaAM-v3** от **SaluteDevices**.
 
-> **Важно:** Данная реализация работает благодаря компании **Sber (ПАО «Сбербанк»)** и их команде разработки модели **GigaAM-v3** — современной модели распознавания русской речи. Модель доступна на [HuggingFace](https://huggingface.co/ai-sage/GigaAM-v3) и в [официальном репозитории](https://github.com/salute-developers/GigaAM).
+> **Важно:** Данная реализация работает благодаря компании **SaluteDevices** и их команде разработки модели **GigaAM-v3** — современной модели распознавания русской речи. Модель доступна на [HuggingFace](https://huggingface.co/ai-sage/GigaAM-v3) и в [официальном репозитории](https://github.com/salute-developers/GigaAM).
 
 ## 🎉 Что нового в v3.1 (февраль 2026)
 
@@ -73,7 +73,8 @@ curl -X POST "http://localhost:8000/api/v1/transcribe" \
 
 - Транскрибация аудио и видео файлов на русском языке
 - 🎙️ **Диаризация спикеров** - автоматическое определение и разделение речи разных говорящих (во всех форматах вывода)
-- Поддержка множества форматов: mp3, wav, m4a, aac, mp4, avi, mov, mkv, webm, flac, ogg, wma, **qta**
+- Поддержка 14 входных форматов: `mp3`, `wav`, `m4a`, `aac`, `flac`, `ogg`, `wma`, `mp4`, `avi`, `mov`, `mkv`, `webm`, `qta`, `3gp`
+- **Рекурсивное сканирование папок** в GUI (кнопка "Выбрать папку" и drag & drop обходят все вложенные подпапки)
 - Автоматическая сегментация длинных записей
 - **Три интерфейса**: GUI, CLI, REST API
 - **Улучшенный прогресс-бар** - отдельные индикаторы для общего прогресса и текущего файла
@@ -99,6 +100,11 @@ curl -X POST "http://localhost:8000/api/v1/transcribe" \
 - 8 GB RAM (рекомендуется 16 GB)
 - 10 GB свободного места на диске
 - NVIDIA GPU с CUDA (опционально, для ускорения)
+
+> ℹ️ **RTX 5090 (Blackwell / sm_120):** поддерживается через встроенный патч совместимости. Требуется CUDA 12.8 и PyTorch 2.10+ — установите вручную перед `pip install -r requirements.txt`:
+> ```bash
+> pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+> ```
 
 ### macOS(только Apple Silicon)
 - macOS 11.0 или выше (Big Sur+)
@@ -136,13 +142,44 @@ curl -X POST "http://localhost:8000/api/v1/transcribe" \
 2. Установите FFmpeg:
    - Скачайте с [ffmpeg.org](https://ffmpeg.org/download.html)
    - Добавьте в PATH
-3. Установите зависимости:
+3. Убедитесь, что `git` установлен:
+   - Скачайте с [git-scm.com](https://git-scm.com/download/win) и установите
+   - Проверьте: `git --version`
+
+   > ℹ️ `git` необходим для установки пакета GigaAM напрямую из репозитория.
+   > Если `git` не установлен, `pip install -r requirements.txt` завершится ошибкой.
+   > Альтернатива — скачать [архив нужной версии GigaAM](https://github.com/salute-developers/GigaAM/archive/0a3f1036d93287d5ef226911ec795bde8ef05d57.zip),
+   > распаковать и установить вручную:
+   > ```bash
+   > cd GigaAM-0a3f1036d93287d5ef226911ec795bde8ef05d57
+   > pip install -e .
+   > ```
+
+4. Установите зависимости:
 ```bash
 pip install -r requirements.txt
-cd GigaAM
-pip install -e .
 ```
-4. Настройте конфигурацию (см. раздел "Настройка" ниже)
+
+> ⚠️ **Ошибка `No matching distribution found for torch==2.6.0+cu124`?**
+>
+> Это происходит, если pip пытается найти wheel с постфиксом `+cu124` (CUDA 12.4), которого нет в индексе PyPI.
+> Возможные причины: отсутствие CUDA 12.4, или конфликт с другим `--extra-index-url`.
+>
+> **Решение — установите torch вручную до `pip install -r requirements.txt`:**
+> ```bash
+> # Для NVIDIA GPU (выберите нужную версию CUDA):
+> pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+> # или для cu121:
+> pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+>
+> # Для CPU (без GPU):
+> pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+>
+> # Затем установите остальные зависимости:
+> pip install -r requirements.txt
+> ```
+
+5. Настройте конфигурацию (см. раздел "Настройка" ниже)
 
 ### macOS
 
@@ -162,8 +199,6 @@ conda create -n gigaam python=3.10 -y
 conda activate gigaam
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
-cd GigaAM
-pip install -e .
 ```
 
 4. Настройте конфигурацию (см. раздел "Настройка" ниже)
@@ -315,6 +350,14 @@ python cli.py
 python cli.py -d /path/to/audio/files -o /path/to/output
 ```
 
+> **Примечание:** флаг `-d` сканирует только верхний уровень указанной папки (без подпапок).
+> Для рекурсивной обработки передайте файлы явно через `-f` или используйте GUI/shell-расширение:
+> ```bash
+> # Bash: рекурсивно найти все mp3 и wav и передать в CLI
+> find /path/to/files -type f \( -name "*.mp3" -o -name "*.wav" \) \
+>   | xargs -I{} python cli.py -f {} -o /output -n
+> ```
+
 **Обработка конкретных файлов:**
 ```bash
 python cli.py -f audio1.mp3 -f audio2.wav -f video.mp4 -o /output
@@ -324,6 +367,18 @@ python cli.py -f audio1.mp3 -f audio2.wav -f video.mp4 -o /output
 ```bash
 python cli.py -d /data/incoming -o /data/results -n -v
 ```
+
+**Доступные флаги:**
+
+| Флаг | Краткий | Описание |
+|------|---------|----------|
+| `--files` | `-f` | Один или несколько конкретных файлов (повторяется) |
+| `--directory` | `-d` | Папка для сканирования (плоский поиск, без подпапок) |
+| `--output` | `-o` | Папка для сохранения результатов |
+| `--no-interactive` | `-n` | Отключить интерактивные меню (для скриптов и CI) |
+| `--verbose` | `-v` | Подробный вывод для отладки |
+
+Поддерживаемые форматы входных файлов: `mp3`, `wav`, `m4a`, `aac`, `flac`, `ogg`, `wma`, `mp4`, `avi`, `mov`, `mkv`, `webm`, `qta`, `3gp`
 
 ### REST API (Веб-сервис)
 
@@ -444,19 +499,25 @@ sudo ./deploy/install_api.sh
 ### GUI
 
 1. Запустите приложение: `python app.py`
-2. Нажмите "Выбрать файлы" или "Выбрать папку с файлами"
-3. Выберите один или несколько аудио/видео файлов
-4. (Опционально) Нажмите "Папка сохранения" для выбора каталога вывода
-5. (Опционально) Включите "Диаризацию спикеров" для автоматического определения говорящих
+2. Добавьте файлы одним из способов:
+   - **"Выбрать файлы"** — выбор отдельных файлов через диалог (поддерживаемые форматы уже отфильтрованы)
+   - **"Выбрать папку с файлами"** — рекурсивное сканирование: добавляются все медиафайлы из папки **и всех вложенных подпапок**
+   - **Drag & Drop** — перетащите файлы или папку прямо в окно приложения; папки также сканируются рекурсивно
+
+   Поддерживаемые форматы: `mp3`, `wav`, `m4a`, `aac`, `flac`, `ogg`, `wma`, `mp4`, `avi`, `mov`, `mkv`, `webm`, `qta`, `3gp`
+
+3. (Опционально) Нажмите "Папка сохранения" для выбора каталога вывода
+4. (Опционально) Включите "Диаризацию спикеров" для автоматического определения говорящих:
    - Установите чекбокс "3. Включить диаризацию спикеров"
    - При необходимости укажите количество спикеров (или оставьте пустым для автоопределения)
-6. Выберите форматы вывода (блок "4. Форматы вывода"):
-   - **Текст (.txt)** - по умолчанию включен
-   - **Markdown (.md)** - структурированный документ
-   - **Субтитры SRT (.srt)** - для видеоплееров
-   - **Субтитры VTT (.vtt)** - для веб-плееров
-7. Нажмите "ЗАПУСТИТЬ ОБРАБОТКУ"
-8. Наблюдайте за прогрессом (два прогресс-бара: общий и текущего файла)
+5. Выберите форматы вывода (блок "4. Форматы вывода"):
+   - **Текст (.txt)** — по умолчанию включён
+   - **Текст с таймкодами (.txt)** — по умолчанию включён
+   - **Markdown (.md)** — структурированный документ
+   - **Субтитры SRT (.srt)** — для видеоплееров
+   - **Субтитры VTT (.vtt)** — для веб-плееров
+6. Нажмите "ЗАПУСТИТЬ ОБРАБОТКУ"
+7. Наблюдайте за прогрессом (два прогресс-бара: общий и текущего файла)
 
 ### CLI
 
@@ -560,7 +621,7 @@ GigaAMv3/
 ## Технологии
 
 ### Ядро распознавания речи
-- **GigaAM-v3** (Sber) — современная модель автоматического распознавания русской речи
+- **GigaAM-v3** (SaluteDevices) — современная модель автоматического распознавания русской речи
 
 ### Фреймворки и библиотеки
 - **Python 3.10+** — основной язык программирования
@@ -606,6 +667,26 @@ Weights only load failed... Unsupported global: GLOBAL torch.torch_version.Torch
 AttributeError: `np.NaN` was removed in the NumPy 2.0 release
 ```
 Патч применяется автоматически при запуске.
+
+### RTX 5090 (Blackwell) и PyTorch 2.10+: ошибки torchaudio
+
+```
+AttributeError: module 'torchaudio' has no attribute 'set_audio_backend'
+AttributeError: module 'torchaudio' has no attribute 'get_audio_backend'
+ModuleNotFoundError: No module named 'torchaudio.backend'
+```
+
+**Причина:** Видеокарты серии NVIDIA RTX 5090 (архитектура Blackwell, sm_120) требуют PyTorch 2.10+ и CUDA 12.8. В этих версиях из `torchaudio` удалены устаревшие API, на которые внутри завязаны `pyannote.audio` и `speechbrain`.
+
+**Решение:** Начиная с текущей версии, патч совместимости (`src/utils/pyannote_patch.py`) применяется **автоматически при запуске** и подставляет no-op заглушки вместо удалённых функций. Дополнительных действий не требуется.
+
+Для RTX 5090 установите PyTorch с поддержкой CUDA 12.8 вместо стандартного cu124:
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements.txt
+```
+
+Если ошибки всё же возникают (например, при использовании нестандартной версии библиотек), убедитесь что запускаете приложение через `app.py`, `cli.py` или `api.py` — патч применяется только через эти точки входа.
 
 ### Проблемы с HuggingFace cache на Windows
 
@@ -703,7 +784,7 @@ ffmpeg -version
 
 Данная реализация работает благодаря:
 
-- **Sber (ПАО «Сбербанк»)** — разработка и предоставление модели **GigaAM-v3**, современной модели транскрибации русской речи
+- **SaluteDevices** — разработка и предоставление модели **GigaAM-v3**, современной модели транскрибации русской речи
 - **Команда GigaAM** — за создание высококачественной модели распознавания речи
 - **HuggingFace** — за инфраструктуру и библиотеки для работы с transformer-моделями
 - **Pyannote.audio** — за инструменты сегментации и обработки аудио

@@ -3,7 +3,10 @@
 #
 # Как это работает:
 # - macOS: CUDA-wheels не существуют для macOS, pip берёт torch из PyPI → MPS поддержка
-# - Linux/Windows с NVIDIA GPU: pip находит CUDA-wheels в extra-index → GPU ускорение
+# - Linux/Windows с NVIDIA GPU (Ampere/Ada, RTX 20xx–40xx): pip находит CUDA-wheels в extra-index → GPU ускорение
+# - Linux/Windows с NVIDIA GPU (Blackwell, RTX 50xx): требуется CUDA 12.8 и torch>=2.10
+#   Установите вручную ДО pip install -r requirements.txt:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 # - Linux/Windows без GPU: CUDA-build работает и на CPU (просто тяжелее по размеру)
 
 --extra-index-url https://download.pytorch.org/whl/cu124
