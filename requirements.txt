@@ -11,6 +11,7 @@
 
 --extra-index-url https://download.pytorch.org/whl/cu124
 
+setuptools==68.2.2
 accelerate==1.12.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.2
@@ -143,6 +144,7 @@ tzdata==2025.2
 urllib3==2.5.0
 yarl==1.22.0
 zipp==3.23.0
+yt-dlp==2026.3.17
 
 # Environment variables
 python-dotenv==1.0.0

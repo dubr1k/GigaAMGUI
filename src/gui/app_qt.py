@@ -7,6 +7,8 @@ import os
 import sys
 import threading
 import time
+import threading
+import yt_dlp
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +33,8 @@ class WorkerSignals(QObject):
     current_file_info = pyqtSignal(str)
     processing_finished = pyqtSignal(bool, str)
     stage_update = pyqtSignal(str, float)
+    download_progress = pyqtSignal(int)
+    download_finished = pyqtSignal(list)
 
 
 class GigaTranscriberQtApp(QMainWindow):
@@ -53,6 +57,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_file_start_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
+        self.queue = []
         
         # Настройки диаризации
         self.enable_diarization = False
@@ -101,6 +106,8 @@ class GigaTranscriberQtApp(QMainWindow):
         
         # Инициализация интерфейса
         self._init_ui()
+        self.signals.download_progress.connect(self.progress_upload.setValue)
+        self.signals.download_finished.connect(self._on_download_finished)
         # Включаем приём перетаскивания файлов (на всё окно, в т.ч. на кнопку «Выбрать файлы»)
         self.setAcceptDrops(True)
         
@@ -328,43 +335,85 @@ class GigaTranscriberQtApp(QMainWindow):
         """)
 
     def _create_files_group(self) -> QGroupBox:
-        """Создает блок выбора файлов"""
-        group = QGroupBox("1. Выбор файлов")
-        layout = QVBoxLayout()
-        layout.setContentsMargins(12, 20, 12, 10)
-        layout.setSpacing(8)
-        
-        # Первая строка: выбор отдельных файлов
+        group = QGroupBox("1. Выбора файлов")
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(12, 20, 12, 10)
+        main_layout.setSpacing(10)
+
+        # --- 1 строка: Выбрать файлы + Лейбл + Input + Прогресс ---
         row1 = QHBoxLayout()
-        row1.setSpacing(12)
+        row1.setSpacing(10)
+
+        # Кнопка "Выбрать файлы"
         btn_select_files = QPushButton("Выбрать файлы")
-        btn_select_files.setToolTip("Или перетащите файлы сюда")
         btn_select_files.clicked.connect(self._select_files)
-        btn_select_files.setMinimumWidth(220)
         btn_select_files.setFixedHeight(36)
+        btn_select_files.setMinimumWidth(180)
         row1.addWidget(btn_select_files)
-        
+
+        # Лейбл для выбранных файлов
         self.lbl_files_count = QLabel("Файлы не выбраны")
         self.lbl_files_count.setStyleSheet("color: #909090;")
-        row1.addWidget(self.lbl_files_count, 1)
-        
-        layout.addLayout(row1)
-        
-        # Вторая строка: выбор папки
+        self.lbl_files_count.setFixedWidth(180)
+        row1.addWidget(self.lbl_files_count)
+
+        # Поле ввода ссылки
+        self.input_path = QLineEdit()
+        self.input_path.setPlaceholderText("Ссылка")
+        self.input_path.setFixedHeight(24)
+        self.input_path.setFixedWidth(150)
+        row1.addWidget(self.input_path)
+
+        # Прогресс-бар
+        self.progress_upload = QProgressBar()
+        self.progress_upload.setFixedHeight(24)
+        self.progress_upload.setFixedWidth(60)
+        self.progress_upload.setValue(0)
+        self.progress_upload.setTextVisible(True)
+        self.progress_upload.setStyleSheet("""
+            QProgressBar {
+                border: none;
+                background-color: #2a2a2c;
+                border-radius: 3px;
+            }
+            QProgressBar::chunk {
+                background-color: #7a7a7d;
+                border-radius: 3px;
+            }
+        """)
+        row1.addWidget(self.progress_upload)
+
+        row1.addStretch()
+        main_layout.addLayout(row1)
+
+        # 2 строка: Выбрать папку + Лейбл + Загрузить
         row2 = QHBoxLayout()
-        row2.setSpacing(12)
+        row2.setSpacing(10)
+
+        # Кнопка выбора папки
         btn_select_folder = QPushButton("Выбрать папку с файлами")
         btn_select_folder.clicked.connect(self._select_files_folder)
-        btn_select_folder.setMinimumWidth(220)
         btn_select_folder.setFixedHeight(36)
+        btn_select_folder.setMinimumWidth(180)
         row2.addWidget(btn_select_folder)
-        
+
+        # Лейбл выбранной папки
         self.lbl_input_folder = QLabel("Папка не выбрана")
         self.lbl_input_folder.setStyleSheet("color: #909090;")
-        row2.addWidget(self.lbl_input_folder, 1)
-        
-        layout.addLayout(row2)
-        group.setLayout(layout)
+        self.lbl_input_folder.setFixedWidth(180)
+        row2.addWidget(self.lbl_input_folder)
+
+        # Кнопка Загрузить
+        self.btn_upload = QPushButton("Загрузить")
+        self.btn_upload.setFixedHeight(36)
+        self.btn_upload.setMinimumWidth(100)
+        self.btn_upload.clicked.connect(self._start_download)
+        row2.addWidget(self.btn_upload)
+
+        row2.addStretch()
+        main_layout.addLayout(row2)
+
+        group.setLayout(main_layout)
         return group
 
     def _create_output_group(self) -> QGroupBox:
@@ -677,6 +726,55 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_output_folder.setText(display_path)
         self.lbl_output_folder.setStyleSheet("color: #dcdcdc;")
 
+    def _start_download(self):
+        url = self.input_path.text().strip()
+        folder = self.lbl_input_folder.text()
+        if folder == "Папка не выбрана":
+            folder = os.getcwd()
+
+        if not url:
+            return
+
+        self.btn_upload.setEnabled(False)
+        self.progress_upload.setValue(0)
+        downloaded_files = []
+
+        def progress_hook(d):
+            if d['status'] == 'downloading':
+                try:
+                    percent = int(float(d.get('_percent_str', '0%').replace('%', '').strip()))
+                except (ValueError, TypeError):
+                    percent = 0
+                self.signals.download_progress.emit(percent)
+            elif d['status'] == 'finished':
+                filepath = d.get('filename')
+                if filepath and filepath not in downloaded_files:
+                    downloaded_files.append(filepath)
+                self.signals.download_progress.emit(100)
+
+        def download():
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(folder, '%(title)s.%(ext)s'),
+                'progress_hooks': [progress_hook],
+                'ignoreerrors': True,
+                'noplaylist': False
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            self.signals.download_finished.emit(list(downloaded_files))
+
+        threading.Thread(target=download, daemon=True).start()
+
+    def _on_download_finished(self, files: list):
+        self.btn_upload.setEnabled(True)
+        self.progress_upload.setValue(0)
+        if files:
+            self._apply_dropped_or_selected_files(files)
+            self.input_path.clear()
+
     def _toggle_diarization(self, state):
         """Обработчик изменения состояния диаризации"""
         self.enable_diarization = (state == Qt.CheckState.Checked.value)
@@ -965,9 +1063,16 @@ class GigaTranscriberQtApp(QMainWindow):
         """Обновляет общий прогресс-бар"""
         self.progress_bar_total.setValue(value)
 
-    def _update_file_progress(self, value: int):
-        """Обновляет прогресс-бар текущего файла"""
-        self.progress_bar_file.setValue(value)
+    def _update_file_progress(self, d):
+        if d['status'] == 'downloading':
+            percent = d.get('_percent_str', '0%').replace('%', '')
+            try:
+                percent = float(percent)
+            except:
+                percent = 0
+            QTimer.singleShot(0, lambda: self.progress_upload.setValue(int(percent)))
+        elif d['status'] == 'finished':
+            QTimer.singleShot(0, lambda: self.progress_upload.setValue(100))
 
     def _update_current_file_info(self, info: str):
         """Обновляет информацию о текущем файле"""
