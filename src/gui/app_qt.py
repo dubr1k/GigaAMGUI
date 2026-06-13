@@ -366,6 +366,13 @@ class GigaTranscriberQtApp(QMainWindow):
         self.input_path.setMinimumWidth(220)
         row1.addWidget(self.input_path)
 
+        # Кнопка загрузки ссылки
+        self.btn_upload = QPushButton("Загрузить")
+        self.btn_upload.setFixedHeight(36)
+        self.btn_upload.setMinimumWidth(100)
+        self.btn_upload.clicked.connect(self._start_download)
+        row1.addWidget(self.btn_upload)
+
         # Прогресс-бар
         self.progress_upload = QProgressBar()
         self.progress_upload.setFixedHeight(24)
@@ -384,13 +391,6 @@ class GigaTranscriberQtApp(QMainWindow):
             }
         """)
         row1.addWidget(self.progress_upload)
-
-        # Кнопка загрузки ссылки
-        self.btn_upload = QPushButton("Загрузить")
-        self.btn_upload.setFixedHeight(36)
-        self.btn_upload.setMinimumWidth(100)
-        self.btn_upload.clicked.connect(self._start_download)
-        row1.addWidget(self.btn_upload)
 
         row1.addStretch()
         main_layout.addLayout(row1)
