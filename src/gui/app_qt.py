@@ -4,8 +4,10 @@
 """
 
 import os
+import shutil
 import sys
 import threading
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -32,7 +34,7 @@ class WorkerSignals(QObject):
     processing_finished = pyqtSignal(bool, str)
     stage_update = pyqtSignal(str, float)
     download_progress = pyqtSignal(int)
-    download_finished = pyqtSignal(list)
+    download_finished = pyqtSignal(list, str)
     download_failed = pyqtSignal(str)
 
 
@@ -57,6 +59,9 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_stage = None
         self.current_stage_progress = 0.0
         self.is_downloading = False
+        self.start_processing_after_download = False
+        self.download_temp_dirs = []
+        self.downloaded_url_files = set()
         
         # Настройки диаризации
         self.enable_diarization = False
@@ -612,19 +617,38 @@ class GigaTranscriberQtApp(QMainWindow):
         if files:
             self._apply_dropped_or_selected_files(files)
 
-    def _apply_dropped_or_selected_files(self, files: list):
+    def _apply_dropped_or_selected_files(self, files: list, append: bool = False, remember_dir: bool = True):
         """Применяет список выбранных/перетащенных файлов: обновляет очередь, метки и лог"""
         if not files:
             return
-        self.files_to_process = files
-        count = len(files)
-        file_dir = os.path.dirname(files[0])
-        self.input_dir = file_dir
-        self.user_settings.set_last_files_dir(files[0])
-        self.lbl_files_count.setText(f"Выбрано файлов: {count}")
+
+        unique_files = []
+        seen = set()
+        for file_path in files:
+            normalized = os.path.abspath(file_path)
+            if normalized not in seen:
+                unique_files.append(file_path)
+                seen.add(normalized)
+
+        if append:
+            existing = {os.path.abspath(f) for f in self.files_to_process}
+            for file_path in unique_files:
+                normalized = os.path.abspath(file_path)
+                if normalized not in existing:
+                    self.files_to_process.append(file_path)
+                    existing.add(normalized)
+        else:
+            self.files_to_process = unique_files
+
+        if remember_dir:
+            file_dir = os.path.dirname(unique_files[0])
+            self.input_dir = file_dir
+            self.user_settings.set_last_files_dir(file_dir)
+
+        self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
         self.lbl_files_count.setStyleSheet("color: #dcdcdc;")
-        self.log(f"Добавлено в очередь: {count} файлов")
-        for f in files:
+        self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
+        for f in unique_files:
             self.log(f" + {os.path.basename(f)}")
 
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -727,60 +751,126 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_output_folder.setText(display_path)
         self.lbl_output_folder.setStyleSheet("color: #dcdcdc;")
 
-    def _start_download(self):
+    def _start_download(self, start_after_download: bool = False):
         url = self.input_path.text().strip()
         if not url:
             QMessageBox.warning(self, "Внимание", "Введите ссылку для загрузки.")
             return
+        if not (url.startswith("http://") or url.startswith("https://")):
+            QMessageBox.warning(self, "Внимание", "Ссылка должна начинаться с http:// или https://.")
+            return
+        if self.is_processing:
+            QMessageBox.warning(self, "Внимание", "Дождитесь завершения обработки файлов.")
+            return
         if self.is_downloading:
+            QMessageBox.information(self, "Информация", "Загрузка уже выполняется.")
             return
 
-        folder = self.input_dir or os.getcwd()
+        temp_dir = tempfile.mkdtemp(prefix="gigaam_url_")
         self.is_downloading = True
+        self.start_processing_after_download = start_after_download
         self.btn_upload.setEnabled(False)
+        self.btn_start.setEnabled(False)
         self.progress_upload.setValue(0)
-        self.log(f"Загрузка медиа по ссылке в папку: {folder}")
+        self.lbl_status.setText("Загрузка медиа по ссылке...")
+        self.log(f"Загрузка медиа по ссылке: {url}")
 
         thread = threading.Thread(
             target=self._download_media,
-            args=(url, folder),
+            args=(url, temp_dir),
             daemon=True
         )
         thread.start()
 
-    def _download_media(self, url: str, folder: str):
+    def _download_media(self, url: str, temp_dir: str):
         try:
             result = self.media_downloader.download(
                 url,
-                folder,
+                temp_dir,
                 progress_callback=self.signals.download_progress.emit,
                 allow_playlist=False,
             )
-            self.signals.download_finished.emit(result.files)
+            files = [
+                path for path in result.files
+                if os.path.isfile(path) and os.path.getsize(path) > 0
+            ]
+            if not files:
+                raise RuntimeError("yt-dlp не вернул скачанный медиафайл")
+            self.signals.download_finished.emit(files, temp_dir)
         except Exception as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
             self.signals.download_failed.emit(str(e))
 
     def _update_download_progress(self, value: int):
         self.progress_upload.setValue(value)
 
-    def _on_download_finished(self, files: list):
+    def _on_download_finished(self, files: list, temp_dir: str):
         self.is_downloading = False
+        self.download_temp_dirs.append(temp_dir)
+        normalized_files = [os.path.abspath(path) for path in files]
+        self.downloaded_url_files.update(normalized_files)
+
         self.btn_upload.setEnabled(True)
+        self.btn_start.setEnabled(True)
         self.progress_upload.setValue(0)
         if files:
-            self._apply_dropped_or_selected_files(files)
+            self._apply_dropped_or_selected_files(files, append=True, remember_dir=False)
             self.input_path.clear()
+            self.lbl_status.setText("Медиа загружено и добавлено в очередь")
             self.log(f"Загрузка завершена: {len(files)} файлов")
         else:
             QMessageBox.warning(self, "Загрузка", "Не удалось получить медиафайлы по ссылке.")
             self.log("Загрузка завершилась без файлов")
 
+        if self.start_processing_after_download:
+            self.start_processing_after_download = False
+            QTimer.singleShot(0, self._start_processing_thread)
+
     def _on_download_failed(self, message: str):
         self.is_downloading = False
+        self.start_processing_after_download = False
         self.btn_upload.setEnabled(True)
+        self.btn_start.setEnabled(True)
         self.progress_upload.setValue(0)
+        self.lbl_status.setText("Ошибка загрузки")
         self.log(f"Ошибка загрузки: {message}")
         QMessageBox.warning(self, "Ошибка загрузки", message)
+
+    def _is_downloaded_url_file(self, filepath: str) -> bool:
+        """Проверяет, был ли файл скачан по ссылке во временную папку"""
+        return os.path.abspath(filepath) in self.downloaded_url_files
+
+    def _get_url_results_dir(self) -> str:
+        """Возвращает постоянную папку для результатов временных URL-файлов"""
+        results_dir = os.path.join(os.path.expanduser("~"), "GigaAMGUI Results")
+        os.makedirs(results_dir, exist_ok=True)
+        return results_dir
+
+    def _get_output_dir_for_file(self, filepath: str) -> str:
+        """Выбирает папку результата с учетом временных URL-файлов"""
+        if self.output_dir:
+            return self.output_dir
+        if self._is_downloaded_url_file(filepath):
+            return self._get_url_results_dir()
+        return os.path.dirname(filepath)
+
+    def _cleanup_download_temp_dirs(self):
+        """Удаляет временные файлы, скачанные по ссылке"""
+        downloaded_files = set(self.downloaded_url_files)
+        for temp_dir in self.download_temp_dirs:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        self.download_temp_dirs = []
+        self.downloaded_url_files.clear()
+        if downloaded_files:
+            self.files_to_process = [
+                path for path in self.files_to_process
+                if os.path.abspath(path) not in downloaded_files
+            ]
+            if self.files_to_process:
+                self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
+            else:
+                self.lbl_files_count.setText("Файлы не выбраны")
+                self.lbl_files_count.setStyleSheet("color: #909090;")
 
     def _toggle_diarization(self, state):
         """Обработчик изменения состояния диаризации"""
@@ -840,11 +930,14 @@ class GigaTranscriberQtApp(QMainWindow):
         self.total_estimated_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
+        self.start_processing_after_download = False
+        self._cleanup_download_temp_dirs()
         
         # Очищаем интерфейс
         self.log_text.clear()
         self.progress_bar_total.setValue(0)
         self.progress_bar_file.setValue(0)
+        self.progress_upload.setValue(0)
         self.lbl_current_file.setText("")
         self.lbl_status.setText("Готов к работе")
         
@@ -854,13 +947,23 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_input_folder.setStyleSheet("color: #909090;")
         self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)")
         self.lbl_output_folder.setStyleSheet("color: #909090;")
+        self.input_path.clear()
         
         self.btn_start.setEnabled(True)
+        self.btn_upload.setEnabled(True)
         self.log("Все настройки сброшены")
 
     def _start_processing_thread(self):
         """Запускает обработку в отдельном потоке"""
         if self.is_processing:
+            return
+
+        if self.is_downloading:
+            QMessageBox.information(self, "Информация", "Дождитесь завершения загрузки по ссылке.")
+            return
+
+        if self.input_path.text().strip():
+            self._start_download(start_after_download=True)
             return
         
         if not self.files_to_process:
@@ -869,7 +972,14 @@ class GigaTranscriberQtApp(QMainWindow):
         
         # Если папка не выбрана — результаты сохраняются рядом с каждым исходным файлом
         if not self.output_dir:
-            self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
+            if any(self._is_downloaded_url_file(path) for path in self.files_to_process):
+                self.log(
+                    "Папка сохранения не выбрана. Для файлов по ссылке результаты будут "
+                    f"сохранены в: {self._get_url_results_dir()}"
+                )
+                self.log("Для локальных файлов результаты будут сохраняться рядом с исходным файлом.")
+            else:
+                self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
         
         self.is_processing = True
         self.start_time = time.time()
@@ -970,7 +1080,7 @@ class GigaTranscriberQtApp(QMainWindow):
                     )
                     
                     # Если глобальная папка не выбрана — сохраняем рядом с исходным файлом
-                    file_output_dir = self.output_dir if self.output_dir else os.path.dirname(filepath)
+                    file_output_dir = self._get_output_dir_for_file(filepath)
 
                     result = processor.process_file(
                         filepath,
@@ -1087,6 +1197,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.progress_bar_total.setValue(100 if success else 0)
         self.lbl_status.setText(message)
+        self._cleanup_download_temp_dirs()
         
         if success:
             QMessageBox.information(self, "Готово", f"Обработка завершена!\n{message}")
@@ -1100,6 +1211,7 @@ class GigaTranscriberQtApp(QMainWindow):
         if self.input_dir:
             self.user_settings.set_last_files_dir(self.input_dir)
         
+        self._cleanup_download_temp_dirs()
         self.app_logger.log_session_end()
         event.accept()
 

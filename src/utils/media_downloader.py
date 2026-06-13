@@ -32,6 +32,7 @@ class MediaDownloader:
         target_dir: str,
         progress_callback: Optional[ProgressCallback] = None,
         allow_playlist: bool = False,
+        windows_filenames: bool = True,
     ) -> DownloadResult:
         url = url.strip()
         if not url:
@@ -65,6 +66,7 @@ class MediaDownloader:
             "noplaylist": not allow_playlist,
             "quiet": True,
             "no_warnings": True,
+            "windowsfilenames": windows_filenames,
         }
 
         with self.youtube_dl_cls(ydl_opts) as ydl:
@@ -72,6 +74,13 @@ class MediaDownloader:
 
         if exit_code:
             raise RuntimeError(f"yt-dlp завершился с кодом {exit_code}")
+
+        if not downloaded_files:
+            downloaded_files = [
+                os.path.abspath(str(path))
+                for path in target_path.iterdir()
+                if path.is_file() and not path.name.endswith((".part", ".ytdl"))
+            ]
 
         return DownloadResult(files=downloaded_files)
 

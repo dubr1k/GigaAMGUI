@@ -33,6 +33,18 @@ class FakeYoutubeDL:
         return self.exit_code
 
 
+class FakeYoutubeDLWithoutFinishedFile(FakeYoutubeDL):
+    def download(self, urls):
+        self.urls = urls
+        output_file = os.path.join(
+            os.path.dirname(self.opts["outtmpl"]),
+            "fallback.m4a",
+        )
+        with open(output_file, "wb") as media_file:
+            media_file.write(b"audio")
+        return self.exit_code
+
+
 @pytest.fixture(autouse=True)
 def reset_fake_youtube_dl():
     FakeYoutubeDL.instances = []
@@ -53,6 +65,7 @@ def test_download_collects_files_and_progress(tmp_path):
     assert instance.urls == ["https://example.test/video"]
     assert instance.opts["noplaylist"] is True
     assert instance.opts["ignoreerrors"] is False
+    assert instance.opts["windowsfilenames"] is True
     assert result.files == [str(tmp_path / "downloaded.webm")]
     assert progress == [42, 100, 100]
 
@@ -67,6 +80,14 @@ def test_download_can_allow_playlists(tmp_path):
     )
 
     assert FakeYoutubeDL.instances[0].opts["noplaylist"] is False
+
+
+def test_download_falls_back_to_target_dir_scan(tmp_path):
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDLWithoutFinishedFile)
+
+    result = downloader.download("https://example.test/video", str(tmp_path))
+
+    assert result.files == [str(tmp_path / "fallback.m4a")]
 
 
 def test_download_rejects_empty_url(tmp_path):
