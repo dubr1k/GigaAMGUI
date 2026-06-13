@@ -10,6 +10,7 @@ from .torch_patch import apply_torch_load_patch
 from .logger import AppLogger, LoggerAdapter
 from .user_settings import UserSettings
 from .diarization import DiarizationManager, SpeakerSegment, get_diarization_manager
+from .media_downloader import DownloadResult, MediaDownloader
 
 __all__ = [
     'AudioConverter', 
@@ -22,5 +23,7 @@ __all__ = [
     'UserSettings',
     'DiarizationManager',
     'SpeakerSegment',
-    'get_diarization_manager'
+    'get_diarization_manager',
+    'DownloadResult',
+    'MediaDownloader'
 ]

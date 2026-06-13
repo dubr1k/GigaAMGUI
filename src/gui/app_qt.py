@@ -7,8 +7,6 @@ import os
 import sys
 import threading
 import time
-import threading
-import yt_dlp
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +20,7 @@ from PyQt6.QtGui import QFont, QPalette, QColor, QDragEnterEvent, QDropEvent
 
 from ..config import APP_TITLE, SUPPORTED_FORMATS, STATS_FILE, OUTPUT_FORMATS, MEDIA_EXTENSIONS
 from ..core import ModelLoader, TranscriptionProcessor
-from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, UserSettings
+from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, UserSettings, MediaDownloader
 
 
 class WorkerSignals(QObject):
@@ -35,6 +33,7 @@ class WorkerSignals(QObject):
     stage_update = pyqtSignal(str, float)
     download_progress = pyqtSignal(int)
     download_finished = pyqtSignal(list)
+    download_failed = pyqtSignal(str)
 
 
 class GigaTranscriberQtApp(QMainWindow):
@@ -57,7 +56,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_file_start_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
-        self.queue = []
+        self.is_downloading = False
         
         # Настройки диаризации
         self.enable_diarization = False
@@ -81,6 +80,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.stats = ProcessingStats(STATS_FILE)
         self.time_formatter = TimeFormatter()
         self.user_settings = UserSettings()
+        self.media_downloader = MediaDownloader()
         
         # Сигналы для потока обработки
         self.signals = WorkerSignals()
@@ -90,6 +90,9 @@ class GigaTranscriberQtApp(QMainWindow):
         self.signals.current_file_info.connect(self._update_current_file_info)
         self.signals.processing_finished.connect(self._on_processing_finished)
         self.signals.stage_update.connect(self._on_stage_update)
+        self.signals.download_progress.connect(self._update_download_progress)
+        self.signals.download_finished.connect(self._on_download_finished)
+        self.signals.download_failed.connect(self._on_download_failed)
         
         # Таймер для обновления прогресса
         self.progress_timer = QTimer()
@@ -106,8 +109,6 @@ class GigaTranscriberQtApp(QMainWindow):
         
         # Инициализация интерфейса
         self._init_ui()
-        self.signals.download_progress.connect(self.progress_upload.setValue)
-        self.signals.download_finished.connect(self._on_download_finished)
         # Включаем приём перетаскивания файлов (на всё окно, в т.ч. на кнопку «Выбрать файлы»)
         self.setAcceptDrops(True)
         
@@ -335,7 +336,7 @@ class GigaTranscriberQtApp(QMainWindow):
         """)
 
     def _create_files_group(self) -> QGroupBox:
-        group = QGroupBox("1. Выбора файлов")
+        group = QGroupBox("1. Выбор файлов")
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(12, 20, 12, 10)
         main_layout.setSpacing(10)
@@ -359,15 +360,15 @@ class GigaTranscriberQtApp(QMainWindow):
 
         # Поле ввода ссылки
         self.input_path = QLineEdit()
-        self.input_path.setPlaceholderText("Ссылка")
+        self.input_path.setPlaceholderText("Ссылка на медиа")
         self.input_path.setFixedHeight(24)
-        self.input_path.setFixedWidth(150)
+        self.input_path.setMinimumWidth(220)
         row1.addWidget(self.input_path)
 
         # Прогресс-бар
         self.progress_upload = QProgressBar()
         self.progress_upload.setFixedHeight(24)
-        self.progress_upload.setFixedWidth(60)
+        self.progress_upload.setFixedWidth(90)
         self.progress_upload.setValue(0)
         self.progress_upload.setTextVisible(True)
         self.progress_upload.setStyleSheet("""
@@ -728,52 +729,58 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _start_download(self):
         url = self.input_path.text().strip()
-        folder = self.lbl_input_folder.text()
-        if folder == "Папка не выбрана":
-            folder = os.getcwd()
-
         if not url:
+            QMessageBox.warning(self, "Внимание", "Введите ссылку для загрузки.")
+            return
+        if self.is_downloading:
             return
 
+        folder = self.input_dir or os.getcwd()
+        self.is_downloading = True
         self.btn_upload.setEnabled(False)
         self.progress_upload.setValue(0)
-        downloaded_files = []
+        self.log(f"Загрузка медиа по ссылке в папку: {folder}")
 
-        def progress_hook(d):
-            if d['status'] == 'downloading':
-                try:
-                    percent = int(float(d.get('_percent_str', '0%').replace('%', '').strip()))
-                except (ValueError, TypeError):
-                    percent = 0
-                self.signals.download_progress.emit(percent)
-            elif d['status'] == 'finished':
-                filepath = d.get('filename')
-                if filepath and filepath not in downloaded_files:
-                    downloaded_files.append(filepath)
-                self.signals.download_progress.emit(100)
+        thread = threading.Thread(
+            target=self._download_media,
+            args=(url, folder),
+            daemon=True
+        )
+        thread.start()
 
-        def download():
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': os.path.join(folder, '%(title)s.%(ext)s'),
-                'progress_hooks': [progress_hook],
-                'ignoreerrors': True,
-                'noplaylist': False
-            }
+    def _download_media(self, url: str, folder: str):
+        try:
+            result = self.media_downloader.download(
+                url,
+                folder,
+                progress_callback=self.signals.download_progress.emit,
+                allow_playlist=False,
+            )
+            self.signals.download_finished.emit(result.files)
+        except Exception as e:
+            self.signals.download_failed.emit(str(e))
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-            self.signals.download_finished.emit(list(downloaded_files))
-
-        threading.Thread(target=download, daemon=True).start()
+    def _update_download_progress(self, value: int):
+        self.progress_upload.setValue(value)
 
     def _on_download_finished(self, files: list):
+        self.is_downloading = False
         self.btn_upload.setEnabled(True)
         self.progress_upload.setValue(0)
         if files:
             self._apply_dropped_or_selected_files(files)
             self.input_path.clear()
+            self.log(f"Загрузка завершена: {len(files)} файлов")
+        else:
+            QMessageBox.warning(self, "Загрузка", "Не удалось получить медиафайлы по ссылке.")
+            self.log("Загрузка завершилась без файлов")
+
+    def _on_download_failed(self, message: str):
+        self.is_downloading = False
+        self.btn_upload.setEnabled(True)
+        self.progress_upload.setValue(0)
+        self.log(f"Ошибка загрузки: {message}")
+        QMessageBox.warning(self, "Ошибка загрузки", message)
 
     def _toggle_diarization(self, state):
         """Обработчик изменения состояния диаризации"""
@@ -1063,16 +1070,9 @@ class GigaTranscriberQtApp(QMainWindow):
         """Обновляет общий прогресс-бар"""
         self.progress_bar_total.setValue(value)
 
-    def _update_file_progress(self, d):
-        if d['status'] == 'downloading':
-            percent = d.get('_percent_str', '0%').replace('%', '')
-            try:
-                percent = float(percent)
-            except:
-                percent = 0
-            QTimer.singleShot(0, lambda: self.progress_upload.setValue(int(percent)))
-        elif d['status'] == 'finished':
-            QTimer.singleShot(0, lambda: self.progress_upload.setValue(100))
+    def _update_file_progress(self, value: int):
+        """Обновляет прогресс-бар текущего файла"""
+        self.progress_bar_file.setValue(value)
 
     def _update_current_file_info(self, info: str):
         """Обновляет информацию о текущем файле"""

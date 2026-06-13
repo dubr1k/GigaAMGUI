@@ -135,6 +135,7 @@ tmp/
 test_*.py
 scripts/test_*.py
 !tests/
+!tests/test_*.py
 
 # FFmpeg builds (Windows)
 ffmpeg/
