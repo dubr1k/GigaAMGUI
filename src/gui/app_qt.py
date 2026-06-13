@@ -4,10 +4,8 @@
 """
 
 import os
-import shutil
 import sys
 import threading
-import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -34,7 +32,7 @@ class WorkerSignals(QObject):
     processing_finished = pyqtSignal(bool, str)
     stage_update = pyqtSignal(str, float)
     download_progress = pyqtSignal(int)
-    download_finished = pyqtSignal(list, str)
+    download_finished = pyqtSignal(list)
     download_failed = pyqtSignal(str)
 
 
@@ -60,8 +58,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_stage_progress = 0.0
         self.is_downloading = False
         self.start_processing_after_download = False
-        self.download_temp_dirs = []
-        self.downloaded_url_files = set()
         
         # Настройки диаризации
         self.enable_diarization = False
@@ -766,27 +762,40 @@ class GigaTranscriberQtApp(QMainWindow):
             QMessageBox.information(self, "Информация", "Загрузка уже выполняется.")
             return
 
-        temp_dir = tempfile.mkdtemp(prefix="gigaam_url_")
+        download_dir = self.input_dir
+        if not download_dir:
+            initial_dir = self.user_settings.get_last_files_dir() or os.path.expanduser("~")
+            download_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Выберите папку для загрузки медиа",
+                initial_dir
+            )
+            if not download_dir:
+                return
+            self.input_dir = download_dir
+            self.user_settings.set_last_files_dir(download_dir)
+            self._update_input_dir_label(download_dir)
+
         self.is_downloading = True
         self.start_processing_after_download = start_after_download
         self.btn_upload.setEnabled(False)
         self.btn_start.setEnabled(False)
         self.progress_upload.setValue(0)
         self.lbl_status.setText("Загрузка медиа по ссылке...")
-        self.log(f"Загрузка медиа по ссылке: {url}")
+        self.log(f"Загрузка медиа по ссылке в папку: {download_dir}")
 
         thread = threading.Thread(
             target=self._download_media,
-            args=(url, temp_dir),
+            args=(url, download_dir),
             daemon=True
         )
         thread.start()
 
-    def _download_media(self, url: str, temp_dir: str):
+    def _download_media(self, url: str, download_dir: str):
         try:
             result = self.media_downloader.download(
                 url,
-                temp_dir,
+                download_dir,
                 progress_callback=self.signals.download_progress.emit,
                 allow_playlist=False,
             )
@@ -796,20 +805,15 @@ class GigaTranscriberQtApp(QMainWindow):
             ]
             if not files:
                 raise RuntimeError("yt-dlp не вернул скачанный медиафайл")
-            self.signals.download_finished.emit(files, temp_dir)
+            self.signals.download_finished.emit(files)
         except Exception as e:
-            shutil.rmtree(temp_dir, ignore_errors=True)
             self.signals.download_failed.emit(str(e))
 
     def _update_download_progress(self, value: int):
         self.progress_upload.setValue(value)
 
-    def _on_download_finished(self, files: list, temp_dir: str):
+    def _on_download_finished(self, files: list):
         self.is_downloading = False
-        self.download_temp_dirs.append(temp_dir)
-        normalized_files = [os.path.abspath(path) for path in files]
-        self.downloaded_url_files.update(normalized_files)
-
         self.btn_upload.setEnabled(True)
         self.btn_start.setEnabled(True)
         self.progress_upload.setValue(0)
@@ -835,42 +839,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_status.setText("Ошибка загрузки")
         self.log(f"Ошибка загрузки: {message}")
         QMessageBox.warning(self, "Ошибка загрузки", message)
-
-    def _is_downloaded_url_file(self, filepath: str) -> bool:
-        """Проверяет, был ли файл скачан по ссылке во временную папку"""
-        return os.path.abspath(filepath) in self.downloaded_url_files
-
-    def _get_url_results_dir(self) -> str:
-        """Возвращает постоянную папку для результатов временных URL-файлов"""
-        results_dir = os.path.join(os.path.expanduser("~"), "GigaAMGUI Results")
-        os.makedirs(results_dir, exist_ok=True)
-        return results_dir
-
-    def _get_output_dir_for_file(self, filepath: str) -> str:
-        """Выбирает папку результата с учетом временных URL-файлов"""
-        if self.output_dir:
-            return self.output_dir
-        if self._is_downloaded_url_file(filepath):
-            return self._get_url_results_dir()
-        return os.path.dirname(filepath)
-
-    def _cleanup_download_temp_dirs(self):
-        """Удаляет временные файлы, скачанные по ссылке"""
-        downloaded_files = set(self.downloaded_url_files)
-        for temp_dir in self.download_temp_dirs:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        self.download_temp_dirs = []
-        self.downloaded_url_files.clear()
-        if downloaded_files:
-            self.files_to_process = [
-                path for path in self.files_to_process
-                if os.path.abspath(path) not in downloaded_files
-            ]
-            if self.files_to_process:
-                self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
-            else:
-                self.lbl_files_count.setText("Файлы не выбраны")
-                self.lbl_files_count.setStyleSheet("color: #909090;")
 
     def _toggle_diarization(self, state):
         """Обработчик изменения состояния диаризации"""
@@ -931,7 +899,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_stage = None
         self.current_stage_progress = 0.0
         self.start_processing_after_download = False
-        self._cleanup_download_temp_dirs()
         
         # Очищаем интерфейс
         self.log_text.clear()
@@ -972,14 +939,7 @@ class GigaTranscriberQtApp(QMainWindow):
         
         # Если папка не выбрана — результаты сохраняются рядом с каждым исходным файлом
         if not self.output_dir:
-            if any(self._is_downloaded_url_file(path) for path in self.files_to_process):
-                self.log(
-                    "Папка сохранения не выбрана. Для файлов по ссылке результаты будут "
-                    f"сохранены в: {self._get_url_results_dir()}"
-                )
-                self.log("Для локальных файлов результаты будут сохраняться рядом с исходным файлом.")
-            else:
-                self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
+            self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
         
         self.is_processing = True
         self.start_time = time.time()
@@ -1080,7 +1040,7 @@ class GigaTranscriberQtApp(QMainWindow):
                     )
                     
                     # Если глобальная папка не выбрана — сохраняем рядом с исходным файлом
-                    file_output_dir = self._get_output_dir_for_file(filepath)
+                    file_output_dir = self.output_dir if self.output_dir else os.path.dirname(filepath)
 
                     result = processor.process_file(
                         filepath,
@@ -1197,7 +1157,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.progress_bar_total.setValue(100 if success else 0)
         self.lbl_status.setText(message)
-        self._cleanup_download_temp_dirs()
         
         if success:
             QMessageBox.information(self, "Готово", f"Обработка завершена!\n{message}")
@@ -1211,7 +1170,6 @@ class GigaTranscriberQtApp(QMainWindow):
         if self.input_dir:
             self.user_settings.set_last_files_dir(self.input_dir)
         
-        self._cleanup_download_temp_dirs()
         self.app_logger.log_session_end()
         event.accept()
 
