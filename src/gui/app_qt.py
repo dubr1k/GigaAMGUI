@@ -385,10 +385,17 @@ class GigaTranscriberQtApp(QMainWindow):
         """)
         row1.addWidget(self.progress_upload)
 
+        # Кнопка загрузки ссылки
+        self.btn_upload = QPushButton("Загрузить")
+        self.btn_upload.setFixedHeight(36)
+        self.btn_upload.setMinimumWidth(100)
+        self.btn_upload.clicked.connect(self._start_download)
+        row1.addWidget(self.btn_upload)
+
         row1.addStretch()
         main_layout.addLayout(row1)
 
-        # 2 строка: Выбрать папку + Лейбл + Загрузить
+        # 2 строка: Выбрать папку + Лейбл
         row2 = QHBoxLayout()
         row2.setSpacing(10)
 
@@ -404,13 +411,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_input_folder.setStyleSheet("color: #909090;")
         self.lbl_input_folder.setFixedWidth(180)
         row2.addWidget(self.lbl_input_folder)
-
-        # Кнопка Загрузить
-        self.btn_upload = QPushButton("Загрузить")
-        self.btn_upload.setFixedHeight(36)
-        self.btn_upload.setMinimumWidth(100)
-        self.btn_upload.clicked.connect(self._start_download)
-        row2.addWidget(self.btn_upload)
 
         row2.addStretch()
         main_layout.addLayout(row2)
