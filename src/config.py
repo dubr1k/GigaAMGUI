@@ -4,9 +4,10 @@
 """
 
 import os
-import sys
 import re
+import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 
@@ -18,16 +19,16 @@ def _has_cyrillic(text: str) -> bool:
 def _setup_huggingface_cache():
     """
     Настраивает директорию кэша HuggingFace для избежания проблем на Windows.
-    
+
     Проблемы на Windows:
     1. Символьные ссылки требуют прав администратора
     2. Пути с кириллицей могут вызывать ошибки
-    
+
     Решение: устанавливаем HF_HOME в путь без кириллицы
     """
     # Определяем текущий путь к домашней директории
     home_path = os.path.expanduser("~")
-    
+
     # Проверяем наличие кириллицы в пути
     if _has_cyrillic(home_path):
         print("=" * 60)
@@ -46,14 +47,14 @@ def _setup_huggingface_cache():
         print("    Или добавьте в файл .env:")
         print("       HF_HOME=C:\\HuggingFaceCache")
         print("=" * 60)
-    
+
     # На Windows устанавливаем специальные настройки
     if sys.platform == 'win32':
         # Отключаем использование символьных ссылок в HuggingFace
         # Это предотвращает ошибки с правами доступа
         if 'HF_HUB_DISABLE_SYMLINKS_WARNING' not in os.environ:
             os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
-        
+
         # Если HF_HOME не установлен и путь содержит кириллицу,
         # предлагаем альтернативный путь
         if 'HF_HOME' not in os.environ and _has_cyrillic(home_path):
