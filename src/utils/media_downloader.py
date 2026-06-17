@@ -3,6 +3,7 @@
 """
 
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,7 +66,14 @@ class MediaDownloader:
         def progress_hook(data):
             status = data.get("status")
             if status == "downloading":
-                percent = self._parse_percent(data.get("_percent_str"))
+                # Считаем процент из байтов — надёжнее, чем _percent_str
+                # (в новых версиях yt-dlp он обёрнут ANSI-кодами и не парсится).
+                total = data.get("total_bytes") or data.get("total_bytes_estimate")
+                downloaded = data.get("downloaded_bytes")
+                if total and downloaded is not None:
+                    percent = max(0, min(100, int(downloaded * 100 / total)))
+                else:
+                    percent = self._parse_percent(data.get("_percent_str"))
                 if progress_callback:
                     progress_callback(percent)
             elif status == "finished":
@@ -111,7 +119,9 @@ class MediaDownloader:
     def _parse_percent(value) -> int:
         if value is None:
             return 0
+        # Снимаем ANSI-escape коды, которыми yt-dlp раскрашивает _percent_str
+        text = re.sub(r"\x1b\[[0-9;]*m", "", str(value)).replace("%", "").strip()
         try:
-            return max(0, min(100, int(float(str(value).replace("%", "").strip()))))
+            return max(0, min(100, int(float(text))))
         except (TypeError, ValueError):
             return 0
