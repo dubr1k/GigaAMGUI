@@ -74,6 +74,36 @@ def test_log_is_on_second_tab():
     window.close()
 
 
+def test_stage_aware_progress():
+    import time
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    window.is_processing = True
+    window.total_files = 2
+    window.files_processed = 0
+    window.files_to_process = ["/tmp/a.mp3", "/tmp/b.mp3"]
+    window.file_estimates = {"/tmp/a.mp3": 100, "/tmp/b.mp3": 100}
+    window.current_file_start_time = time.time()
+
+    # Этап конвертации — прогресс в нижней «полосе» (0..15%)
+    window._on_stage_update("conversion", 0.0)
+    assert "Конвертация" in window.lbl_stage.text()
+    assert window.progress_bar_file.value() <= 15
+    assert window.lbl_file_counter.text() == "Файл 1 / 2"
+
+    # Распознавание, ~половина оценочного времени -> около середины полосы файла
+    window._on_stage_update("transcription", 0.0)
+    window._stage_start_time = time.time() - 42  # ~42 из ~85 c
+    window._refresh_progress()
+    assert "Распознавание" in window.lbl_stage.text()
+    assert 40 <= window.progress_bar_file.value() <= 75
+    # Общий прогресс = доля файла / число файлов
+    assert 20 <= window.progress_bar_total.value() <= 38
+    window.is_processing = False  # чтобы закрытие не показывало модальный диалог
+    window.close()
+
+
 def test_download_progress_updates_bar():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])

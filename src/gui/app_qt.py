@@ -69,6 +69,8 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_file_start_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
+        self._stage_start_time = 0.0   # время начала текущего этапа (для интерполяции)
+        self._current_filename = ""    # имя обрабатываемого файла (для подписи)
         self.is_downloading = False
         self.start_processing_after_download = False
 
@@ -553,74 +555,79 @@ class GigaTranscriberQtApp(QMainWindow):
         group.setLayout(layout)
         return group
 
-    def _create_progress_section(self, parent_layout):
-        """Создает секцию прогресса без QGroupBox для избежания проблем с отступами"""
-        # Заголовок секции
-        lbl_title = QLabel("Прогресс обработки")
-        lbl_title.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        lbl_title.setFixedHeight(28)
-        parent_layout.addWidget(lbl_title)
+    # Акцентный цвет прогресса и доля шкалы файла, отводимая на конвертацию
+    _ACCENT = "#3d7eff"
+    _CONVERSION_BAND = 0.15  # 0..15% шкалы файла — конвертация, 15..99% — распознавание
 
-        # Контейнер прогресса
+    def _make_progress_bar(self, height: int, font_pt: int) -> QProgressBar:
+        """Создаёт стилизованную полосу прогресса (единый стиль для всех баров)."""
+        bar = QProgressBar()
+        bar.setFixedHeight(height)
+        bar.setTextVisible(True)
+        bar.setRange(0, 100)
+        radius = height // 2
+        bar.setStyleSheet(
+            f"QProgressBar {{ border: none; border-radius: {radius}px;"
+            f"  background-color: #2a2a2e; text-align: center; color: #f0f0f0;"
+            f"  font-size: {font_pt}pt; font-weight: 600; }}"
+            f"QProgressBar::chunk {{ border-radius: {radius}px;"
+            f"  background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f"  stop:0 {self._ACCENT}, stop:1 #2f6bdb); }}"
+        )
+        return bar
+
+    def _create_progress_section(self, parent_layout):
+        """Создаёт секцию прогресса (без QGroupBox — чтобы не было проблем с отступами)."""
+        # Контейнер-карточка прогресса
         progress_frame = QFrame()
+        progress_frame.setObjectName("progress_card")
         progress_frame.setStyleSheet(
-            "QFrame { background-color: #38383b; border: 1px solid #4a4a4e; border-radius: 6px; }"
+            "#progress_card { background-color: #313135; border: 1px solid #45454a;"
+            "  border-radius: 8px; }"
+            "#progress_card QLabel { border: none; background: transparent; }"
         )
         frame_layout = QVBoxLayout(progress_frame)
-        frame_layout.setContentsMargins(14, 14, 14, 14)
-        frame_layout.setSpacing(10)
+        frame_layout.setContentsMargins(16, 14, 16, 14)
+        frame_layout.setSpacing(8)
 
-        # Общий прогресс
-        total_layout = QHBoxLayout()
-        total_layout.setSpacing(10)
-        lbl_total = QLabel("Всего:")
-        lbl_total.setFixedWidth(60)
-        lbl_total.setStyleSheet("border: none;")
-        total_layout.addWidget(lbl_total)
+        # Шапка: «Общий прогресс» ... «Файл 2 / 5»
+        head_row = QHBoxLayout()
+        lbl_overall = QLabel("Общий прогресс")
+        lbl_overall.setStyleSheet("color: #c8c8cc; font-size: 11pt; font-weight: bold;")
+        head_row.addWidget(lbl_overall)
+        head_row.addStretch()
+        self.lbl_file_counter = QLabel("")
+        self.lbl_file_counter.setStyleSheet(f"color: {self._ACCENT}; font-size: 11pt; font-weight: bold;")
+        head_row.addWidget(self.lbl_file_counter)
+        frame_layout.addLayout(head_row)
 
-        self.progress_bar_total = QProgressBar()
-        self.progress_bar_total.setFixedHeight(24)
-        self.progress_bar_total.setTextVisible(True)
-        self.progress_bar_total.setStyleSheet(
-            "QProgressBar { border: 1px solid #555; border-radius: 4px;"
-            "  text-align: center; background-color: #252528; color: #e0e0e0; font-size: 10pt; }"
-            "QProgressBar::chunk { background-color: #5a5a5d; border-radius: 3px; }"
-        )
-        total_layout.addWidget(self.progress_bar_total, 1)
-        frame_layout.addLayout(total_layout)
+        # Общий прогресс-бар
+        self.progress_bar_total = self._make_progress_bar(height=22, font_pt=10)
+        frame_layout.addWidget(self.progress_bar_total)
 
-        # Прогресс текущего файла
-        file_layout = QHBoxLayout()
-        file_layout.setSpacing(10)
-        lbl_file = QLabel("Файл:")
-        lbl_file.setFixedWidth(60)
-        lbl_file.setStyleSheet("border: none;")
-        file_layout.addWidget(lbl_file)
-
-        self.progress_bar_file = QProgressBar()
-        self.progress_bar_file.setFixedHeight(20)
-        self.progress_bar_file.setTextVisible(True)
-        self.progress_bar_file.setStyleSheet(
-            "QProgressBar { border: 1px solid #555; border-radius: 4px;"
-            "  text-align: center; background-color: #252528; color: #e0e0e0; font-size: 9pt; }"
-            "QProgressBar::chunk { background-color: #5a5a5d; border-radius: 3px; }"
-        )
-        file_layout.addWidget(self.progress_bar_file, 1)
-        frame_layout.addLayout(file_layout)
-
-        # Информация о текущем файле
+        # Подпись текущего файла (имя)
         self.lbl_current_file = QLabel(" ")
-        self.lbl_current_file.setStyleSheet("color: #b0b0b0; font-size: 9pt; border: none;")
-        self.lbl_current_file.setFixedHeight(20)
+        self.lbl_current_file.setStyleSheet("color: #9a9aa0; font-size: 9pt;")
+        self.lbl_current_file.setFixedHeight(18)
         frame_layout.addWidget(self.lbl_current_file)
 
-        # Статус
+        # Этап + прогресс файла («● Распознавание речи… 47%»)
+        self.lbl_stage = QLabel("")
+        self.lbl_stage.setStyleSheet("color: #d8d8dc; font-size: 9pt; font-weight: 600;")
+        self.lbl_stage.setFixedHeight(18)
+        frame_layout.addWidget(self.lbl_stage)
+
+        # Прогресс текущего файла (тоньше)
+        self.progress_bar_file = self._make_progress_bar(height=16, font_pt=8)
+        frame_layout.addWidget(self.progress_bar_file)
+
+        # Статус / оценка оставшегося времени
         self.lbl_status = QLabel("Готов к работе")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_status.setFixedHeight(30)
+        self.lbl_status.setFixedHeight(28)
         self.lbl_status.setStyleSheet(
-            "color: #e0e0e0; font-size: 11pt; font-weight: bold;"
-            "background-color: #2d2d30; border: 1px solid #4a4a4e; border-radius: 4px; padding: 2px;"
+            "color: #e0e0e0; font-size: 10pt; font-weight: bold;"
+            "background-color: #2a2a2e; border-radius: 6px; padding: 2px;"
         )
         frame_layout.addWidget(self.lbl_status)
 
@@ -946,6 +953,8 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_bar_file.setValue(0)
         self.progress_upload.setValue(0)
         self.lbl_current_file.setText("")
+        self.lbl_stage.setText("")
+        self.lbl_file_counter.setText("")
         self.lbl_status.setText("Готов к работе")
 
         self.lbl_files_count.setText("Файлы не выбраны")
@@ -1019,10 +1028,14 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_start.setText("ИДЕТ ОБРАБОТКА...")
         self.progress_bar_total.setValue(0)
         self.progress_bar_file.setValue(0)
+        self._stage_start_time = 0.0
+        self.lbl_file_counter.setText(f"Файл 1 / {self.total_files}")
+        self.lbl_current_file.setText(" ")
+        self.lbl_stage.setText("●  Подготовка…")
         self.lbl_status.setText(f"Оценка: ~{estimate_str}")
 
-        # Запускаем таймер обновления прогресса
-        self.progress_timer.start(1000)  # Обновление каждую секунду
+        # Запускаем таймер обновления прогресса (плавная интерполяция)
+        self.progress_timer.start(500)
 
         # Считываем ВСЕ параметры из виджетов в main thread и передаём в поток как
         # снимок (Qt thread-safety): worker не должен читать/писать виджеты и общее
@@ -1120,9 +1133,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
                 try:
                     self.current_file_start_time = time.time()
-                    self.signals.current_file_info.emit(
-                        f"Файл {i + 1}/{total_files}: {os.path.basename(filepath)}"
-                    )
+                    self.signals.current_file_info.emit(os.path.basename(filepath))
 
                     # Если глобальная папка не выбрана — сохраняем рядом с исходным файлом
                     file_output_dir = output_dir if output_dir else os.path.dirname(filepath)
@@ -1186,55 +1197,74 @@ class GigaTranscriberQtApp(QMainWindow):
             self.log(f"Критическая ошибка: {str(e)}")
             self.signals.processing_finished.emit(False, f"Ошибка: {str(e)}")
 
+    # Человекочитаемые названия этапов
+    _STAGE_NAMES = {
+        'conversion': 'Конвертация…',
+        'transcription': 'Распознавание речи…',
+    }
+
     def _on_file_progress(self, stage: str, progress: float):
-        """Callback для обновления прогресса файла"""
-        self.current_stage = stage
-        self.current_stage_progress = progress
+        """Callback процессора (вызывается из worker-потока) — только шлём сигнал."""
         self.signals.stage_update.emit(stage, progress)
 
     def _on_stage_update(self, stage: str, progress: float):
-        """Обработчик обновления этапа"""
-        self.current_stage = stage
+        """Обработчик смены этапа (главный поток): фиксируем начало этапа для интерполяции."""
+        if stage != self.current_stage:
+            self.current_stage = stage
+            self._stage_start_time = time.time()
         self.current_stage_progress = progress
+        self._refresh_progress()
 
-    def _update_progress_display(self):
-        """Обновляет отображение прогресса"""
+    def _estimate_file_progress(self) -> float:
+        """Оценка прогресса текущего файла (0..1): этап задаёт диапазон, время — заполнение."""
+        if self.current_file_start_time <= 0 or not self.files_to_process:
+            return 0.0
+        idx = min(self.files_processed, len(self.files_to_process) - 1)
+        total_est = self.file_estimates.get(self.files_to_process[idx], 30) or 30
+        band = self._CONVERSION_BAND
+        stage_elapsed = (time.time() - self._stage_start_time) if self._stage_start_time else 0.0
+
+        if self.current_stage == 'conversion':
+            conv_est = max(1.0, total_est * band)
+            return band * min(1.0, stage_elapsed / conv_est)
+        if self.current_stage == 'transcription':
+            trans_est = max(1.0, total_est * (1 - band))
+            return band + (0.99 - band) * min(1.0, stage_elapsed / trans_est)
+        # Этап ещё не сообщён — грубая оценка по общему времени файла
+        elapsed = time.time() - self.current_file_start_time
+        return min(0.99, elapsed / total_est)
+
+    def _refresh_progress(self):
+        """Единый пересчёт и отрисовка прогресса (вызывается из таймера и при смене этапа)."""
         if not self.is_processing or self.total_files == 0 or not self.files_to_process:
             return
 
-        # Общий прогресс (защита от деления на ноль / рассинхронизации с worker)
-        files_progress = min(self.files_processed, self.total_files) / self.total_files
+        files_done = min(self.files_processed, self.total_files)
+        file_progress = self._estimate_file_progress()
+        overall = min(0.99, (files_done + file_progress) / self.total_files)
 
-        # Прогресс текущего файла
-        current_file_progress = 0.0
-        if self.files_processed < len(self.files_to_process) and self.current_file_start_time > 0:
-            current_filepath = self.files_to_process[self.files_processed]
-            current_elapsed = time.time() - self.current_file_start_time
-            estimated_time = self.file_estimates.get(current_filepath, 30)
+        self.progress_bar_total.setValue(int(overall * 100))
+        self.progress_bar_file.setValue(int(file_progress * 100))
 
-            if estimated_time > 0:
-                current_file_progress = min(0.95, current_elapsed / estimated_time)
+        current_idx = min(files_done + 1, self.total_files)
+        self.lbl_file_counter.setText(f"Файл {current_idx} / {self.total_files}")
 
-        # Общий прогресс
-        overall_progress = files_progress + (current_file_progress / self.total_files)
-        overall_progress = min(0.99, overall_progress)
+        stage_name = self._STAGE_NAMES.get(self.current_stage or '', 'Подготовка…')
+        self.lbl_stage.setText(f"●  {stage_name}  {int(file_progress * 100)}%")
 
-        # Обновляем прогресс-бары
-        self.progress_bar_total.setValue(int(overall_progress * 100))
-        self.progress_bar_file.setValue(int(current_file_progress * 100))
-
-        # Оставшееся время
-        if self.files_processed < len(self.files_to_process):
-            remaining_files = len(self.files_to_process) - self.files_processed
-
-            if self.files_processed > 0:
-                avg_time = self.time_spent / self.files_processed
+        # Оценка оставшегося времени
+        remaining_files = self.total_files - files_done
+        if remaining_files > 0:
+            if files_done > 0 and self.time_spent > 0:
+                avg_time = self.time_spent / files_done
             else:
                 avg_time = self.file_estimates.get(self.files_to_process[0], 30)
-
             remaining_time = avg_time * remaining_files
-            time_info = f"Осталось: ~{self.time_formatter.format_duration(remaining_time)}"
-            self.lbl_status.setText(time_info)
+            self.lbl_status.setText(f"Осталось: ~{self.time_formatter.format_duration(remaining_time)}")
+
+    def _update_progress_display(self):
+        """Тик таймера — плавная интерполяция прогресса по времени."""
+        self._refresh_progress()
 
     def _update_total_progress(self, value: int):
         """Обновляет общий прогресс-бар"""
@@ -1245,8 +1275,13 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_bar_file.setValue(value)
 
     def _update_current_file_info(self, info: str):
-        """Обновляет информацию о текущем файле"""
-        self.lbl_current_file.setText(info)
+        """Обновляет имя текущего файла (этап и счётчик отображаются отдельно)."""
+        # Сброс этапа на старте нового файла, чтобы не показывать прогресс предыдущего
+        self.current_stage = None
+        self.current_stage_progress = 0.0
+        display = info if len(info) <= 64 else f"…{info[-64:]}"
+        self._current_filename = display
+        self.lbl_current_file.setText(display)
 
     def _on_processing_finished(self, success: bool, message: str):
         """Обработчик завершения обработки"""
@@ -1255,7 +1290,9 @@ class GigaTranscriberQtApp(QMainWindow):
 
         self.btn_start.setEnabled(True)
         self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ")
-        self.progress_bar_total.setValue(100 if success else 0)
+        self.progress_bar_total.setValue(100 if success else self.progress_bar_total.value())
+        self.progress_bar_file.setValue(100 if success else self.progress_bar_file.value())
+        self.lbl_stage.setText("✓  Готово" if success else "✕  Остановлено")
         self.lbl_status.setText(message)
 
         # Возвращаем управляющие виджеты в активное состояние
