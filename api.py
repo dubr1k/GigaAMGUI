@@ -14,20 +14,21 @@ import hashlib
 import asyncio
 import shutil
 import zipfile
-import io
+import tempfile
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 from contextlib import asynccontextmanager
 
 import aiofiles
 from fastapi import (
     FastAPI, File, UploadFile, HTTPException, Depends,
-    BackgroundTasks, status, Header, Request
+    BackgroundTasks, status, Header, Request, Query
 )
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -44,6 +45,8 @@ from src.core.processor import TranscriptionProcessor
 from src.utils.processing_stats import ProcessingStats
 from src.utils.logger import setup_logger
 from src.utils.output_naming import output_filename, find_result_file
+from src.utils.audio_converter import ffmpeg_available
+from src.utils.atomic_json import load_json, save_json_atomic
 from src.config import HF_TOKEN, SUPPORTED_FORMATS
 
 # Применяем патч
@@ -358,31 +361,43 @@ def restore_tasks_from_results():
             continue
         
         task_id = task_dir.name
-        
-        # Ищем любой txt файл для определения имени оригинального файла
+
+        # Предпочитаем реальные метаданные из meta.json, если они есть
+        meta = load_json(str(task_dir / "meta.json"), None)
+        if isinstance(meta, dict) and meta.get('filename'):
+            tasks_storage[task_id] = {
+                'task_id': task_id,
+                'status': 'completed',
+                'created_at': meta.get('created_at'),
+                'started_at': meta.get('started_at', meta.get('created_at')),
+                'completed_at': meta.get('completed_at', meta.get('created_at')),
+                'progress': 100,
+                'filename': meta['filename'],
+                'file_size': meta.get('file_size', 0),
+                'message': 'Задача восстановлена из результатов при запуске API'
+            }
+            restored_count += 1
+            continue
+
+        # Fallback (старые задачи без meta.json): определяем имя по txt-файлу
         txt_files = list(task_dir.glob("*.txt"))
         if not txt_files:
             continue
-        
+
         # Берем первый файл (не timecodes)
         result_file = None
         for f in txt_files:
             if not f.name.endswith('_timecodes.txt'):
                 result_file = f
                 break
-        
+
         if not result_file:
             continue
-        
-        # Определяем оригинальное имя файла
+
+        # Оригинальное расширение неизвестно — оставляем только базовое имя
         filename_base = result_file.stem
-        # Предполагаем что это был аудио файл (можем использовать .ogg как fallback)
-        original_filename = filename_base + '.ogg'
-        
-        # Получаем время создания файла
         created_timestamp = datetime.fromtimestamp(result_file.stat().st_ctime)
-        
-        # Восстанавливаем запись о задаче
+
         tasks_storage[task_id] = {
             'task_id': task_id,
             'status': 'completed',
@@ -390,11 +405,11 @@ def restore_tasks_from_results():
             'started_at': created_timestamp.isoformat(),
             'completed_at': created_timestamp.isoformat(),
             'progress': 100,
-            'filename': original_filename,
+            'filename': filename_base,  # без выдуманного .ogg
             'file_size': 0,  # Неизвестно
             'message': 'Задача восстановлена из результатов при запуске API'
         }
-        
+
         restored_count += 1
     
     if restored_count > 0:
@@ -542,6 +557,22 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     'media_duration': result.get('media_duration', 0),
                     'message': 'Транскрибация успешно завершена'
                 })
+
+            # Сохраняем метаданные задачи на диск, чтобы корректно восстановить
+            # реальное имя файла после перезапуска API (без выдуманного .ogg)
+            try:
+                task = tasks_storage.get(task_id, {})
+                save_json_atomic(str(output_dir / "meta.json"), {
+                    'task_id': task_id,
+                    'filename': filename,
+                    'file_size': task.get('file_size', 0),
+                    'created_at': task.get('created_at'),
+                    'started_at': task.get('started_at'),
+                    'completed_at': task.get('completed_at'),
+                })
+            except OSError as meta_err:
+                logger.debug(f"[{task_id}] Не удалось сохранить meta.json: {meta_err}")
+
             logger.info(f"Задача {task_id} успешно завершена ({result['total_time']:.1f}с)")
 
         except Exception as e:
@@ -593,6 +624,10 @@ async def lifespan(app: FastAPI):
     # Восстановление задач из существующих результатов
     restore_tasks_from_results()
     
+    # Предполётная проверка ffmpeg/ffprobe (без них конвертация не работает)
+    if not ffmpeg_available():
+        logger.error("ffmpeg/ffprobe не найдены в PATH — обработка файлов будет невозможна!")
+
     # Проверка токена
     if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
         logger.error("HuggingFace токен не настроен!")
@@ -819,8 +854,8 @@ async def upload_files_batch(
     dependencies=[Depends(verify_api_key)]
 )
 async def list_tasks(
-    status_filter: Optional[str] = None,
-    limit: int = 100
+    status_filter: Optional[Literal["pending", "processing", "completed", "failed"]] = None,
+    limit: int = Query(100, ge=1, le=1000)
 ):
     """
     Получить список задач
@@ -1000,7 +1035,7 @@ async def get_task_result(task_id: str):
     "/api/v1/download-batch",
     dependencies=[Depends(verify_api_key)]
 )
-async def download_batch_results(task_ids: str, format: str = "txt"):
+async def download_batch_results(task_ids: str, format: Literal["txt", "timecodes"] = "txt"):
     """
     Скачать результаты нескольких задач в ZIP архиве
 
@@ -1054,10 +1089,11 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
             detail=f"Некоторые задачи еще не завершены: {', '.join(not_completed_ids)}"
         )
 
-    # Создаем ZIP архив в памяти
-    zip_buffer = io.BytesIO()
+    # Создаём ZIP во временном файле, чтобы не держать весь архив в памяти
+    tmp_fd, tmp_zip_path = tempfile.mkstemp(suffix=".zip")
+    os.close(tmp_fd)
 
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+    with zipfile.ZipFile(tmp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         for task in valid_tasks:
             task_id = task['task_id']
             result_dir = RESULTS_DIR / task_id
@@ -1095,16 +1131,15 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
                 error_msg = f"Ошибка при обработке файла {task['filename']}"
                 zip_file.writestr(zip_name, error_msg)
 
-    zip_buffer.seek(0)
-
-    # Возвращаем ZIP файл
+    # Возвращаем ZIP файл и удаляем временный файл после отправки
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"transcription_results_{timestamp}.zip"
 
-    return StreamingResponse(
-        iter([zip_buffer.getvalue()]),
+    return FileResponse(
+        path=tmp_zip_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        filename=filename,
+        background=BackgroundTask(os.unlink, tmp_zip_path),
     )
 
 
@@ -1112,7 +1147,7 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
     "/api/v1/tasks/{task_id}/download",
     dependencies=[Depends(verify_api_key)]
 )
-async def download_result(task_id: str, format: str = "txt"):
+async def download_result(task_id: str, format: Literal["txt", "timecodes"] = "txt"):
     """
     Скачать файл с результатами
     
