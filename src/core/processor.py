@@ -428,38 +428,27 @@ class TranscriptionProcessor:
                     utt['speaker'] = "Спикер №1"
             return utterances
     
+    @staticmethod
+    def _format_timestamp(seconds: float, ms_sep: str) -> str:
+        """
+        Форматирует время как HH:MM:SS<ms_sep>mmm.
+        ms_sep=',' для SRT, '.' для VTT.
+        """
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds - int(seconds)) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}{ms_sep}{millis:03d}"
+
     def _format_srt_timestamp(self, seconds: float) -> str:
-        """
-        Форматирует время в формат SRT (HH:MM:SS,mmm)
-        
-        Args:
-            seconds: время в секундах
-            
-        Returns:
-            str: отформатированное время
-        """
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millis = int((seconds - int(seconds)) * 1000)
-        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-    
+        """Форматирует время в формат SRT (HH:MM:SS,mmm)"""
+        return self._format_timestamp(seconds, ',')
+
     def _format_vtt_timestamp(self, seconds: float) -> str:
-        """
-        Форматирует время в формат VTT (HH:MM:SS.mmm)
-        
-        Args:
-            seconds: время в секундах
-            
-        Returns:
-            str: отформатированное время
-        """
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millis = int((seconds - int(seconds)) * 1000)
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
-    
+        """Форматирует время в формат VTT (HH:MM:SS.mmm)"""
+        return self._format_timestamp(seconds, '.')
+
+
     def _generate_srt(self, utterances: list) -> str:
         """
         Генерирует контент в формате SRT субтитров
