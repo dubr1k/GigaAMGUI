@@ -5,13 +5,17 @@ GigaAM v3 Transcriber - REST API
 """
 
 import os
+import re
 import sys
 import uuid
 import time
+import hmac
+import hashlib
 import asyncio
 import shutil
 import zipfile
 import io
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -39,6 +43,7 @@ from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
 from src.utils.processing_stats import ProcessingStats
 from src.utils.logger import setup_logger
+from src.utils.output_naming import output_filename, find_result_file
 from src.config import HF_TOKEN, SUPPORTED_FORMATS
 
 # Применяем патч
@@ -47,8 +52,6 @@ apply_pyannote_patch()
 # ==================== КОНФИГУРАЦИЯ ====================
 
 # Загрузка конфигурации из .env
-import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
@@ -56,9 +59,18 @@ env_path = Path(__file__).parent / '.env'
 if env_path.exists():
     load_dotenv(env_path, override=False)
 
-# API ключи
+# API ключи (в файле хранятся только SHA-256 хэши)
 API_KEYS_FILE = Path(__file__).parent / os.getenv("API_KEYS_FILE", ".api_keys")
-VALID_API_KEYS = set()
+VALID_API_KEY_HASHES: set = set()
+
+# Регулярка валидного task_id (uuid4().hex = 32 hex-символа)
+TASK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+# Разрешённые CORS-origins (через запятую в .env); по умолчанию пусто = кросс-доменные запросы запрещены
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+
+# Показывать ли клиенту полный traceback (только для отладки!)
+API_DEBUG = os.getenv("API_DEBUG", "false").lower() in ("1", "true", "yes")
 
 # Директории
 UPLOAD_DIR = Path(__file__).parent / os.getenv("UPLOAD_DIR", "uploads")
@@ -146,35 +158,57 @@ class APIKeyResponse(BaseModel):
 
 # ==================== УТИЛИТЫ ====================
 
+_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _hash_key(key: str) -> str:
+    """SHA-256 хэш ключа (в файле и памяти хранятся только хэши)"""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
 def load_api_keys():
-    """Загружает API ключи из файла"""
-    global VALID_API_KEYS
+    """Загружает хэши API-ключей из файла (с миграцией старых plaintext-ключей)"""
+    global VALID_API_KEY_HASHES
     if API_KEYS_FILE.exists():
-        with open(API_KEYS_FILE, 'r') as f:
-            VALID_API_KEYS = set(line.strip() for line in f if line.strip())
+        raw_lines = [l.strip() for l in API_KEYS_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+        hashes = set()
+        migrated = False
+        for line in raw_lines:
+            if _HASH_RE.match(line):
+                hashes.add(line)
+            else:
+                # Старый ключ в открытом виде — мигрируем в хэш
+                hashes.add(_hash_key(line))
+                migrated = True
+        VALID_API_KEY_HASHES = hashes
+        if migrated:
+            save_api_keys()
+            print("API-ключи мигрированы в хэшированный вид (.api_keys)")
     else:
         # Создаем первый ключ по умолчанию
         default_key = f"gam_{uuid.uuid4().hex}"
-        VALID_API_KEYS.add(default_key)
+        VALID_API_KEY_HASHES = {_hash_key(default_key)}
         save_api_keys()
         print(f"\n{'='*60}")
-        print(f"ПЕРВЫЙ API КЛЮЧ СОЗДАН:")
+        print(f"ПЕРВЫЙ API КЛЮЧ СОЗДАН (показывается только один раз):")
         print(f"  {default_key}")
-        print(f"Сохраните его в безопасном месте!")
+        print(f"Сохраните его в безопасном месте! В файле хранится только хэш.")
         print(f"{'='*60}\n")
 
 
 def save_api_keys():
-    """Сохраняет API ключи в файл"""
+    """Сохраняет хэши API-ключей в файл"""
     with open(API_KEYS_FILE, 'w') as f:
-        for key in VALID_API_KEYS:
-            f.write(f"{key}\n")
+        for key_hash in VALID_API_KEY_HASHES:
+            f.write(f"{key_hash}\n")
     os.chmod(API_KEYS_FILE, 0o600)  # Только владелец может читать
 
 
 def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")) -> str:
-    """Проверяет API ключ"""
-    if x_api_key not in VALID_API_KEYS:
+    """Проверяет API ключ в постоянное время (constant-time)"""
+    candidate = _hash_key(x_api_key)
+    # hmac.compare_digest защищает от timing-атак при сравнении хэшей
+    if not any(hmac.compare_digest(candidate, valid) for valid in VALID_API_KEY_HASHES):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный API ключ"
@@ -187,6 +221,130 @@ def is_supported_format(filename: str) -> bool:
     extensions = SUPPORTED_FORMATS[1].split()
     file_ext = Path(filename).suffix.lower()
     return any(file_ext == ext.replace('*', '') for ext in extensions)
+
+
+def safe_filename(filename: Optional[str]) -> str:
+    """Защита от path traversal: оставляет только базовое имя без разделителей путей.
+
+    Учитывает и POSIX (/), и Windows (\\) разделители независимо от ОС сервера,
+    т.к. имя файла приходит от клиента и может быть сформировано на другой платформе.
+    """
+    name = (filename or "").replace("\\", "/")
+    name = name.split("/")[-1]          # отбрасывает любые компоненты пути
+    name = name.replace("\x00", "").strip()
+    return name or "upload"
+
+
+def validated_task_id(task_id: str) -> str:
+    """Валидирует task_id перед любым обращением к файловой системе"""
+    if not TASK_ID_RE.match(task_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректный формат task_id"
+        )
+    return task_id
+
+
+def _fsync_path(path: Path):
+    """Гарантирует запись файла на диск (синхронный вызов, запускать в executor)"""
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _register_task(task_id: str, filename: str, file_size: int):
+    """Создаёт запись о задаче в хранилище"""
+    tasks_storage[task_id] = {
+        'task_id': task_id,
+        'status': 'pending',
+        'created_at': datetime.now().isoformat(),
+        'started_at': None,
+        'completed_at': None,
+        'progress': 0,
+        'filename': filename,
+        'file_size': file_size,
+        'message': 'Задача в очереди на обработку'
+    }
+
+
+async def _save_upload(file: UploadFile, request: Request) -> tuple:
+    """
+    Валидирует формат/размер и сохраняет загруженный файл.
+
+    Возвращает (task_id, file_path, filename, file_size).
+    Бросает HTTPException с корректными кодами (400/413/500) — вызывающий код
+    обязан пробрасывать HTTPException дальше (не оборачивать в 500).
+    """
+    # Проверка формата
+    if not is_supported_format(file.filename):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Неподдерживаемый формат файла {file.filename}. Поддерживаемые: {SUPPORTED_FORMATS[1]}"
+        )
+
+    max_gb = MAX_FILE_SIZE / 1024 / 1024 / 1024
+
+    # Ранний отказ по Content-Length до записи на диск (защита от DoS)
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Файл слишком большой (макс. {max_gb:.1f} GB)"
+                )
+        except ValueError:
+            pass  # некорректный заголовок — проверим по факту записи
+
+    task_id = uuid.uuid4().hex
+    filename = safe_filename(file.filename)
+    file_path = UPLOAD_DIR / f"{task_id}_{filename}"
+    file_size = 0
+
+    try:
+        async with aiofiles.open(file_path, 'wb') as f:
+            while chunk := await file.read(1024 * 1024):
+                file_size += len(chunk)
+                if file_size > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"Файл {filename} слишком большой (макс. {max_gb:.1f} GB)"
+                    )
+                await f.write(chunk)
+
+        # Синхронизируем на диск, не блокируя event loop
+        await asyncio.get_running_loop().run_in_executor(None, _fsync_path, file_path)
+
+        if not file_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Файл не был сохранён на диск"
+            )
+        actual_size = file_path.stat().st_size
+        if actual_size != file_size:
+            # Усечённая запись — считаем ошибкой, а не «не критично»
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Размер сохранённого файла не совпадает с полученным"
+            )
+    except HTTPException:
+        # Корректные коды (400/413/500) пробрасываем как есть, удалив частичный файл
+        if file_path.exists():
+            file_path.unlink()
+        raise
+    except Exception as e:
+        if file_path.exists():
+            file_path.unlink()
+        if logger:
+            logger.error(f"Ошибка сохранения файла {filename}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Ошибка сохранения файла"
+        )
+
+    return task_id, file_path, filename, file_size
 
 
 def restore_tasks_from_results():
@@ -247,26 +405,40 @@ async def cleanup_old_tasks():
     """Очищает старые задачи и файлы"""
     now = time.time()
     cutoff = now - (TASK_CLEANUP_HOURS * 3600)
-    
+
     tasks_to_remove = []
-    for task_id, task in tasks_storage.items():
+    # Итерируемся по снимку, чтобы не словить "dictionary changed size during iteration"
+    for task_id, task in list(tasks_storage.items()):
         created_timestamp = datetime.fromisoformat(task['created_at']).timestamp()
         if created_timestamp < cutoff:
             tasks_to_remove.append(task_id)
-            
+
             # Удаляем файлы
             upload_path = UPLOAD_DIR / f"{task_id}_{task['filename']}"
             if upload_path.exists():
                 upload_path.unlink()
-            
+
             # Удаляем результаты
             result_dir = RESULTS_DIR / task_id
             if result_dir.exists():
                 shutil.rmtree(result_dir)
-    
+
     for task_id in tasks_to_remove:
-        del tasks_storage[task_id]
+        tasks_storage.pop(task_id, None)
         logger.info(f"Очищена задача {task_id} (старше {TASK_CLEANUP_HOURS}ч)")
+
+
+async def _cleanup_loop():
+    """Периодически запускает очистку старых задач (раз в час)"""
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            await cleanup_old_tasks()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            if logger:
+                logger.error(f"Ошибка в цикле очистки задач: {e}")
 
 
 async def process_transcription(task_id: str, file_path: Path, filename: str):
@@ -280,91 +452,43 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
     """
     async with processing_semaphore:
         try:
-            # Проверяем существование файла перед обработкой
-            # Используем оригинальный путь и resolved путь для надежности
-            file_path_original = file_path
-            file_path_resolved = file_path.resolve()
-            
-            # Логируем оба пути для отладки
-            logger.debug(f"[{task_id}] Проверка файла:")
-            logger.debug(f"[{task_id}]   Оригинальный путь: {file_path_original}")
-            logger.debug(f"[{task_id}]   Resolved путь: {file_path_resolved}")
-            logger.debug(f"[{task_id}]   Оригинальный существует: {file_path_original.exists()}")
-            logger.debug(f"[{task_id}]   Resolved существует: {file_path_resolved.exists()}")
-            
-            # Проверяем оба варианта пути
-            actual_file_path = None
-            if file_path_resolved.exists():
-                actual_file_path = file_path_resolved
-            elif file_path_original.exists():
-                actual_file_path = file_path_original
-            else:
-                # Пробуем найти файл по имени в директории uploads
-                filename_only = file_path_original.name
-                alternative_path = UPLOAD_DIR / filename_only
-                logger.debug(f"[{task_id}]   Альтернативный путь: {alternative_path}")
-                logger.debug(f"[{task_id}]   Альтернативный существует: {alternative_path.exists()}")
-                
-                if alternative_path.exists():
-                    actual_file_path = alternative_path
-                else:
-                    # КРИТИЧНО: Пробуем найти файл через glob, так как файл может еще не полностью записан на диск
-                    # и exists() может вернуть False, но glob все равно найдет файл
-                    try:
-                        files_in_dir = list(UPLOAD_DIR.glob(f"*{task_id}*"))
-                        logger.debug(f"[{task_id}] Файлы с task_id в директории uploads (через glob): {[str(f) for f in files_in_dir]}")
-                        
-                        if files_in_dir:
-                            # Используем первый найденный файл
-                            found_file = files_in_dir[0]
-                            logger.debug(f"[{task_id}] Найден файл через glob: {found_file}")
-                            logger.debug(f"[{task_id}] Файл существует (проверка после glob): {found_file.exists()}")
-                            
-                            # Даже если exists() возвращает False, пробуем использовать файл
-                            # Возможно, файл еще записывается, но уже доступен через glob
-                            actual_file_path = found_file
-                            logger.info(f"[{task_id}] Используем файл, найденный через glob (может быть еще записывается)")
-                        else:
-                            error_msg = f"Файл не найден ни по одному из путей:\n  - {file_path_original}\n  - {file_path_resolved}\n  - {alternative_path}"
-                            logger.error(f"[{task_id}] {error_msg}")
-                            
-                            tasks_storage[task_id].update({
-                                'status': 'failed',
-                                'completed_at': datetime.now().isoformat(),
-                                'error': error_msg,
-                                'message': 'Файл не найден'
-                            })
-                            return
-                    except Exception as e:
-                        logger.debug(f"[{task_id}] Не удалось прочитать директорию uploads: {e}")
-                        error_msg = f"Ошибка при поиске файла: {str(e)}"
-                        logger.error(f"[{task_id}] {error_msg}")
-                        tasks_storage[task_id].update({
-                            'status': 'failed',
-                            'completed_at': datetime.now().isoformat(),
-                            'error': error_msg,
-                            'message': 'Ошибка при поиске файла'
-                        })
-                        return
-            
-            logger.debug(f"[{task_id}] Используемый путь к файлу: {actual_file_path}")
-            
+            # Файл уже записан и fsync-нут в _save_upload до планирования задачи —
+            # доверяем переданному пути, без glob/retry-эвристик.
+            if not file_path.exists():
+                logger.error(f"[{task_id}] Файл не найден: {file_path}")
+                if task_id in tasks_storage:
+                    tasks_storage[task_id].update({
+                        'status': 'failed',
+                        'completed_at': datetime.now().isoformat(),
+                        'error': 'Файл не найден',
+                        'message': 'Файл не найден'
+                    })
+                return
+
+            # Задача могла быть удалена, пока ждала в очереди семафора
+            if task_id not in tasks_storage:
+                logger.debug(f"[{task_id}] Задача удалена до начала обработки — пропускаем")
+                return
+
             # Обновляем статус
             tasks_storage[task_id]['status'] = 'processing'
             tasks_storage[task_id]['started_at'] = datetime.now().isoformat()
             tasks_storage[task_id]['progress'] = 5
-            
+
             # Создаем директорию для результатов
             output_dir = RESULTS_DIR / task_id
             output_dir.mkdir(exist_ok=True)
-            
-            # Callback для обновления прогресса
+
+            # Callback для обновления прогресса (с защитой от удалённой задачи)
             def progress_callback(stage: str, progress: float):
+                task = tasks_storage.get(task_id)
+                if task is None:
+                    return
                 if stage == 'conversion':
-                    tasks_storage[task_id]['progress'] = int(5 + progress * 15)
+                    task['progress'] = int(5 + progress * 15)
                 elif stage == 'transcription':
-                    tasks_storage[task_id]['progress'] = int(20 + progress * 75)
-            
+                    task['progress'] = int(20 + progress * 75)
+
             # Процессор
             processor = TranscriptionProcessor(
                 model_loader=model_loader,
@@ -372,76 +496,42 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 logger=lambda msg: logger.debug(f"[{task_id}] {msg}"),
                 progress_callback=progress_callback
             )
-            
-            # Финальная проверка файла перед обработкой
-            # Если файл был найден через glob, он может еще записываться
-            # Пробуем несколько раз с небольшой задержкой
-            file_found = False
-            for attempt in range(3):
-                if actual_file_path.exists():
-                    file_found = True
-                    break
-                else:
-                    logger.debug(f"[{task_id}] Попытка {attempt + 1}/3: файл еще не доступен, ждем 0.5 сек...")
-                    await asyncio.sleep(0.5)
-            
-            if not file_found:
-                # Последняя попытка через glob
-                files_in_dir = list(UPLOAD_DIR.glob(f"*{task_id}*"))
-                if files_in_dir:
-                    actual_file_path = files_in_dir[0]
-                    logger.info(f"[{task_id}] Файл найден через glob после ожидания: {actual_file_path}")
-                    file_found = True
-            
-            if not file_found:
-                error_msg = f"Файл недоступен после ожидания: {actual_file_path}"
-                logger.error(f"[{task_id}] {error_msg}")
-                tasks_storage[task_id].update({
-                    'status': 'failed',
-                    'completed_at': datetime.now().isoformat(),
-                    'error': error_msg,
-                    'message': 'Файл недоступен после ожидания'
-                })
-                return
-            
-            logger.debug(f"[{task_id}] Файл подтвержден перед обработкой: {actual_file_path}")
-            try:
-                file_size = actual_file_path.stat().st_size
-                logger.debug(f"[{task_id}] Размер файла: {file_size} байт")
-            except Exception as e:
-                logger.warning(f"[{task_id}] Не удалось получить размер файла: {e}")
-            
-            # Обработка в синхронном коде через executor
-            # Используем найденный путь к файлу
-            loop = asyncio.get_event_loop()
+
+            # Обработка в синхронном коде через executor.
+            # Запрашиваем и txt, и txt_timecodes, чтобы _timecodes.txt реально создавался
+            # (иначе transcription_with_timecodes всегда пуст).
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
-                processor.process_file,
-                str(actual_file_path),
-                str(output_dir),
-                0,
-                1,
-                filename  # Передаем оригинальное имя файла
+                lambda: processor.process_file(
+                    str(file_path),
+                    str(output_dir),
+                    0,
+                    1,
+                    filename,  # Передаем оригинальное имя файла
+                    output_formats=['txt', 'txt_timecodes'],
+                )
             )
-            
-            if result['success']:
-                # Читаем результаты
-                # Файлы сохраняются с оригинальным именем
-                text_file = output_dir / f"{Path(filename).stem}.txt"
-                timecode_file = output_dir / f"{Path(filename).stem}_timecodes.txt"
-                
-                transcription = ""
-                transcription_timecoded = ""
-                
-                if text_file.exists():
-                    async with aiofiles.open(text_file, 'r', encoding='utf-8') as f:
-                        transcription = await f.read()
-                
-                if timecode_file.exists():
-                    async with aiofiles.open(timecode_file, 'r', encoding='utf-8') as f:
-                        transcription_timecoded = await f.read()
-                
-                # Обновляем задачу
+
+            if not result['success']:
+                raise Exception("Обработка не удалась")
+
+            # Читаем результаты (имена файлов — из единого модуля output_naming)
+            stem = Path(filename).stem
+            text_file = output_dir / output_filename(stem, 'txt')
+            timecode_file = output_dir / output_filename(stem, 'txt_timecodes')
+
+            transcription = ""
+            transcription_timecoded = ""
+            if text_file.exists():
+                async with aiofiles.open(text_file, 'r', encoding='utf-8') as f:
+                    transcription = await f.read()
+            if timecode_file.exists():
+                async with aiofiles.open(timecode_file, 'r', encoding='utf-8') as f:
+                    transcription_timecoded = await f.read()
+
+            # Обновляем задачу (если она ещё существует)
+            if task_id in tasks_storage:
                 tasks_storage[task_id].update({
                     'status': 'completed',
                     'completed_at': datetime.now().isoformat(),
@@ -452,49 +542,33 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     'media_duration': result.get('media_duration', 0),
                     'message': 'Транскрибация успешно завершена'
                 })
-                
-                logger.info(f"Задача {task_id} успешно завершена ({result['total_time']:.1f}с)")
-                
-            else:
-                raise Exception("Обработка не удалась")
-                
+            logger.info(f"Задача {task_id} успешно завершена ({result['total_time']:.1f}с)")
+
         except Exception as e:
-            import traceback
-            error_traceback = traceback.format_exc()
-            error_msg = str(e)
-            logger.error(f"Ошибка при обработке задачи {task_id}: {error_msg}")
-            logger.debug(f"Traceback для задачи {task_id}:\n{error_traceback}")
-            tasks_storage[task_id].update({
-                'status': 'failed',
-                'completed_at': datetime.now().isoformat(),
-                'error': error_msg,
-                'error_details': error_traceback,  # Добавляем полный traceback для отладки
-                'message': f'Ошибка обработки: {error_msg}'
-            })
-        
+            # Полный traceback — только в логи; клиенту отдаём обобщённое сообщение
+            logger.error(f"Ошибка при обработке задачи {task_id}: {e}")
+            logger.debug(f"Traceback для задачи {task_id}:\n{traceback.format_exc()}")
+            if task_id in tasks_storage:
+                update = {
+                    'status': 'failed',
+                    'completed_at': datetime.now().isoformat(),
+                    'error': 'Внутренняя ошибка обработки',
+                    'message': 'Ошибка обработки файла'
+                }
+                if API_DEBUG:
+                    update['error_details'] = traceback.format_exc()
+                tasks_storage[task_id].update(update)
+
         finally:
             # Удаляем загруженный файл только после успешной обработки
-            # НЕ удаляем файл, если обработка не удалась - файл может понадобиться для повторной попытки
+            # (при ошибке файл может понадобиться для повторной попытки)
             task_status = tasks_storage.get(task_id, {}).get('status', 'unknown')
-            if task_status == 'completed':
-                # Удаляем файл только после успешной обработки
-                paths_to_check = []
-                if 'actual_file_path' in locals():
-                    paths_to_check.append(actual_file_path)
-                paths_to_check.append(file_path)
-                if hasattr(file_path, 'resolve'):
-                    paths_to_check.append(file_path.resolve())
-                
-                for path_to_check in paths_to_check:
-                    if path_to_check and Path(path_to_check).exists():
-                        try:
-                            Path(path_to_check).unlink()
-                            logger.debug(f"[{task_id}] Удален файл после успешной обработки: {path_to_check}")
-                            break
-                        except Exception as e:
-                            logger.debug(f"[{task_id}] Не удалось удалить файл {path_to_check}: {e}")
-            else:
-                logger.debug(f"[{task_id}] Файл не удален (статус: {task_status}), может понадобиться для повторной попытки")
+            if task_status == 'completed' and file_path.exists():
+                try:
+                    file_path.unlink()
+                    logger.debug(f"[{task_id}] Удалён файл после успешной обработки: {file_path}")
+                except OSError as e:
+                    logger.debug(f"[{task_id}] Не удалось удалить файл {file_path}: {e}")
 
 
 # ==================== LIFESPAN ====================
@@ -540,15 +614,23 @@ async def lifespan(app: FastAPI):
     
     # Семафор для ограничения задач
     processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-    
+
+    # Фоновая периодическая очистка старых задач
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+
     logger.info(f"API готов к работе (макс. {MAX_CONCURRENT_TASKS} задач одновременно)")
     print("✅ API сервер успешно запущен!")
     print("="*60)
-    
+
     yield
-    
+
     # Очистка
     logger.info("Остановка API сервера...")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     print("\n👋 API сервер остановлен")
 
 
@@ -567,13 +649,14 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS
+# CORS — список доменов задаётся через CORS_ORIGINS в .env (по умолчанию кросс-домен запрещён).
+# Аутентификация по заголовку X-API-Key, поэтому credentials не нужны.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # В продакшене указать конкретные домены
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["X-API-Key", "Content-Type"],
 )
 
 
@@ -651,87 +734,19 @@ async def upload_file(
     
     Возвращает task_id для проверки статуса и получения результата.
     """
-    
-    # Проверка формата
-    if not is_supported_format(file.filename):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Неподдерживаемый формат файла. Поддерживаемые: {SUPPORTED_FORMATS[1]}"
-        )
-    
-    # Генерируем ID задачи
-    task_id = uuid.uuid4().hex
-    
-    # Сохраняем файл
-    file_path = UPLOAD_DIR / f"{task_id}_{file.filename}"
-    file_size = 0
-    
-    try:
-        async with aiofiles.open(file_path, 'wb') as f:
-            while chunk := await file.read(8192):
-                file_size += len(chunk)
-                
-                # Проверка размера
-                if file_size > MAX_FILE_SIZE:
-                    await f.close()
-                    file_path.unlink()
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail=f"Файл слишком большой (макс. {MAX_FILE_SIZE/1024/1024/1024:.1f} GB)"
-                    )
-                
-                await f.write(chunk)
-        
-        # Убеждаемся, что файл полностью записан на диск
-        # Синхронизируем файловую систему
-        file_fd = os.open(str(file_path), os.O_RDONLY)
-        try:
-            os.fsync(file_fd)  # Синхронизируем файл
-        finally:
-            os.close(file_fd)
-        
-        # Финальная проверка, что файл существует и имеет правильный размер
-        if not file_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Файл не был сохранен на диск"
-            )
-        
-        actual_size = file_path.stat().st_size
-        if actual_size != file_size:
-            logger.warning(f"Размер файла не совпадает: ожидалось {file_size}, получено {actual_size}")
-            # Не критично, но логируем
-    
-    except Exception as e:
-        if file_path.exists():
-            file_path.unlink()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка сохранения файла: {str(e)}"
-        )
-    
-    # Создаем задачу
-    tasks_storage[task_id] = {
-        'task_id': task_id,
-        'status': 'pending',
-        'created_at': datetime.now().isoformat(),
-        'started_at': None,
-        'completed_at': None,
-        'progress': 0,
-        'filename': file.filename,
-        'file_size': file_size,
-        'message': 'Задача в очереди на обработку'
-    }
-    
-    # Запускаем обработку в фоне
-    background_tasks.add_task(process_transcription, task_id, file_path, file.filename)
-    
-    logger.info(f"Создана задача {task_id}: {file.filename} ({file_size/1024/1024:.1f} MB)")
-    
+    # Валидация, сохранение и проверка файла (HTTPException пробрасывается с корректным кодом)
+    task_id, file_path, filename, file_size = await _save_upload(file, request)
+
+    # Создаем задачу и запускаем обработку в фоне
+    _register_task(task_id, filename, file_size)
+    background_tasks.add_task(process_transcription, task_id, file_path, filename)
+
+    logger.info(f"Создана задача {task_id}: {filename} ({file_size/1024/1024:.1f} MB)")
+
     return UploadResponse(
         task_id=task_id,
         message="Файл успешно загружен и отправлен на обработку",
-        filename=file.filename,
+        filename=filename,
         file_size=file_size,
         estimated_time="Оценка будет доступна после начала обработки"
     )
@@ -776,86 +791,18 @@ async def upload_files_batch(
     uploaded_tasks = []
 
     for file in files:
-        # Проверка формата
-        if not is_supported_format(file.filename):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Неподдерживаемый формат файла {file.filename}. Поддерживаемые: {SUPPORTED_FORMATS[1]}"
-            )
+        # Валидация, сохранение и проверка файла (общий хелпер; HTTPException пробрасывается)
+        task_id, file_path, filename, file_size = await _save_upload(file, request)
 
-        # Генерируем ID задачи
-        task_id = uuid.uuid4().hex
+        _register_task(task_id, filename, file_size)
+        background_tasks.add_task(process_transcription, task_id, file_path, filename)
 
-        # Сохраняем файл
-        file_path = UPLOAD_DIR / f"{task_id}_{file.filename}"
-        file_size = 0
-
-        try:
-            async with aiofiles.open(file_path, 'wb') as f:
-                while chunk := await file.read(8192):
-                    file_size += len(chunk)
-
-                    # Проверка размера
-                    if file_size > MAX_FILE_SIZE:
-                        await f.close()
-                        file_path.unlink()
-                        raise HTTPException(
-                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                            detail=f"Файл {file.filename} слишком большой (макс. {MAX_FILE_SIZE/1024/1024/1024:.1f} GB)"
-                        )
-
-                    await f.write(chunk)
-            
-            # Убеждаемся, что файл полностью записан на диск
-            # Синхронизируем файловую систему
-            import os
-            file_fd = os.open(str(file_path), os.O_RDONLY)
-            try:
-                os.fsync(file_fd)  # Синхронизируем файл
-            finally:
-                os.close(file_fd)
-            
-            # Финальная проверка, что файл существует и имеет правильный размер
-            if not file_path.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Файл {file.filename} не был сохранен на диск"
-                )
-            
-            actual_size = file_path.stat().st_size
-            if actual_size != file_size:
-                logger.warning(f"Размер файла {file.filename} не совпадает: ожидалось {file_size}, получено {actual_size}")
-
-        except Exception as e:
-            if file_path.exists():
-                file_path.unlink()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Ошибка сохранения файла {file.filename}: {str(e)}"
-            )
-
-        # Создаем задачу
-        tasks_storage[task_id] = {
-            'task_id': task_id,
-            'status': 'pending',
-            'created_at': datetime.now().isoformat(),
-            'started_at': None,
-            'completed_at': None,
-            'progress': 0,
-            'filename': file.filename,
-            'file_size': file_size,
-            'message': 'Задача в очереди на обработку'
-        }
-
-        # Запускаем обработку в фоне
-        background_tasks.add_task(process_transcription, task_id, file_path, file.filename)
-
-        logger.info(f"Создана задача {task_id}: {file.filename} ({file_size/1024/1024:.1f} MB)")
+        logger.info(f"Создана задача {task_id}: {filename} ({file_size/1024/1024:.1f} MB)")
 
         uploaded_tasks.append(UploadResponse(
             task_id=task_id,
             message="Файл успешно загружен и отправлен на обработку",
-            filename=file.filename,
+            filename=filename,
             file_size=file_size,
             estimated_time="Оценка будет доступна после начала обработки"
         ))
@@ -916,12 +863,13 @@ async def get_task_status(task_id: str):
     - completed: завершено успешно
     - failed: ошибка
     """
+    validated_task_id(task_id)
     if task_id not in tasks_storage:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Задача не найдена"
         )
-    
+
     task = tasks_storage[task_id]
     return TaskStatus(**task)
 
@@ -940,14 +888,8 @@ async def get_batch_progress(task_ids: str):
     Полезно для отображения прогресса в Postman/клиенте.
     """
     # Парсим список task_id
-    try:
-        task_id_list = [tid.strip() for tid in task_ids.split(',') if tid.strip()]
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неверный формат списка task_id. Используйте: task_id1,task_id2,task_id3"
-        )
-    
+    task_id_list = [tid.strip() for tid in task_ids.split(',') if tid.strip()]
+
     if len(task_id_list) > 50:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1000,14 +942,15 @@ async def get_task_result(task_id: str):
     Возвращает текст транскрибации с таймкодами и без.
     Доступно только для завершенных задач.
     """
+    validated_task_id(task_id)
     if task_id not in tasks_storage:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Задача не найдена"
         )
-    
+
     task = tasks_storage[task_id]
-    
+
     if task['status'] != 'completed':
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1029,24 +972,16 @@ async def get_task_result(task_id: str):
             )
         
         filename_base = Path(task['filename']).stem
-        
-        # Ищем файлы напрямую в списке файлов директории
-        text_file = None
-        timecode_file = None
-        
-        for file in result_dir.iterdir():
-            if file.suffix == '.txt':
-                if file.stem == filename_base:
-                    text_file = file
-                elif file.stem == f"{filename_base}_timecodes":
-                    timecode_file = file
-        
-        # Читаем файлы если нашли
-        if text_file and text_file.exists():
+
+        # Имена детерминированы — ищем через единый модуль output_naming
+        text_file = find_result_file(result_dir, filename_base, 'txt')
+        timecode_file = find_result_file(result_dir, filename_base, 'txt_timecodes')
+
+        if text_file:
             async with aiofiles.open(text_file, 'r', encoding='utf-8') as f:
                 transcription = await f.read()
-        
-        if timecode_file and timecode_file.exists():
+
+        if timecode_file:
             async with aiofiles.open(timecode_file, 'r', encoding='utf-8') as f:
                 transcription_timecoded = await f.read()
     
@@ -1074,13 +1009,9 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
     """
 
     # Парсим список task_id
-    try:
-        task_id_list = [tid.strip() for tid in task_ids.split(',') if tid.strip()]
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неверный формат списка task_id. Используйте: task_id1,task_id2,task_id3"
-        )
+    task_id_list = [tid.strip() for tid in task_ids.split(',') if tid.strip()]
+    for tid in task_id_list:
+        validated_task_id(tid)
 
     if len(task_id_list) > 20:
         raise HTTPException(
@@ -1114,7 +1045,7 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
     if not_found_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Задачи не найдены: {', '.join(not_found_ids)}. Всего задач в системе: {len(tasks_storage)}. Используйте GET /api/v1/tasks для получения списка доступных task_id."
+            detail=f"Задачи не найдены: {', '.join(not_found_ids)}. Используйте GET /api/v1/tasks для получения списка доступных task_id."
         )
     
     if not_completed_ids:
@@ -1141,54 +1072,27 @@ async def download_batch_results(task_ids: str, format: str = "txt"):
                 continue
             
             filename_base = Path(task['filename']).stem
-            
-            # Определяем имя файла в архиве
-            if format == "timecodes":
-                zip_name = f"{filename_base}_timecodes.txt"
-            else:
-                zip_name = f"{filename_base}.txt"
-            
-            # Ищем файл напрямую в списке файлов директории
-            # Это надежный способ, работающий с кириллицей
-            found_file = None
-            
+            fmt_key = 'txt_timecodes' if format == "timecodes" else 'txt'
+            zip_name = output_filename(filename_base, fmt_key)
+
             try:
-                for file in result_dir.iterdir():
-                    # Пропускаем не-txt файлы и временные файлы
-                    if file.suffix != '.txt' or file.name.startswith('temp_'):
-                        continue
-                    
-                    # Определяем тип файла и базовое имя
-                    is_timecoded = file.stem.endswith('_timecodes')
-                    file_base = file.stem[:-10] if is_timecoded else file.stem
-                    
-                    # Проверяем совпадение
-                    if file_base == filename_base:
-                        # Если нужен файл с таймкодами
-                        if format == "timecodes" and is_timecoded:
-                            found_file = file
-                            break
-                        # Если нужен обычный файл
-                        elif format != "timecodes" and not is_timecoded:
-                            found_file = file
-                            break
-                
+                # Имена детерминированы — ищем через единый модуль output_naming
+                found_file = find_result_file(result_dir, filename_base, fmt_key)
+
                 # Добавляем файл в архив
-                if found_file and found_file.exists():
+                if found_file:
                     zip_file.write(str(found_file), zip_name)
                     logger.info(f"Batch download: добавлен файл {zip_name} для задачи {task_id}")
                 else:
-                    # Файл не найден - добавляем сообщение об ошибке
-                    all_files = [f.name for f in result_dir.iterdir()]
+                    # Файл не найден - добавляем сообщение об ошибке (без листинга папки)
                     error_msg = f"Результат не найден для файла: {task['filename']}\n"
-                    error_msg += f"Искали: {filename_base}{'_timecodes' if format == 'timecodes' else ''}.txt\n"
-                    error_msg += f"Файлы в папке: {', '.join(all_files)}"
+                    error_msg += f"Искали: {zip_name}"
                     zip_file.writestr(zip_name, error_msg)
                     logger.warning(f"Batch download: файл не найден для задачи {task_id}")
-                    
+
             except Exception as e:
                 logger.error(f"Batch download: ошибка при обработке задачи {task_id}: {e}")
-                error_msg = f"Ошибка при обработке файла {task['filename']}: {str(e)}"
+                error_msg = f"Ошибка при обработке файла {task['filename']}"
                 zip_file.writestr(zip_name, error_msg)
 
     zip_buffer.seek(0)
@@ -1215,79 +1119,41 @@ async def download_result(task_id: str, format: str = "txt"):
     - **task_id**: ID задачи
     - **format**: формат файла (txt или timecodes)
     """
+    validated_task_id(task_id)
     if task_id not in tasks_storage:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Задача не найдена"
         )
-    
+
     task = tasks_storage[task_id]
-    
+
     if task['status'] != 'completed':
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Задача еще не завершена (статус: {task['status']})"
         )
-    
+
     # Проверяем директорию с результатами
     result_dir = RESULTS_DIR / task_id
     if not result_dir.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Директория с результатами не найдена: {result_dir}"
+            detail="Директория с результатами не найдена"
         )
     
-    # Получаем базовое имя файла
+    # Получаем базовое имя файла и формат (имена детерминированы — output_naming)
     filename_base = Path(task['filename']).stem
-    
-    # Ищем нужный файл напрямую в списке файлов директории
-    # Это решает проблему с кириллицей в именах файлов
-    found_file = None
-    
-    try:
-        for file in result_dir.iterdir():
-            # Пропускаем не-txt файлы и временные файлы
-            if file.suffix != '.txt' or file.name.startswith('temp_'):
-                continue
-            
-            # Определяем тип файла и базовое имя
-            is_timecoded = file.stem.endswith('_timecodes')
-            file_base = file.stem[:-10] if is_timecoded else file.stem
-            
-            # Проверяем совпадение
-            if file_base == filename_base:
-                # Если нужен файл с таймкодами
-                if format == "timecodes" and is_timecoded:
-                    found_file = file
-                    break
-                # Если нужен обычный файл
-                elif format != "timecodes" and not is_timecoded:
-                    found_file = file
-                    break
-    except Exception as e:
-        logger.error(f"Ошибка при поиске файла в {result_dir}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при поиске файла: {str(e)}"
-        )
-    
-    # Если файл не найден, возвращаем детальную ошибку
+    fmt_key = 'txt_timecodes' if format == "timecodes" else 'txt'
+    found_file = find_result_file(result_dir, filename_base, fmt_key)
+
+    # Если файл не найден, возвращаем ошибку (без листинга папки)
     if not found_file:
-        all_files = [f.name for f in result_dir.iterdir()]
-        error_detail = f"Файл результата не найден. "
-        error_detail += f"Искали: {filename_base}{'_timecodes' if format == 'timecodes' else ''}.txt. "
-        error_detail += f"Файлы в папке: {all_files}"
-        
+        error_detail = "Файл результата не найден. "
+        error_detail += f"Искали: {output_filename(filename_base, fmt_key)}"
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=error_detail
-        )
-    
-    # Финальная проверка что файл существует и читаем
-    if not found_file.exists() or not found_file.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Найденный файл недоступен: {found_file.name}"
         )
     
     logger.info(f"Download: отправляем файл {found_file.name} для задачи {task_id}")
@@ -1309,31 +1175,32 @@ async def delete_task(task_id: str):
     
     - **task_id**: ID задачи
     """
+    validated_task_id(task_id)
     if task_id not in tasks_storage:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Задача не найдена"
         )
-    
+
     task = tasks_storage[task_id]
-    
+
     if task['status'] == 'processing':
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя удалить задачу в процессе обработки"
         )
-    
+
     # Удаляем файлы
     upload_path = UPLOAD_DIR / f"{task_id}_{task['filename']}"
     if upload_path.exists():
         upload_path.unlink()
-    
+
     result_dir = RESULTS_DIR / task_id
     if result_dir.exists():
         shutil.rmtree(result_dir)
-    
+
     # Удаляем задачу
-    del tasks_storage[task_id]
+    tasks_storage.pop(task_id, None)
     
     logger.info(f"Задача {task_id} удалена")
     
@@ -1375,9 +1242,9 @@ async def delete_all_tasks(status_filter: Optional[str] = None):
             detail=f"Неверный статус фильтра. Используйте: completed, failed, pending, all"
         )
     
-    # Собираем задачи для удаления
+    # Собираем задачи для удаления (по снимку — без гонок при изменении словаря)
     tasks_to_delete = []
-    for task_id, task in tasks_storage.items():
+    for task_id, task in list(tasks_storage.items()):
         if task['status'] in statuses_to_delete:
             tasks_to_delete.append(task_id)
     
@@ -1394,22 +1261,24 @@ async def delete_all_tasks(status_filter: Optional[str] = None):
     
     for task_id in tasks_to_delete:
         try:
-            task = tasks_storage[task_id]
-            
+            task = tasks_storage.get(task_id)
+            if task is None:
+                continue  # уже удалена другим запросом
+
             # Удаляем загруженный файл
             upload_path = UPLOAD_DIR / f"{task_id}_{task['filename']}"
             if upload_path.exists():
                 upload_path.unlink()
-            
+
             # Удаляем результаты
             result_dir = RESULTS_DIR / task_id
             if result_dir.exists():
                 shutil.rmtree(result_dir)
-            
+
             # Удаляем из хранилища
-            del tasks_storage[task_id]
+            tasks_storage.pop(task_id, None)
             deleted_count += 1
-            
+
         except Exception as e:
             errors.append(f"{task_id}: {str(e)}")
             logger.error(f"Ошибка при удалении задачи {task_id}: {str(e)}")
