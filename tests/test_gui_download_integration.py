@@ -28,6 +28,33 @@ def test_file_progress_still_accepts_integer():
     window.close()
 
 
+def test_content_in_scroll_area_no_overlap_when_short():
+    # Регрессия: при низком окне контент не должен наезжать — он в QScrollArea
+    from PyQt6.QtWidgets import QScrollArea
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    window.resize(1000, 640)
+    window.show()
+    app.processEvents()
+
+    assert isinstance(window.centralWidget(), QScrollArea)
+    content = window.centralWidget().widget()
+    log_bottom = window.log_text.mapTo(content, window.log_text.rect().bottomLeft()).y()
+    clear_top = window.btn_clear.mapTo(content, window.btn_clear.rect().topLeft()).y()
+    assert log_bottom <= clear_top  # нет вертикального наложения
+    window.close()
+
+
+def test_download_progress_updates_bar():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    window._update_download_progress(37)
+    assert window.progress_upload.value() == 37
+    window.close()
+
+
 def test_url_download_asks_for_download_folder(monkeypatch, tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])

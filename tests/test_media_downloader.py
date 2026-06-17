@@ -135,7 +135,30 @@ def test_download_raises_on_nonzero_exit_code(tmp_path):
         ("-5%", 0),
         ("bad", 0),
         (None, 0),
+        # yt-dlp оборачивает _percent_str в ANSI-коды — должно парситься
+        ("\x1b[0;94m 42.8%\x1b[0m", 42),
+        ("\x1b[0;32m100.0%\x1b[0m", 100),
     ],
 )
 def test_parse_percent(raw, expected):
     assert MediaDownloader._parse_percent(raw) == expected
+
+
+class FakeYoutubeDLBytesProgress(FakeYoutubeDL):
+    def download(self, urls):
+        self.urls = urls
+        hook = self.opts["progress_hooks"][0]
+        output_file = os.path.join(os.path.dirname(self.opts["outtmpl"]), "downloaded.webm")
+        # Прогресс по байтам (как у реального yt-dlp), без _percent_str
+        hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200})
+        hook({"status": "downloading", "downloaded_bytes": 200, "total_bytes": 200})
+        hook({"status": "finished", "filename": output_file})
+        return self.exit_code
+
+
+def test_progress_from_bytes(tmp_path):
+    progress = []
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDLBytesProgress)
+    downloader.download("https://example.test/v", str(tmp_path), progress_callback=progress.append)
+    # 50/200 -> 25%, 200/200 -> 100%, finished -> 100%
+    assert progress == [25, 100, 100]
