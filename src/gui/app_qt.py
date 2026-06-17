@@ -47,6 +47,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.output_dir = ""
         self.input_dir = ""
         self.is_processing = False
+        self._cancel_requested = False
         self.start_time = None
         self.files_processed = 0
         self.total_files = 0
@@ -882,8 +883,12 @@ class GigaTranscriberQtApp(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.No:
                 return
+            # Запрашиваем отмену; worker использует локальный снимок, поэтому
+            # сброс self-состояния ниже безопасен и не уронит поток.
+            self._cancel_requested = True
             self.is_processing = False
             self.progress_timer.stop()
+            self._set_processing_controls_enabled(True)
         
         # Очищаем данные
         self.files_to_process = []
@@ -942,6 +947,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
         
         self.is_processing = True
+        self._cancel_requested = False
         self.start_time = time.time()
         self.files_processed = 0
         self.total_files = len(self.files_to_process)
@@ -983,30 +989,70 @@ class GigaTranscriberQtApp(QMainWindow):
         # Запускаем таймер обновления прогресса
         self.progress_timer.start(1000)  # Обновление каждую секунду
         
-        # Считываем параметры диаризации из виджета в main thread (Qt thread-safety)
+        # Считываем ВСЕ параметры из виджетов в main thread и передаём в поток как
+        # снимок (Qt thread-safety): worker не должен читать/писать виджеты и общее
+        # изменяемое состояние напрямую.
         num_speakers = None
         if self.enable_diarization:
             try:
                 speakers_text = self.entry_num_speakers.text().strip()
                 if speakers_text:
-                    num_speakers = int(speakers_text)
+                    value = int(speakers_text)
+                    if value > 0:
+                        num_speakers = value
+                    else:
+                        self.log("ПРЕДУПРЕЖДЕНИЕ: число спикеров должно быть > 0, используется автоопределение")
             except ValueError:
-                pass
-        
+                self.log("ПРЕДУПРЕЖДЕНИЕ: некорректное число спикеров, используется автоопределение")
+
+        snapshot = {
+            "num_speakers": num_speakers,
+            "enable_diarization": self.enable_diarization,
+            "selected_formats": self._get_selected_formats(),
+            "output_dir": self.output_dir,
+            "files": list(self.files_to_process),
+            "start_time": self.start_time,
+        }
+
+        # Блокируем управляющие виджеты на время обработки
+        self._set_processing_controls_enabled(False)
+
         # Запускаем обработку в отдельном потоке
         thread = threading.Thread(
             target=self._process_files,
-            args=(num_speakers,),
+            kwargs={"snapshot": snapshot},
             daemon=True
         )
         thread.start()
 
-    def _process_files(self, num_speakers: int = None):
-        """Основной процесс обработки файлов (выполняется в отдельном потоке)
-        
-        Args:
-            num_speakers: Количество спикеров (считано из виджета в main thread)
+    def _set_processing_controls_enabled(self, enabled: bool):
+        """Включает/выключает виджеты, которые нельзя менять во время обработки."""
+        self.cb_diarization.setEnabled(enabled)
+        self.entry_num_speakers.setEnabled(enabled and self.enable_diarization)
+        self.btn_upload.setEnabled(enabled)
+        for cb in self.format_checkboxes.values():
+            cb.setEnabled(enabled)
+        # Диаризованные форматы доступны только при включённой диаризации
+        if enabled:
+            for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
+                cb = self.format_checkboxes.get(fmt)
+                if cb:
+                    cb.setEnabled(self.enable_diarization)
+
+    def _process_files(self, snapshot: dict):
+        """Основной процесс обработки файлов (выполняется в отдельном потоке).
+
+        Все нужные параметры передаются снимком (snapshot), сформированным в main
+        thread, поэтому worker не читает виджеты и не зависит от изменяемого self-состояния
+        (которое может быть сброшено через «Очистить» во время обработки).
         """
+        num_speakers = snapshot["num_speakers"]
+        enable_diarization = snapshot["enable_diarization"]
+        selected_formats = snapshot["selected_formats"]
+        output_dir = snapshot["output_dir"]
+        files = snapshot["files"]
+        start_time = snapshot["start_time"]
+        total_files = len(files)
         try:
             # Загружаем модель
             if not self.model_loader.load_model(self.log):
@@ -1022,36 +1068,40 @@ class GigaTranscriberQtApp(QMainWindow):
             )
             
             # Логируем параметры диаризации
-            if self.enable_diarization:
+            if enable_diarization:
                 if num_speakers is not None:
                     self.log(f"Количество спикеров: {num_speakers}")
                 else:
                     self.log("Количество спикеров: автоопределение")
-            
+
             # Обрабатываем файлы
-            for i, filepath in enumerate(self.files_to_process):
-                if not self.is_processing:
+            files_processed = 0
+            files_failed = 0
+            time_spent = 0.0
+            for i, filepath in enumerate(files):
+                if self._cancel_requested:
+                    self.log("Обработка отменена пользователем")
                     break
-                
+
                 try:
                     self.current_file_start_time = time.time()
                     self.signals.current_file_info.emit(
-                        f"Файл {i + 1}/{self.total_files}: {os.path.basename(filepath)}"
+                        f"Файл {i + 1}/{total_files}: {os.path.basename(filepath)}"
                     )
-                    
+
                     # Если глобальная папка не выбрана — сохраняем рядом с исходным файлом
-                    file_output_dir = self.output_dir if self.output_dir else os.path.dirname(filepath)
+                    file_output_dir = output_dir if output_dir else os.path.dirname(filepath)
 
                     result = processor.process_file(
                         filepath,
                         file_output_dir,
                         i,
-                        self.total_files,
-                        enable_diarization=self.enable_diarization,
+                        total_files,
+                        enable_diarization=enable_diarization,
                         num_speakers=num_speakers,
-                        output_formats=self._get_selected_formats()
+                        output_formats=selected_formats
                     )
-                    
+
                     # Сохраняем статистику
                     self.stats.add_processing_record(
                         file_path=result['file_path'],
@@ -1061,27 +1111,42 @@ class GigaTranscriberQtApp(QMainWindow):
                         transcription_time=result['transcription_time'],
                         success=result['success']
                     )
-                    
+
                     if result['success']:
-                        self.files_processed += 1
-                    
-                    self.time_spent += result['total_time']
-                    
+                        files_processed += 1
+                    else:
+                        files_failed += 1
+
+                    time_spent += result['total_time']
+
                 except Exception as e:
+                    files_failed += 1
                     self.log(f"Ошибка при обработке файла {os.path.basename(filepath)}: {str(e)}")
                     continue
-            
+                finally:
+                    # Обновляем счётчики для индикатора прогресса (только чтение в таймере)
+                    self.files_processed = files_processed
+                    self.time_spent = time_spent
+
             # Завершение
-            total_elapsed = time.time() - self.start_time
-            self.log("=== ВСЕ ФАЙЛЫ ОБРАБОТАНЫ ===")
+            total_elapsed = time.time() - start_time
+            self.log("=== ОБРАБОТКА ЗАВЕРШЕНА ===")
             self.log(f"Общее время обработки: {self.time_formatter.format_duration(total_elapsed)}")
-            self.log(f"Обработано файлов: {self.files_processed}/{self.total_files}")
-            
-            self.signals.processing_finished.emit(
-                True,
-                f"Завершено за {self.time_formatter.format_duration(total_elapsed)}"
-            )
-            
+            self.log(f"Успешно: {files_processed}/{total_files}" +
+                     (f", с ошибками: {files_failed}" if files_failed else ""))
+
+            cancelled = self._cancel_requested
+            duration_str = self.time_formatter.format_duration(total_elapsed)
+            if cancelled:
+                message = f"Отменено. Обработано {files_processed}/{total_files} за {duration_str}"
+            elif files_failed:
+                message = f"Готово с ошибками: {files_processed}/{total_files} успешно за {duration_str}"
+            else:
+                message = f"Завершено за {duration_str}"
+            # success=False, если ни один файл не обработан или были сбои/отмена
+            success = (files_processed > 0) and (files_failed == 0) and not cancelled
+            self.signals.processing_finished.emit(success, message)
+
         except Exception as e:
             self.log(f"Критическая ошибка: {str(e)}")
             self.signals.processing_finished.emit(False, f"Ошибка: {str(e)}")
@@ -1099,11 +1164,11 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _update_progress_display(self):
         """Обновляет отображение прогресса"""
-        if not self.is_processing or self.total_files == 0:
+        if not self.is_processing or self.total_files == 0 or not self.files_to_process:
             return
-        
-        # Общий прогресс
-        files_progress = self.files_processed / self.total_files
+
+        # Общий прогресс (защита от деления на ноль / рассинхронизации с worker)
+        files_progress = min(self.files_processed, self.total_files) / self.total_files
         
         # Прогресс текущего файла
         current_file_progress = 0.0
@@ -1152,24 +1217,43 @@ class GigaTranscriberQtApp(QMainWindow):
         """Обработчик завершения обработки"""
         self.is_processing = False
         self.progress_timer.stop()
-        
+
         self.btn_start.setEnabled(True)
         self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.progress_bar_total.setValue(100 if success else 0)
         self.lbl_status.setText(message)
-        
+
+        # Возвращаем управляющие виджеты в активное состояние
+        self._set_processing_controls_enabled(True)
+
         if success:
             QMessageBox.information(self, "Готово", f"Обработка завершена!\n{message}")
         else:
-            QMessageBox.warning(self, "Ошибка", message)
+            QMessageBox.warning(self, "Завершено", message)
 
     def closeEvent(self, event):
         """Обработчик закрытия окна"""
+        # Если идёт обработка или загрузка — подтверждаем и запрашиваем отмену
+        if self.is_processing or self.is_downloading:
+            reply = QMessageBox.question(
+                self,
+                "Внимание",
+                "Идёт обработка/загрузка. Закрыть приложение и прервать её?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+            # Сообщаем worker-потоку остановиться после текущего файла
+            self._cancel_requested = True
+            self.is_processing = False
+
         if self.output_dir:
             self.user_settings.set_last_output_dir(self.output_dir)
         if self.input_dir:
             self.user_settings.set_last_files_dir(self.input_dir)
-        
+
         self.app_logger.log_session_end()
         event.accept()
 
