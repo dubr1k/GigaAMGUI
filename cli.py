@@ -37,6 +37,7 @@ from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
 from src.utils.processing_stats import ProcessingStats
 from src.utils.logger import setup_logger
+from src.utils.audio_converter import ffmpeg_available
 from src.config import HF_TOKEN, SUPPORTED_FORMATS, OUTPUT_FORMATS
 
 # Применяем патч
@@ -509,6 +510,17 @@ def main(files, directory, output, interactive, verbose, formats, diarize, speak
             "3. Примите условия: https://huggingface.co/pyannote/segmentation-3.0\n"
             "4. Добавьте токен в файл .env",
             title="❌ Требуется настройка",
+            border_style="red"
+        ))
+        sys.exit(1)
+
+    # Предполётная проверка ffmpeg/ffprobe
+    if not ffmpeg_available():
+        console.print(Panel(
+            "[bold red]⚠ ОШИБКА: ffmpeg/ffprobe не найдены в PATH![/bold red]\n\n"
+            "Они нужны для конвертации и определения длительности медиа.\n"
+            "Установите ffmpeg и убедитесь, что он доступен в PATH.",
+            title="❌ Требуется ffmpeg",
             border_style="red"
         ))
         sys.exit(1)
