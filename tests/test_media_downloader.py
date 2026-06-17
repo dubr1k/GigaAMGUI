@@ -97,6 +97,28 @@ def test_download_rejects_empty_url(tmp_path):
         downloader.download("  ", str(tmp_path))
 
 
+@pytest.mark.parametrize("bad_url", [
+    "file:///etc/passwd",
+    "ftp://example.test/a.mp3",
+    "/local/path/file.mp3",
+])
+def test_download_rejects_non_http_scheme(tmp_path, bad_url):
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDL)
+    with pytest.raises(ValueError, match="схем"):
+        downloader.download(bad_url, str(tmp_path))
+
+
+def test_fallback_excludes_preexisting_files(tmp_path):
+    # Посторонний файл, уже лежавший в папке до загрузки, не должен попасть в результат
+    (tmp_path / "user_other.mp3").write_bytes(b"preexisting")
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDLWithoutFinishedFile)
+
+    result = downloader.download("https://example.test/video", str(tmp_path))
+
+    assert result.files == [str(tmp_path / "fallback.m4a")]
+    assert str(tmp_path / "user_other.mp3") not in result.files
+
+
 def test_download_raises_on_nonzero_exit_code(tmp_path):
     FakeYoutubeDL.exit_code = 1
     downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDL)

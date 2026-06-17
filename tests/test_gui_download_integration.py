@@ -1,10 +1,21 @@
 import os
 import threading
 
-from PyQt6.QtWidgets import QFileDialog
+from PyQt6.QtWidgets import QFileDialog, QMessageBox
 from PyQt6.QtWidgets import QApplication
 
 from src.gui.app_qt import GigaTranscriberQtApp
+
+
+def _autoclose(window, monkeypatch):
+    """Закрытие окна во время активной загрузки/обработки теперь спрашивает
+    подтверждение — в тестах автоматически отвечаем «Да», чтобы не блокироваться
+    на модальном диалоге."""
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes,
+    )
+    window.close()
 
 
 def test_file_progress_still_accepts_integer():
@@ -49,4 +60,4 @@ def test_url_download_asks_for_download_folder(monkeypatch, tmp_path):
     assert started["args"] == ("https://example.test/video", str(tmp_path))
     assert started["daemon"] is True
     assert started["started"] is True
-    window.close()
+    _autoclose(window, monkeypatch)
