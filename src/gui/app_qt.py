@@ -144,7 +144,7 @@ class GigaTranscriberQtApp(QMainWindow):
         # без прокрутки. Минимум — заметно меньше: если пользователь уменьшит окно,
         # контент вкладки уходит в прокрутку (QScrollArea), а не наезжает друг на друга.
         self.setMinimumSize(940, 560)
-        self.resize(1040, 920)
+        self.resize(1040, 850)
 
         # Корневой виджет: заголовок + вкладки
         root = QWidget()
