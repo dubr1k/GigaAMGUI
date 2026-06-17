@@ -6,8 +6,12 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import yt_dlp
+
+# Разрешённые схемы URL (защита от SSRF/локальных путей через file://, и т.п.)
+_ALLOWED_SCHEMES = {"http", "https"}
 
 
 ProgressCallback = Callable[[int], None]
@@ -38,8 +42,23 @@ class MediaDownloader:
         if not url:
             raise ValueError("URL для загрузки не указан")
 
+        scheme = urlparse(url).scheme.lower()
+        if scheme not in _ALLOWED_SCHEMES:
+            raise ValueError(
+                f"Недопустимая схема URL: '{scheme or '(пусто)'}'. "
+                "Разрешены только http:// и https://"
+            )
+
         target_path = Path(target_dir).expanduser()
         target_path.mkdir(parents=True, exist_ok=True)
+
+        # Запоминаем файлы, которые уже были в папке ДО загрузки,
+        # чтобы fallback не вернул посторонние пользовательские файлы.
+        files_before = {
+            os.path.abspath(str(p))
+            for p in target_path.iterdir()
+            if p.is_file()
+        }
 
         downloaded_files: list[str] = []
 
@@ -76,10 +95,14 @@ class MediaDownloader:
             raise RuntimeError(f"yt-dlp завершился с кодом {exit_code}")
 
         if not downloaded_files:
+            # Хук не сообщил имя файла — берём только НОВЫЕ файлы (появившиеся после старта),
+            # исключая то, что уже лежало в папке, и временные файлы yt-dlp.
             downloaded_files = [
                 os.path.abspath(str(path))
                 for path in target_path.iterdir()
-                if path.is_file() and not path.name.endswith((".part", ".ytdl"))
+                if path.is_file()
+                and not path.name.endswith((".part", ".ytdl"))
+                and os.path.abspath(str(path)) not in files_before
             ]
 
         return DownloadResult(files=downloaded_files)
