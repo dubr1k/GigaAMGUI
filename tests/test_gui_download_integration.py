@@ -28,21 +28,35 @@ def test_file_progress_still_accepts_integer():
     window.close()
 
 
-def test_content_in_scroll_area_no_overlap_when_short():
-    # Регрессия: при низком окне контент не должен наезжать — он в QScrollArea
+def test_processing_tab_in_scroll_area_no_overlap_when_short():
+    # Регрессия: вкладка «Обработка» в QScrollArea, элементы не наезжают при низком окне
     from PyQt6.QtWidgets import QScrollArea
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
-    window.resize(1000, 640)
+    window.resize(940, 560)
     window.show()
     app.processEvents()
 
-    assert isinstance(window.centralWidget(), QScrollArea)
-    content = window.centralWidget().widget()
-    log_bottom = window.log_text.mapTo(content, window.log_text.rect().bottomLeft()).y()
+    proc_scroll = window.tabs.widget(0)
+    assert isinstance(proc_scroll, QScrollArea)
+    content = proc_scroll.widget()
+    start_bottom = window.btn_start.mapTo(content, window.btn_start.rect().bottomLeft()).y()
     clear_top = window.btn_clear.mapTo(content, window.btn_clear.rect().topLeft()).y()
-    assert log_bottom <= clear_top  # нет вертикального наложения
+    assert start_bottom <= clear_top  # нет вертикального наложения
+    window.close()
+
+
+def test_log_is_on_second_tab():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    assert window.tabs.count() == 2
+    assert window.tabs.tabText(0) == "Обработка"
+    assert "Журнал" in window.tabs.tabText(1)
+    # Журнал лежит на второй вкладке, и логирование в него работает
+    window.log("тестовое сообщение")
+    assert "тестовое сообщение" in window.log_text.toPlainText()
     window.close()
 
 
