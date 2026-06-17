@@ -66,7 +66,13 @@ class AppLogger:
         logger = logging.getLogger("GigaAM")
         logger.setLevel(logging.DEBUG)
         
-        # Очищаем предыдущие handlers если есть
+        # Закрываем и очищаем предыдущие handlers (иначе при повторной инициализации
+        # утекают файловые дескрипторы)
+        for handler in logger.handlers[:]:
+            try:
+                handler.close()
+            except Exception:
+                pass
         logger.handlers.clear()
         
         # Формат логов
