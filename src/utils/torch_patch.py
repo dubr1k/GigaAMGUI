@@ -63,28 +63,28 @@ def apply_torch_load_patch():
         if torch_version >= (2, 6):
             # Сохраняем оригинальную функцию
             _original_torch_load = torch.load
-            
+
             def _patched_torch_load(*args, **kwargs):
                 """
                 Патченная версия torch.load с weights_only=False по умолчанию.
-                
+
                 Если пользователь явно передал weights_only, используем его значение.
                 Иначе устанавливаем weights_only=False для совместимости.
                 """
                 if 'weights_only' not in kwargs:
                     kwargs['weights_only'] = False
                 return _original_torch_load(*args, **kwargs)
-            
+
             # Применяем патч
             torch.load = _patched_torch_load
-            
+
             # Подавляем предупреждения о небезопасной загрузке
             warnings.filterwarnings(
                 "ignore",
                 message=".*You are using `torch.load` with `weights_only=False`.*",
                 category=FutureWarning
             )
-            
+
             _TORCH_PATCH_APPLIED = True
             print(f"PyTorch {torch.__version__} patch: weights_only=False установлен по умолчанию")
             return True
@@ -92,7 +92,7 @@ def apply_torch_load_patch():
             # Для старых версий PyTorch патч не нужен
             _TORCH_PATCH_APPLIED = True
             return True
-            
+
     except ImportError:
         print("Предупреждение: PyTorch не установлен, патч не применен")
         return False

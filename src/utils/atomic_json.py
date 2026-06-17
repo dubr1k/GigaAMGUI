@@ -6,8 +6,8 @@
 поэтому падение/kill посреди записи не оставляет битый/усечённый JSON.
 """
 
-import os
 import json
+import os
 import tempfile
 from typing import Any
 
@@ -17,7 +17,7 @@ def load_json(path: str, default: Any) -> Any:
     if not os.path.exists(path):
         return default
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, encoding='utf-8') as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return default

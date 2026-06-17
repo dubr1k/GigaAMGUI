@@ -2,14 +2,14 @@
 Модуль конвертации аудио/видео файлов
 """
 
+import json
 import os
 import re
-import json
-import uuid
 import shutil
 import subprocess
-from typing import Optional
-from ..config import AUDIO_SAMPLE_RATE, AUDIO_CHANNELS
+import uuid
+
+from ..config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
 
 # Таймауты для проб длительности (защита от зависания на битых файлах)
 _PROBE_TIMEOUT = 30       # ffprobe
@@ -44,7 +44,7 @@ class AudioConverter:
         """Логирует последние строки stderr ffmpeg для диагностики."""
         if not stderr:
             return
-        error_lines = [l for l in stderr.strip().split('\n') if l.strip()]
+        error_lines = [line for line in stderr.strip().split('\n') if line.strip()]
         for line in error_lines[-lines:]:
             self.logger(f"  FFmpeg: {line}")
 
@@ -52,10 +52,10 @@ class AudioConverter:
     def get_media_duration(filepath: str) -> float:
         """
         Получает длительность аудио/видео файла через ffprobe
-        
+
         Args:
             filepath: путь к медиа файлу
-            
+
         Returns:
             float: длительность в секундах, или 0 при ошибке
         """
@@ -113,41 +113,41 @@ class AudioConverter:
                 pass
 
             return 0.0
-        
-    def convert_to_wav(self, input_path: str, output_dir: str) -> Optional[str]:
+
+    def convert_to_wav(self, input_path: str, output_dir: str) -> str | None:
         """
         Конвертирует любой входной файл в 16kHz mono wav для модели
-        
+
         Args:
             input_path: путь к входному файлу
             output_dir: директория для временного файла
-            
+
         Returns:
             str: путь к конвертированному WAV файлу или None при ошибке
         """
         # Нормализуем путь (решает проблемы с относительными путями и символическими ссылками)
         input_path = os.path.abspath(os.path.expanduser(input_path))
-        
+
         # Проверяем существование файла
         if not os.path.exists(input_path):
             self.logger(f"ОШИБКА: Файл не найден: {input_path}")
             return None
-        
+
         if not os.path.isfile(input_path):
             self.logger(f"ОШИБКА: Путь не является файлом: {input_path}")
             return None
-        
+
         # Создаём временный файл в папке вывода с уникальным именем,
         # чтобы исключить коллизии при одинаковых basename / параллельных конвертациях.
         temp_filename = f"temp_{uuid.uuid4().hex}_{os.path.basename(input_path)}.wav"
         temp_wav = os.path.join(output_dir, temp_filename)
-        
+
         self.logger(f"Конвертация {os.path.basename(input_path)} -> 16kHz WAV...")
-        
+
         # Логируем реальный путь для отладки
         self.logger(f"DEBUG: Абсолютный путь к файлу: {input_path}")
         self.logger(f"DEBUG: Файл существует: {os.path.exists(input_path)}")
-        
+
         try:
             # FFmpeg: -i input -ar 16000 (Hz) -ac 1 (mono) -y (overwrite)
             # Используем абсолютный путь для надежности
@@ -161,14 +161,13 @@ class AudioConverter:
                 "-y",   # перезаписывать если есть
                 temp_wav
             ]
-            
+
             # Логируем команду для отладки (без полного пути для краткости)
             self.logger(f"DEBUG: Команда FFmpeg: ffmpeg -i [файл] -ar {AUDIO_SAMPLE_RATE} -ac {AUDIO_CHANNELS} -vn -y [выход]")
-            
+
             result = subprocess.run(
                 command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 startupinfo=_windows_startupinfo(),
             )

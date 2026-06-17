@@ -4,8 +4,8 @@
 
 import warnings
 
-from src.utils.pyannote_patch import apply_pyannote_patch
 from src.gui import run_qt_app
+from src.utils.pyannote_patch import apply_pyannote_patch
 
 # Подавляем предупреждения от зависимостей
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")

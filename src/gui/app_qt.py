@@ -7,20 +7,30 @@ import os
 import sys
 import threading
 import time
-from pathlib import Path
-from typing import Optional
 
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QPalette
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QTextEdit, QProgressBar, QFileDialog,
-    QMessageBox, QCheckBox, QLineEdit, QGroupBox, QFrame
+    QApplication,
+    QCheckBox,
+    QFileDialog,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QPalette, QColor, QDragEnterEvent, QDropEvent
 
-from ..config import APP_TITLE, SUPPORTED_FORMATS, STATS_FILE, OUTPUT_FORMATS, MEDIA_EXTENSIONS
+from ..config import APP_TITLE, MEDIA_EXTENSIONS, OUTPUT_FORMATS, STATS_FILE
 from ..core import ModelLoader, TranscriptionProcessor
-from ..utils import ProcessingStats, TimeFormatter, AudioConverter, AppLogger, UserSettings, MediaDownloader
+from ..utils import AppLogger, AudioConverter, MediaDownloader, ProcessingStats, TimeFormatter, UserSettings
 
 
 class WorkerSignals(QObject):
@@ -41,7 +51,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        
+
         # Переменные состояния
         self.files_to_process = []
         self.output_dir = ""
@@ -59,11 +69,11 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_stage_progress = 0.0
         self.is_downloading = False
         self.start_processing_after_download = False
-        
+
         # Настройки диаризации
         self.enable_diarization = False
         self.num_speakers = None
-        
+
         # Настройки выходных форматов (txt и txt_timecodes включены по умолчанию)
         self.output_formats = {
             'txt': True,
@@ -74,7 +84,7 @@ class GigaTranscriberQtApp(QMainWindow):
             'srt': False,
             'vtt': False,
         }
-        
+
         # Инициализация модулей
         self.app_logger = AppLogger()
         self.app_logger.log_session_start()
@@ -83,7 +93,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.time_formatter = TimeFormatter()
         self.user_settings = UserSettings()
         self.media_downloader = MediaDownloader()
-        
+
         # Сигналы для потока обработки
         self.signals = WorkerSignals()
         self.signals.log_message.connect(self._append_log)
@@ -95,31 +105,31 @@ class GigaTranscriberQtApp(QMainWindow):
         self.signals.download_progress.connect(self._update_download_progress)
         self.signals.download_finished.connect(self._on_download_finished)
         self.signals.download_failed.connect(self._on_download_failed)
-        
+
         # Таймер для обновления прогресса
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self._update_progress_display)
-        
+
         # Загружаем сохраненные пути
         saved_output_dir = self.user_settings.get_last_output_dir()
         saved_input_dir = self.user_settings.get_last_files_dir()
-        
+
         if saved_output_dir:
             self.output_dir = saved_output_dir
         if saved_input_dir:
             self.input_dir = saved_input_dir
-        
+
         # Инициализация интерфейса
         self._init_ui()
         # Включаем приём перетаскивания файлов (на всё окно, в т.ч. на кнопку «Выбрать файлы»)
         self.setAcceptDrops(True)
-        
+
         # Обновляем метки папок
         if saved_output_dir:
             self._update_output_dir_label(saved_output_dir)
         if saved_input_dir:
             self._update_input_dir_label(saved_input_dir)
-        
+
         # Очистка старых логов
         self.app_logger.cleanup_old_logs()
 
@@ -129,66 +139,66 @@ class GigaTranscriberQtApp(QMainWindow):
         # Достаточный минимальный и стартовый размер, чтобы на Linux элементы не наезжали
         self.setMinimumSize(1000, 820)
         self.resize(1280, 960)
-        
+
         # Центральный виджет
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(16, 12, 16, 12)
         main_layout.setSpacing(6)
-        
+
         # Заголовок
         title_label = QLabel("GigaAM v3: Транскрибация")
         title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_label.setFixedHeight(40)
         main_layout.addWidget(title_label)
-        
+
         # Блок выбора файлов
         files_group = self._create_files_group()
         main_layout.addWidget(files_group)
-        
+
         # Блок папки сохранения
         output_group = self._create_output_group()
         main_layout.addWidget(output_group)
-        
+
         # Блок диаризации
         diarization_group = self._create_diarization_group()
         main_layout.addWidget(diarization_group)
-        
+
         # Блок форматов вывода
         formats_group = self._create_formats_group()
         main_layout.addWidget(formats_group)
-        
+
         # Кнопка запуска
         self.btn_start = QPushButton("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.btn_start.setObjectName("start_button")
         self.btn_start.setFixedHeight(52)
         self.btn_start.clicked.connect(self._start_processing_thread)
         main_layout.addWidget(self.btn_start)
-        
+
         # Блок прогресса (отдельная секция без QGroupBox)
         self._create_progress_section(main_layout)
-        
+
         # Лог
         log_label = QLabel("Журнал обработки:")
         log_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         log_label.setFixedHeight(24)
         main_layout.addWidget(log_label)
-        
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFont(QFont("Consolas", 11))
         self.log_text.setMinimumHeight(160)
         main_layout.addWidget(self.log_text, 1)  # Растягивается
-        
+
         # Кнопка очистки
         self.btn_clear = QPushButton("ОЧИСТИТЬ ВСЕ")
         self.btn_clear.setObjectName("clear_button")
         self.btn_clear.setFixedHeight(40)
         self.btn_clear.clicked.connect(self._clear_all)
         main_layout.addWidget(self.btn_clear)
-        
+
         # Применяем строгую цветовую схему после создания всех элементов
         self._apply_strict_style()
 
@@ -196,7 +206,7 @@ class GigaTranscriberQtApp(QMainWindow):
         """Применяет строгую профессиональную темную цветовую схему"""
         # Определяем темную палитру
         palette = QPalette()
-        
+
         # Основные цвета - темная тема
         palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 48))           # Темно-серый фон
         palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))    # Светлый текст
@@ -205,10 +215,10 @@ class GigaTranscriberQtApp(QMainWindow):
         palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))          # Светлый текст
         palette.setColor(QPalette.ColorRole.Button, QColor(60, 60, 62))           # Кнопки
         palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))    # Текст кнопок
-        
+
         # Применяем палитру
         self.setPalette(palette)
-        
+
         # Применяем стили через stylesheet (темная тема)
         self.setStyleSheet("""
             QMainWindow {
@@ -425,17 +435,17 @@ class GigaTranscriberQtApp(QMainWindow):
         layout = QHBoxLayout()
         layout.setContentsMargins(12, 20, 12, 10)
         layout.setSpacing(12)
-        
+
         btn_output = QPushButton("Выбрать папку")
         btn_output.clicked.connect(self._select_output_folder)
         btn_output.setMinimumWidth(220)
         btn_output.setFixedHeight(36)
         layout.addWidget(btn_output)
-        
+
         self.lbl_output_folder = QLabel("Папка не выбрана (по умолчанию - рядом с файлом)")
         self.lbl_output_folder.setStyleSheet("color: #909090;")
         layout.addWidget(self.lbl_output_folder, 1)
-        
+
         group.setLayout(layout)
         return group
 
@@ -445,18 +455,18 @@ class GigaTranscriberQtApp(QMainWindow):
         layout = QVBoxLayout()
         layout.setContentsMargins(12, 20, 12, 10)
         layout.setSpacing(8)
-        
+
         # Чекбокс включения диаризации
         self.cb_diarization = QCheckBox("Включить диаризацию спикеров")
         self.cb_diarization.stateChanged.connect(self._toggle_diarization)
         layout.addWidget(self.cb_diarization)
-        
+
         # Поле ввода количества спикеров
         speakers_layout = QHBoxLayout()
         speakers_layout.setSpacing(12)
         lbl_speakers = QLabel("Кол-во спикеров:")
         speakers_layout.addWidget(lbl_speakers)
-        
+
         self.entry_num_speakers = QLineEdit()
         self.entry_num_speakers.setPlaceholderText("Пусто = автоопределение")
         self.entry_num_speakers.setEnabled(False)
@@ -465,14 +475,14 @@ class GigaTranscriberQtApp(QMainWindow):
         self.entry_num_speakers.setMaximumWidth(350)
         speakers_layout.addWidget(self.entry_num_speakers)
         speakers_layout.addStretch()
-        
+
         layout.addLayout(speakers_layout)
-        
+
         # Информация
         info_label = QLabel("Автоматическое определение спикеров (требуется HF_TOKEN)")
         info_label.setStyleSheet("color: #909090; font-size: 9pt;")
         layout.addWidget(info_label)
-        
+
         group.setLayout(layout)
         return group
 
@@ -525,7 +535,7 @@ class GigaTranscriberQtApp(QMainWindow):
         lbl_title.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         lbl_title.setFixedHeight(28)
         parent_layout.addWidget(lbl_title)
-        
+
         # Контейнер прогресса
         progress_frame = QFrame()
         progress_frame.setStyleSheet(
@@ -534,7 +544,7 @@ class GigaTranscriberQtApp(QMainWindow):
         frame_layout = QVBoxLayout(progress_frame)
         frame_layout.setContentsMargins(14, 14, 14, 14)
         frame_layout.setSpacing(10)
-        
+
         # Общий прогресс
         total_layout = QHBoxLayout()
         total_layout.setSpacing(10)
@@ -542,7 +552,7 @@ class GigaTranscriberQtApp(QMainWindow):
         lbl_total.setFixedWidth(60)
         lbl_total.setStyleSheet("border: none;")
         total_layout.addWidget(lbl_total)
-        
+
         self.progress_bar_total = QProgressBar()
         self.progress_bar_total.setFixedHeight(24)
         self.progress_bar_total.setTextVisible(True)
@@ -553,7 +563,7 @@ class GigaTranscriberQtApp(QMainWindow):
         )
         total_layout.addWidget(self.progress_bar_total, 1)
         frame_layout.addLayout(total_layout)
-        
+
         # Прогресс текущего файла
         file_layout = QHBoxLayout()
         file_layout.setSpacing(10)
@@ -561,7 +571,7 @@ class GigaTranscriberQtApp(QMainWindow):
         lbl_file.setFixedWidth(60)
         lbl_file.setStyleSheet("border: none;")
         file_layout.addWidget(lbl_file)
-        
+
         self.progress_bar_file = QProgressBar()
         self.progress_bar_file.setFixedHeight(20)
         self.progress_bar_file.setTextVisible(True)
@@ -572,13 +582,13 @@ class GigaTranscriberQtApp(QMainWindow):
         )
         file_layout.addWidget(self.progress_bar_file, 1)
         frame_layout.addLayout(file_layout)
-        
+
         # Информация о текущем файле
         self.lbl_current_file = QLabel(" ")
         self.lbl_current_file.setStyleSheet("color: #b0b0b0; font-size: 9pt; border: none;")
         self.lbl_current_file.setFixedHeight(20)
         frame_layout.addWidget(self.lbl_current_file)
-        
+
         # Статус
         self.lbl_status = QLabel("Готов к работе")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -588,7 +598,7 @@ class GigaTranscriberQtApp(QMainWindow):
             "background-color: #2d2d30; border: 1px solid #4a4a4e; border-radius: 4px; padding: 2px;"
         )
         frame_layout.addWidget(self.lbl_status)
-        
+
         parent_layout.addWidget(progress_frame)
 
     def log(self, message: str):
@@ -603,14 +613,14 @@ class GigaTranscriberQtApp(QMainWindow):
     def _select_files(self):
         """Обработчик выбора файлов"""
         initial_dir = self.user_settings.get_last_files_dir() or self.input_dir or os.path.expanduser("~")
-        
+
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Выберите аудио или видео файлы",
             initial_dir,
             "Медиа файлы (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.avi *.mov *.mkv *.webm *.wma *.qta *.3gp);;Все файлы (*.*)"
         )
-        
+
         if files:
             self._apply_dropped_or_selected_files(files)
 
@@ -687,13 +697,13 @@ class GigaTranscriberQtApp(QMainWindow):
     def _select_files_folder(self):
         """Обработчик выбора папки с файлами"""
         initial_dir = self.user_settings.get_last_files_dir() or self.input_dir or os.path.expanduser("~")
-        
+
         folder = QFileDialog.getExistingDirectory(
             self,
             "Выберите папку с аудио/видео файлами",
             initial_dir
         )
-        
+
         if folder:
             self.input_dir = folder
             self.user_settings.set_last_files_dir(folder)
@@ -723,13 +733,13 @@ class GigaTranscriberQtApp(QMainWindow):
     def _select_output_folder(self):
         """Обработчик выбора папки сохранения"""
         initial_dir = self.user_settings.get_last_output_dir() or self.output_dir or os.path.expanduser("~")
-        
+
         folder = QFileDialog.getExistingDirectory(
             self,
             "Выберите папку для сохранения результатов",
             initial_dir
         )
-        
+
         if folder:
             self.output_dir = folder
             self.user_settings.set_last_output_dir(folder)
@@ -861,7 +871,7 @@ class GigaTranscriberQtApp(QMainWindow):
     def _toggle_format(self, fmt: str):
         """Обработчик изменения формата вывода"""
         self.output_formats[fmt] = self.format_checkboxes[fmt].isChecked()
-        
+
         # Проверяем, что хотя бы один формат выбран
         if not any(self.output_formats.values()):
             self.output_formats['txt'] = True
@@ -889,7 +899,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.is_processing = False
             self.progress_timer.stop()
             self._set_processing_controls_enabled(True)
-        
+
         # Очищаем данные
         self.files_to_process = []
         self.output_dir = ""
@@ -904,7 +914,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_stage = None
         self.current_stage_progress = 0.0
         self.start_processing_after_download = False
-        
+
         # Очищаем интерфейс
         self.log_text.clear()
         self.progress_bar_total.setValue(0)
@@ -912,7 +922,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_upload.setValue(0)
         self.lbl_current_file.setText("")
         self.lbl_status.setText("Готов к работе")
-        
+
         self.lbl_files_count.setText("Файлы не выбраны")
         self.lbl_files_count.setStyleSheet("color: #909090;")
         self.lbl_input_folder.setText("Папка не выбрана")
@@ -920,7 +930,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)")
         self.lbl_output_folder.setStyleSheet("color: #909090;")
         self.input_path.clear()
-        
+
         self.btn_start.setEnabled(True)
         self.btn_upload.setEnabled(True)
         self.log("Все настройки сброшены")
@@ -937,15 +947,15 @@ class GigaTranscriberQtApp(QMainWindow):
         if self.input_path.text().strip():
             self._start_download(start_after_download=True)
             return
-        
+
         if not self.files_to_process:
             QMessageBox.warning(self, "Внимание", "Выберите хотя бы один файл для обработки!")
             return
-        
+
         # Если папка не выбрана — результаты сохраняются рядом с каждым исходным файлом
         if not self.output_dir:
             self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
-        
+
         self.is_processing = True
         self._cancel_requested = False
         self.start_time = time.time()
@@ -955,7 +965,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_file_start_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
-        
+
         # Анализ файлов
         self.log("Анализ файлов и оценка времени обработки...")
         files_with_durations = []
@@ -971,24 +981,24 @@ class GigaTranscriberQtApp(QMainWindow):
             except Exception:
                 self.log(f"  {os.path.basename(filepath)}: ошибка определения длительности")
                 files_with_durations.append((filepath, 60))
-        
+
         # Оценка времени
         batch_estimate = self.stats.estimate_batch_time(files_with_durations)
         self.file_estimates = batch_estimate["per_file"]
         self.total_estimated_time = batch_estimate["total_seconds"]
-        
+
         estimate_str = self.time_formatter.format_duration(self.total_estimated_time)
         self.log(f"Ожидаемое время обработки: ~{estimate_str}")
-        
+
         self.btn_start.setEnabled(False)
         self.btn_start.setText("ИДЕТ ОБРАБОТКА...")
         self.progress_bar_total.setValue(0)
         self.progress_bar_file.setValue(0)
         self.lbl_status.setText(f"Оценка: ~{estimate_str}")
-        
+
         # Запускаем таймер обновления прогресса
         self.progress_timer.start(1000)  # Обновление каждую секунду
-        
+
         # Считываем ВСЕ параметры из виджетов в main thread и передаём в поток как
         # снимок (Qt thread-safety): worker не должен читать/писать виджеты и общее
         # изменяемое состояние напрямую.
@@ -1058,7 +1068,7 @@ class GigaTranscriberQtApp(QMainWindow):
             if not self.model_loader.load_model(self.log):
                 self.signals.processing_finished.emit(False, "Не удалось загрузить модель")
                 return
-            
+
             # Создаем процессор
             processor = TranscriptionProcessor(
                 self.model_loader,
@@ -1066,7 +1076,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 self.log,
                 progress_callback=self._on_file_progress
             )
-            
+
             # Логируем параметры диаризации
             if enable_diarization:
                 if num_speakers is not None:
@@ -1169,34 +1179,34 @@ class GigaTranscriberQtApp(QMainWindow):
 
         # Общий прогресс (защита от деления на ноль / рассинхронизации с worker)
         files_progress = min(self.files_processed, self.total_files) / self.total_files
-        
+
         # Прогресс текущего файла
         current_file_progress = 0.0
         if self.files_processed < len(self.files_to_process) and self.current_file_start_time > 0:
             current_filepath = self.files_to_process[self.files_processed]
             current_elapsed = time.time() - self.current_file_start_time
             estimated_time = self.file_estimates.get(current_filepath, 30)
-            
+
             if estimated_time > 0:
                 current_file_progress = min(0.95, current_elapsed / estimated_time)
-        
+
         # Общий прогресс
         overall_progress = files_progress + (current_file_progress / self.total_files)
         overall_progress = min(0.99, overall_progress)
-        
+
         # Обновляем прогресс-бары
         self.progress_bar_total.setValue(int(overall_progress * 100))
         self.progress_bar_file.setValue(int(current_file_progress * 100))
-        
+
         # Оставшееся время
         if self.files_processed < len(self.files_to_process):
             remaining_files = len(self.files_to_process) - self.files_processed
-            
+
             if self.files_processed > 0:
                 avg_time = self.time_spent / self.files_processed
             else:
                 avg_time = self.file_estimates.get(self.files_to_process[0], 30)
-            
+
             remaining_time = avg_time * remaining_files
             time_info = f"Осталось: ~{self.time_formatter.format_duration(remaining_time)}"
             self.lbl_status.setText(time_info)
@@ -1261,14 +1271,14 @@ class GigaTranscriberQtApp(QMainWindow):
 def run_qt_app():
     """Запускает приложение на PyQt6"""
     app = QApplication(sys.argv)
-    
+
     # Устанавливаем шрифт по умолчанию (крупный размер для удобства чтения)
     font = QFont("Arial", 12)
     app.setFont(font)
-    
+
     window = GigaTranscriberQtApp()
     window.show()
-    
+
     sys.exit(app.exec())
 
 

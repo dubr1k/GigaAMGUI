@@ -9,7 +9,6 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
 # Ключ формата -> (суффикс имени, расширение)
 FORMAT_SUFFIX = {
@@ -36,7 +35,7 @@ def output_path(output_dir, stem: str, fmt: str) -> str:
     return os.path.join(str(output_dir), output_filename(stem, fmt))
 
 
-def find_result_file(result_dir, stem: str, fmt: str) -> Optional[Path]:
+def find_result_file(result_dir, stem: str, fmt: str) -> Path | None:
     """Возвращает путь к существующему файлу результата нужного формата либо None.
 
     Имя детерминировано, поэтому достаточно прямой проверки существования —

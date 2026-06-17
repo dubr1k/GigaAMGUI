@@ -3,9 +3,9 @@
 """
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -34,7 +34,7 @@ class MediaDownloader:
         self,
         url: str,
         target_dir: str,
-        progress_callback: Optional[ProgressCallback] = None,
+        progress_callback: ProgressCallback | None = None,
         allow_playlist: bool = False,
         windows_filenames: bool = True,
     ) -> DownloadResult:

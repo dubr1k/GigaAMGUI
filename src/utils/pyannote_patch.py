@@ -6,9 +6,10 @@ Monkey patching для pyannote.audio чтобы использовать soundf
 где из torchaudio удалены устаревшие функции backend-а.
 """
 
-import os
 import logging
+import os
 import warnings
+
 import numpy as np
 
 # ВАЖНО: Применяем патч для torch.load ДО импорта других библиотек
@@ -36,8 +37,9 @@ def apply_torchaudio_backend_patch():
     Патч добавляет no-op заглушки, чтобы импорт и вызовы не падали с AttributeError.
     """
     try:
-        import torchaudio
         import types
+
+        import torchaudio
 
         # Проверяем, нужен ли патч (функции отсутствуют начиная с torchaudio 2.10)
         needs_patch = not hasattr(torchaudio, 'set_audio_backend') or \
@@ -84,7 +86,7 @@ def apply_torchaudio_backend_patch():
     except ImportError:
         pass  # torchaudio не установлен — ничего не делаем
     except Exception as e:
-        warnings.warn(f"Не удалось применить torchaudio backend патч: {e}")
+        warnings.warn(f"Не удалось применить torchaudio backend патч: {e}", stacklevel=2)
 
 
 # Применяем torchaudio патч сразу при импорте модуля
@@ -99,8 +101,7 @@ def apply_pyannote_patch():
     try:
         import soundfile as sf
         import torch
-        import sys
-        
+
         # Патч для совместимости numpy 2.x с pyannote.audio
         # pyannote использует устаревшие np.NaN и np.NAN которые удалены в NumPy 2.0
         # ВАЖНО: Применяем ДО импорта pyannote
@@ -108,19 +109,19 @@ def apply_pyannote_patch():
             np.NaN = np.nan
         if not hasattr(np, 'NAN'):
             np.NAN = np.nan
-        
+
         # Также добавляем в атрибуты модуля numpy напрямую
-        setattr(np, 'NaN', np.nan)
-        setattr(np, 'NAN', np.nan)
-        
+        np.NaN = np.nan
+        np.NAN = np.nan
+
         # Подавляем предупреждения о torchcodec
         warnings.filterwarnings("ignore", message=".*torchcodec.*")
-        
+
         # Monkey patch для работы с pyannote.audio 4.0.2+
         try:
-            from pyannote.audio import Pipeline
             import pyannote.audio.core.io as io_module
-            
+            from pyannote.audio import Pipeline
+
             # Создаем функцию-обертку для загрузки аудио через soundfile
             def _load_audio_with_soundfile(file_path):
                 """Загружает аудио через soundfile и возвращает в формате pyannote"""
@@ -135,7 +136,7 @@ def apply_pyannote_patch():
                     if len(audio_tensor.shape) == 1:
                         audio_tensor = audio_tensor.unsqueeze(0)
                 return {"waveform": audio_tensor, "sample_rate": sample_rate}
-            
+
             # Защита от повторной обёртки: если __call__ уже наш — выходим
             if not getattr(Pipeline.__call__, "_gigaam_patched", False):
                 # Сохраняем оригинальный __call__ метод Pipeline
@@ -158,7 +159,7 @@ def apply_pyannote_patch():
                 _patched_pipeline_call._gigaam_patched = True
                 # Применяем патч
                 Pipeline.__call__ = _patched_pipeline_call
-            
+
             # Если AudioDecoder все же используется где-то (для обратной совместимости)
             # создаем его как класс-заглушку
             if not hasattr(io_module, 'AudioDecoder'):
@@ -168,10 +169,10 @@ def apply_pyannote_patch():
                         result = _load_audio_with_soundfile(file_path)
                         self.waveform = result["waveform"]
                         self.sample_rate = result["sample_rate"]
-                    
+
                     def __call__(self):
                         return {"waveform": self.waveform, "sample_rate": self.sample_rate}
-                
+
                 io_module.AudioDecoder = AudioDecoder
 
             _PYANNOTE_PATCH_APPLIED = True

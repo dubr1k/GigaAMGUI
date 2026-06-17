@@ -4,50 +4,47 @@ GigaAM v3 Transcriber - REST API
 Безопасный REST API для транскрибации с доступом из интернета
 """
 
+import asyncio
+import hashlib
+import hmac
 import os
 import re
-import sys
-import uuid
-import time
-import hmac
-import hashlib
-import asyncio
 import shutil
-import zipfile
 import tempfile
+import time
 import traceback
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional, List, Dict, Literal
-from contextlib import asynccontextmanager
-
-import aiofiles
-from fastapi import (
-    FastAPI, File, UploadFile, HTTPException, Depends,
-    BackgroundTasks, status, Header, Request, Query
-)
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.background import BackgroundTask
-from pydantic import BaseModel, Field
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
+import uuid
 
 # Подавляем предупреждения
 import warnings
+import zipfile
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
+
+import aiofiles
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from starlette.background import BackgroundTask
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты проекта
-from src.utils.pyannote_patch import apply_pyannote_patch
+from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
-from src.utils.processing_stats import ProcessingStats
-from src.utils.logger import setup_logger
-from src.utils.output_naming import output_filename, find_result_file
-from src.utils.audio_converter import ffmpeg_available
 from src.utils.atomic_json import load_json, save_json_atomic
-from src.config import HF_TOKEN, SUPPORTED_FORMATS
+from src.utils.audio_converter import ffmpeg_available
+from src.utils.logger import setup_logger
+from src.utils.output_naming import find_result_file, output_filename
+from src.utils.processing_stats import ProcessingStats
+from src.utils.pyannote_patch import apply_pyannote_patch
 
 # Применяем патч
 apply_pyannote_patch()
@@ -97,7 +94,7 @@ stats_manager = None
 logger = None
 
 # Хранилище задач (в продакшене использовать Redis или базу данных)
-tasks_storage: Dict[str, dict] = {}
+tasks_storage: dict[str, dict] = {}
 
 # Семафор для ограничения одновременных задач
 processing_semaphore = None
@@ -110,14 +107,14 @@ class TaskStatus(BaseModel):
     task_id: str
     status: str  # pending, processing, completed, failed
     created_at: str
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    started_at: str | None = None
+    completed_at: str | None = None
     progress: int = 0  # 0-100
     filename: str
     file_size: int
-    message: Optional[str] = None
-    error: Optional[str] = None
-    error_details: Optional[str] = None  # Полный traceback для отладки
+    message: str | None = None
+    error: str | None = None
+    error_details: str | None = None  # Полный traceback для отладки
 
 
 class TaskResult(BaseModel):
@@ -125,10 +122,10 @@ class TaskResult(BaseModel):
     task_id: str
     status: str
     filename: str
-    transcription: Optional[str] = None
-    transcription_with_timecodes: Optional[str] = None
-    processing_time: Optional[float] = None
-    media_duration: Optional[float] = None
+    transcription: str | None = None
+    transcription_with_timecodes: str | None = None
+    processing_time: float | None = None
+    media_duration: float | None = None
 
 
 class UploadResponse(BaseModel):
@@ -137,12 +134,12 @@ class UploadResponse(BaseModel):
     message: str
     filename: str
     file_size: int
-    estimated_time: Optional[str] = None
+    estimated_time: str | None = None
 
 
 class BatchUploadResponse(BaseModel):
     """Ответ на множественную загрузку файлов"""
-    tasks: List[UploadResponse]
+    tasks: list[UploadResponse]
     total_files: int
     message: str
 
@@ -173,7 +170,7 @@ def load_api_keys():
     """Загружает хэши API-ключей из файла (с миграцией старых plaintext-ключей)"""
     global VALID_API_KEY_HASHES
     if API_KEYS_FILE.exists():
-        raw_lines = [l.strip() for l in API_KEYS_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+        raw_lines = [ln.strip() for ln in API_KEYS_FILE.read_text(encoding="utf-8").splitlines() if ln.strip()]
         hashes = set()
         migrated = False
         for line in raw_lines:
@@ -193,9 +190,9 @@ def load_api_keys():
         VALID_API_KEY_HASHES = {_hash_key(default_key)}
         save_api_keys()
         print(f"\n{'='*60}")
-        print(f"ПЕРВЫЙ API КЛЮЧ СОЗДАН (показывается только один раз):")
+        print("ПЕРВЫЙ API КЛЮЧ СОЗДАН (показывается только один раз):")
         print(f"  {default_key}")
-        print(f"Сохраните его в безопасном месте! В файле хранится только хэш.")
+        print("Сохраните его в безопасном месте! В файле хранится только хэш.")
         print(f"{'='*60}\n")
 
 
@@ -226,7 +223,7 @@ def is_supported_format(filename: str) -> bool:
     return any(file_ext == ext.replace('*', '') for ext in extensions)
 
 
-def safe_filename(filename: Optional[str]) -> str:
+def safe_filename(filename: str | None) -> str:
     """Защита от path traversal: оставляет только базовое имя без разделителей путей.
 
     Учитывает и POSIX (/), и Windows (\\) разделители независимо от ОС сервера,
@@ -345,7 +342,7 @@ async def _save_upload(file: UploadFile, request: Request) -> tuple:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Ошибка сохранения файла"
-        )
+        ) from e
 
     return task_id, file_path, filename, file_size
 
@@ -354,12 +351,12 @@ def restore_tasks_from_results():
     """Восстанавливает информацию о задачах из существующих результатов при запуске API"""
     if not RESULTS_DIR.exists():
         return
-    
+
     restored_count = 0
     for task_dir in RESULTS_DIR.iterdir():
         if not task_dir.is_dir():
             continue
-        
+
         task_id = task_dir.name
 
         # Предпочитаем реальные метаданные из meta.json, если они есть
@@ -411,7 +408,7 @@ def restore_tasks_from_results():
         }
 
         restored_count += 1
-    
+
     if restored_count > 0:
         logger.info(f"Восстановлено {restored_count} задач из существующих результатов")
 
@@ -459,7 +456,7 @@ async def _cleanup_loop():
 async def process_transcription(task_id: str, file_path: Path, filename: str):
     """
     Фоновая обработка транскрибации
-    
+
     Args:
         task_id: ID задачи
         file_path: путь к файлу
@@ -539,10 +536,10 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
             transcription = ""
             transcription_timecoded = ""
             if text_file.exists():
-                async with aiofiles.open(text_file, 'r', encoding='utf-8') as f:
+                async with aiofiles.open(text_file, encoding='utf-8') as f:
                     transcription = await f.read()
             if timecode_file.exists():
-                async with aiofiles.open(timecode_file, 'r', encoding='utf-8') as f:
+                async with aiofiles.open(timecode_file, encoding='utf-8') as f:
                     transcription_timecoded = await f.read()
 
             # Обновляем задачу (если она ещё существует)
@@ -608,22 +605,22 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
     global model_loader, stats_manager, logger, processing_semaphore
-    
+
     # Инициализация
     print("="*60)
     print("🚀 Запуск GigaAM v3 Transcriber API")
     print("="*60)
-    
+
     # Загрузка API ключей
     load_api_keys()
-    
+
     # Логгер
     logger = setup_logger()
     logger.info("API сервер запускается...")
-    
+
     # Восстановление задач из существующих результатов
     restore_tasks_from_results()
-    
+
     # Предполётная проверка ffmpeg/ffprobe (без них конвертация не работает)
     if not ffmpeg_available():
         logger.error("ffmpeg/ffprobe не найдены в PATH — обработка файлов будет невозможна!")
@@ -632,21 +629,21 @@ async def lifespan(app: FastAPI):
     if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
         logger.error("HuggingFace токен не настроен!")
         raise RuntimeError("Требуется настроить HF_TOKEN в .env")
-    
+
     # Загрузка модели
     logger.info("Загрузка модели GigaAM-v3...")
     model_loader = ModelLoader()
     success = model_loader.load_model(logger=logger.info)
-    
+
     if not success:
         logger.error("Не удалось загрузить модель!")
         raise RuntimeError("Ошибка загрузки модели")
-    
+
     logger.info("Модель успешно загружена")
-    
+
     # Статистика
     stats_manager = ProcessingStats()
-    
+
     # Семафор для ограничения задач
     processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
@@ -762,11 +759,11 @@ async def upload_file(
 ):
     """
     Загрузить файл для транскрибации
-    
+
     - **file**: Аудио или видео файл (mp3, wav, m4a, mp4, avi, mov, mkv, webm, flac, ogg, wma)
     - Максимальный размер: 2GB
     - Требуется заголовок X-API-Key
-    
+
     Возвращает task_id для проверки статуса и получения результата.
     """
     # Валидация, сохранение и проверка файла (HTTPException пробрасывается с корректным кодом)
@@ -797,7 +794,7 @@ async def upload_file(
 async def upload_files_batch(
     request: Request,
     background_tasks: BackgroundTasks,
-    files: List[UploadFile] = File(..., description="Список аудио или видео файлов")
+    files: list[UploadFile] = File(..., description="Список аудио или видео файлов")
 ):
     """
     Загрузить несколько файлов для транскрибации
@@ -854,27 +851,27 @@ async def upload_files_batch(
     dependencies=[Depends(verify_api_key)]
 )
 async def list_tasks(
-    status_filter: Optional[Literal["pending", "processing", "completed", "failed"]] = None,
+    status_filter: Literal["pending", "processing", "completed", "failed"] | None = None,
     limit: int = Query(100, ge=1, le=1000)
 ):
     """
     Получить список задач
-    
+
     - **status_filter**: фильтр по статусу (pending, processing, completed, failed)
     - **limit**: максимальное количество задач (по умолчанию 100)
     """
     tasks = list(tasks_storage.values())
-    
+
     # Фильтрация
     if status_filter:
         tasks = [t for t in tasks if t['status'] == status_filter]
-    
+
     # Сортировка по дате создания (новые первыми)
     tasks.sort(key=lambda x: x['created_at'], reverse=True)
-    
+
     # Ограничение
     tasks = tasks[:limit]
-    
+
     return {
         "total": len(tasks),
         "tasks": tasks
@@ -889,9 +886,9 @@ async def list_tasks(
 async def get_task_status(task_id: str):
     """
     Получить статус задачи
-    
+
     - **task_id**: ID задачи, полученный при загрузке файла
-    
+
     Статусы:
     - pending: в очереди
     - processing: обрабатывается
@@ -916,9 +913,9 @@ async def get_task_status(task_id: str):
 async def get_batch_progress(task_ids: str):
     """
     Получить прогресс нескольких задач одновременно
-    
+
     - **task_ids**: Список ID задач через запятую (task_id1,task_id2,task_id3)
-    
+
     Возвращает статус и прогресс для каждой задачи.
     Полезно для отображения прогресса в Postman/клиенте.
     """
@@ -930,17 +927,17 @@ async def get_batch_progress(task_ids: str):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Максимум 50 задач за раз"
         )
-    
+
     if len(task_id_list) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Необходимо указать хотя бы один task_id. Получено: '{task_ids}'. Убедитесь, что переменные task_id установлены в Postman или укажите ID вручную."
         )
-    
+
     # Собираем информацию о задачах
     results = []
     not_found = []
-    
+
     for task_id in task_id_list:
         if task_id in tasks_storage:
             task = tasks_storage[task_id]
@@ -954,7 +951,7 @@ async def get_batch_progress(task_ids: str):
             })
         else:
             not_found.append(task_id)
-    
+
     return {
         "total_requested": len(task_id_list),
         "found": len(results),
@@ -971,9 +968,9 @@ async def get_batch_progress(task_ids: str):
 async def get_task_result(task_id: str):
     """
     Получить результат транскрибации
-    
+
     - **task_id**: ID задачи
-    
+
     Возвращает текст транскрибации с таймкодами и без.
     Доступно только для завершенных задач.
     """
@@ -991,12 +988,12 @@ async def get_task_result(task_id: str):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Задача еще не завершена (статус: {task['status']})"
         )
-    
+
     # Проверяем что результаты есть в tasks_storage
     # Если нет - пробуем прочитать из файлов (для восстановленных задач)
     transcription = task.get('transcription')
     transcription_timecoded = task.get('transcription_timecoded')
-    
+
     # Если результатов нет в памяти, читаем из файлов
     if not transcription or not transcription_timecoded:
         result_dir = RESULTS_DIR / task_id
@@ -1005,7 +1002,7 @@ async def get_task_result(task_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Директория с результатами не найдена"
             )
-        
+
         filename_base = Path(task['filename']).stem
 
         # Имена детерминированы — ищем через единый модуль output_naming
@@ -1013,13 +1010,13 @@ async def get_task_result(task_id: str):
         timecode_file = find_result_file(result_dir, filename_base, 'txt_timecodes')
 
         if text_file:
-            async with aiofiles.open(text_file, 'r', encoding='utf-8') as f:
+            async with aiofiles.open(text_file, encoding='utf-8') as f:
                 transcription = await f.read()
 
         if timecode_file:
-            async with aiofiles.open(timecode_file, 'r', encoding='utf-8') as f:
+            async with aiofiles.open(timecode_file, encoding='utf-8') as f:
                 transcription_timecoded = await f.read()
-    
+
     return TaskResult(
         task_id=task_id,
         status=task['status'],
@@ -1064,25 +1061,25 @@ async def download_batch_results(task_ids: str, format: Literal["txt", "timecode
     valid_tasks = []
     not_found_ids = []
     not_completed_ids = []
-    
+
     for task_id in task_id_list:
         if task_id not in tasks_storage:
             not_found_ids.append(task_id)
             continue
-        
+
         task = tasks_storage[task_id]
         if task['status'] != 'completed':
             not_completed_ids.append(f"{task_id} (status: {task['status']})")
             continue
-        
+
         valid_tasks.append(task)
-    
+
     if not_found_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Задачи не найдены: {', '.join(not_found_ids)}. Используйте GET /api/v1/tasks для получения списка доступных task_id."
         )
-    
+
     if not_completed_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1097,7 +1094,7 @@ async def download_batch_results(task_ids: str, format: Literal["txt", "timecode
         for task in valid_tasks:
             task_id = task['task_id']
             result_dir = RESULTS_DIR / task_id
-            
+
             # Проверяем что директория существует
             if not result_dir.exists():
                 error_msg = f"Директория с результатами не найдена для задачи {task_id}\n"
@@ -1106,7 +1103,7 @@ async def download_batch_results(task_ids: str, format: Literal["txt", "timecode
                 zip_file.writestr(zip_name, error_msg)
                 logger.warning(f"Batch download: директория не найдена {result_dir}")
                 continue
-            
+
             filename_base = Path(task['filename']).stem
             fmt_key = 'txt_timecodes' if format == "timecodes" else 'txt'
             zip_name = output_filename(filename_base, fmt_key)
@@ -1150,7 +1147,7 @@ async def download_batch_results(task_ids: str, format: Literal["txt", "timecode
 async def download_result(task_id: str, format: Literal["txt", "timecodes"] = "txt"):
     """
     Скачать файл с результатами
-    
+
     - **task_id**: ID задачи
     - **format**: формат файла (txt или timecodes)
     """
@@ -1176,7 +1173,7 @@ async def download_result(task_id: str, format: Literal["txt", "timecodes"] = "t
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Директория с результатами не найдена"
         )
-    
+
     # Получаем базовое имя файла и формат (имена детерминированы — output_naming)
     filename_base = Path(task['filename']).stem
     fmt_key = 'txt_timecodes' if format == "timecodes" else 'txt'
@@ -1190,9 +1187,9 @@ async def download_result(task_id: str, format: Literal["txt", "timecodes"] = "t
             status_code=status.HTTP_404_NOT_FOUND,
             detail=error_detail
         )
-    
+
     logger.info(f"Download: отправляем файл {found_file.name} для задачи {task_id}")
-    
+
     return FileResponse(
         path=str(found_file),  # Используем строку для надежности
         filename=found_file.name,
@@ -1207,7 +1204,7 @@ async def download_result(task_id: str, format: Literal["txt", "timecodes"] = "t
 async def delete_task(task_id: str):
     """
     Удалить задачу и связанные файлы
-    
+
     - **task_id**: ID задачи
     """
     validated_task_id(task_id)
@@ -1236,9 +1233,9 @@ async def delete_task(task_id: str):
 
     # Удаляем задачу
     tasks_storage.pop(task_id, None)
-    
+
     logger.info(f"Задача {task_id} удалена")
-    
+
     return {"message": "Задача успешно удалена"}
 
 
@@ -1246,21 +1243,21 @@ async def delete_task(task_id: str):
     "/api/v1/tasks",
     dependencies=[Depends(verify_api_key)]
 )
-async def delete_all_tasks(status_filter: Optional[str] = None):
+async def delete_all_tasks(status_filter: str | None = None):
     """
     Удалить все задачи (массовое удаление)
-    
+
     - **status_filter**: фильтр по статусу для удаления (completed, failed, pending, all)
       - Если не указан, по умолчанию удаляются только завершенные задачи (completed, failed)
       - Используйте "all" для удаления всех задач включая pending
       - Задачи со статусом "processing" НИКОГДА не удаляются
-    
+
     Примеры:
     - DELETE /api/v1/tasks - удалит все completed и failed задачи
     - DELETE /api/v1/tasks?status_filter=completed - удалит только completed
     - DELETE /api/v1/tasks?status_filter=all - удалит все кроме processing
     """
-    
+
     # Определяем какие статусы удалять
     if status_filter == "all":
         # Удаляем все кроме processing
@@ -1274,26 +1271,26 @@ async def delete_all_tasks(status_filter: Optional[str] = None):
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Неверный статус фильтра. Используйте: completed, failed, pending, all"
+            detail="Неверный статус фильтра. Используйте: completed, failed, pending, all"
         )
-    
+
     # Собираем задачи для удаления (по снимку — без гонок при изменении словаря)
     tasks_to_delete = []
     for task_id, task in list(tasks_storage.items()):
         if task['status'] in statuses_to_delete:
             tasks_to_delete.append(task_id)
-    
+
     if len(tasks_to_delete) == 0:
         return {
             "message": "Нет задач для удаления",
             "deleted_count": 0,
             "filter": status_filter or "completed, failed (default)"
         }
-    
+
     # Удаляем задачи и их файлы
     deleted_count = 0
     errors = []
-    
+
     for task_id in tasks_to_delete:
         try:
             task = tasks_storage.get(task_id)
@@ -1317,19 +1314,19 @@ async def delete_all_tasks(status_filter: Optional[str] = None):
         except Exception as e:
             errors.append(f"{task_id}: {str(e)}")
             logger.error(f"Ошибка при удалении задачи {task_id}: {str(e)}")
-    
+
     logger.info(f"Массовое удаление: удалено {deleted_count} задач (фильтр: {status_filter or 'default'})")
-    
+
     response = {
         "message": f"Успешно удалено задач: {deleted_count}",
         "deleted_count": deleted_count,
         "filter": status_filter or "completed, failed (default)"
     }
-    
+
     if errors:
         response["errors"] = errors
         response["message"] += f" (с ошибками: {len(errors)})"
-    
+
     return response
 
 
@@ -1337,7 +1334,7 @@ async def delete_all_tasks(status_filter: Optional[str] = None):
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "api:app",
         host=API_HOST,

@@ -4,12 +4,13 @@
 
 import torch
 from transformers import AutoModel
-from ..config import MODEL_NAME, MODEL_REVISION, HF_TOKEN
+
+from ..config import HF_TOKEN, MODEL_NAME, MODEL_REVISION
 
 
 class ModelLoader:
     """Класс для загрузки и управления моделью GigaAM"""
-    
+
     def __init__(self):
         self.model = None
         self.device = None
@@ -24,37 +25,37 @@ class ModelLoader:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         return "cpu"
-        
+
     def load_model(self, logger=None):
         """
         Загружает модель GigaAM-v3
-        
+
         Args:
             logger: функция для логирования (опционально)
-            
+
         Returns:
             bool: True если загрузка успешна, False иначе
         """
         if self.model is not None:
             return True
-            
+
         if logger:
             logger("Инициализация модели GigaAM-v3 (e2e_rnnt)...")
             logger("Это может занять несколько минут при первом запуске (скачивание весов).")
-        
+
         try:
             # Определение устройства: CUDA > XPU (Intel) > MPS (Apple) > CPU
             self.device = self._select_device()
             if logger:
                 logger(f"Устройство вычисления: {self.device.upper()}")
-            
+
             # Загружаем модель с токеном
             model_kwargs = {
                 "trust_remote_code": True
             }
             if HF_TOKEN and HF_TOKEN.startswith("hf_"):
                 model_kwargs["token"] = HF_TOKEN
-            
+
             loaded_model = AutoModel.from_pretrained(
                 MODEL_NAME,
                 revision=MODEL_REVISION,
@@ -73,16 +74,16 @@ class ModelLoader:
                     )
                 self.device = "cpu"
                 self.model = loaded_model.to(self.device)
-            
+
             if logger:
                 logger("Модель успешно загружена!")
             return True
-            
+
         except Exception as e:
             if logger:
                 logger(f"КРИТИЧЕСКАЯ ОШИБКА загрузки модели:\n{str(e)}")
             return False
-    
+
     def _empty_cache(self):
         """Освобождает кэш ускорителя, чтобы снизить фрагментацию памяти между файлами."""
         try:
