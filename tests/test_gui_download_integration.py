@@ -1,8 +1,7 @@
 import os
 import threading
 
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from src.gui.app_qt import GigaTranscriberQtApp
 

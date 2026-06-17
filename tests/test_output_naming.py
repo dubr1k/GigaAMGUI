@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.utils.output_naming import output_filename, output_path, find_result_file
+from src.utils.output_naming import find_result_file, output_filename, output_path
 
 
 @pytest.mark.parametrize("fmt,expected", [
