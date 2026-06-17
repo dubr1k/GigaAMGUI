@@ -1,0 +1,30 @@
+# Конфигурация инструментов разработки (линтер, тесты).
+# Сборочные метаданные намеренно не задаются: проект устанавливается через
+# requirements.txt (включая editable-зависимость GigaAM из git).
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+# Исходники проекта; вендорная копия GigaAM и кэши исключены
+extend-exclude = ["src/gigaam", "GigaAM", "GigaAMv3.workflow", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501 (длина строки) и часть стилистики не критичны для существующего кода
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах: F811 (переопределение фикстур), F841 (QApplication держим ссылкой, но не используем)
+"tests/*" = ["F811", "F841"]
+# api.py/cli.py: импорты намеренно идут после применения патчей и настройки окружения
+"api.py" = ["E402"]
+"cli.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Игнорируем тесты вендорной копии GigaAM (требуют установленный пакет gigaam)
+addopts = "-q --ignore=src/gigaam --ignore=examples"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
