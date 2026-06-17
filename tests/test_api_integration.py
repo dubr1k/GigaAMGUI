@@ -82,3 +82,16 @@ def test_cors_not_wildcard_with_credentials(client):
         headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"},
     )
     assert r.headers.get("access-control-allow-origin") != "*"
+
+
+def test_invalid_format_query_is_422(client):
+    # Phase 2.7: format ограничен Literal["txt","timecodes"]
+    tid = "a" * 32
+    r = client.get(f"/api/v1/tasks/{tid}/download?format=exe", headers={"X-API-Key": VALID_KEY})
+    assert r.status_code == 422
+
+
+def test_invalid_limit_query_is_422(client):
+    # Phase 2.7: limit ограничен диапазоном [1, 1000]
+    r = client.get("/api/v1/tasks?limit=0", headers={"X-API-Key": VALID_KEY})
+    assert r.status_code == 422
