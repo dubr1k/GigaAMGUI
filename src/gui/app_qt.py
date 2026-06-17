@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -137,31 +138,34 @@ class GigaTranscriberQtApp(QMainWindow):
     def _init_ui(self):
         """Инициализация интерфейса"""
         self.setWindowTitle(APP_TITLE)
-        # Минимум по ширине достаточен для строк управления; по высоте — небольшой,
-        # т.к. контент обёрнут в QScrollArea и при нехватке высоты появляется прокрутка
-        # (раньше элементы наезжали друг на друга при низком окне).
-        self.setMinimumSize(1000, 640)
-        self.resize(1280, 1000)
+        # Журнал вынесен на отдельную вкладку, поэтому стартовое окно компактнее.
+        # Контент вкладки «Обработка» обёрнут в QScrollArea: при нехватке высоты
+        # появляется прокрутка, а не наложение элементов.
+        self.setMinimumSize(940, 560)
+        self.resize(1040, 720)
 
-        # Контент в области прокрутки, чтобы элементы не перекрывались при малой высоте окна
-        content_widget = QWidget()
-        main_layout = QVBoxLayout(content_widget)
-        main_layout.setContentsMargins(16, 12, 16, 12)
-        main_layout.setSpacing(6)
+        # Корневой виджет: заголовок + вкладки
+        root = QWidget()
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(16, 12, 16, 12)
+        root_layout.setSpacing(8)
+        self.setCentralWidget(root)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setWidget(content_widget)
-        self.setCentralWidget(scroll_area)
-
-        # Заголовок
+        # Заголовок (общий для всех вкладок)
         title_label = QLabel("GigaAM v3: Транскрибация")
         title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_label.setFixedHeight(40)
-        main_layout.addWidget(title_label)
+        root_layout.addWidget(title_label)
+
+        tabs = QTabWidget()
+        root_layout.addWidget(tabs, 1)
+
+        # ===== Вкладка «Обработка» =====
+        content_widget = QWidget()
+        main_layout = QVBoxLayout(content_widget)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(6)
 
         # Блок выбора файлов
         files_group = self._create_files_group()
@@ -189,24 +193,36 @@ class GigaTranscriberQtApp(QMainWindow):
         # Блок прогресса (отдельная секция без QGroupBox)
         self._create_progress_section(main_layout)
 
-        # Лог
-        log_label = QLabel("Журнал обработки:")
-        log_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        log_label.setFixedHeight(24)
-        main_layout.addWidget(log_label)
-
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont("Consolas", 11))
-        self.log_text.setMinimumHeight(160)
-        main_layout.addWidget(self.log_text, 1)  # Растягивается
-
         # Кнопка очистки
         self.btn_clear = QPushButton("ОЧИСТИТЬ ВСЕ")
         self.btn_clear.setObjectName("clear_button")
         self.btn_clear.setFixedHeight(40)
         self.btn_clear.clicked.connect(self._clear_all)
         main_layout.addWidget(self.btn_clear)
+
+        main_layout.addStretch()
+
+        proc_scroll = QScrollArea()
+        proc_scroll.setWidgetResizable(True)
+        proc_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        proc_scroll.setWidget(content_widget)
+        tabs.addTab(proc_scroll, "Обработка")
+
+        # ===== Вкладка «Журнал обработки» =====
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        log_layout.setContentsMargins(8, 8, 8, 8)
+        log_layout.setSpacing(6)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 11))
+        self.log_text.setMinimumHeight(160)
+        log_layout.addWidget(self.log_text, 1)  # Растягивается
+
+        tabs.addTab(log_tab, "Журнал обработки")
+        self.tabs = tabs
 
         # Применяем строгую цветовую схему после создания всех элементов
         self._apply_strict_style()
