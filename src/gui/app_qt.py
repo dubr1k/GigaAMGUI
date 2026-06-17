@@ -587,8 +587,8 @@ class GigaTranscriberQtApp(QMainWindow):
             "#progress_card QLabel { border: none; background: transparent; }"
         )
         frame_layout = QVBoxLayout(progress_frame)
-        frame_layout.setContentsMargins(16, 14, 16, 14)
-        frame_layout.setSpacing(8)
+        frame_layout.setContentsMargins(16, 12, 16, 12)
+        frame_layout.setSpacing(6)
 
         # Шапка: «Общий прогресс» ... «Файл 2 / 5»
         head_row = QHBoxLayout()
@@ -605,17 +605,21 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_bar_total = self._make_progress_bar(height=22, font_pt=10)
         frame_layout.addWidget(self.progress_bar_total)
 
-        # Подпись текущего файла (имя)
-        self.lbl_current_file = QLabel(" ")
-        self.lbl_current_file.setStyleSheet("color: #9a9aa0; font-size: 9pt;")
-        self.lbl_current_file.setFixedHeight(18)
-        frame_layout.addWidget(self.lbl_current_file)
-
-        # Этап + прогресс файла («● Распознавание речи… 47%»)
+        # Строка деталей (этап слева, имя файла справа) — показывается только во время обработки,
+        # чтобы в простое не было пустого «провала» между полосами.
+        self.detail_row = QWidget()
+        detail_layout = QHBoxLayout(self.detail_row)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(10)
         self.lbl_stage = QLabel("")
         self.lbl_stage.setStyleSheet("color: #d8d8dc; font-size: 9pt; font-weight: 600;")
-        self.lbl_stage.setFixedHeight(18)
-        frame_layout.addWidget(self.lbl_stage)
+        detail_layout.addWidget(self.lbl_stage)
+        detail_layout.addStretch()
+        self.lbl_current_file = QLabel("")
+        self.lbl_current_file.setStyleSheet("color: #9a9aa0; font-size: 9pt;")
+        detail_layout.addWidget(self.lbl_current_file)
+        frame_layout.addWidget(self.detail_row)
+        self.detail_row.setVisible(False)  # скрыто в простое
 
         # Прогресс текущего файла (тоньше)
         self.progress_bar_file = self._make_progress_bar(height=16, font_pt=8)
@@ -955,6 +959,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_current_file.setText("")
         self.lbl_stage.setText("")
         self.lbl_file_counter.setText("")
+        self.detail_row.setVisible(False)
         self.lbl_status.setText("Готов к работе")
 
         self.lbl_files_count.setText("Файлы не выбраны")
@@ -1029,8 +1034,9 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_bar_total.setValue(0)
         self.progress_bar_file.setValue(0)
         self._stage_start_time = 0.0
+        self.detail_row.setVisible(True)
         self.lbl_file_counter.setText(f"Файл 1 / {self.total_files}")
-        self.lbl_current_file.setText(" ")
+        self.lbl_current_file.setText("")
         self.lbl_stage.setText("●  Подготовка…")
         self.lbl_status.setText(f"Оценка: ~{estimate_str}")
 
