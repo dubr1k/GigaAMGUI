@@ -7,6 +7,7 @@ Monkey patching для pyannote.audio чтобы использовать soundf
 """
 
 import os
+import logging
 import warnings
 import numpy as np
 
@@ -15,6 +16,10 @@ from .torch_patch import apply_torch_load_patch
 
 # Применяем патч сразу при импорте модуля
 apply_torch_load_patch()
+
+# Флаг идемпотентности: pyannote-патч применяется только один раз за процесс,
+# чтобы повторные вызовы не оборачивали Pipeline.__call__ многократно.
+_PYANNOTE_PATCH_APPLIED = False
 
 
 def apply_torchaudio_backend_patch():
@@ -87,7 +92,10 @@ apply_torchaudio_backend_patch()
 
 
 def apply_pyannote_patch():
-    """Применяет патч для работы pyannote.audio через soundfile"""
+    """Применяет патч для работы pyannote.audio через soundfile (идемпотентно)"""
+    global _PYANNOTE_PATCH_APPLIED
+    if _PYANNOTE_PATCH_APPLIED:
+        return
     try:
         import soundfile as sf
         import torch
@@ -128,25 +136,28 @@ def apply_pyannote_patch():
                         audio_tensor = audio_tensor.unsqueeze(0)
                 return {"waveform": audio_tensor, "sample_rate": sample_rate}
             
-            # Сохраняем оригинальный __call__ метод Pipeline
-            _original_pipeline_call = Pipeline.__call__
-            
-            # Патчим Pipeline.__call__ чтобы он загружал аудио через soundfile если это строка пути
-            def _patched_pipeline_call(self, file, **kwargs):
-                """Патченный метод Pipeline.__call__ для загрузки аудио через soundfile"""
-                # Если file - это строка (путь к файлу), загружаем через soundfile
-                if isinstance(file, (str, os.PathLike)):
-                    file_path = str(file)
-                    # Загружаем аудио через soundfile
-                    audio_dict = _load_audio_with_soundfile(file_path)
-                    # Вызываем оригинальный метод с предзагруженным аудио
-                    return _original_pipeline_call(self, audio_dict, **kwargs)
-                else:
-                    # Если это уже словарь или другой тип, используем оригинальный метод
-                    return _original_pipeline_call(self, file, **kwargs)
-            
-            # Применяем патч
-            Pipeline.__call__ = _patched_pipeline_call
+            # Защита от повторной обёртки: если __call__ уже наш — выходим
+            if not getattr(Pipeline.__call__, "_gigaam_patched", False):
+                # Сохраняем оригинальный __call__ метод Pipeline
+                _original_pipeline_call = Pipeline.__call__
+
+                # Патчим Pipeline.__call__ чтобы он загружал аудио через soundfile если это строка пути
+                def _patched_pipeline_call(self, file, **kwargs):
+                    """Патченный метод Pipeline.__call__ для загрузки аудио через soundfile"""
+                    # Если file - это строка (путь к файлу), загружаем через soundfile
+                    if isinstance(file, (str, os.PathLike)):
+                        file_path = str(file)
+                        # Загружаем аудио через soundfile
+                        audio_dict = _load_audio_with_soundfile(file_path)
+                        # Вызываем оригинальный метод с предзагруженным аудио
+                        return _original_pipeline_call(self, audio_dict, **kwargs)
+                    else:
+                        # Если это уже словарь или другой тип, используем оригинальный метод
+                        return _original_pipeline_call(self, file, **kwargs)
+
+                _patched_pipeline_call._gigaam_patched = True
+                # Применяем патч
+                Pipeline.__call__ = _patched_pipeline_call
             
             # Если AudioDecoder все же используется где-то (для обратной совместимости)
             # создаем его как класс-заглушку
@@ -162,14 +173,15 @@ def apply_pyannote_patch():
                         return {"waveform": self.waveform, "sample_rate": self.sample_rate}
                 
                 io_module.AudioDecoder = AudioDecoder
-            
-            print("Pyannote.audio патч успешно применен")
-            
+
+            _PYANNOTE_PATCH_APPLIED = True
+            logging.getLogger(__name__).debug("Pyannote.audio патч успешно применён")
+
         except Exception as e:
             # Если не удалось сделать monkey patch, продолжаем с предупреждениями
-            import traceback
-            print(f"Предупреждение: не удалось применить monkey patch для pyannote.audio: {e}")
-            traceback.print_exc()
-            
+            logging.getLogger(__name__).warning(
+                "Не удалось применить monkey patch для pyannote.audio: %s", e, exc_info=True
+            )
+
     except ImportError as e:
-        print(f"Не удалось импортировать soundfile для патча: {e}")
+        logging.getLogger(__name__).warning("Не удалось импортировать soundfile для патча: %s", e)

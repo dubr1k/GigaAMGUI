@@ -11,9 +11,9 @@ import warnings
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-# Применяем патч для совместимости с NumPy 2.0
-from .pyannote_patch import apply_pyannote_patch
-apply_pyannote_patch()
+# Патч pyannote применяется лениво в _load_pipeline (а не при импорте модуля),
+# чтобы простой импорт src.utils не переписывал pyannote глобально, когда
+# диаризация не используется. apply_pyannote_patch идемпотентен.
 
 logger = logging.getLogger(__name__)
 
@@ -232,23 +232,19 @@ class DiarizationManager:
             # Преобразование результатов
             segments = []
             
-            # Проверяем, какой API использует pyannote
-            if hasattr(diarization, 'itertracks'):
-                # Старый API (pyannote.audio < 3.0)
-                for turn, _, speaker in diarization.itertracks(yield_label=True):
-                    segments.append(SpeakerSegment(
-                        start=turn.start,
-                        end=turn.end,
-                        speaker=speaker
-                    ))
-            else:
-                # Новый API (pyannote.audio >= 3.0)
-                for turn, speaker in diarization.speaker_diarization:
-                    segments.append(SpeakerSegment(
-                        start=turn.start,
-                        end=turn.end,
-                        speaker=speaker
-                    ))
+            # Pipeline возвращает pyannote.core.Annotation — итерируем через itertracks.
+            # Поддерживается всеми версиями pyannote.audio 2.x–3.x.
+            if not hasattr(diarization, 'itertracks'):
+                raise ValueError(
+                    f"Неожиданный тип результата диаризации: {type(diarization).__name__} "
+                    "(ожидался pyannote.core.Annotation с методом itertracks)"
+                )
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                segments.append(SpeakerSegment(
+                    start=turn.start,
+                    end=turn.end,
+                    speaker=speaker
+                ))
             
             # Сортировка по времени
             segments.sort(key=lambda s: s.start)
