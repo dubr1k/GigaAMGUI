@@ -9,6 +9,7 @@ from typing import Dict, Callable, Optional
 from ..utils.audio_converter import AudioConverter
 from ..utils.time_formatter import TimeFormatter
 from ..utils.diarization import DiarizationManager
+from ..utils.output_naming import output_path
 from ..config import HF_TOKEN
 
 
@@ -106,7 +107,8 @@ class TranscriptionProcessor:
             'media_duration': media_duration,
             'total_time': 0,
             'conversion_time': 0,
-            'transcription_time': 0
+            'transcription_time': 0,
+            'saved_files': []
         }
         
         # Логирование начала
@@ -282,14 +284,14 @@ class TranscriptionProcessor:
             for fmt in output_formats:
                 if fmt == 'txt':
                     # Чистый текст без таймкодов и меток спикеров
-                    path_txt = os.path.join(output_dir, f"{name_without_ext}.txt")
+                    path_txt = output_path(output_dir, name_without_ext, 'txt')
                     with open(path_txt, "w", encoding="utf-8") as f:
                         f.write(full_text)
                     saved_files.append(path_txt)
 
                 elif fmt == 'txt_timecodes':
                     # Текст с таймкодами, без меток спикеров
-                    path_ts = os.path.join(output_dir, f"{name_without_ext}_timecodes.txt")
+                    path_ts = output_path(output_dir, name_without_ext, 'txt_timecodes')
                     with open(path_ts, "w", encoding="utf-8") as f:
                         f.write("\n".join(timecoded_lines))
                     saved_files.append(path_ts)
@@ -297,7 +299,7 @@ class TranscriptionProcessor:
                 elif fmt == 'txt_diarize':
                     # Текст с метками спикеров (только при включённой диаризации)
                     if enable_diarization and full_text_diarized.strip():
-                        path_diarize = os.path.join(output_dir, f"{name_without_ext}_diarize.txt")
+                        path_diarize = output_path(output_dir, name_without_ext, 'txt_diarize')
                         with open(path_diarize, "w", encoding="utf-8") as f:
                             f.write(full_text_diarized)
                         saved_files.append(path_diarize)
@@ -307,7 +309,7 @@ class TranscriptionProcessor:
                 elif fmt == 'txt_diarize_timecodes':
                     # Текст с метками спикеров и таймкодами (только при включённой диаризации)
                     if enable_diarization and timecoded_lines_diarized:
-                        path_diarize_ts = os.path.join(output_dir, f"{name_without_ext}_diarize_timecodes.txt")
+                        path_diarize_ts = output_path(output_dir, name_without_ext, 'txt_diarize_timecodes')
                         with open(path_diarize_ts, "w", encoding="utf-8") as f:
                             f.write("\n".join(timecoded_lines_diarized))
                         saved_files.append(path_diarize_ts)
@@ -316,23 +318,23 @@ class TranscriptionProcessor:
 
                 elif fmt == 'md':
                     # Markdown формат
-                    path_md = os.path.join(output_dir, f"{name_without_ext}.md")
+                    path_md = output_path(output_dir, name_without_ext, 'md')
                     md_content = self._generate_markdown(utterances, filename)
                     with open(path_md, "w", encoding="utf-8") as f:
                         f.write(md_content)
                     saved_files.append(path_md)
-                    
+
                 elif fmt == 'srt':
                     # SRT субтитры
-                    path_srt = os.path.join(output_dir, f"{name_without_ext}.srt")
+                    path_srt = output_path(output_dir, name_without_ext, 'srt')
                     srt_content = self._generate_srt(utterances)
                     with open(path_srt, "w", encoding="utf-8") as f:
                         f.write(srt_content)
                     saved_files.append(path_srt)
-                    
+
                 elif fmt == 'vtt':
                     # VTT субтитры
-                    path_vtt = os.path.join(output_dir, f"{name_without_ext}.vtt")
+                    path_vtt = output_path(output_dir, name_without_ext, 'vtt')
                     vtt_content = self._generate_vtt(utterances)
                     with open(path_vtt, "w", encoding="utf-8") as f:
                         f.write(vtt_content)
@@ -346,6 +348,7 @@ class TranscriptionProcessor:
             
             # Успех
             result['success'] = True
+            result['saved_files'] = saved_files
             result['total_time'] = time.time() - file_start_time
             
             # Логируем сохраненные файлы

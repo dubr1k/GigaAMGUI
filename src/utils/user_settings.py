@@ -2,10 +2,10 @@
 Модуль для сохранения пользовательских настроек приложения
 """
 
-import json
 import os
-from pathlib import Path
 from typing import Optional
+
+from .atomic_json import load_json, save_json_atomic
 
 
 class UserSettings:
@@ -22,22 +22,14 @@ class UserSettings:
         self.settings: dict = self._load_settings()
     
     def _load_settings(self) -> dict:
-        """Загрузка настроек из файла"""
-        if os.path.exists(self.settings_file):
-            try:
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Ошибка загрузки настроек: {e}")
-                return {}
-        return {}
-    
+        """Загрузка настроек из файла (устойчиво к битому JSON)"""
+        return load_json(self.settings_file, {})
+
     def _save_settings(self):
-        """Сохранение настроек в файл"""
+        """Атомарное сохранение настроек в файл"""
         try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, ensure_ascii=False, indent=2)
-        except Exception as e:
+            save_json_atomic(self.settings_file, self.settings)
+        except OSError as e:
             print(f"Ошибка сохранения настроек: {e}")
     
     def get_last_output_dir(self) -> Optional[str]:

@@ -2,36 +2,32 @@
 Модуль статистики обработки файлов
 """
 
-import json
 import os
+import threading
 from datetime import datetime
 from typing import Dict, List
+
+from .atomic_json import load_json, save_json_atomic
 
 
 class ProcessingStats:
     """Класс для сбора и анализа статистики обработки файлов"""
-    
+
     def __init__(self, stats_file: str = "processing_stats.json"):
         self.stats_file = stats_file
+        # Защита от гонок: статистика пишется из worker-потока GUI и читается из главного
+        self._lock = threading.Lock()
         self.stats: Dict = self._load_stats()
-        
+
     def _load_stats(self) -> Dict:
-        """Загрузка статистики из файла"""
-        if os.path.exists(self.stats_file):
-            try:
-                with open(self.stats_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Ошибка загрузки статистики: {e}")
-                return {"history": [], "summary": {}}
-        return {"history": [], "summary": {}}
-    
+        """Загрузка статистики из файла (устойчиво к битому JSON)"""
+        return load_json(self.stats_file, {"history": [], "summary": {}})
+
     def _save_stats(self):
-        """Сохранение статистики в файл"""
+        """Атомарное сохранение статистики в файл"""
         try:
-            with open(self.stats_file, 'w', encoding='utf-8') as f:
-                json.dump(self.stats, f, ensure_ascii=False, indent=2)
-        except Exception as e:
+            save_json_atomic(self.stats_file, self.stats)
+        except OSError as e:
             print(f"Ошибка сохранения статистики: {e}")
     
     def add_processing_record(self, 
@@ -54,10 +50,11 @@ class ProcessingStats:
             "transcription_time": round(transcription_time, 2),
             "success": success
         }
-        
-        self.stats["history"].append(record)
-        self._update_summary()
-        self._save_stats()
+
+        with self._lock:
+            self.stats["history"].append(record)
+            self._update_summary()
+            self._save_stats()
     
     def _update_summary(self):
         """Обновление сводной статистики"""
