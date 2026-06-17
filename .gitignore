@@ -92,6 +92,7 @@ checkpoints/
 *.txt
 !requirements.txt
 !requirements_macos.txt
+!requirements-dev.txt
 *.wav
 *.mp3
 *.mp4

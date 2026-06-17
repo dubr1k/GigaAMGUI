@@ -1,0 +1,8 @@
+# Зависимости для разработки и тестирования.
+# Установка: pip install -r requirements-dev.txt (поверх requirements.txt)
+
+pytest>=9.0.0
+pytest-cov>=7.0.0
+coverage>=7.0.0
+httpx>=0.28.0       # требуется fastapi.testclient
+ruff>=0.13.0        # линтер и форматтер (конфиг в pyproject.toml)
