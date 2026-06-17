@@ -47,6 +47,20 @@ def test_processing_tab_in_scroll_area_no_overlap_when_short():
     window.close()
 
 
+def test_default_size_needs_no_scroll():
+    # При стартовом размере вкладка «Обработка» должна помещаться без прокрутки
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    window.show()
+    app.processEvents()
+
+    proc_scroll = window.tabs.widget(0)
+    assert proc_scroll.verticalScrollBar().maximum() == 0
+    assert proc_scroll.horizontalScrollBar().maximum() == 0
+    window.close()
+
+
 def test_log_is_on_second_tab():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
