@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -136,16 +137,24 @@ class GigaTranscriberQtApp(QMainWindow):
     def _init_ui(self):
         """Инициализация интерфейса"""
         self.setWindowTitle(APP_TITLE)
-        # Достаточный минимальный и стартовый размер, чтобы на Linux элементы не наезжали
-        self.setMinimumSize(1000, 820)
-        self.resize(1280, 960)
+        # Минимум по ширине достаточен для строк управления; по высоте — небольшой,
+        # т.к. контент обёрнут в QScrollArea и при нехватке высоты появляется прокрутка
+        # (раньше элементы наезжали друг на друга при низком окне).
+        self.setMinimumSize(1000, 640)
+        self.resize(1280, 1000)
 
-        # Центральный виджет
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        # Контент в области прокрутки, чтобы элементы не перекрывались при малой высоте окна
+        content_widget = QWidget()
+        main_layout = QVBoxLayout(content_widget)
         main_layout.setContentsMargins(16, 12, 16, 12)
         main_layout.setSpacing(6)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setWidget(content_widget)
+        self.setCentralWidget(scroll_area)
 
         # Заголовок
         title_label = QLabel("GigaAM v3: Транскрибация")
