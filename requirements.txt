@@ -103,6 +103,7 @@ pyparsing==3.2.5
 pyreadline3==3.5.4
 pytest==9.0.1
 pytest-cov==7.0.0
+httpx==0.28.1
 python-dateutil==2.9.0.post0
 pytorch-lightning==2.5.6
 pytorch-metric-learning==2.9.0
@@ -147,6 +148,19 @@ yt-dlp==2026.3.17
 
 # Environment variables
 python-dotenv==1.0.0
+
+# REST API (api.py)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+slowapi>=0.1.9
+aiofiles>=23.0.0
+
+# CLI (cli.py)
+click>=8.1.0
+questionary>=2.0.0
+# rich уже указан выше
 
 # GUI (PyQt6 - строгий профессиональный интерфейс)
 PyQt6>=6.10.0
