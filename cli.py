@@ -37,7 +37,7 @@ from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
 from src.utils.processing_stats import ProcessingStats
 from src.utils.logger import setup_logger
-from src.config import HF_TOKEN, SUPPORTED_FORMATS
+from src.config import HF_TOKEN, SUPPORTED_FORMATS, OUTPUT_FORMATS
 
 # Применяем патч
 apply_pyannote_patch()
@@ -257,21 +257,28 @@ def process_files_with_progress(
     output_dir: str,
     model_loader: ModelLoader,
     stats_manager: ProcessingStats,
-    logger: CLILogger
+    logger: CLILogger,
+    output_formats: Optional[List[str]] = None,
+    enable_diarization: bool = False,
+    num_speakers: Optional[int] = None,
 ) -> List[dict]:
     """
     Обрабатывает файлы с отображением прогресса
-    
+
     Args:
         files: список файлов
         output_dir: директория для результатов
         model_loader: загрузчик модели
         stats_manager: менеджер статистики
         logger: логгер
-        
+        output_formats: список форматов вывода (txt, md, srt, vtt, ...)
+        enable_diarization: включить диаризацию спикеров
+        num_speakers: количество спикеров (если известно)
+
     Returns:
         список результатов обработки
     """
+    output_formats = output_formats or ['txt']
     results = []
     
     with Progress(
@@ -324,21 +331,27 @@ def process_files_with_progress(
                 filepath=filepath,
                 output_dir=output_dir,
                 file_index=i,
-                total_files=len(files)
+                total_files=len(files),
+                enable_diarization=enable_diarization,
+                num_speakers=num_speakers,
+                output_formats=output_formats,
             )
-            
+
             results.append(result)
-            
+
             # Обновляем прогресс
             progress.update(main_task, advance=1)
             progress.update(current_task, completed=100)
-            
+
             # Сохраняем статистику
             if result['success'] and result['media_duration'] > 0:
-                stats_manager.add_record(
+                stats_manager.add_processing_record(
+                    file_path=result.get('file_path', filepath),
                     file_size=result['file_size'],
-                    media_duration=result['media_duration'],
-                    processing_time=result['total_time']
+                    duration=result['media_duration'],
+                    conversion_time=result.get('conversion_time', 0),
+                    transcription_time=result.get('transcription_time', 0),
+                    success=result['success'],
                 )
     
     return results
@@ -436,7 +449,25 @@ def display_results(results: List[dict]):
     is_flag=True,
     help='Подробный вывод'
 )
-def main(files, directory, output, interactive, verbose):
+@click.option(
+    '--format', '-F', 'formats',
+    multiple=True,
+    type=click.Choice(list(OUTPUT_FORMATS.keys())),
+    help=('Форматы вывода (можно несколько). По умолчанию: txt. '
+          'Доступно: ' + ', '.join(OUTPUT_FORMATS.keys()))
+)
+@click.option(
+    '--diarize/--no-diarize',
+    default=False,
+    help='Включить диаризацию спикеров (по умолчанию: выключено)'
+)
+@click.option(
+    '--speakers', '-s',
+    type=click.IntRange(min=1),
+    default=None,
+    help='Количество спикеров для диаризации (если известно)'
+)
+def main(files, directory, output, interactive, verbose, formats, diarize, speakers):
     """
     🎙️ GigaAM v3 Transcriber - CLI
     
@@ -560,7 +591,10 @@ def main(files, directory, output, interactive, verbose):
         output_dir=output_dir,
         model_loader=model_loader,
         stats_manager=stats_manager,
-        logger=logger
+        logger=logger,
+        output_formats=list(formats) if formats else ['txt'],
+        enable_diarization=diarize,
+        num_speakers=speakers,
     )
     total_time = time.time() - start_time
     
