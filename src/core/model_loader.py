@@ -83,21 +83,40 @@ class ModelLoader:
                 logger(f"КРИТИЧЕСКАЯ ОШИБКА загрузки модели:\n{str(e)}")
             return False
     
+    def _empty_cache(self):
+        """Освобождает кэш ускорителя, чтобы снизить фрагментацию памяти между файлами."""
+        try:
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif self.device == "mps" and hasattr(torch, "mps"):
+                torch.mps.empty_cache()
+        except Exception:
+            pass  # очистка кэша не критична
+
     def transcribe_longform(self, audio_path: str):
         """
         Транскрибирует длинное аудио
-        
+
         Args:
             audio_path: путь к аудио файлу
-            
+
         Returns:
             list: список utterances с транскрипцией и таймкодами
         """
         if self.model is None:
             raise RuntimeError("Модель не загружена")
-        
-        return self.model.transcribe_longform(audio_path)
-    
+
+        try:
+            return self.model.transcribe_longform(audio_path)
+        finally:
+            # Чистим кэш ускорителя после каждого файла (длинные файлы фрагментируют память)
+            self._empty_cache()
+
+    def unload(self):
+        """Выгружает модель и освобождает память ускорителя."""
+        self.model = None
+        self._empty_cache()
+
     def is_loaded(self) -> bool:
         """Проверяет, загружена ли модель"""
         return self.model is not None
