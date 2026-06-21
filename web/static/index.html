@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GigaAM v3 Transcriber</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260621-actions">
+    <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+</head>
+<body>
+
+<!-- ===== ЭКРАН АВТОРИЗАЦИИ ===== -->
+<div id="login-screen" class="login-screen">
+    <div class="login-card">
+        <h1 class="login-title">GigaAM v3</h1>
+        <p class="login-subtitle">Транскрибация аудио и видео</p>
+        <form id="login-form" class="login-form">
+            <input type="text" id="login-username" placeholder="Логин" autocomplete="username" required>
+            <input type="password" id="login-password" placeholder="Пароль" autocomplete="current-password" required>
+            <button type="submit" class="btn-login">Войти</button>
+            <div id="login-error" class="login-error"></div>
+        </form>
+    </div>
+</div>
+
+<!-- ===== ГЛАВНЫЙ ИНТЕРФЕЙС ===== -->
+<div id="main-screen" class="main-screen hidden">
+
+    <!-- Заголовок -->
+    <header class="app-header">
+        <h1>GigaAM v3: Транскрибация</h1>
+        <div class="header-right">
+            <span id="device-badge" class="device-badge">CPU</span>
+            <button id="btn-logout" class="btn-logout" title="Выйти">Выйти</button>
+        </div>
+    </header>
+
+    <!-- Вкладки -->
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="process">Обработка</button>
+        <button class="tab-btn" data-tab="log">Журнал</button>
+        <button class="tab-btn" data-tab="results">Результаты</button>
+    </div>
+
+    <!-- ===== ВКЛАДКА: ОБРАБОТКА ===== -->
+    <div id="tab-process" class="tab-content active">
+
+        <!-- 1. Выбор файлов -->
+        <div class="card">
+            <h2 class="card-title">1. Выбор файлов</h2>
+
+            <div class="row">
+                <button id="btn-select-files" class="btn btn-secondary">Выбрать файлы</button>
+                <span id="files-count" class="label-muted">Файлы не выбраны</span>
+                <input type="file" id="file-input" multiple accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.mp4,.avi,.mov,.mkv,.webm,.wma,.qta,.3gp" hidden>
+            </div>
+
+            <div class="row mt-8">
+                <button id="btn-select-folder" class="btn btn-secondary">Выбрать папку</button>
+                <span id="folder-label" class="label-muted">Папка не выбрана</span>
+                <input type="file" id="folder-input" webkitdirectory multiple hidden>
+            </div>
+
+            <div class="row mt-8">
+                <input type="text" id="url-input" class="input" placeholder="Ссылка на медиа (YouTube, и т.д.)">
+                <button id="btn-download-url" class="btn btn-secondary">Загрузить</button>
+                <div id="download-progress" class="download-progress hidden">
+                    <div class="progress-bar-small"><div id="download-bar" class="progress-fill-small"></div></div>
+                    <span id="download-pct" class="progress-text">0%</span>
+                </div>
+            </div>
+
+            <!-- Drag & Drop зона -->
+            <div id="drop-zone" class="drop-zone">
+                <p>Перетащите файлы сюда</p>
+                <p class="drop-zone-hint">mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, qta, 3gp</p>
+            </div>
+
+            <!-- Список выбранных файлов -->
+            <div id="file-list" class="file-list hidden"></div>
+        </div>
+
+        <!-- 2. Диаризация -->
+        <div class="card">
+            <h2 class="card-title">2. Диаризация спикеров</h2>
+            <label class="checkbox-label">
+                <input type="checkbox" id="cb-diarization">
+                <span>Включить диаризацию спикеров</span>
+            </label>
+            <div class="row mt-8">
+                <label for="num-speakers" class="label">Кол-во спикеров:</label>
+                <input type="number" id="num-speakers" class="input input-small" placeholder="Пусто = авто" min="1" disabled>
+            </div>
+            <p class="hint">Автоматическое определение спикеров (требуется HF_TOKEN)</p>
+        </div>
+
+        <!-- 3. Форматы вывода -->
+        <div class="card">
+            <h2 class="card-title">3. Форматы вывода</h2>
+            <div class="formats-row">
+                <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt" checked><span>Текст (.txt)</span></label>
+                <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt_timecodes" checked><span>Таймкоды (_timecodes.txt)</span></label>
+                <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt_diarize" disabled><span>Диаризация (_diarize.txt)</span></label>
+                <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt_diarize_timecodes" disabled><span>Диар.+тайм. (_diarize_timecodes.txt)</span></label>
+            </div>
+            <div class="formats-row mt-8">
+                <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="md"><span>Markdown (.md)</span></label>
+                <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="srt"><span>SRT (.srt)</span></label>
+                <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="vtt"><span>VTT (.vtt)</span></label>
+            </div>
+        </div>
+
+        <!-- Кнопка запуска -->
+        <button id="btn-start" class="btn btn-start">ЗАПУСТИТЬ ОБРАБОТКУ</button>
+
+        <!-- Прогресс -->
+        <div id="progress-section" class="progress-card hidden">
+            <div class="progress-header">
+                <span class="progress-title">Общий прогресс</span>
+                <span id="file-counter" class="progress-counter"></span>
+            </div>
+            <div class="progress-bar"><div id="bar-total" class="progress-fill"></div></div>
+            <div class="progress-detail">
+                <span id="stage-label" class="stage-label"></span>
+                <span id="current-file" class="current-file"></span>
+            </div>
+            <div class="progress-bar progress-bar-thin"><div id="bar-file" class="progress-fill"></div></div>
+            <div id="status-label" class="status-label">Готов к работе</div>
+        </div>
+
+        <!-- Кнопка очистки -->
+        <button id="btn-clear" class="btn btn-clear">ОЧИСТИТЬ ВСЁ</button>
+    </div>
+
+    <!-- ===== ВКЛАДКА: ЖУРНАЛ ===== -->
+    <div id="tab-log" class="tab-content">
+        <div id="log-panel" class="log-panel"></div>
+    </div>
+
+    <!-- ===== ВКЛАДКА: РЕЗУЛЬТАТЫ ===== -->
+    <div id="tab-results" class="tab-content">
+        <div id="results-list" class="results-list">
+            <p class="label-muted">Нет завершённых задач</p>
+        </div>
+    </div>
+
+</div>
+
+<script src="/static/app.js?v=20260621-actions"></script>
+</body>
+</html>
