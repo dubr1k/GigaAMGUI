@@ -57,6 +57,13 @@ env/
 # User Settings (персональные настройки пользователя)
 user_settings.json
 
+# Runtime data (локальные загрузки, результаты и временные кэши)
+uploads/
+results/
+cache/
+.opencode-*/
+.env.auth-backup-*
+
 # Project directories (документация, конфигурация развертывания, Postman коллекции)
 postman/
 deploy/
@@ -93,6 +100,7 @@ checkpoints/
 !requirements.txt
 !requirements_macos.txt
 !requirements-dev.txt
+!web/static/robots.txt
 *.wav
 *.mp3
 *.mp4
