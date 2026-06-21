@@ -2,7 +2,7 @@
 
 Программа для расшифровки русской речи из аудио и видео. В основе используется модель **GigaAM-v3** от **SaluteDevices**.
 
-Проект можно использовать как обычное desktop-приложение, CLI-утилиту или REST API сервис.
+Проект можно использовать как обычное desktop-приложение, CLI-утилиту, REST API сервис или защищённый Web GUI в Docker.
 
 ## Что умеет программа
 
@@ -26,6 +26,7 @@
 - Ведёт логи запусков и автоматически очищает старые логи.
 - Хранит секреты и настройки в `.env`, без хардкода токенов в коде.
 - Даёт REST API для загрузки файлов, отслеживания задач и скачивания результатов.
+- Даёт Web GUI для загрузки файлов и ссылок через браузер, просмотра задач и скачивания результатов.
 
 ## Варианты запуска
 
@@ -96,6 +97,46 @@ curl -X POST "http://localhost:8000/api/v1/transcribe" \
   -H "X-API-Key: YOUR_API_KEY" \
   -F "file=@audio.mp3"
 ```
+
+### Web GUI в Docker
+
+Актуальный Web GUI запускается через Docker Compose и слушает внутренний порт контейнера `8000`. В production порт опубликован только на localhost:
+
+```yaml
+ports:
+  - "127.0.0.1:8001:8000"
+```
+
+Публичный доступ должен идти через reverse proxy, например nginx:
+
+```text
+https://gigaam-site.dubr1k.space -> http://127.0.0.1:8001
+```
+
+Локальный запуск:
+
+```bash
+cp .env.example .env
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+# вставьте результат в WEB_SECRET
+docker compose up -d --build gigaam-web
+```
+
+После запуска доступны:
+
+- Web GUI: `http://127.0.0.1:8001/`
+- Healthcheck: `http://127.0.0.1:8001/health`
+
+Для Web GUI обязательны переменные окружения:
+
+```env
+HF_TOKEN=hf_your_token_here
+WEB_SECRET=replace_with_32plus_byte_random_secret
+WEB_USERNAME=dubr1k
+WEB_PASSWORD=replace_with_strong_password
+```
+
+Контейнер запускается с усиленной изоляцией: пользователь `gigaam`, `read_only: true`, `no-new-privileges:true`, ограничение памяти и процессов. Для работы HuggingFace/pyannote при read-only rootfs отдельно смонтирован writable-кэш `/home/gigaam/.cache`.
 
 ## Как выглядит результат
 
@@ -192,6 +233,10 @@ MAX_FILE_SIZE=2147483648
 MAX_CONCURRENT_TASKS=3
 UPLOAD_DIR=uploads
 RESULTS_DIR=results
+
+WEB_SECRET=replace_with_32plus_byte_random_secret
+WEB_USERNAME=dubr1k
+WEB_PASSWORD=replace_with_strong_password
 ```
 
 Файл `.env` не должен попадать в Git.
@@ -213,6 +258,15 @@ RESULTS_DIR=results
 
 В API результат сохраняется в директорию, указанную в `RESULTS_DIR`.
 
+В Web GUI контейнер использует bind mounts:
+
+- `uploads/` -> временные загруженные файлы;
+- `results/` -> результаты и статистика обработки;
+- `logs/` -> прикладные логи;
+- `cache/home-gigaam-cache/` -> кэш HuggingFace/pyannote для longform-сегментации.
+
+Эти директории являются runtime-данными и не коммитятся.
+
 ## Структура проекта
 
 ```text
@@ -220,6 +274,10 @@ GigaAMGUI/
 ├── app.py                 # запуск GUI
 ├── cli.py                 # CLI
 ├── api.py                 # REST API
+├── web/                   # Web GUI на FastAPI + статический фронтенд
+├── Dockerfile             # образ Web GUI
+├── docker-compose.yml     # запуск Web GUI с GPU и hardening
+├── .dockerignore          # исключения для Docker build context
 ├── requirements.txt       # зависимости
 ├── .env.example           # пример конфигурации
 ├── src/
@@ -230,6 +288,30 @@ GigaAMGUI/
 ├── scripts/               # скрипты запуска
 ├── deploy/                # файлы для production-развёртывания API
 └── docs/                  # дополнительная документация
+```
+
+## Production-развёртывание Web GUI
+
+На production-хосте источник правды для запущенного контейнера должен совпадать с этим репозиторием. Проверить фактический путь можно так:
+
+```bash
+docker inspect gigaam-web --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
+```
+
+Ожидаемая схема:
+
+1. `docker compose up -d --build gigaam-web` собирает и запускает контейнер.
+2. Docker публикует только `127.0.0.1:8001`.
+3. Nginx принимает HTTPS на публичном домене и проксирует в `http://127.0.0.1:8001`.
+4. `.env` хранит реальные `HF_TOKEN`, `WEB_SECRET`, `WEB_USERNAME`, `WEB_PASSWORD` и не попадает в Git.
+5. Runtime-директории `uploads/`, `results/`, `logs/`, `cache/` не коммитятся.
+
+Быстрая проверка после деплоя:
+
+```bash
+curl -fsS http://127.0.0.1:8001/health
+docker ps --filter name=gigaam-web
+docker logs --tail 100 gigaam-web
 ```
 
 ## Частые проблемы
@@ -248,6 +330,31 @@ ffmpeg -version
 
 ```env
 HF_TOKEN=hf_your_token_here
+```
+
+### Web GUI не принимает пароль
+
+Проверьте, что `.env` содержит актуальные `WEB_USERNAME` и `WEB_PASSWORD`, затем пересоздайте контейнер:
+
+```bash
+docker compose up -d gigaam-web
+```
+
+Если менялся `WEB_SECRET`, старые cookie станут недействительными: выйдите из Web GUI или очистите cookie сайта.
+
+### Longform-транскрибация падает на read-only filesystem
+
+При `read_only: true` HuggingFace/pyannote всё равно пишет кэш в домашнюю директорию пользователя. В `docker-compose.yml` должен быть mount:
+
+```yaml
+volumes:
+  - ./cache/home-gigaam-cache:/home/gigaam/.cache
+```
+
+Без него возможна ошибка вида:
+
+```text
+OSError: [Errno 30] Read-only file system: '/home/gigaam/.cache'
 ```
 
 ### Нет доступа к pyannote
