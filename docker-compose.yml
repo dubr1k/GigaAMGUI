@@ -1,0 +1,74 @@
+# ===== GigaAM v3 Transcriber - Web GUI =====
+# Docker Compose с поддержкой CUDA
+
+services:
+  gigaam-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gigaam-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8000"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - WEB_USERNAME=${WEB_USERNAME:?WEB_USERNAME must be set}
+      - WEB_PASSWORD=${WEB_PASSWORD:?WEB_PASSWORD must be set}
+      - WEB_SECRET=${WEB_SECRET:?WEB_SECRET must be set}
+      - WEB_PORT=8000
+      - MAX_FILE_SIZE=2147483648
+      - MAX_CONCURRENT_TASKS=2
+      - UPLOAD_DIR=uploads
+      - RESULTS_DIR=results
+      - STATS_FILE=results/processing_stats.json
+      - HF_HOME=/models/huggingface
+      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - MPLCONFIGDIR=/tmp/matplotlib
+      - XDG_CACHE_HOME=/tmp/cache
+      - PYTHONWARNINGS=ignore::UserWarning:pyannote.audio.core.io,ignore::UserWarning:pyannote.audio.pipelines.speaker_verification,ignore::UserWarning:pyannote.audio.tasks.segmentation.mixins,ignore::UserWarning:pyannote.audio.utils.reproducibility
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 8g
+    pids_limit: 512
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - ./cache/home-gigaam-cache:/home/gigaam/.cache
+      - gigaam-models:/models/huggingface
+    # GPU поддержка (нужен nvidia-container-toolkit на хосте)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Fallback: если GPU недоступен, раскомментировать строку ниже
+    # и закомментировать блок deploy выше
+    # runtime: nvidia
+    networks:
+      - gigaam-net
+
+volumes:
+  gigaam-models:
+    driver: local
+
+networks:
+  gigaam-net:
+    driver: bridge
