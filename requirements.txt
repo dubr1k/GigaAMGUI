@@ -167,6 +167,7 @@ PyQt6>=6.10.0
 
 # Web GUI (web/web_app.py)
 PyJWT>=2.8.0
+itsdangerous>=2.2.0
 
 # GigaAM (установлен из git репозитория)
 -e git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam

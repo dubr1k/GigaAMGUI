@@ -50,6 +50,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
+from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import AudioConverter, ffmpeg_available
 from src.utils.media_downloader import MediaDownloader
 from src.utils.output_naming import find_result_file, output_filename
@@ -99,6 +100,12 @@ processing_semaphore: asyncio.Semaphore | None = None
 
 # Хранилище задач
 tasks_storage: dict[str, dict] = {}
+TASKS_INDEX_PATH: Final[Path] = RESULTS_DIR / ".tasks_index.json"
+DELETED_TASKS_PATH: Final[Path] = RESULTS_DIR / ".deleted_tasks.json"
+TASK_RECOVERY_MESSAGE: Final[str] = "Сервер перезапустился во время обработки задачи"
+ACTIVE_TASK_STATUSES: Final[set[str]] = {'pending', 'downloading', 'processing'}
+ALL_TASK_STATUSES: Final[set[str]] = {'pending', 'downloading', 'processing', 'completed', 'failed'}
+deleted_task_ids: set[str] = set()
 
 # Очередь логов для SSE (task_id -> list of log lines)
 log_queues: dict[str, list[str]] = {}
@@ -167,7 +174,82 @@ def safe_filename(filename: str | None) -> str:
     return name or "upload"
 
 
-def _register_task(task_id: str, filename: str, file_size: int):
+def _persist_tasks_index() -> None:
+    save_json_atomic(str(TASKS_INDEX_PATH), tasks_storage)
+
+
+def _persist_deleted_task_ids() -> None:
+    save_json_atomic(str(DELETED_TASKS_PATH), sorted(deleted_task_ids))
+
+
+def _restore_deleted_task_ids() -> None:
+    raw_deleted = load_json(str(DELETED_TASKS_PATH), [])
+    if isinstance(raw_deleted, list):
+        deleted_task_ids.update(task_id for task_id in raw_deleted if isinstance(task_id, str))
+
+
+def _task_result_dir(task_id: str) -> Path:
+    return RESULTS_DIR / task_id
+
+
+def _remove_task_files(task_id: str, filename: str | None = None) -> None:
+    for upload_path in UPLOAD_DIR.glob(f"{task_id}_*"):
+        if upload_path.is_file():
+            try:
+                upload_path.unlink()
+            except OSError:
+                pass
+
+    if filename:
+        exact_upload = UPLOAD_DIR / f"{task_id}_{filename}"
+        if exact_upload.exists():
+            try:
+                exact_upload.unlink()
+            except OSError:
+                pass
+
+    result_dir = _task_result_dir(task_id)
+    if result_dir.exists():
+        shutil.rmtree(result_dir, ignore_errors=True)
+
+
+def _delete_task_data(task_id: str, task: dict) -> None:
+    if task.get('status') in ACTIVE_TASK_STATUSES:
+        deleted_task_ids.add(task_id)
+        _persist_deleted_task_ids()
+    filename = task.get('filename')
+    _remove_task_files(task_id, filename if isinstance(filename, str) else None)
+
+
+def _finalize_deleted_task(task_id: str, filename: str | None = None) -> None:
+    _remove_task_files(task_id, filename)
+    deleted_task_ids.discard(task_id)
+    _persist_deleted_task_ids()
+
+
+def _cleanup_deleted_task_tombstones() -> None:
+    if not deleted_task_ids:
+        return
+
+    raw_index = load_json(str(TASKS_INDEX_PATH), {})
+    index_changed = False
+    if isinstance(raw_index, dict):
+        for task_id in list(deleted_task_ids):
+            if task_id in raw_index:
+                raw_index.pop(task_id, None)
+                index_changed = True
+    if index_changed:
+        save_json_atomic(str(TASKS_INDEX_PATH), raw_index)
+
+    for task_id in list(deleted_task_ids):
+        _remove_task_files(task_id)
+        tasks_storage.pop(task_id, None)
+        log_queues.pop(task_id, None)
+        deleted_task_ids.discard(task_id)
+    _persist_deleted_task_ids()
+
+
+def _register_task(task_id: str, filename: str, file_size: int, user: str):
     tasks_storage[task_id] = {
         'task_id': task_id,
         'status': 'pending',
@@ -182,14 +264,145 @@ def _register_task(task_id: str, filename: str, file_size: int):
         'output_formats': [],
         'enable_diarization': False,
         'num_speakers': None,
+        'user': user,
     }
     log_queues[task_id] = []
+    _persist_tasks_index()
 
 
 def _task_log(task_id: str, message: str):
     """Добавляет сообщение в лог задачи."""
     if task_id in log_queues:
         log_queues[task_id].append(message)
+
+
+def _user_task_or_404(task_id: str, user: str):
+    task = tasks_storage.get(task_id)
+    if task is None or task.get('user') != user:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    return task
+
+
+def _visible_task_copy(task: dict) -> dict:
+    task_copy = dict(task)
+    task_copy.pop('result_files', None)
+    return task_copy
+
+
+def _restore_completed_task_from_meta(task_dir: Path) -> dict | None:
+    meta = load_json(str(task_dir / "meta.json"), None)
+    if not isinstance(meta, dict):
+        return None
+
+    filename = meta.get('filename')
+    user = meta.get('user')
+    if not isinstance(filename, str):
+        return None
+    if not isinstance(user, str) or not user:
+        user = WEB_USERNAME
+
+    task_id = task_dir.name
+    created_at = meta.get('created_at')
+    if not isinstance(created_at, str):
+        created_at = datetime.fromtimestamp(task_dir.stat().st_mtime).isoformat()
+    started_at = meta.get('started_at', created_at)
+    completed_at = meta.get('completed_at', started_at)
+    if not isinstance(started_at, str):
+        started_at = created_at
+    if not isinstance(completed_at, str):
+        completed_at = started_at
+
+    task = {
+        'task_id': task_id,
+        'status': 'completed',
+        'created_at': created_at,
+        'started_at': started_at,
+        'completed_at': completed_at,
+        'progress': 100,
+        'filename': filename,
+        'file_size': meta.get('file_size', 0),
+        'message': 'Задача восстановлена из результатов при запуске Web GUI',
+        'stage': 'Готово',
+        'output_formats': meta.get('output_formats') if isinstance(meta.get('output_formats'), list) else ['txt', 'txt_timecodes'],
+        'enable_diarization': meta.get('enable_diarization', False),
+        'num_speakers': meta.get('num_speakers'),
+        'user': user,
+    }
+    if isinstance(meta.get('processing_time'), (int, float)):
+        task['processing_time'] = meta['processing_time']
+    if isinstance(meta.get('media_duration'), (int, float)):
+        task['media_duration'] = meta['media_duration']
+    return task
+
+
+def _restore_tasks_from_index() -> bool:
+    raw_index = load_json(str(TASKS_INDEX_PATH), {})
+    if not isinstance(raw_index, dict):
+        return False
+
+    restored_any = False
+    changed = False
+    now_iso = datetime.now().isoformat()
+
+    for task_id, raw_task in raw_index.items():
+        if not isinstance(task_id, str) or not isinstance(raw_task, dict):
+            continue
+
+        task = dict(raw_task)
+        task['task_id'] = task_id
+
+        user = task.get('user')
+        if not isinstance(user, str) or not user:
+            task['user'] = WEB_USERNAME
+            changed = True
+
+        if task.get('status') in ACTIVE_TASK_STATUSES:
+            task['status'] = 'failed'
+            task['completed_at'] = now_iso
+            task['stage'] = 'Ошибка'
+            task['message'] = TASK_RECOVERY_MESSAGE
+            task['error'] = TASK_RECOVERY_MESSAGE
+            changed = True
+
+        tasks_storage[task_id] = task
+        log_queues[task_id] = []
+        restored_any = True
+
+    if changed:
+        _persist_tasks_index()
+
+    return restored_any
+
+
+def _restore_tasks_from_results() -> bool:
+    restored_any = False
+    if not RESULTS_DIR.exists():
+        return False
+
+    for task_dir in RESULTS_DIR.iterdir():
+        if not task_dir.is_dir():
+            continue
+        task = _restore_completed_task_from_meta(task_dir)
+        if task is None:
+            continue
+        task_id = task['task_id']
+        if task_id in tasks_storage:
+            continue
+        tasks_storage[task_id] = task
+        log_queues[task_id] = []
+        restored_any = True
+
+    if restored_any:
+        _persist_tasks_index()
+
+    return restored_any
+
+
+def _restore_persisted_tasks() -> None:
+    _restore_deleted_task_ids()
+    _cleanup_deleted_task_tombstones()
+    _restore_tasks_from_index()
+    _restore_tasks_from_results()
 
 
 async def _save_upload(file: UploadFile, request: Request) -> tuple:
@@ -252,6 +465,9 @@ async def process_transcription(
     num_speakers: int | None,
 ):
     """Фоновая обработка транскрибации."""
+    if processing_semaphore is None:
+        raise RuntimeError("Семафор обработки не инициализирован")
+
     async with processing_semaphore:
         try:
             if not file_path.exists() or task_id not in tasks_storage:
@@ -264,9 +480,10 @@ async def process_transcription(
                 'stage': 'Подготовка...',
                 'message': 'Обработка началась',
             })
+            _persist_tasks_index()
             _task_log(task_id, f"Начало обработки: {filename}")
 
-            output_dir = RESULTS_DIR / task_id
+            output_dir = _task_result_dir(task_id)
             output_dir.mkdir(exist_ok=True)
 
             def progress_callback(stage: str, progress: float):
@@ -311,6 +528,15 @@ async def process_transcription(
             if not result['success']:
                 raise Exception("Обработка не удалась")
 
+            if task_id not in tasks_storage:
+                if task_id in deleted_task_ids:
+                    _finalize_deleted_task(task_id, filename)
+                return
+
+            if task_id in deleted_task_ids:
+                _finalize_deleted_task(task_id, filename)
+                return
+
             # Собираем результаты
             stem = Path(filename).stem
             saved_files = result.get('saved_files', [])
@@ -335,11 +561,16 @@ async def process_transcription(
                 'processing_time': result['total_time'],
                 'media_duration': result.get('media_duration', 0),
             })
+            _persist_tasks_index()
             _task_log(task_id, f"Обработка завершена за {time_formatter.format_duration(result['total_time'])}")
+
+            if task_id in deleted_task_ids or task_id not in tasks_storage:
+                if task_id in deleted_task_ids:
+                    _finalize_deleted_task(task_id, filename)
+                return
 
             # Сохраняем meta.json
             try:
-                from src.utils.atomic_json import save_json_atomic
                 save_json_atomic(str(output_dir / "meta.json"), {
                     'task_id': task_id,
                     'filename': filename,
@@ -350,6 +581,9 @@ async def process_transcription(
                     'output_formats': output_formats,
                     'enable_diarization': enable_diarization,
                     'num_speakers': num_speakers,
+                    'user': tasks_storage[task_id].get('user'),
+                    'processing_time': result['total_time'],
+                    'media_duration': result.get('media_duration', 0),
                 })
             except Exception:
                 pass
@@ -364,6 +598,7 @@ async def process_transcription(
                     'stage': 'Ошибка',
                     'message': str(e),
                 })
+            _persist_tasks_index()
 
         finally:
             task_status = tasks_storage.get(task_id, {}).get('status', 'unknown')
@@ -372,6 +607,8 @@ async def process_transcription(
                     file_path.unlink()
                 except OSError:
                     pass
+            if task_id in deleted_task_ids:
+                _finalize_deleted_task(task_id, filename)
 
 
 def _detect_format(filename: str, stem: str) -> str:
@@ -405,11 +642,14 @@ async def lifespan(app: FastAPI):
     if not success:
         print("ОШИБКА загрузки модели!")
         raise RuntimeError("Ошибка загрузки модели")
-    print(f"Модель загружена. Устройство: {model_loader.device.upper()}")
+    device_name = model_loader.device.upper() if model_loader.device else "N/A"
+    print(f"Модель загружена. Устройство: {device_name}")
 
     stats_manager = ProcessingStats(os.getenv("STATS_FILE", str(RESULTS_DIR / "processing_stats.json")))
     media_downloader = MediaDownloader()
     processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+
+    _restore_persisted_tasks()
 
     print(f"Web GUI готов (порт {WEB_PORT}, макс. {MAX_CONCURRENT_TASKS} задач)")
     print("=" * 60)
@@ -528,10 +768,11 @@ async def upload_files(
     uploaded = []
     for file in files:
         task_id, file_path, filename, file_size = await _save_upload(file, request)
-        _register_task(task_id, filename, file_size)
+        _register_task(task_id, filename, file_size, user)
         tasks_storage[task_id]['output_formats'] = fmt_list
         tasks_storage[task_id]['enable_diarization'] = enable_diarization
         tasks_storage[task_id]['num_speakers'] = ns
+        _persist_tasks_index()
 
         asyncio.create_task(
             process_transcription(task_id, file_path, filename, fmt_list, enable_diarization, ns)
@@ -573,13 +814,14 @@ async def download_from_url(
             ns = None
 
     task_id = uuid.uuid4().hex
-    _register_task(task_id, url.split("/")[-1][:80], 0)
+    _register_task(task_id, url.split("/")[-1][:80], 0, user)
     tasks_storage[task_id]['output_formats'] = fmt_list
     tasks_storage[task_id]['enable_diarization'] = enable_diarization
     tasks_storage[task_id]['num_speakers'] = ns
     tasks_storage[task_id]['status'] = 'downloading'
     tasks_storage[task_id]['stage'] = 'Загрузка медиа...'
     tasks_storage[task_id]['message'] = 'Загрузка по URL'
+    _persist_tasks_index()
 
     asyncio.create_task(
         _download_and_process(task_id, url, fmt_list, enable_diarization, ns)
@@ -631,6 +873,13 @@ async def _download_and_process(
 
         await loop.run_in_executor(None, do_download)
 
+        if task_id in deleted_task_ids or task_id not in tasks_storage:
+            if task_id in deleted_task_ids:
+                _finalize_deleted_task(task_id)
+            else:
+                _remove_task_files(task_id)
+            return
+
         # Найти скачанный файл
         downloaded_files = [
             p for p in download_dir.iterdir()
@@ -653,6 +902,7 @@ async def _download_and_process(
             'progress': 0,
             'message': 'Загрузка завершена, ожидание обработки',
         })
+        _persist_tasks_index()
         _task_log(task_id, f"Загружено: {filename} ({file_size / 1024 / 1024:.1f} MB)")
 
         await process_transcription(task_id, file_path, filename, output_formats, enable_diarization, num_speakers)
@@ -666,44 +916,40 @@ async def _download_and_process(
                 'message': str(e),
                 'completed_at': datetime.now().isoformat(),
             })
+            _persist_tasks_index()
+
+    finally:
+        if task_id in deleted_task_ids and task_id not in tasks_storage:
+            _finalize_deleted_task(task_id)
 
 
 # ==================== ЭНДПОИНТЫ ЗАДАЧ ====================
 
 @app.get("/api/tasks")
 async def list_tasks(user: str = Depends(require_auth)):
-    tasks = list(tasks_storage.values())
-    tasks.sort(key=lambda x: x['created_at'], reverse=True)
-    # Не отправляем тяжёлые данные
-    for t in tasks:
-        t.pop('result_files', None)
+    tasks = [_visible_task_copy(task) for task in tasks_storage.values() if task.get('user') == user]
+    tasks.sort(key=lambda x: x.get('created_at') or '', reverse=True)
     return {"total": len(tasks), "tasks": tasks}
 
 
 @app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str, user: str = Depends(require_auth)):
-    if task_id not in tasks_storage:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-    return tasks_storage[task_id]
+    return _user_task_or_404(task_id, user)
 
 
 @app.get("/api/tasks/{task_id}/logs")
 async def get_task_logs(task_id: str, user: str = Depends(require_auth)):
-    if task_id not in tasks_storage:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
+    _user_task_or_404(task_id, user)
     return {"logs": log_queues.get(task_id, [])}
 
 
 @app.get("/api/tasks/{task_id}/result")
 async def get_task_result(task_id: str, user: str = Depends(require_auth)):
-    if task_id not in tasks_storage:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-
-    task = tasks_storage[task_id]
+    task = _user_task_or_404(task_id, user)
     if task['status'] != 'completed':
         raise HTTPException(status_code=400, detail=f"Задача не завершена (статус: {task['status']})")
 
-    result_dir = RESULTS_DIR / task_id
+    result_dir = _task_result_dir(task_id)
     result_files = []
     if result_dir.exists():
         stem = Path(task['filename']).stem
@@ -736,14 +982,11 @@ async def download_result_file(
     format: str = "txt",
     user: str = Depends(require_auth),
 ):
-    if task_id not in tasks_storage:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-
-    task = tasks_storage[task_id]
+    task = _user_task_or_404(task_id, user)
     if task['status'] != 'completed':
         raise HTTPException(status_code=400, detail="Задача не завершена")
 
-    result_dir = RESULTS_DIR / task_id
+    result_dir = _task_result_dir(task_id)
     if not result_dir.exists():
         raise HTTPException(status_code=404, detail="Результаты не найдены")
 
@@ -761,23 +1004,15 @@ async def download_result_file(
 
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str, user: str = Depends(require_auth)):
-    if task_id not in tasks_storage:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-
-    task = tasks_storage[task_id]
+    task = _user_task_or_404(task_id, user)
     if task['status'] == 'processing':
         raise HTTPException(status_code=400, detail="Нельзя удалить задачу в процессе обработки")
 
-    upload_path = UPLOAD_DIR / f"{task_id}_{task['filename']}"
-    if upload_path.exists():
-        upload_path.unlink()
-
-    result_dir = RESULTS_DIR / task_id
-    if result_dir.exists():
-        shutil.rmtree(result_dir)
+    _delete_task_data(task_id, task)
 
     tasks_storage.pop(task_id, None)
     log_queues.pop(task_id, None)
+    _persist_tasks_index()
 
     return {"ok": True, "message": "Задача удалена"}
 
@@ -787,20 +1022,22 @@ async def delete_all_tasks(
     status_filter: str = "completed,failed",
     user: str = Depends(require_auth),
 ):
-    statuses = set(status_filter.split(","))
+    statuses = {status.strip() for status in status_filter.split(",") if status.strip()}
     if "all" in statuses:
-        statuses = {'pending', 'completed', 'failed', 'downloading'}
+        statuses = set(ALL_TASK_STATUSES)
 
     removed = 0
     for tid in list(tasks_storage.keys()):
         task = tasks_storage[tid]
-        if task['status'] in statuses and task['status'] != 'processing':
-            result_dir = RESULTS_DIR / tid
-            if result_dir.exists():
-                shutil.rmtree(result_dir)
+        if task.get('user') != user:
+            continue
+        if task['status'] in statuses:
+            _delete_task_data(tid, task)
             tasks_storage.pop(tid, None)
             log_queues.pop(tid, None)
             removed += 1
+
+    _persist_tasks_index()
 
     return {"ok": True, "removed": removed}
 
@@ -821,6 +1058,8 @@ async def progress_stream(request: Request, user: str = Depends(require_auth)):
 
             current = {}
             for tid, task in tasks_storage.items():
+                if task.get('user') != user:
+                    continue
                 current[tid] = {
                     'status': task['status'],
                     'progress': task['progress'],
@@ -839,6 +1078,9 @@ async def progress_stream(request: Request, user: str = Depends(require_auth)):
             # Новые логи
             new_logs = {}
             for tid, logs in log_queues.items():
+                task = tasks_storage.get(tid)
+                if task is None or task.get('user') != user:
+                    continue
                 prev_len = last_snapshot.get(f"_logs_{tid}", 0)
                 if len(logs) > prev_len:
                     new_logs[tid] = logs[prev_len:]
@@ -884,10 +1126,11 @@ async def index():
 
 @app.get("/health")
 async def health():
+    device_name = model_loader.device.upper() if model_loader and model_loader.device else "N/A"
     return {
         "status": "healthy",
         "model_loaded": model_loader is not None and model_loader.is_loaded(),
-        "device": model_loader.device.upper() if model_loader else "N/A",
+        "device": device_name,
         "active_tasks": sum(1 for t in tasks_storage.values() if t['status'] in ('processing', 'downloading')),
         "total_tasks": len(tasks_storage),
     }
