@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GigaAM v3 Transcriber</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260621-actions">
+    <link rel="stylesheet" href="/static/style.css?v=20260621-delete-all">
     <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
 </head>
 <body>
@@ -31,15 +31,15 @@
         <h1>GigaAM v3: Транскрибация</h1>
         <div class="header-right">
             <span id="device-badge" class="device-badge">CPU</span>
-            <button id="btn-logout" class="btn-logout" title="Выйти">Выйти</button>
+            <button id="btn-logout" class="btn-logout" type="button" title="Выйти">Выйти</button>
         </div>
     </header>
 
     <!-- Вкладки -->
     <div class="tabs">
-        <button class="tab-btn active" data-tab="process">Обработка</button>
-        <button class="tab-btn" data-tab="log">Журнал</button>
-        <button class="tab-btn" data-tab="results">Результаты</button>
+        <button class="tab-btn active" type="button" data-tab="process">Обработка</button>
+        <button class="tab-btn" type="button" data-tab="log">Журнал</button>
+        <button class="tab-btn" type="button" data-tab="results">Результаты</button>
     </div>
 
     <!-- ===== ВКЛАДКА: ОБРАБОТКА ===== -->
@@ -50,20 +50,20 @@
             <h2 class="card-title">1. Выбор файлов</h2>
 
             <div class="row">
-                <button id="btn-select-files" class="btn btn-secondary">Выбрать файлы</button>
+                <button id="btn-select-files" class="btn btn-secondary" type="button">Выбрать файлы</button>
                 <span id="files-count" class="label-muted">Файлы не выбраны</span>
                 <input type="file" id="file-input" multiple accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.mp4,.avi,.mov,.mkv,.webm,.wma,.qta,.3gp" hidden>
             </div>
 
             <div class="row mt-8">
-                <button id="btn-select-folder" class="btn btn-secondary">Выбрать папку</button>
+                <button id="btn-select-folder" class="btn btn-secondary" type="button">Выбрать папку</button>
                 <span id="folder-label" class="label-muted">Папка не выбрана</span>
                 <input type="file" id="folder-input" webkitdirectory multiple hidden>
             </div>
 
             <div class="row mt-8">
                 <input type="text" id="url-input" class="input" placeholder="Ссылка на медиа (YouTube, и т.д.)">
-                <button id="btn-download-url" class="btn btn-secondary">Загрузить</button>
+                <button id="btn-download-url" class="btn btn-secondary" type="button">Загрузить</button>
                 <div id="download-progress" class="download-progress hidden">
                     <div class="progress-bar-small"><div id="download-bar" class="progress-fill-small"></div></div>
                     <span id="download-pct" class="progress-text">0%</span>
@@ -111,7 +111,7 @@
         </div>
 
         <!-- Кнопка запуска -->
-        <button id="btn-start" class="btn btn-start">ЗАПУСТИТЬ ОБРАБОТКУ</button>
+        <button id="btn-start" class="btn btn-start" type="button">ЗАПУСТИТЬ ОБРАБОТКУ</button>
 
         <!-- Прогресс -->
         <div id="progress-section" class="progress-card hidden">
@@ -129,7 +129,7 @@
         </div>
 
         <!-- Кнопка очистки -->
-        <button id="btn-clear" class="btn btn-clear">ОЧИСТИТЬ ВСЁ</button>
+        <button id="btn-clear" class="btn btn-clear" type="button">ОЧИСТИТЬ ВСЁ</button>
     </div>
 
     <!-- ===== ВКЛАДКА: ЖУРНАЛ ===== -->
@@ -142,10 +142,17 @@
         <div id="results-list" class="results-list">
             <p class="label-muted">Нет завершённых задач</p>
         </div>
+        <div class="results-danger-zone">
+            <div class="results-danger-copy">
+                <div class="results-danger-title">Опасная зона</div>
+                <p>Удалить все данные пользователя: задачи, загруженные файлы и результаты транскрибации. Действие необратимо.</p>
+            </div>
+            <button id="btn-delete-all-user-data" class="results-delete-all-btn" type="button">Удалить все мои данные</button>
+        </div>
     </div>
 
 </div>
 
-<script src="/static/app.js?v=20260621-actions"></script>
+<script src="/static/app.js?v=20260621-delete-all"></script>
 </body>
 </html>

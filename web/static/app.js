@@ -73,6 +73,7 @@ async function initApp() {
     setupFormats();
     setupStartButton();
     setupClearButton();
+    setupDeleteAllUserDataButton();
     setupTabs();
     setupUrlDownload();
 }
@@ -186,6 +187,14 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function escapeJsString(text) {
+    return String(text)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n');
 }
 
 // ===== DRAG & DROP =====
@@ -375,6 +384,78 @@ function setupClearButton() {
     });
 }
 
+function setupDeleteAllUserDataButton() {
+    const btn = document.getElementById('btn-delete-all-user-data');
+    if (!btn) return;
+
+    btn.onclick = async () => {
+        const firstConfirm = confirm('Удалить ВСЕ ваши задачи, загрузки и результаты транскрибации? Это действие нельзя отменить.');
+        if (!firstConfirm) return;
+
+        const secondConfirm = confirm('Подтвердите повторно: все данные текущего пользователя будут удалены без возможности восстановления.');
+        if (!secondConfirm) return;
+
+        btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = 'Удаление...';
+
+        try {
+            const res = await fetch(`${API}/tasks?status_filter=all`, {
+                method: 'DELETE',
+                credentials: 'same-origin',
+            });
+
+            if (!res.ok) {
+                const detail = await readErrorDetail(res);
+                console.error('delete all user data error:', detail);
+                addLog(`Ошибка удаления данных: ${detail}`, 'error');
+                alert(`Ошибка удаления данных: ${detail}`);
+                return;
+            }
+
+            clearVisibleTaskState();
+            startProgressStream();
+            await loadResults();
+            addLog('Все данные пользователя удалены', 'success');
+        } catch (e) {
+            console.error('delete all user data error:', e);
+            addLog(`Ошибка удаления данных: ${e}`, 'error');
+            alert('Ошибка удаления данных: ' + e);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    };
+}
+
+async function readErrorDetail(res) {
+    try {
+        const data = await res.json();
+        return data.detail || JSON.stringify(data);
+    } catch (e) {
+        try {
+            const text = await res.text();
+            return text || `HTTP ${res.status}`;
+        } catch (inner) {
+            return `HTTP ${res.status}`;
+        }
+    }
+}
+
+function clearVisibleTaskState() {
+    document.getElementById('results-list').innerHTML = '<p class="label-muted">Нет завершённых задач</p>';
+    document.getElementById('progress-section').classList.add('hidden');
+    document.getElementById('bar-total').style.width = '0%';
+    document.getElementById('bar-total').textContent = '';
+    document.getElementById('bar-file').style.width = '0%';
+    document.getElementById('file-counter').textContent = '';
+    document.getElementById('stage-label').textContent = '';
+    document.getElementById('current-file').textContent = '';
+    document.getElementById('status-label').textContent = 'Готов к работе';
+    document.getElementById('log-panel').innerHTML = '';
+    currentLogs = [];
+}
+
 // ===== PROGRESS STREAM (SSE) =====
 
 function startProgressStream() {
@@ -464,6 +545,9 @@ async function loadResults() {
         }
 
         list.innerHTML = completed.map(task => {
+            const taskId = String(task.task_id);
+            const htmlTaskId = escapeHtml(taskId);
+            const jsTaskId = escapeJsString(taskId);
             const statusBadge = task.status === 'completed'
                 ? '<span style="color: var(--success)">✓ Готово</span>'
                 : '<span style="color: var(--danger)">✕ Ошибка</span>';
@@ -476,7 +560,7 @@ async function loadResults() {
             if (task.status === 'completed') {
                 const formats = task.output_formats || ['txt', 'txt_timecodes'];
                 buttons += '<div class="result-files">';
-                buttons += `<button class="result-view-btn" onclick="viewResult('${task.task_id}')">Просмотреть</button>`;
+                buttons += `<button class="result-view-btn" onclick="viewResult('${jsTaskId}')">Просмотреть</button>`;
                 formats.forEach(fmt => {
                     const labels = {
                         'txt': 'Скачать .txt',
@@ -487,11 +571,12 @@ async function loadResults() {
                         'srt': 'Скачать .srt',
                         'vtt': 'Скачать .vtt',
                     };
-                    buttons += `<a class="result-file-btn" href="${API}/tasks/${task.task_id}/download?format=${fmt}" download>${labels[fmt] || fmt}</a>`;
+                    const href = `${API}/tasks/${encodeURIComponent(taskId)}/download?format=${encodeURIComponent(fmt)}`;
+                    buttons += `<a class="result-file-btn" href="${href}" download>${escapeHtml(labels[fmt] || fmt)}</a>`;
                 });
                 buttons += '</div>';
             }
-            buttons += `<button class="result-delete-btn" onclick="deleteTask('${task.task_id}')">Удалить</button>`;
+            buttons += `<button class="result-delete-btn" onclick="deleteTask('${jsTaskId}')">Удалить</button>`;
             buttons += '</div>';
 
             return `<div class="result-card">
@@ -501,7 +586,7 @@ async function loadResults() {
                 </div>
                 <div class="result-meta">${time} ${size ? '· ' + size : ''} ${task.message ? '· ' + escapeHtml(task.message) : ''}</div>
                 ${buttons}
-                <div id="result-preview-${task.task_id}" class="hidden"></div>
+                <div id="result-preview-${htmlTaskId}" class="hidden"></div>
             </div>`;
         }).join('');
     } catch (e) {
@@ -536,7 +621,7 @@ window.viewResult = async function(taskId) {
                         'srt': 'SRT',
                         'vtt': 'VTT',
                     }[rf.format] || rf.format;
-                    html += `<h4 style="color:var(--accent);margin:8px 0 4px;">${label} (${rf.name})</h4>`;
+                    html += `<h4 style="color:var(--accent);margin:8px 0 4px;">${escapeHtml(label)} (${escapeHtml(rf.name)})</h4>`;
                     html += `<div class="result-text-preview">${escapeHtml(rf.content)}</div>`;
                 });
                 preview.innerHTML = html;
@@ -545,7 +630,7 @@ window.viewResult = async function(taskId) {
             }
         }
     } catch (e) {
-        preview.innerHTML = `<p class="label-muted">Ошибка: ${e}</p>`;
+        preview.innerHTML = `<p class="label-muted">Ошибка: ${escapeHtml(String(e))}</p>`;
     }
 };
 
