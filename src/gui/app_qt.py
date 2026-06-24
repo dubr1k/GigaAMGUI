@@ -230,147 +230,222 @@ class GigaTranscriberQtApp(QMainWindow):
         self._apply_strict_style()
 
     def _apply_strict_style(self):
-        """Применяет строгую профессиональную темную цветовую схему"""
-        # Определяем темную палитру
         palette = QPalette()
 
-        # Основные цвета - темная тема
-        palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 48))           # Темно-серый фон
-        palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))    # Светлый текст
-        palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 30))             # Темный фон для полей ввода
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(40, 40, 42))    # Альтернативный фон
-        palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))          # Светлый текст
-        palette.setColor(QPalette.ColorRole.Button, QColor(60, 60, 62))           # Кнопки
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))    # Текст кнопок
+        palette.setColor(QPalette.ColorRole.Window, QColor(245, 246, 248))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(26, 26, 26))
+        palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(240, 241, 244))
+        palette.setColor(QPalette.ColorRole.Text, QColor(26, 26, 26))
+        palette.setColor(QPalette.ColorRole.Button, QColor(235, 236, 240))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(26, 26, 26))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(59, 130, 246))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
 
-        # Применяем палитру
         self.setPalette(palette)
 
-        # Применяем стили через stylesheet (темная тема)
         self.setStyleSheet("""
-            QMainWindow {
-                background-color: #2d2d30;
+            QMainWindow, QWidget {
+                background-color: #f5f6f8;
+                color: #1a1a1a;
+            }
+            QScrollArea {
+                background-color: #f5f6f8;
+                border: none;
+            }
+            QTabWidget::pane {
+                border: 1px solid #dde0e6;
+                border-radius: 6px;
+                background-color: #f5f6f8;
+            }
+            QTabBar::tab {
+                background-color: #e8eaee;
+                color: #555;
+                border: 1px solid #dde0e6;
+                border-bottom: none;
+                border-radius: 5px 5px 0 0;
+                padding: 6px 18px;
+                font-size: 11pt;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #f5f6f8;
+                color: #1a1a1a;
+                font-weight: bold;
+                border-bottom: 2px solid #3b82f6;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #dde1ea;
             }
             QGroupBox {
                 font-weight: bold;
-                font-size: 12pt;
-                border: 1px solid #4a4a4e;
-                border-radius: 6px;
-                margin-top: 12px;
+                font-size: 11pt;
+                border: 1px solid #dde0e6;
+                border-radius: 8px;
+                margin-top: 14px;
                 padding-top: 6px;
-                background-color: #38383b;
-                color: #dcdcdc;
+                background-color: #ffffff;
+                color: #1a1a1a;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                left: 12px;
-                padding: 2px 6px;
-                color: #e0e0e0;
+                left: 14px;
+                padding: 2px 8px;
+                color: #374151;
+                background-color: #ffffff;
             }
             QPushButton {
-                background-color: #4a4a4d;
-                border: 1px solid #5a5a5d;
-                border-radius: 4px;
-                padding: 6px 14px;
-                color: #e0e0e0;
-                font-size: 11pt;
+                background-color: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 6px 16px;
+                color: #374151;
+                font-size: 10pt;
             }
             QPushButton:hover {
-                background-color: #58585b;
-                border: 1px solid #6a6a6d;
+                background-color: #f0f4ff;
+                border: 1px solid #3b82f6;
+                color: #1d4ed8;
             }
             QPushButton:pressed {
-                background-color: #3a3a3d;
+                background-color: #dbeafe;
+                border: 1px solid #2563eb;
             }
             QPushButton:disabled {
-                background-color: #3a3a3c;
-                color: #707070;
-                border: 1px solid #4a4a4c;
+                background-color: #f3f4f6;
+                color: #9ca3af;
+                border: 1px solid #e5e7eb;
             }
             QPushButton#start_button {
-                background-color: #505050;
+                background-color: #3b82f6;
                 color: #ffffff;
-                font-size: 14pt;
+                font-size: 13pt;
                 font-weight: bold;
-                border: 1px solid #606060;
+                border: none;
+                border-radius: 8px;
             }
             QPushButton#start_button:hover {
-                background-color: #606060;
-                border: 1px solid #707070;
+                background-color: #2563eb;
             }
             QPushButton#start_button:pressed {
-                background-color: #404040;
+                background-color: #1d4ed8;
             }
             QPushButton#start_button:disabled {
-                background-color: #3a3a3c;
-                color: #707070;
+                background-color: #93c5fd;
+                color: #ffffff;
             }
             QPushButton#clear_button {
-                background-color: #5a5a5c;
-                color: #ffffff;
-                font-size: 11pt;
+                background-color: #f3f4f6;
+                color: #6b7280;
+                font-size: 10pt;
                 font-weight: bold;
-                border: 1px solid #6a6a6c;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
             }
             QPushButton#clear_button:hover {
-                background-color: #6a6a6c;
+                background-color: #fee2e2;
+                border: 1px solid #fca5a5;
+                color: #dc2626;
             }
             QProgressBar {
-                border: 1px solid #555555;
+                border: none;
                 border-radius: 4px;
                 text-align: center;
-                background-color: #252528;
-                color: #e0e0e0;
+                background-color: #e5e7eb;
+                color: #1a1a1a;
                 font-size: 10pt;
             }
             QProgressBar::chunk {
-                background-color: #5a5a5d;
-                border-radius: 3px;
+                background-color: #3b82f6;
+                border-radius: 4px;
             }
             QLineEdit {
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px 8px;
-                background-color: #1e1e1e;
-                color: #dcdcdc;
-                selection-background-color: #505050;
-                font-size: 11pt;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 4px 10px;
+                background-color: #ffffff;
+                color: #1a1a1a;
+                selection-background-color: #bfdbfe;
+                font-size: 10pt;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3b82f6;
             }
             QLineEdit:disabled {
-                background-color: #2a2a2c;
-                color: #707070;
+                background-color: #f9fafb;
+                color: #9ca3af;
             }
             QTextEdit {
-                border: 1px solid #4a4a4e;
-                border-radius: 4px;
-                background-color: #1e1e1e;
-                color: #dcdcdc;
-                selection-background-color: #505050;
-                font-size: 11pt;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                background-color: #ffffff;
+                color: #1a1a1a;
+                selection-background-color: #bfdbfe;
+                font-size: 10pt;
             }
             QCheckBox {
                 spacing: 8px;
-                color: #dcdcdc;
-                font-size: 11pt;
+                color: #374151;
+                font-size: 10pt;
             }
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
-                border: 1px solid #5a5a5d;
-                border-radius: 3px;
-                background-color: #2a2a2c;
+                border: 1.5px solid #d1d5db;
+                border-radius: 4px;
+                background-color: #ffffff;
             }
             QCheckBox::indicator:checked {
-                background-color: #606060;
-                border: 1px solid #707070;
+                background-color: #3b82f6;
+                border: 1.5px solid #3b82f6;
+                image: none;
             }
             QCheckBox::indicator:hover {
-                border: 1px solid #707070;
+                border: 1.5px solid #3b82f6;
+            }
+            QCheckBox:disabled {
+                color: #9ca3af;
+            }
+            QCheckBox::indicator:disabled {
+                background-color: #f3f4f6;
+                border: 1.5px solid #e5e7eb;
             }
             QLabel {
-                color: #dcdcdc;
-                font-size: 11pt;
+                color: #374151;
+                font-size: 10pt;
+            }
+            QScrollBar:vertical {
+                background: #f1f2f4;
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #cbd5e1;
+                border-radius: 4px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #94a3b8;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar:horizontal {
+                background: #f1f2f4;
+                height: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #cbd5e1;
+                border-radius: 4px;
+                min-width: 30px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #94a3b8;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
             }
         """)
 
@@ -393,7 +468,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
         # Лейбл для выбранных файлов
         self.lbl_files_count = QLabel("Файлы не выбраны")
-        self.lbl_files_count.setStyleSheet("color: #909090;")
+        self.lbl_files_count.setStyleSheet("color: #9ca3af;")
         self.lbl_files_count.setFixedWidth(180)
         row1.addWidget(self.lbl_files_count)
 
@@ -420,11 +495,11 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_upload.setStyleSheet("""
             QProgressBar {
                 border: none;
-                background-color: #2a2a2c;
+                background-color: #e5e7eb;
                 border-radius: 3px;
             }
             QProgressBar::chunk {
-                background-color: #7a7a7d;
+                background-color: #3b82f6;
                 border-radius: 3px;
             }
         """)
@@ -446,7 +521,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
         # Лейбл выбранной папки
         self.lbl_input_folder = QLabel("Папка не выбрана")
-        self.lbl_input_folder.setStyleSheet("color: #909090;")
+        self.lbl_input_folder.setStyleSheet("color: #9ca3af;")
         self.lbl_input_folder.setFixedWidth(180)
         row2.addWidget(self.lbl_input_folder)
 
@@ -470,7 +545,7 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addWidget(btn_output)
 
         self.lbl_output_folder = QLabel("Папка не выбрана (по умолчанию - рядом с файлом)")
-        self.lbl_output_folder.setStyleSheet("color: #909090;")
+        self.lbl_output_folder.setStyleSheet("color: #9ca3af;")
         layout.addWidget(self.lbl_output_folder, 1)
 
         group.setLayout(layout)
@@ -507,7 +582,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
         # Информация
         info_label = QLabel("Автоматическое определение спикеров (требуется HF_TOKEN)")
-        info_label.setStyleSheet("color: #909090; font-size: 9pt;")
+        info_label.setStyleSheet("color: #6b7280; font-size: 9pt;")
         layout.addWidget(info_label)
 
         group.setLayout(layout)
@@ -556,7 +631,7 @@ class GigaTranscriberQtApp(QMainWindow):
         return group
 
     # Акцентный цвет прогресса и доля шкалы файла, отводимая на конвертацию
-    _ACCENT = "#3d7eff"
+    _ACCENT = "#3b82f6"
     _CONVERSION_BAND = 0.15  # 0..15% шкалы файла — конвертация, 15..99% — распознавание
 
     def _make_progress_bar(self, height: int, font_pt: int) -> QProgressBar:
@@ -568,11 +643,11 @@ class GigaTranscriberQtApp(QMainWindow):
         radius = height // 2
         bar.setStyleSheet(
             f"QProgressBar {{ border: none; border-radius: {radius}px;"
-            f"  background-color: #2a2a2e; text-align: center; color: #f0f0f0;"
+            f"  background-color: #e5e7eb; text-align: center; color: #1a1a1a;"
             f"  font-size: {font_pt}pt; font-weight: 600; }}"
             f"QProgressBar::chunk {{ border-radius: {radius}px;"
             f"  background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
-            f"  stop:0 {self._ACCENT}, stop:1 #2f6bdb); }}"
+            f"  stop:0 {self._ACCENT}, stop:1 #2563eb); }}"
         )
         return bar
 
@@ -582,7 +657,7 @@ class GigaTranscriberQtApp(QMainWindow):
         progress_frame = QFrame()
         progress_frame.setObjectName("progress_card")
         progress_frame.setStyleSheet(
-            "#progress_card { background-color: #313135; border: 1px solid #45454a;"
+            "#progress_card { background-color: #ffffff; border: 1px solid #dde0e6;"
             "  border-radius: 8px; }"
             "#progress_card QLabel { border: none; background: transparent; }"
         )
@@ -593,7 +668,7 @@ class GigaTranscriberQtApp(QMainWindow):
         # Шапка: «Общий прогресс» ... «Файл 2 / 5»
         head_row = QHBoxLayout()
         lbl_overall = QLabel("Общий прогресс")
-        lbl_overall.setStyleSheet("color: #c8c8cc; font-size: 11pt; font-weight: bold;")
+        lbl_overall.setStyleSheet("color: #374151; font-size: 11pt; font-weight: bold;")
         head_row.addWidget(lbl_overall)
         head_row.addStretch()
         self.lbl_file_counter = QLabel("")
@@ -612,11 +687,11 @@ class GigaTranscriberQtApp(QMainWindow):
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(10)
         self.lbl_stage = QLabel("")
-        self.lbl_stage.setStyleSheet("color: #d8d8dc; font-size: 9pt; font-weight: 600;")
+        self.lbl_stage.setStyleSheet("color: #374151; font-size: 9pt; font-weight: 600;")
         detail_layout.addWidget(self.lbl_stage)
         detail_layout.addStretch()
         self.lbl_current_file = QLabel("")
-        self.lbl_current_file.setStyleSheet("color: #9a9aa0; font-size: 9pt;")
+        self.lbl_current_file.setStyleSheet("color: #6b7280; font-size: 9pt;")
         detail_layout.addWidget(self.lbl_current_file)
         frame_layout.addWidget(self.detail_row)
         self.detail_row.setVisible(False)  # скрыто в простое
@@ -630,8 +705,8 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_status.setFixedHeight(28)
         self.lbl_status.setStyleSheet(
-            "color: #e0e0e0; font-size: 10pt; font-weight: bold;"
-            "background-color: #2a2a2e; border-radius: 6px; padding: 2px;"
+            "color: #374151; font-size: 10pt; font-weight: bold;"
+            "background-color: #f3f4f6; border-radius: 6px; padding: 2px;"
         )
         frame_layout.addWidget(self.lbl_status)
 
@@ -689,7 +764,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.user_settings.set_last_files_dir(file_dir)
 
         self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
-        self.lbl_files_count.setStyleSheet("color: #dcdcdc;")
+        self.lbl_files_count.setStyleSheet("color: #374151;")
         self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
         for f in unique_files:
             self.log(f" + {os.path.basename(f)}")
@@ -756,7 +831,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 self.files_to_process = files
                 count = len(files)
                 self.lbl_files_count.setText(f"Выбрано файлов: {count}")
-                self.lbl_files_count.setStyleSheet("color: #dcdcdc;")
+                self.lbl_files_count.setStyleSheet("color: #374151;")
 
                 self.log(f"Добавлено из папки (включая подпапки): {count} файлов")
                 for f in files:
@@ -786,13 +861,13 @@ class GigaTranscriberQtApp(QMainWindow):
         """Обновляет метку входной папки"""
         display_path = path if len(path) < 60 else f"...{path[-60:]}"
         self.lbl_input_folder.setText(display_path)
-        self.lbl_input_folder.setStyleSheet("color: #dcdcdc;")
+        self.lbl_input_folder.setStyleSheet("color: #374151;")
 
     def _update_output_dir_label(self, path: str):
         """Обновляет метку выходной папки"""
         display_path = path if len(path) < 60 else f"...{path[-60:]}"
         self.lbl_output_folder.setText(display_path)
-        self.lbl_output_folder.setStyleSheet("color: #dcdcdc;")
+        self.lbl_output_folder.setStyleSheet("color: #374151;")
 
     def _start_download(self, start_after_download: bool = False):
         url = self.input_path.text().strip()
@@ -963,11 +1038,11 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_status.setText("Готов к работе")
 
         self.lbl_files_count.setText("Файлы не выбраны")
-        self.lbl_files_count.setStyleSheet("color: #909090;")
+        self.lbl_files_count.setStyleSheet("color: #9ca3af;")
         self.lbl_input_folder.setText("Папка не выбрана")
-        self.lbl_input_folder.setStyleSheet("color: #909090;")
+        self.lbl_input_folder.setStyleSheet("color: #9ca3af;")
         self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)")
-        self.lbl_output_folder.setStyleSheet("color: #909090;")
+        self.lbl_output_folder.setStyleSheet("color: #9ca3af;")
         self.input_path.clear()
 
         self.btn_start.setEnabled(True)
