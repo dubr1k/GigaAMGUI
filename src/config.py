@@ -94,21 +94,8 @@ load_env()
 # HuggingFace токен для доступа к моделям
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-# Проверка и установка токена
 if HF_TOKEN and HF_TOKEN.startswith("hf_"):
     os.environ["HF_TOKEN"] = HF_TOKEN
-    print("Токен HuggingFace загружен из .env файла")
-else:
-    print("ВНИМАНИЕ: Токен HuggingFace не установлен или неверный!")
-    print("Пожалуйста, установите ваш токен в файле .env")
-    print("Скопируйте .env.example в .env и добавьте свой токен")
-    print("Токен должен начинаться с 'hf_'")
-    print("\nИнструкция:")
-    print("1. Зарегистрируйтесь на https://huggingface.co")
-    print("2. Создайте токен: https://huggingface.co/settings/tokens")
-    print("3. Примите условия: https://huggingface.co/pyannote/segmentation-3.0")
-    print("4. Скопируйте .env.example в .env: cp .env.example .env")
-    print("5. Замените 'your_huggingface_token_here' на ваш токен в .env")
 
 # Настройки модели
 MODEL_NAME = os.getenv("MODEL_NAME", "ai-sage/GigaAM-v3")

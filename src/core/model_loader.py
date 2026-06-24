@@ -3,9 +3,9 @@
 """
 
 import torch
-from transformers import AutoModel
+import gigaam
 
-from ..config import HF_TOKEN, MODEL_NAME, MODEL_REVISION
+from ..config import HF_TOKEN
 
 
 class ModelLoader:
@@ -17,7 +17,6 @@ class ModelLoader:
 
     def _select_device(self) -> str:
         """Выбирает устройство вычисления в порядке приоритета."""
-        # Приоритет: CUDA (NVIDIA) > XPU (Intel) > MPS (Apple) > CPU
         if torch.cuda.is_available():
             return "cuda"
         if hasattr(torch, "xpu") and torch.xpu.is_available():
@@ -28,10 +27,7 @@ class ModelLoader:
 
     def load_model(self, logger=None):
         """
-        Загружает модель GigaAM-v3
-
-        Args:
-            logger: функция для логирования (опционально)
+        Загружает модель GigaAM-v3 (e2e_rnnt) через gigaam.load_model.
 
         Returns:
             bool: True если загрузка успешна, False иначе
@@ -44,36 +40,16 @@ class ModelLoader:
             logger("Это может занять несколько минут при первом запуске (скачивание весов).")
 
         try:
-            # Определение устройства: CUDA > XPU (Intel) > MPS (Apple) > CPU
             self.device = self._select_device()
             if logger:
                 logger(f"Устройство вычисления: {self.device.upper()}")
 
-            # Загружаем модель с токеном
-            model_kwargs = {
-                "trust_remote_code": True
-            }
-            if HF_TOKEN and HF_TOKEN.startswith("hf_"):
-                model_kwargs["token"] = HF_TOKEN
-
-            loaded_model = AutoModel.from_pretrained(
-                MODEL_NAME,
-                revision=MODEL_REVISION,
-                **model_kwargs
+            use_fp16 = self.device != "cpu"
+            self.model = gigaam.load_model(
+                "e2e_rnnt",
+                fp16_encoder=use_fp16,
+                device=self.device,
             )
-
-            try:
-                self.model = loaded_model.to(self.device)
-            except Exception as device_error:
-                # Безопасный откат: если выбранный ускоритель недоступен для части графа,
-                # запускаем на CPU, чтобы приложение не падало.
-                if logger:
-                    logger(
-                        f"ПРЕДУПРЕЖДЕНИЕ: Не удалось перенести модель на {self.device.upper()}: "
-                        f"{device_error}. Переключаюсь на CPU."
-                    )
-                self.device = "cpu"
-                self.model = loaded_model.to(self.device)
 
             if logger:
                 logger("Модель успешно загружена!")
@@ -85,36 +61,75 @@ class ModelLoader:
             return False
 
     def _empty_cache(self):
-        """Освобождает кэш ускорителя, чтобы снизить фрагментацию памяти между файлами."""
+        """Освобождает кэш ускорителя."""
         try:
             if self.device == "cuda" and torch.cuda.is_available():
                 torch.cuda.empty_cache()
             elif self.device == "mps" and hasattr(torch, "mps"):
                 torch.mps.empty_cache()
         except Exception:
-            pass  # очистка кэша не критична
+            pass
 
     def transcribe_longform(self, audio_path: str):
         """
-        Транскрибирует длинное аудио
-
-        Args:
-            audio_path: путь к аудио файлу
-
-        Returns:
-            list: список utterances с транскрипцией и таймкодами
+        Транскрибирует длинное аудио чанками по 20 сек (без ffmpeg subprocess).
         """
+        import traceback as _tb
         if self.model is None:
             raise RuntimeError("Модель не загружена")
 
+        import torchaudio
+        SAMPLE_RATE = 16000
+
+        wav_data, sr = torchaudio.load(audio_path)
+        audio = wav_data.mean(0)
+        if sr != SAMPLE_RATE:
+            audio = torchaudio.functional.resample(audio, sr, SAMPLE_RATE)
+
+        chunk_size = 20 * SAMPLE_RATE
+        results = []
+        total = audio.shape[0]
+        start = 0
+
+        device = self.model._device
+        dtype = self.model._dtype
+
         try:
-            return self.model.transcribe_longform(audio_path)
+            with torch.inference_mode():
+                while start < total:
+                    end = min(start + chunk_size, total)
+                    chunk = audio[start:end]
+
+                    if chunk.shape[0] < 1600:
+                        start = end
+                        continue
+
+                    wav = chunk.to(device).to(dtype).unsqueeze(0)
+                    length = torch.full([1], wav.shape[-1], device=device)
+                    encoded, encoded_len = self.model.forward(wav, length)
+                    decode_result = self.model.decoding.decode(self.model.head, encoded, encoded_len)
+                    text = decode_result[0]
+                    if isinstance(text, tuple):
+                        text = text[0] if text else ''
+                    if not isinstance(text, str):
+                        text = str(text)
+
+                    if text.strip():
+                        results.append({
+                            'transcription': text,
+                            'boundaries': (start / SAMPLE_RATE, end / SAMPLE_RATE),
+                        })
+
+                    start = end
+        except Exception as e:
+            raise RuntimeError(f"Chunk transcription error at {start}/{total}: {e}\n{_tb.format_exc()}")
         finally:
-            # Чистим кэш ускорителя после каждого файла (длинные файлы фрагментируют память)
             self._empty_cache()
 
+        return results
+
     def unload(self):
-        """Выгружает модель и освобождает память ускорителя."""
+        """Выгружает модель и освобождает память."""
         self.model = None
         self._empty_cache()
 

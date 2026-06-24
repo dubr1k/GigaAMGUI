@@ -9,7 +9,7 @@ import threading
 import time
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QPalette
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QDialog,
+    QDialogButtonBox,
     QScrollArea,
     QTabWidget,
     QTextEdit,
@@ -887,9 +889,81 @@ class GigaTranscriberQtApp(QMainWindow):
         self.log(f"Ошибка загрузки: {message}")
         QMessageBox.warning(self, "Ошибка загрузки", message)
 
+    def _show_hf_token_dialog(self) -> bool:
+        """Показывает диалог для ввода HuggingFace токена. Возвращает True если токен сохранён."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("HuggingFace токен для диаризации")
+        dlg.setMinimumWidth(520)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "<b>Диаризация спикеров требует HuggingFace токен</b><br><br>"
+            "1. Создайте аккаунт на <a href='https://huggingface.co'>huggingface.co</a><br>"
+            "2. Получите токен: <a href='https://huggingface.co/settings/tokens'>huggingface.co/settings/tokens</a><br>"
+            "3. Примите условия доступа к моделям:<br>"
+            "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/speaker-diarization-3.1'>pyannote/speaker-diarization-3.1</a><br>"
+            "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/segmentation-3.0'>pyannote/segmentation-3.0</a><br><br>"
+            "Вставьте ваш токен ниже (начинается с <b>hf_</b>):"
+        )
+        info.setOpenExternalLinks(True)
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        token_input = QLineEdit()
+        token_input.setPlaceholderText("hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+        token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        current_token = os.getenv("HF_TOKEN", "")
+        if current_token:
+            token_input.setText(current_token)
+        layout.addWidget(token_input)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        token = token_input.text().strip()
+        if not token.startswith("hf_"):
+            QMessageBox.warning(self, "Неверный токен", "Токен должен начинаться с 'hf_'")
+            return False
+
+        os.environ["HF_TOKEN"] = token
+        env_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            '.env'
+        )
+        try:
+            lines = []
+            if os.path.exists(env_path):
+                with open(env_path, 'r') as f:
+                    lines = [l for l in f.readlines() if not l.startswith('HF_TOKEN=')]
+            lines.append(f'HF_TOKEN={token}\n')
+            with open(env_path, 'w') as f:
+                f.writelines(lines)
+            self.log("Токен сохранён в .env")
+        except Exception:
+            pass
+
+        return True
+
     def _toggle_diarization(self, state):
         """Обработчик изменения состояния диаризации"""
-        self.enable_diarization = (state == Qt.CheckState.Checked.value)
+        enabling = (state == Qt.CheckState.Checked.value)
+
+        if enabling and not os.getenv("HF_TOKEN", "").startswith("hf_"):
+            if not self._show_hf_token_dialog():
+                self.cb_diarization.blockSignals(True)
+                self.cb_diarization.setChecked(False)
+                self.cb_diarization.blockSignals(False)
+                return
+
+        self.enable_diarization = enabling
         self.entry_num_speakers.setEnabled(self.enable_diarization)
 
         # Активируем/деактивируем чекбоксы диаризованных форматов
@@ -1338,14 +1412,45 @@ class GigaTranscriberQtApp(QMainWindow):
 
 def run_qt_app():
     """Запускает приложение на PyQt6"""
+    # AppUserModelID до QApplication — иначе Windows показывает иконку терминала
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(u'GigaAM.Transcriber.v3')
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
 
-    # Устанавливаем шрифт по умолчанию (крупный размер для удобства чтения)
     font = QFont("Arial", 12)
     app.setFont(font)
 
+    # Иконка приложения
+    icon_path = os.path.join(
+        getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'icon.ico'
+    )
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+
     window = GigaTranscriberQtApp()
     window.show()
+
+    # Win32: явно ставим иконку на окно и в taskbar через WM_SETICON
+    if sys.platform == 'win32' and os.path.exists(icon_path):
+        def _set_win32_icon():
+            try:
+                import ctypes
+                hwnd = int(window.winId())
+                hicon = ctypes.windll.user32.LoadImageW(
+                    None, icon_path, 1, 0, 0, 0x10 | 0x40
+                )
+                if hicon:
+                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)
+                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)
+            except Exception:
+                pass
+        QTimer.singleShot(100, _set_win32_icon)
 
     sys.exit(app.exec())
 

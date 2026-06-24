@@ -133,17 +133,6 @@ class TranscriptionProcessor:
         # Транскрибация
         transcription_start = time.time()
         try:
-            # Проверяем токен
-            if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
-                error_msg = (
-                    "ОШИБКА: Требуется валидный токен HuggingFace для longform транскрибации!\n"
-                    "Установите ваш токен в src/config.py\n"
-                    "Получить токен: https://huggingface.co/settings/tokens\n"
-                    "Принять условия доступа: https://huggingface.co/pyannote/segmentation-3.0"
-                )
-                self.logger(error_msg)
-                return result
-
             self.logger("Распознавание речи (GigaAM-v3)...")
             self._update_progress('transcription', 0.0)
 
@@ -184,6 +173,11 @@ class TranscriptionProcessor:
                            f"has_boundaries={'boundaries' in first_utt}")
 
             # Применение диаризации, если включена
+            if enable_diarization and not os.getenv("HF_TOKEN", "").startswith("hf_"):
+                self.logger("ОШИБКА: Диаризация требует токен HuggingFace.")
+                self.logger("Установите токен через чекбокс 'Диаризация' в интерфейсе.")
+                enable_diarization = False
+
             if enable_diarization and utterances and len(utterances) > 0:
                 self.logger("Применение диаризации спикеров...")
                 try:

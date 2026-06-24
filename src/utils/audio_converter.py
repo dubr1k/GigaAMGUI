@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 
 from ..config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
@@ -14,6 +15,39 @@ from ..config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
 # Таймауты для проб длительности (защита от зависания на битых файлах)
 _PROBE_TIMEOUT = 30       # ffprobe
 _FFMPEG_PROBE_TIMEOUT = 120  # ffmpeg -f null (полное декодирование как fallback)
+
+
+def _project_root() -> str:
+    """Корень проекта: при EXE — рядом с _MEIPASS, при разработке — 3 уровня вверх от этого файла."""
+    if getattr(sys, '_MEIPASS', None):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _find_ffmpeg() -> str:
+    """Ищет ffmpeg: EXE-сборка → bin/ проекта → PATH."""
+    root = _project_root()
+    for candidate in [
+        os.path.join(root, 'bin', 'ffmpeg.exe'),
+        os.path.join(root, 'bin', 'ffmpeg'),
+    ]:
+        if os.path.exists(candidate):
+            return candidate
+    return "ffmpeg"
+
+
+def _find_ffprobe() -> str:
+    """Ищет ffprobe: bin/ проекта → PATH. None если не найден (EXE без ffprobe → None)."""
+    root = _project_root()
+    for candidate in [
+        os.path.join(root, 'bin', 'ffprobe.exe'),
+        os.path.join(root, 'bin', 'ffprobe'),
+    ]:
+        if os.path.exists(candidate):
+            return candidate
+    if getattr(sys, '_MEIPASS', None):
+        return None
+    return shutil.which("ffprobe") or None
 
 
 def _windows_startupinfo():
@@ -60,8 +94,11 @@ class AudioConverter:
             float: длительность в секундах, или 0 при ошибке
         """
         try:
+            ffprobe = _find_ffprobe()
+            if not ffprobe:
+                raise FileNotFoundError("ffprobe not available")
             command = [
-                "ffprobe",
+                ffprobe,
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "json",
@@ -86,7 +123,7 @@ class AudioConverter:
             # Если ffprobe не работает, пробуем альтернативный метод
             try:
                 command = [
-                    "ffmpeg",
+                    _find_ffmpeg(),
                     "-i", filepath,
                     "-f", "null",
                     "-"
@@ -154,7 +191,7 @@ class AudioConverter:
             # Убеждаемся, что путь - это строка (не Path объект)
             input_path_str = str(input_path) if not isinstance(input_path, str) else input_path
             command = [
-                "ffmpeg", "-i", input_path_str,
+                _find_ffmpeg(), "-i", input_path_str,
                 "-ar", str(AUDIO_SAMPLE_RATE),
                 "-ac", str(AUDIO_CHANNELS),
                 "-vn",  # убираем видео поток
