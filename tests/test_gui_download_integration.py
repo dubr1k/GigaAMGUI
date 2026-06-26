@@ -110,6 +110,13 @@ def test_gui_text_widgets_have_transparent_backgrounds():
     assert "background-color:" not in group_title_block
 
 
+def test_gui_tabs_do_not_elide_labels():
+    source = Path("src/gui/app_qt.py").read_text(encoding="utf-8")
+    tab_block = source.split("QTabBar::tab {{", 1)[1].split("            }}", 1)[0]
+    assert "min-width: {tab_min_width}px;" in tab_block
+    assert "setElideMode(Qt.TextElideMode.ElideNone)" in source
+
+
 def test_stage_aware_progress():
     import time
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

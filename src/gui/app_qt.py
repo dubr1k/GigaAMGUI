@@ -9,7 +9,17 @@ import threading
 import time
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QFontDatabase, QGuiApplication, QIcon, QPalette
+from PyQt6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QFontDatabase,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QPalette,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -283,6 +293,11 @@ class GigaTranscriberQtApp(QMainWindow):
         font.setWeight(weight)
         return font
 
+    def _tab_min_width(self, labels: tuple[str, ...]) -> int:
+        metrics = QFontMetrics(self._font(11, QFont.Weight.Bold))
+        text_width = max(metrics.horizontalAdvance(label) for label in labels)
+        return text_width + self._px(36)
+
     def _toggle_theme(self):
         self._theme = "dark" if self._theme == "light" else "light"
         self.user_settings.settings["theme"] = self._theme
@@ -308,6 +323,7 @@ class GigaTranscriberQtApp(QMainWindow):
         r2 = c["progress_chunk2"]
         rad_f = self._px(11)
         rad_s = self._px(8)
+        tab_min_width = self._tab_min_width(("Обработка", "Журнал обработки"))
 
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{
@@ -332,6 +348,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 padding: {self._px(6)}px {self._px(18)}px;
                 font-size: {self._pt_css(11)}pt;
                 margin-right: {self._px(2)}px;
+                min-width: {tab_min_width}px;
             }}
             QTabBar::tab:selected {{
                 background-color: {c["tab_sel_bg"]};
@@ -609,6 +626,7 @@ class GigaTranscriberQtApp(QMainWindow):
         root_layout.addLayout(header_row)
 
         tabs = QTabWidget()
+        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
         root_layout.addWidget(tabs, 1)
 
         # ── Вкладка «Обработка» ──
