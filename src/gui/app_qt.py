@@ -263,6 +263,19 @@ class GigaTranscriberQtApp(QMainWindow):
     def _pt_css(self, value: int | float) -> str:
         return _format_css_number(self._pt(value))
 
+    def _transparent_label_style(
+        self,
+        color: str,
+        font_pt: int | float | None = None,
+        font_weight: str | None = None,
+    ) -> str:
+        parts = ["background: transparent", f"color: {color}"]
+        if font_pt is not None:
+            parts.append(f"font-size: {self._pt_css(font_pt)}pt")
+        if font_weight:
+            parts.append(f"font-weight: {font_weight}")
+        return "; ".join(parts) + ";"
+
     def _font(self, point_size: int | float, weight: QFont.Weight = QFont.Weight.Normal, fixed: bool = False) -> QFont:
         font_kind = QFontDatabase.SystemFont.FixedFont if fixed else QFontDatabase.SystemFont.GeneralFont
         font = QFontDatabase.systemFont(font_kind)
@@ -450,6 +463,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 font-size: {self._pt_css(10)}pt;
             }}
             QCheckBox {{
+                background: transparent;
                 spacing: {self._px(8)}px;
                 color: {c["text_sub"]};
                 font-size: {self._pt_css(10)}pt;
@@ -476,6 +490,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 border: 1.5px solid {c["border"]};
             }}
             QLabel {{
+                background: transparent;
                 color: {c["text_sub"]};
                 font-size: {self._pt_css(10)}pt;
             }}
@@ -554,10 +569,10 @@ class GigaTranscriberQtApp(QMainWindow):
             )
         if hasattr(self, 'lbl_stage'):
             self.lbl_stage.setStyleSheet(
-                f"color: {c['text_sub']}; font-size: {self._pt_css(9)}pt; font-weight: 600;"
+                self._transparent_label_style(c["text_sub"], font_pt=9, font_weight="600")
             )
         if hasattr(self, 'lbl_current_file'):
-            self.lbl_current_file.setStyleSheet(f"color: {c['text_mute2']}; font-size: {self._pt_css(9)}pt;")
+            self.lbl_current_file.setStyleSheet(self._transparent_label_style(c["text_mute2"], font_pt=9))
 
     # ──────────────────────────────────────────────────────────────
     # UI
@@ -677,11 +692,11 @@ class GigaTranscriberQtApp(QMainWindow):
 
         head_row = QHBoxLayout()
         lbl_overall = QLabel("Общий прогресс")
-        lbl_overall.setStyleSheet(f"color: {c['text_sub']}; font-size: {self._pt_css(11)}pt; font-weight: bold;")
+        lbl_overall.setStyleSheet(self._transparent_label_style(c["text_sub"], font_pt=11, font_weight="bold"))
         head_row.addWidget(lbl_overall)
         head_row.addStretch()
         self.lbl_file_counter = QLabel("")
-        self.lbl_file_counter.setStyleSheet(f"color: {c['accent']}; font-size: {self._pt_css(11)}pt; font-weight: bold;")
+        self.lbl_file_counter.setStyleSheet(self._transparent_label_style(c["accent"], font_pt=11, font_weight="bold"))
         head_row.addWidget(self.lbl_file_counter)
         frame_layout.addLayout(head_row)
 
@@ -693,11 +708,11 @@ class GigaTranscriberQtApp(QMainWindow):
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(self._px(10))
         self.lbl_stage = QLabel("")
-        self.lbl_stage.setStyleSheet(f"color: {c['text_sub']}; font-size: {self._pt_css(9)}pt; font-weight: 600;")
+        self.lbl_stage.setStyleSheet(self._transparent_label_style(c["text_sub"], font_pt=9, font_weight="600"))
         detail_layout.addWidget(self.lbl_stage)
         detail_layout.addStretch()
         self.lbl_current_file = QLabel("")
-        self.lbl_current_file.setStyleSheet(f"color: {c['text_mute2']}; font-size: {self._pt_css(9)}pt;")
+        self.lbl_current_file.setStyleSheet(self._transparent_label_style(c["text_mute2"], font_pt=9))
         detail_layout.addWidget(self.lbl_current_file)
         frame_layout.addWidget(self.detail_row)
         self.detail_row.setVisible(False)
@@ -731,7 +746,7 @@ class GigaTranscriberQtApp(QMainWindow):
         row1.addWidget(btn_select_files)
 
         self.lbl_files_count = QLabel("Файлы не выбраны")
-        self.lbl_files_count.setStyleSheet(f"color: {self._colors()['text_mute']};")
+        self.lbl_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
         self.lbl_files_count.setFixedWidth(self._px(180))
         row1.addWidget(self.lbl_files_count)
 
@@ -765,7 +780,7 @@ class GigaTranscriberQtApp(QMainWindow):
         row2.addWidget(btn_select_folder)
 
         self.lbl_input_folder = QLabel("Папка не выбрана")
-        self.lbl_input_folder.setStyleSheet(f"color: {self._colors()['text_mute']};")
+        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
         self.lbl_input_folder.setFixedWidth(self._px(180))
         row2.addWidget(self.lbl_input_folder)
         row2.addStretch()
@@ -785,7 +800,7 @@ class GigaTranscriberQtApp(QMainWindow):
         btn_output.setFixedHeight(self._px(36))
         layout.addWidget(btn_output)
         self.lbl_output_folder = QLabel("Папка не выбрана (по умолчанию - рядом с файлом)")
-        self.lbl_output_folder.setStyleSheet(f"color: {self._colors()['text_mute']};")
+        self.lbl_output_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
         layout.addWidget(self.lbl_output_folder, 1)
         group.setLayout(layout)
         return group
@@ -811,7 +826,7 @@ class GigaTranscriberQtApp(QMainWindow):
         speakers_layout.addStretch()
         layout.addLayout(speakers_layout)
         info_label = QLabel("Автоматическое определение спикеров (требуется HF_TOKEN)")
-        info_label.setStyleSheet(f"color: {self._colors()['text_mute2']}; font-size: {self._pt_css(9)}pt;")
+        info_label.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
         layout.addWidget(info_label)
         group.setLayout(layout)
         return group
@@ -981,7 +996,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.input_dir = file_dir
             self.user_settings.set_last_files_dir(file_dir)
         self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
-        self.lbl_files_count.setStyleSheet(f"color: {self._colors()['text_sub']};")
+        self.lbl_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
         self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
         for f in unique_files:
             self.log(f" + {os.path.basename(f)}")
@@ -1030,7 +1045,7 @@ class GigaTranscriberQtApp(QMainWindow):
             if files:
                 self.files_to_process = files
                 self.lbl_files_count.setText(f"Выбрано файлов: {len(files)}")
-                self.lbl_files_count.setStyleSheet(f"color: {self._colors()['text_sub']};")
+                self.lbl_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
                 self.log(f"Добавлено из папки (включая подпапки): {len(files)} файлов")
                 for f in files:
                     self.log(f" + {os.path.relpath(f, folder)}")
@@ -1049,12 +1064,12 @@ class GigaTranscriberQtApp(QMainWindow):
     def _update_input_dir_label(self, path: str):
         display_path = path if len(path) < 60 else f"...{path[-60:]}"
         self.lbl_input_folder.setText(display_path)
-        self.lbl_input_folder.setStyleSheet(f"color: {self._colors()['text_sub']};")
+        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
 
     def _update_output_dir_label(self, path: str):
         display_path = path if len(path) < 60 else f"...{path[-60:]}"
         self.lbl_output_folder.setText(display_path)
-        self.lbl_output_folder.setStyleSheet(f"color: {self._colors()['text_sub']};")
+        self.lbl_output_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
 
     # ──────────────────────────────────────────────────────────────
     # Загрузка по ссылке
@@ -1177,11 +1192,11 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_status.setText("Готов к работе")
         c = self._colors()
         self.lbl_files_count.setText("Файлы не выбраны")
-        self.lbl_files_count.setStyleSheet(f"color: {c['text_mute']};")
+        self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_mute"]))
         self.lbl_input_folder.setText("Папка не выбрана")
-        self.lbl_input_folder.setStyleSheet(f"color: {c['text_mute']};")
+        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(c["text_mute"]))
         self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)")
-        self.lbl_output_folder.setStyleSheet(f"color: {c['text_mute']};")
+        self.lbl_output_folder.setStyleSheet(self._transparent_label_style(c["text_mute"]))
         self.input_path.clear()
         self.btn_start.setEnabled(True)
         self.btn_upload.setEnabled(True)

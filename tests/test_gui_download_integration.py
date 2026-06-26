@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import threading
 import types
@@ -98,6 +99,12 @@ def test_ui_scale_env_is_clamped(monkeypatch):
 
     monkeypatch.setenv("GIGAAM_UI_SCALE", "9")
     assert app_qt._read_ui_scale() == app_qt._MAX_UI_SCALE
+
+
+def test_gui_text_widgets_have_transparent_backgrounds():
+    source = Path("src/gui/app_qt.py").read_text(encoding="utf-8")
+    assert re.search(r"QLabel \{\{\s+background: transparent;", source)
+    assert re.search(r"QCheckBox \{\{\s+background: transparent;", source)
 
 
 def test_stage_aware_progress():
