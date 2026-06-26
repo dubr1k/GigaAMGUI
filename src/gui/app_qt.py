@@ -356,9 +356,9 @@ class GigaTranscriberQtApp(QMainWindow):
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 left: {self._px(14)}px;
-                padding: {self._px(2)}px {self._px(8)}px;
+                padding: 0 {self._px(6)}px;
                 color: {c["text_sub"]};
-                background-color: {c["bg_card"]};
+                background: transparent;
             }}
             QPushButton {{
                 background-color: {c["btn_bg"]};

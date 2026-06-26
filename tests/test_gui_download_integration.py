@@ -105,6 +105,9 @@ def test_gui_text_widgets_have_transparent_backgrounds():
     source = Path("src/gui/app_qt.py").read_text(encoding="utf-8")
     assert re.search(r"QLabel \{\{\s+background: transparent;", source)
     assert re.search(r"QCheckBox \{\{\s+background: transparent;", source)
+    group_title_block = source.split("QGroupBox::title {{", 1)[1].split("            }}", 1)[0]
+    assert "background: transparent;" in group_title_block
+    assert "background-color:" not in group_title_block
 
 
 def test_stage_aware_progress():
