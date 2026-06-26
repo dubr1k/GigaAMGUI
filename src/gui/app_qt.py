@@ -9,7 +9,7 @@ import threading
 import time
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPalette
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QFontDatabase, QGuiApplication, QIcon, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,6 +35,23 @@ from PyQt6.QtWidgets import (
 from ..config import APP_TITLE, MEDIA_EXTENSIONS, OUTPUT_FORMATS, STATS_FILE
 from ..core import ModelLoader, TranscriptionProcessor
 from ..utils import AppLogger, AudioConverter, MediaDownloader, ProcessingStats, TimeFormatter, UserSettings
+
+_BASE_FONT_PT = 12.0
+_MIN_UI_SCALE = 0.85
+_MAX_UI_SCALE = 1.75
+
+
+def _read_ui_scale() -> float:
+    raw_value = os.getenv("GIGAAM_UI_SCALE", "1").strip().replace(",", ".")
+    try:
+        scale = float(raw_value)
+    except ValueError:
+        scale = 1.0
+    return max(_MIN_UI_SCALE, min(_MAX_UI_SCALE, scale))
+
+
+def _format_css_number(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 class WorkerSignals(QObject):
@@ -97,6 +114,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.media_downloader = MediaDownloader()
 
         self._theme = self.user_settings.settings.get("theme", "dark")
+        self._ui_scale = self._effective_ui_scale()
 
         self.signals = WorkerSignals()
         self.signals.log_message.connect(self._append_log)
@@ -227,6 +245,31 @@ class GigaTranscriberQtApp(QMainWindow):
     def _colors(self):
         return self._DARK if self._theme == "dark" else self._LIGHT
 
+    def _effective_ui_scale(self) -> float:
+        app = QApplication.instance()
+        font_pt = app.font().pointSizeF() if app else _BASE_FONT_PT
+        if font_pt <= 0:
+            font_pt = _BASE_FONT_PT
+        font_scale = max(_MIN_UI_SCALE, min(_MAX_UI_SCALE, font_pt / _BASE_FONT_PT))
+        ui_scale = font_scale * _read_ui_scale()
+        return round(max(_MIN_UI_SCALE, min(_MAX_UI_SCALE, ui_scale)), 4)
+
+    def _px(self, value: int | float) -> int:
+        return max(1, int(round(value * self._ui_scale)))
+
+    def _pt(self, value: int | float) -> float:
+        return round(value * self._ui_scale, 2)
+
+    def _pt_css(self, value: int | float) -> str:
+        return _format_css_number(self._pt(value))
+
+    def _font(self, point_size: int | float, weight: QFont.Weight = QFont.Weight.Normal, fixed: bool = False) -> QFont:
+        font_kind = QFontDatabase.SystemFont.FixedFont if fixed else QFontDatabase.SystemFont.GeneralFont
+        font = QFontDatabase.systemFont(font_kind)
+        font.setPointSizeF(self._pt(point_size))
+        font.setWeight(weight)
+        return font
+
     def _toggle_theme(self):
         self._theme = "dark" if self._theme == "light" else "light"
         self.user_settings.settings["theme"] = self._theme
@@ -250,8 +293,8 @@ class GigaTranscriberQtApp(QMainWindow):
 
         r = c["progress_chunk"]
         r2 = c["progress_chunk2"]
-        rad_f = 11   # file bar radius (height=22 // 2)
-        rad_s = 8    # small bar radius (height=16 // 2)
+        rad_f = self._px(11)
+        rad_s = self._px(8)
 
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{
@@ -264,7 +307,7 @@ class GigaTranscriberQtApp(QMainWindow):
             }}
             QTabWidget::pane {{
                 border: 1px solid {c["border"]};
-                border-radius: 6px;
+                border-radius: {self._px(6)}px;
                 background-color: {c["bg"]};
             }}
             QTabBar::tab {{
@@ -272,45 +315,45 @@ class GigaTranscriberQtApp(QMainWindow):
                 color: {c["tab_text"]};
                 border: 1px solid {c["border"]};
                 border-bottom: none;
-                border-radius: 5px 5px 0 0;
-                padding: 6px 18px;
-                font-size: 11pt;
-                margin-right: 2px;
+                border-radius: {self._px(5)}px {self._px(5)}px 0 0;
+                padding: {self._px(6)}px {self._px(18)}px;
+                font-size: {self._pt_css(11)}pt;
+                margin-right: {self._px(2)}px;
             }}
             QTabBar::tab:selected {{
                 background-color: {c["tab_sel_bg"]};
                 color: {c["tab_sel_text"]};
                 font-weight: bold;
-                border-bottom: 2px solid {c["tab_accent"]};
+                border-bottom: {self._px(2)}px solid {c["tab_accent"]};
             }}
             QTabBar::tab:hover:!selected {{
                 background-color: {c["tab_hover"]};
             }}
             QGroupBox {{
                 font-weight: bold;
-                font-size: 11pt;
+                font-size: {self._pt_css(11)}pt;
                 border: 1px solid {c["border"]};
-                border-radius: 8px;
-                margin-top: 14px;
-                padding-top: 6px;
+                border-radius: {self._px(8)}px;
+                margin-top: {self._px(14)}px;
+                padding-top: {self._px(6)}px;
                 background-color: {c["bg_card"]};
                 color: {c["text"]};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                left: 14px;
-                padding: 2px 8px;
+                left: {self._px(14)}px;
+                padding: {self._px(2)}px {self._px(8)}px;
                 color: {c["text_sub"]};
                 background-color: {c["bg_card"]};
             }}
             QPushButton {{
                 background-color: {c["btn_bg"]};
                 border: 1px solid {c["btn_border"]};
-                border-radius: 6px;
-                padding: 6px 16px;
+                border-radius: {self._px(6)}px;
+                padding: {self._px(6)}px {self._px(16)}px;
                 color: {c["btn_text"]};
-                font-size: 10pt;
+                font-size: {self._pt_css(10)}pt;
             }}
             QPushButton:hover {{
                 background-color: {c["btn_hover_bg"]};
@@ -329,10 +372,10 @@ class GigaTranscriberQtApp(QMainWindow):
             QPushButton#start_button {{
                 background-color: {c["accent"]};
                 color: #ffffff;
-                font-size: 13pt;
+                font-size: {self._pt_css(13)}pt;
                 font-weight: bold;
                 border: none;
-                border-radius: 8px;
+                border-radius: {self._px(8)}px;
             }}
             QPushButton#start_button:hover {{
                 background-color: {c["accent2"]};
@@ -347,10 +390,10 @@ class GigaTranscriberQtApp(QMainWindow):
             QPushButton#clear_button {{
                 background-color: {c["clear_bg"]};
                 color: {c["clear_text"]};
-                font-size: 10pt;
+                font-size: {self._pt_css(10)}pt;
                 font-weight: bold;
                 border: 1px solid {c["clear_border"]};
-                border-radius: 6px;
+                border-radius: {self._px(6)}px;
             }}
             QPushButton#clear_button:hover {{
                 background-color: {c["clear_hover_bg"]};
@@ -360,9 +403,9 @@ class GigaTranscriberQtApp(QMainWindow):
             QPushButton#theme_button {{
                 background-color: transparent;
                 border: 1px solid {c["border"]};
-                border-radius: 6px;
-                padding: 2px 8px;
-                font-size: 16pt;
+                border-radius: {self._px(6)}px;
+                padding: {self._px(2)}px {self._px(8)}px;
+                font-size: {self._pt_css(16)}pt;
                 color: {c["text_sub"]};
             }}
             QPushButton#theme_button:hover {{
@@ -375,7 +418,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 text-align: center;
                 background-color: {c["progress_bg"]};
                 color: {c["text"]};
-                font-size: 10pt;
+                font-size: {self._pt_css(10)}pt;
             }}
             QProgressBar::chunk {{
                 background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,
@@ -384,12 +427,12 @@ class GigaTranscriberQtApp(QMainWindow):
             }}
             QLineEdit {{
                 border: 1px solid {c["btn_border"]};
-                border-radius: 6px;
-                padding: 4px 10px;
+                border-radius: {self._px(6)}px;
+                padding: {self._px(4)}px {self._px(10)}px;
                 background-color: {c["input_bg"]};
                 color: {c["text"]};
                 selection-background-color: {c["input_sel"]};
-                font-size: 10pt;
+                font-size: {self._pt_css(10)}pt;
             }}
             QLineEdit:focus {{
                 border: 1px solid {c["accent"]};
@@ -400,22 +443,22 @@ class GigaTranscriberQtApp(QMainWindow):
             }}
             QTextEdit {{
                 border: 1px solid {c["border"]};
-                border-radius: 6px;
+                border-radius: {self._px(6)}px;
                 background-color: {c["input_bg"]};
                 color: {c["text"]};
                 selection-background-color: {c["input_sel"]};
-                font-size: 10pt;
+                font-size: {self._pt_css(10)}pt;
             }}
             QCheckBox {{
-                spacing: 8px;
+                spacing: {self._px(8)}px;
                 color: {c["text_sub"]};
-                font-size: 10pt;
+                font-size: {self._pt_css(10)}pt;
             }}
             QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
+                width: {self._px(18)}px;
+                height: {self._px(18)}px;
                 border: 1.5px solid {c["btn_border"]};
-                border-radius: 4px;
+                border-radius: {self._px(4)}px;
                 background-color: {c["input_bg"]};
             }}
             QCheckBox::indicator:checked {{
@@ -434,17 +477,17 @@ class GigaTranscriberQtApp(QMainWindow):
             }}
             QLabel {{
                 color: {c["text_sub"]};
-                font-size: 10pt;
+                font-size: {self._pt_css(10)}pt;
             }}
             QScrollBar:vertical {{
                 background: {c["scroll_bg"]};
-                width: 8px;
-                border-radius: 4px;
+                width: {self._px(8)}px;
+                border-radius: {self._px(4)}px;
             }}
             QScrollBar::handle:vertical {{
                 background: {c["scroll_handle"]};
-                border-radius: 4px;
-                min-height: 30px;
+                border-radius: {self._px(4)}px;
+                min-height: {self._px(30)}px;
             }}
             QScrollBar::handle:vertical:hover {{
                 background: {c["scroll_handle_hover"]};
@@ -452,13 +495,13 @@ class GigaTranscriberQtApp(QMainWindow):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
             QScrollBar:horizontal {{
                 background: {c["scroll_bg"]};
-                height: 8px;
-                border-radius: 4px;
+                height: {self._px(8)}px;
+                border-radius: {self._px(4)}px;
             }}
             QScrollBar::handle:horizontal {{
                 background: {c["scroll_handle"]};
-                border-radius: 4px;
-                min-width: 30px;
+                border-radius: {self._px(4)}px;
+                min-width: {self._px(30)}px;
             }}
             QScrollBar::handle:horizontal:hover {{
                 background: {c["scroll_handle_hover"]};
@@ -467,7 +510,7 @@ class GigaTranscriberQtApp(QMainWindow):
             #progress_card {{
                 background-color: {c["bg_card"]};
                 border: 1px solid {c["border"]};
-                border-radius: 8px;
+                border-radius: {self._px(8)}px;
             }}
             #progress_card QLabel {{
                 border: none;
@@ -480,7 +523,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.progress_bar_file.setStyleSheet(
                 f"QProgressBar {{ border: none; border-radius: {rad_s}px;"
                 f"  background-color: {c['progress_bg']}; text-align: center;"
-                f"  color: {c['text']}; font-size: 8pt; font-weight: 600; }}"
+                f"  color: {c['text']}; font-size: {self._pt_css(8)}pt; font-weight: 600; }}"
                 f"QProgressBar::chunk {{ border-radius: {rad_s}px;"
                 f"  background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
                 f"  stop:0 {r}, stop:1 {r2}); }}"
@@ -489,7 +532,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.progress_bar_total.setStyleSheet(
                 f"QProgressBar {{ border: none; border-radius: {rad_f}px;"
                 f"  background-color: {c['progress_bg']}; text-align: center;"
-                f"  color: {c['text']}; font-size: 10pt; font-weight: 600; }}"
+                f"  color: {c['text']}; font-size: {self._pt_css(10)}pt; font-weight: 600; }}"
                 f"QProgressBar::chunk {{ border-radius: {rad_f}px;"
                 f"  background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
                 f"  stop:0 {r}, stop:1 {r2}); }}"
@@ -497,20 +540,24 @@ class GigaTranscriberQtApp(QMainWindow):
         if hasattr(self, 'progress_upload'):
             self.progress_upload.setStyleSheet(
                 f"QProgressBar {{ border: none; background-color: {c['progress_bg']};"
-                f"  border-radius: 3px; }}"
-                f"QProgressBar::chunk {{ background-color: {c['accent']}; border-radius: 3px; }}"
+                f"  border-radius: {self._px(3)}px; }}"
+                f"QProgressBar::chunk {{ background-color: {c['accent']}; border-radius: {self._px(3)}px; }}"
             )
         if hasattr(self, 'lbl_file_counter'):
-            self.lbl_file_counter.setStyleSheet(f"color: {c['accent']}; font-size: 11pt; font-weight: bold;")
+            self.lbl_file_counter.setStyleSheet(
+                f"color: {c['accent']}; font-size: {self._pt_css(11)}pt; font-weight: bold;"
+            )
         if hasattr(self, 'lbl_status'):
             self.lbl_status.setStyleSheet(
-                f"color: {c['status_text']}; font-size: 10pt; font-weight: bold;"
-                f"background-color: {c['status_bg']}; border-radius: 6px; padding: 2px;"
+                f"color: {c['status_text']}; font-size: {self._pt_css(10)}pt; font-weight: bold;"
+                f"background-color: {c['status_bg']}; border-radius: {self._px(6)}px; padding: {self._px(2)}px;"
             )
         if hasattr(self, 'lbl_stage'):
-            self.lbl_stage.setStyleSheet(f"color: {c['text_sub']}; font-size: 9pt; font-weight: 600;")
+            self.lbl_stage.setStyleSheet(
+                f"color: {c['text_sub']}; font-size: {self._pt_css(9)}pt; font-weight: 600;"
+            )
         if hasattr(self, 'lbl_current_file'):
-            self.lbl_current_file.setStyleSheet(f"color: {c['text_mute2']}; font-size: 9pt;")
+            self.lbl_current_file.setStyleSheet(f"color: {c['text_mute2']}; font-size: {self._pt_css(9)}pt;")
 
     # ──────────────────────────────────────────────────────────────
     # UI
@@ -518,13 +565,13 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _init_ui(self):
         self.setWindowTitle(APP_TITLE)
-        self.setMinimumSize(940, 560)
-        self.resize(1040, 850)
+        self.setMinimumSize(self._px(940), self._px(560))
+        self.resize(self._px(1040), self._px(850))
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(16, 12, 16, 12)
-        root_layout.setSpacing(8)
+        root_layout.setContentsMargins(self._px(16), self._px(12), self._px(16), self._px(12))
+        root_layout.setSpacing(self._px(8))
         self.setCentralWidget(root)
 
         # Заголовок + кнопка темы
@@ -532,14 +579,14 @@ class GigaTranscriberQtApp(QMainWindow):
         header_row.setContentsMargins(0, 0, 0, 0)
 
         title_label = QLabel("GigaAM v3: Транскрибация")
-        title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title_label.setFont(self._font(18, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setFixedHeight(40)
+        title_label.setFixedHeight(self._px(40))
         header_row.addWidget(title_label, 1)
 
         self._btn_theme = QPushButton(self._colors()["theme_btn"])
         self._btn_theme.setObjectName("theme_button")
-        self._btn_theme.setFixedSize(42, 36)
+        self._btn_theme.setFixedSize(self._px(42), self._px(36))
         self._btn_theme.setToolTip("Переключить тему")
         self._btn_theme.clicked.connect(self._toggle_theme)
         header_row.addWidget(self._btn_theme)
@@ -552,8 +599,8 @@ class GigaTranscriberQtApp(QMainWindow):
         # ── Вкладка «Обработка» ──
         content_widget = QWidget()
         main_layout = QVBoxLayout(content_widget)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(self._px(8), self._px(8), self._px(8), self._px(8))
+        main_layout.setSpacing(self._px(6))
 
         main_layout.addWidget(self._create_files_group())
         main_layout.addWidget(self._create_output_group())
@@ -562,7 +609,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
         self.btn_start = QPushButton("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.btn_start.setObjectName("start_button")
-        self.btn_start.setFixedHeight(52)
+        self.btn_start.setFixedHeight(self._px(52))
         self.btn_start.clicked.connect(self._start_processing_thread)
         main_layout.addWidget(self.btn_start)
 
@@ -570,7 +617,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
         self.btn_clear = QPushButton("ОЧИСТИТЬ ВСЕ")
         self.btn_clear.setObjectName("clear_button")
-        self.btn_clear.setFixedHeight(40)
+        self.btn_clear.setFixedHeight(self._px(40))
         self.btn_clear.clicked.connect(self._clear_all)
         main_layout.addWidget(self.btn_clear)
 
@@ -586,12 +633,12 @@ class GigaTranscriberQtApp(QMainWindow):
         # ── Вкладка «Журнал» ──
         log_tab = QWidget()
         log_layout = QVBoxLayout(log_tab)
-        log_layout.setContentsMargins(8, 8, 8, 8)
-        log_layout.setSpacing(6)
+        log_layout.setContentsMargins(self._px(8), self._px(8), self._px(8), self._px(8))
+        log_layout.setSpacing(self._px(6))
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont("Consolas", 11))
-        self.log_text.setMinimumHeight(160)
+        self.log_text.setFont(self._font(11, fixed=True))
+        self.log_text.setMinimumHeight(self._px(160))
         log_layout.addWidget(self.log_text, 1)
         tabs.addTab(log_tab, "Журнал обработки")
         self.tabs = tabs
@@ -604,15 +651,16 @@ class GigaTranscriberQtApp(QMainWindow):
     def _make_progress_bar(self, height: int, font_pt: int) -> QProgressBar:
         c = self._colors()
         bar = QProgressBar()
-        bar.setFixedHeight(height)
+        scaled_height = self._px(height)
+        bar.setFixedHeight(scaled_height)
         bar.setTextVisible(True)
         bar.setRange(0, 100)
-        radius = height // 2
+        radius = scaled_height // 2
         r, r2 = c["progress_chunk"], c["progress_chunk2"]
         bar.setStyleSheet(
             f"QProgressBar {{ border: none; border-radius: {radius}px;"
             f"  background-color: {c['progress_bg']}; text-align: center; color: {c['text']};"
-            f"  font-size: {font_pt}pt; font-weight: 600; }}"
+            f"  font-size: {self._pt_css(font_pt)}pt; font-weight: 600; }}"
             f"QProgressBar::chunk {{ border-radius: {radius}px;"
             f"  background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             f"  stop:0 {r}, stop:1 {r2}); }}"
@@ -624,16 +672,16 @@ class GigaTranscriberQtApp(QMainWindow):
         progress_frame = QFrame()
         progress_frame.setObjectName("progress_card")
         frame_layout = QVBoxLayout(progress_frame)
-        frame_layout.setContentsMargins(16, 12, 16, 12)
-        frame_layout.setSpacing(6)
+        frame_layout.setContentsMargins(self._px(16), self._px(12), self._px(16), self._px(12))
+        frame_layout.setSpacing(self._px(6))
 
         head_row = QHBoxLayout()
         lbl_overall = QLabel("Общий прогресс")
-        lbl_overall.setStyleSheet(f"color: {c['text_sub']}; font-size: 11pt; font-weight: bold;")
+        lbl_overall.setStyleSheet(f"color: {c['text_sub']}; font-size: {self._pt_css(11)}pt; font-weight: bold;")
         head_row.addWidget(lbl_overall)
         head_row.addStretch()
         self.lbl_file_counter = QLabel("")
-        self.lbl_file_counter.setStyleSheet(f"color: {c['accent']}; font-size: 11pt; font-weight: bold;")
+        self.lbl_file_counter.setStyleSheet(f"color: {c['accent']}; font-size: {self._pt_css(11)}pt; font-weight: bold;")
         head_row.addWidget(self.lbl_file_counter)
         frame_layout.addLayout(head_row)
 
@@ -643,13 +691,13 @@ class GigaTranscriberQtApp(QMainWindow):
         self.detail_row = QWidget()
         detail_layout = QHBoxLayout(self.detail_row)
         detail_layout.setContentsMargins(0, 0, 0, 0)
-        detail_layout.setSpacing(10)
+        detail_layout.setSpacing(self._px(10))
         self.lbl_stage = QLabel("")
-        self.lbl_stage.setStyleSheet(f"color: {c['text_sub']}; font-size: 9pt; font-weight: 600;")
+        self.lbl_stage.setStyleSheet(f"color: {c['text_sub']}; font-size: {self._pt_css(9)}pt; font-weight: 600;")
         detail_layout.addWidget(self.lbl_stage)
         detail_layout.addStretch()
         self.lbl_current_file = QLabel("")
-        self.lbl_current_file.setStyleSheet(f"color: {c['text_mute2']}; font-size: 9pt;")
+        self.lbl_current_file.setStyleSheet(f"color: {c['text_mute2']}; font-size: {self._pt_css(9)}pt;")
         detail_layout.addWidget(self.lbl_current_file)
         frame_layout.addWidget(self.detail_row)
         self.detail_row.setVisible(False)
@@ -659,10 +707,10 @@ class GigaTranscriberQtApp(QMainWindow):
 
         self.lbl_status = QLabel("Готов к работе")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_status.setFixedHeight(28)
+        self.lbl_status.setFixedHeight(self._px(28))
         self.lbl_status.setStyleSheet(
-            f"color: {c['status_text']}; font-size: 10pt; font-weight: bold;"
-            f"background-color: {c['status_bg']}; border-radius: 6px; padding: 2px;"
+            f"color: {c['status_text']}; font-size: {self._pt_css(10)}pt; font-weight: bold;"
+            f"background-color: {c['status_bg']}; border-radius: {self._px(6)}px; padding: {self._px(2)}px;"
         )
         frame_layout.addWidget(self.lbl_status)
 
@@ -671,37 +719,37 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_files_group(self) -> QGroupBox:
         group = QGroupBox("1. Выбор файлов")
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(12, 20, 12, 10)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        main_layout.setSpacing(self._px(10))
 
         row1 = QHBoxLayout()
-        row1.setSpacing(10)
+        row1.setSpacing(self._px(10))
         btn_select_files = QPushButton("Выбрать файлы")
         btn_select_files.clicked.connect(self._select_files)
-        btn_select_files.setFixedHeight(36)
-        btn_select_files.setMinimumWidth(180)
+        btn_select_files.setFixedHeight(self._px(36))
+        btn_select_files.setMinimumWidth(self._px(180))
         row1.addWidget(btn_select_files)
 
         self.lbl_files_count = QLabel("Файлы не выбраны")
         self.lbl_files_count.setStyleSheet(f"color: {self._colors()['text_mute']};")
-        self.lbl_files_count.setFixedWidth(180)
+        self.lbl_files_count.setFixedWidth(self._px(180))
         row1.addWidget(self.lbl_files_count)
 
         self.input_path = QLineEdit()
         self.input_path.setPlaceholderText("Ссылка на медиа")
-        self.input_path.setFixedHeight(24)
-        self.input_path.setMinimumWidth(220)
+        self.input_path.setFixedHeight(self._px(24))
+        self.input_path.setMinimumWidth(self._px(220))
         row1.addWidget(self.input_path)
 
         self.btn_upload = QPushButton("Загрузить")
-        self.btn_upload.setFixedHeight(36)
-        self.btn_upload.setMinimumWidth(100)
+        self.btn_upload.setFixedHeight(self._px(36))
+        self.btn_upload.setMinimumWidth(self._px(100))
         self.btn_upload.clicked.connect(self._start_download)
         row1.addWidget(self.btn_upload)
 
         self.progress_upload = QProgressBar()
-        self.progress_upload.setFixedHeight(24)
-        self.progress_upload.setFixedWidth(90)
+        self.progress_upload.setFixedHeight(self._px(24))
+        self.progress_upload.setFixedWidth(self._px(90))
         self.progress_upload.setValue(0)
         self.progress_upload.setTextVisible(True)
         row1.addWidget(self.progress_upload)
@@ -709,16 +757,16 @@ class GigaTranscriberQtApp(QMainWindow):
         main_layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        row2.setSpacing(10)
+        row2.setSpacing(self._px(10))
         btn_select_folder = QPushButton("Выбрать папку с файлами")
         btn_select_folder.clicked.connect(self._select_files_folder)
-        btn_select_folder.setFixedHeight(36)
-        btn_select_folder.setMinimumWidth(180)
+        btn_select_folder.setFixedHeight(self._px(36))
+        btn_select_folder.setMinimumWidth(self._px(180))
         row2.addWidget(btn_select_folder)
 
         self.lbl_input_folder = QLabel("Папка не выбрана")
         self.lbl_input_folder.setStyleSheet(f"color: {self._colors()['text_mute']};")
-        self.lbl_input_folder.setFixedWidth(180)
+        self.lbl_input_folder.setFixedWidth(self._px(180))
         row2.addWidget(self.lbl_input_folder)
         row2.addStretch()
         main_layout.addLayout(row2)
@@ -729,12 +777,12 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_output_group(self) -> QGroupBox:
         group = QGroupBox("2. Папка сохранения результатов")
         layout = QHBoxLayout()
-        layout.setContentsMargins(12, 20, 12, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setSpacing(self._px(12))
         btn_output = QPushButton("Выбрать папку")
         btn_output.clicked.connect(self._select_output_folder)
-        btn_output.setMinimumWidth(220)
-        btn_output.setFixedHeight(36)
+        btn_output.setMinimumWidth(self._px(220))
+        btn_output.setFixedHeight(self._px(36))
         layout.addWidget(btn_output)
         self.lbl_output_folder = QLabel("Папка не выбрана (по умолчанию - рядом с файлом)")
         self.lbl_output_folder.setStyleSheet(f"color: {self._colors()['text_mute']};")
@@ -745,25 +793,25 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_diarization_group(self) -> QGroupBox:
         group = QGroupBox("3. Диаризация спикеров")
         layout = QVBoxLayout()
-        layout.setContentsMargins(12, 20, 12, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setSpacing(self._px(8))
         self.cb_diarization = QCheckBox("Включить диаризацию спикеров")
         self.cb_diarization.stateChanged.connect(self._toggle_diarization)
         layout.addWidget(self.cb_diarization)
         speakers_layout = QHBoxLayout()
-        speakers_layout.setSpacing(12)
+        speakers_layout.setSpacing(self._px(12))
         speakers_layout.addWidget(QLabel("Кол-во спикеров:"))
         self.entry_num_speakers = QLineEdit()
         self.entry_num_speakers.setPlaceholderText("Пусто = автоопределение")
         self.entry_num_speakers.setEnabled(False)
-        self.entry_num_speakers.setFixedHeight(32)
-        self.entry_num_speakers.setMinimumWidth(250)
-        self.entry_num_speakers.setMaximumWidth(350)
+        self.entry_num_speakers.setFixedHeight(self._px(32))
+        self.entry_num_speakers.setMinimumWidth(self._px(250))
+        self.entry_num_speakers.setMaximumWidth(self._px(350))
         speakers_layout.addWidget(self.entry_num_speakers)
         speakers_layout.addStretch()
         layout.addLayout(speakers_layout)
         info_label = QLabel("Автоматическое определение спикеров (требуется HF_TOKEN)")
-        info_label.setStyleSheet(f"color: {self._colors()['text_mute2']}; font-size: 9pt;")
+        info_label.setStyleSheet(f"color: {self._colors()['text_mute2']}; font-size: {self._pt_css(9)}pt;")
         layout.addWidget(info_label)
         group.setLayout(layout)
         return group
@@ -771,12 +819,12 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_formats_group(self) -> QGroupBox:
         group = QGroupBox("4. Форматы вывода")
         layout = QVBoxLayout()
-        layout.setContentsMargins(12, 20, 12, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setSpacing(self._px(6))
         self.format_checkboxes = {}
 
         row1 = QHBoxLayout()
-        row1.setSpacing(20)
+        row1.setSpacing(self._px(20))
         for fmt in ['txt', 'txt_timecodes', 'txt_diarize', 'txt_diarize_timecodes']:
             cb = QCheckBox(OUTPUT_FORMATS[fmt])
             cb.setChecked(fmt in ('txt', 'txt_timecodes'))
@@ -789,7 +837,7 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        row2.setSpacing(20)
+        row2.setSpacing(self._px(20))
         for fmt in ('md', 'srt', 'vtt'):
             cb = QCheckBox(OUTPUT_FORMATS[fmt])
             cb.setChecked(False)
@@ -809,9 +857,9 @@ class GigaTranscriberQtApp(QMainWindow):
     def _show_hf_token_dialog(self) -> bool:
         dlg = QDialog(self)
         dlg.setWindowTitle("HuggingFace токен для диаризации")
-        dlg.setMinimumWidth(520)
+        dlg.setMinimumWidth(self._px(520))
         layout = QVBoxLayout(dlg)
-        layout.setSpacing(10)
+        layout.setSpacing(self._px(10))
         info = QLabel(
             "<b>Диаризация спикеров требует HuggingFace токен</b><br><br>"
             "1. Создайте аккаунт на <a href='https://huggingface.co'>huggingface.co</a><br>"
@@ -849,8 +897,8 @@ class GigaTranscriberQtApp(QMainWindow):
         try:
             lines = []
             if os.path.exists(env_path):
-                with open(env_path, 'r') as f:
-                    lines = [l for l in f.readlines() if not l.startswith('HF_TOKEN=')]
+                with open(env_path) as f:
+                    lines = [line for line in f.readlines() if not line.startswith('HF_TOKEN=')]
             lines.append(f'HF_TOKEN={token}\n')
             with open(env_path, 'w') as f:
                 f.writelines(lines)
@@ -1414,15 +1462,17 @@ class GigaTranscriberQtApp(QMainWindow):
 
 def run_qt_app():
     """Запускает приложение на PyQt6"""
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
     if sys.platform == 'win32':
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(u'GigaAM.Transcriber.v3')
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('GigaAM.Transcriber.v3')
         except Exception:
             pass
 
     app = QApplication(sys.argv)
-    app.setFont(QFont("Arial", 12))
+    app.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
 
     icon_path = os.path.join(
         getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),

@@ -1,9 +1,18 @@
 import os
+import sys
 import threading
+import types
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from src.gui.app_qt import GigaTranscriberQtApp
+sys.modules.setdefault("gigaam", types.SimpleNamespace(load_model=lambda *args, **kwargs: object()))
+sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
+
+from src.gui import app_qt  # noqa: E402
+from src.gui.app_qt import GigaTranscriberQtApp  # noqa: E402
 
 
 def _autoclose(window, monkeypatch):
@@ -72,6 +81,23 @@ def test_log_is_on_second_tab():
     window.log("тестовое сообщение")
     assert "тестовое сообщение" in window.log_text.toPlainText()
     window.close()
+
+
+def test_gui_does_not_pin_windows_font_families():
+    source = Path("src/gui/app_qt.py").read_text(encoding="utf-8")
+    assert 'QFont("Arial"' not in source
+    assert 'QFont("Consolas"' not in source
+
+
+def test_ui_scale_env_is_clamped(monkeypatch):
+    monkeypatch.setenv("GIGAAM_UI_SCALE", "1.25")
+    assert app_qt._read_ui_scale() == 1.25
+
+    monkeypatch.setenv("GIGAAM_UI_SCALE", "0.2")
+    assert app_qt._read_ui_scale() == app_qt._MIN_UI_SCALE
+
+    monkeypatch.setenv("GIGAAM_UI_SCALE", "9")
+    assert app_qt._read_ui_scale() == app_qt._MAX_UI_SCALE
 
 
 def test_stage_aware_progress():
