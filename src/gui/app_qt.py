@@ -8,9 +8,11 @@ import sys
 import threading
 import time
 
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QByteArray, QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
+    QAction,
     QColor,
+    QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QFont,
@@ -18,6 +20,7 @@ from PyQt6.QtGui import (
     QFontMetrics,
     QGuiApplication,
     QIcon,
+    QKeySequence,
     QPalette,
 )
 from PyQt6.QtWidgets import (
@@ -31,11 +34,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -101,6 +107,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self._current_filename = ""
         self.is_downloading = False
         self.start_processing_after_download = False
+        self._last_result_dir = ""
 
         self.enable_diarization = False
         self.num_speakers = None
@@ -548,7 +555,114 @@ class GigaTranscriberQtApp(QMainWindow):
                 border: none;
                 background: transparent;
             }}
+            QListWidget#files_list {{
+                background-color: {c["input_bg"]};
+                border: 1px solid {c["border"]};
+                border-radius: {self._px(6)}px;
+                color: {c["text"]};
+                font-size: {self._pt_css(10)}pt;
+                padding: {self._px(2)}px;
+            }}
+            QListWidget#files_list::item {{
+                padding: {self._px(3)}px {self._px(6)}px;
+                border-radius: {self._px(4)}px;
+            }}
+            QListWidget#files_list::item:selected {{
+                background-color: {c["accent"]};
+                color: #ffffff;
+            }}
+            QListWidget#files_list::item:hover:!selected {{
+                background-color: {c["btn_hover_bg"]};
+            }}
+            QSpinBox {{
+                border: 1px solid {c["btn_border"]};
+                border-radius: {self._px(6)}px;
+                padding: {self._px(2)}px {self._px(8)}px;
+                background-color: {c["input_bg"]};
+                color: {c["text"]};
+                selection-background-color: {c["input_sel"]};
+                font-size: {self._pt_css(10)}pt;
+            }}
+            QSpinBox:focus {{
+                border: 1px solid {c["accent"]};
+            }}
+            QSpinBox:disabled {{
+                background-color: {c["input_dis"]};
+                color: {c["input_dis_text"]};
+            }}
+            QPushButton#cancel_button {{
+                background-color: {c["clear_bg"]};
+                color: {c["clear_text"]};
+                font-size: {self._pt_css(9)}pt;
+                font-weight: bold;
+                border: 1px solid {c["clear_border"]};
+                border-radius: {self._px(6)}px;
+                padding: {self._px(2)}px {self._px(12)}px;
+            }}
+            QPushButton#cancel_button:hover {{
+                background-color: {c["clear_hover_bg"]};
+                border: 1px solid {c["clear_hover_border"]};
+                color: {c["clear_hover_text"]};
+            }}
+            QPushButton#open_result_button {{
+                background-color: transparent;
+                color: {c["accent"]};
+                font-size: {self._pt_css(10)}pt;
+                font-weight: bold;
+                border: 1px solid {c["accent"]};
+                border-radius: {self._px(6)}px;
+            }}
+            QPushButton#open_result_button:hover {{
+                background-color: {c["btn_hover_bg"]};
+                border: 1px solid {c["btn_hover_border"]};
+            }}
+            QMenuBar {{
+                background-color: {c["bg_card"]};
+                color: {c["text_sub"]};
+                border-bottom: 1px solid {c["border"]};
+                font-size: {self._pt_css(10)}pt;
+            }}
+            QMenuBar::item {{
+                background: transparent;
+                padding: {self._px(4)}px {self._px(10)}px;
+            }}
+            QMenuBar::item:selected {{
+                background-color: {c["btn_hover_bg"]};
+                color: {c["btn_hover_text"]};
+                border-radius: {self._px(4)}px;
+            }}
+            QMenu {{
+                background-color: {c["bg_card"]};
+                color: {c["text_sub"]};
+                border: 1px solid {c["border"]};
+                padding: {self._px(4)}px;
+            }}
+            QMenu::item {{
+                padding: {self._px(5)}px {self._px(22)}px;
+                border-radius: {self._px(4)}px;
+            }}
+            QMenu::item:selected {{
+                background-color: {c["accent"]};
+                color: #ffffff;
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {c["border"]};
+                margin: {self._px(4)}px {self._px(6)}px;
+            }}
+            QStatusBar {{
+                background-color: {c["status_bg"]};
+                color: {c["text_mute2"]};
+                font-size: {self._pt_css(9)}pt;
+            }}
+            QToolTip {{
+                background-color: {c["bg_card"]};
+                color: {c["text"]};
+                border: 1px solid {c["accent"]};
+                padding: {self._px(4)}px;
+            }}
         """)
+        self._style_drop_hint()
 
         # Обновляем динамические стили прогресс-баров файла (тонкий)
         if hasattr(self, 'progress_bar_file'):
@@ -597,8 +711,10 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _init_ui(self):
         self.setWindowTitle(APP_TITLE)
-        self.setMinimumSize(self._px(940), self._px(560))
-        self.resize(self._px(1040), self._px(850))
+        self.setMinimumSize(self._px(940), self._px(600))
+        self.resize(self._px(1040), self._px(940))
+
+        self._build_menu_bar()
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -632,8 +748,8 @@ class GigaTranscriberQtApp(QMainWindow):
         # ── Вкладка «Обработка» ──
         content_widget = QWidget()
         main_layout = QVBoxLayout(content_widget)
-        main_layout.setContentsMargins(self._px(8), self._px(8), self._px(8), self._px(8))
-        main_layout.setSpacing(self._px(6))
+        main_layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(6))
+        main_layout.setSpacing(self._px(4))
 
         main_layout.addWidget(self._create_files_group())
         main_layout.addWidget(self._create_output_group())
@@ -643,6 +759,8 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_start = QPushButton("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.btn_start.setObjectName("start_button")
         self.btn_start.setFixedHeight(self._px(52))
+        self.btn_start.setToolTip("Начать транскрибацию выбранных файлов  (Ctrl+Enter)")
+        self.btn_start.setShortcut(QKeySequence("Ctrl+Return"))
         self.btn_start.clicked.connect(self._start_processing_thread)
         main_layout.addWidget(self.btn_start)
 
@@ -651,6 +769,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_clear = QPushButton("ОЧИСТИТЬ ВСЕ")
         self.btn_clear.setObjectName("clear_button")
         self.btn_clear.setFixedHeight(self._px(40))
+        self.btn_clear.setToolTip("Сбросить файлы, папки, журнал и прогресс")
         self.btn_clear.clicked.connect(self._clear_all)
         main_layout.addWidget(self.btn_clear)
 
@@ -668,6 +787,27 @@ class GigaTranscriberQtApp(QMainWindow):
         log_layout = QVBoxLayout(log_tab)
         log_layout.setContentsMargins(self._px(8), self._px(8), self._px(8), self._px(8))
         log_layout.setSpacing(self._px(6))
+
+        log_toolbar = QHBoxLayout()
+        log_toolbar.setSpacing(self._px(8))
+        btn_log_copy = QPushButton("Копировать")
+        btn_log_copy.setToolTip("Скопировать весь журнал в буфер обмена")
+        btn_log_copy.setFixedHeight(self._px(32))
+        btn_log_copy.clicked.connect(self._copy_log)
+        log_toolbar.addWidget(btn_log_copy)
+        btn_log_save = QPushButton("Сохранить…")
+        btn_log_save.setToolTip("Сохранить журнал в текстовый файл")
+        btn_log_save.setFixedHeight(self._px(32))
+        btn_log_save.clicked.connect(self._save_log)
+        log_toolbar.addWidget(btn_log_save)
+        btn_log_clear = QPushButton("Очистить журнал")
+        btn_log_clear.setToolTip("Очистить только журнал, не сбрасывая настройки")
+        btn_log_clear.setFixedHeight(self._px(32))
+        btn_log_clear.clicked.connect(self._clear_log)
+        log_toolbar.addWidget(btn_log_clear)
+        log_toolbar.addStretch()
+        log_layout.addLayout(log_toolbar)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFont(self._font(11, fixed=True))
@@ -676,7 +816,152 @@ class GigaTranscriberQtApp(QMainWindow):
         tabs.addTab(log_tab, "Журнал обработки")
         self.tabs = tabs
 
+        # Статус-бар: краткие подсказки и состояние
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage("Готов к работе")
+
+        # Esc — отмена текущей обработки
+        esc = QAction(self)
+        esc.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        esc.triggered.connect(self._cancel_processing)
+        self.addAction(esc)
+
         self._apply_theme()
+        self._restore_geometry()
+
+    # ──────────────────────────────────────────────────────────────
+    # Меню, статус, геометрия окна, журнал
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_menu_bar(self):
+        menubar = self.menuBar()
+        menubar.clear()
+
+        file_menu = menubar.addMenu("Файл")
+        act_files = QAction("Выбрать файлы…", self)
+        act_files.setShortcut(QKeySequence.StandardKey.Open)
+        act_files.setStatusTip("Добавить аудио- или видеофайлы в очередь")
+        act_files.triggered.connect(self._select_files)
+        file_menu.addAction(act_files)
+
+        act_folder = QAction("Выбрать папку с файлами…", self)
+        act_folder.setStatusTip("Добавить все медиафайлы из папки и подпапок")
+        act_folder.triggered.connect(self._select_files_folder)
+        file_menu.addAction(act_folder)
+
+        act_out = QAction("Папка сохранения…", self)
+        act_out.setStatusTip("Выбрать папку для результатов транскрибации")
+        act_out.triggered.connect(self._select_output_folder)
+        file_menu.addAction(act_out)
+
+        file_menu.addSeparator()
+        act_open_res = QAction("Открыть папку с результатами", self)
+        act_open_res.setStatusTip("Открыть папку с готовыми файлами")
+        act_open_res.triggered.connect(self._open_results_folder)
+        file_menu.addAction(act_open_res)
+
+        file_menu.addSeparator()
+        act_quit = QAction("Выход", self)
+        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
+        act_quit.triggered.connect(self.close)
+        file_menu.addAction(act_quit)
+
+        view_menu = menubar.addMenu("Вид")
+        self._act_theme = QAction("Переключить тему", self)
+        self._act_theme.setShortcut(QKeySequence("Ctrl+T"))
+        self._act_theme.setStatusTip("Светлая / тёмная тема оформления")
+        self._act_theme.triggered.connect(self._toggle_theme)
+        view_menu.addAction(self._act_theme)
+
+        help_menu = menubar.addMenu("Справка")
+        act_about = QAction("О программе", self)
+        act_about.triggered.connect(self._show_about)
+        help_menu.addAction(act_about)
+
+    @staticmethod
+    def _is_headless() -> bool:
+        app = QApplication.instance()
+        return bool(app) and app.platformName() in ("offscreen", "minimal")
+
+    def _restore_geometry(self):
+        # Геометрию из безголовых/тестовых сессий не восстанавливаем
+        if self._is_headless():
+            return
+        saved = self.user_settings.settings.get("window_geometry")
+        if saved:
+            try:
+                self.restoreGeometry(QByteArray.fromHex(saved.encode("ascii")))
+            except Exception:
+                pass
+
+    def _save_geometry(self):
+        if self._is_headless():
+            return
+        try:
+            self.user_settings.settings["window_geometry"] = bytes(
+                self.saveGeometry().toHex()
+            ).decode("ascii")
+            self.user_settings._save_settings()
+        except Exception:
+            pass
+
+    def _set_status(self, message: str):
+        """Дублирует ключевые сообщения в системный статус-бар."""
+        if hasattr(self, "status_bar") and self.status_bar is not None:
+            self.status_bar.showMessage(message)
+
+    def _copy_log(self):
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(self.log_text.toPlainText())
+            self._set_status("Журнал скопирован в буфер обмена")
+
+    def _save_log(self):
+        if not self.log_text.toPlainText().strip():
+            QMessageBox.information(self, "Журнал пуст", "Журнал пока пуст — нечего сохранять.")
+            return
+        initial_dir = self.user_settings.get_last_output_dir() or self.output_dir or os.path.expanduser("~")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить журнал",
+            os.path.join(initial_dir, "transcription_log.txt"),
+            "Текстовые файлы (*.txt);;Все файлы (*.*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.log_text.toPlainText())
+            self._set_status(f"Журнал сохранён: {os.path.basename(path)}")
+            self.log(f"Журнал сохранён в {path}")
+        except OSError as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить журнал:\n{e}")
+
+    def _clear_log(self):
+        self.log_text.clear()
+        self._set_status("Журнал очищен")
+
+    def _open_results_folder(self):
+        target = self._last_result_dir or self.output_dir or self.input_dir
+        if not target or not os.path.isdir(target):
+            QMessageBox.information(
+                self, "Папка недоступна",
+                "Папка с результатами ещё не определена.\n"
+                "Запустите обработку или выберите папку сохранения."
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+
+    def _show_about(self):
+        QMessageBox.about(
+            self, "О программе",
+            f"<b>{APP_TITLE}</b><br><br>"
+            "Локальная транскрибация аудио и видео на модели "
+            "<b>GigaAM v3</b> с поддержкой диаризации спикеров.<br><br>"
+            "Возможности: пакетная обработка, загрузка по ссылке, "
+            "таймкоды, экспорт в TXT / Markdown / SRT / VTT.<br><br>"
+            "Поддерживаемые форматы ввода: mp3, wav, m4a, aac, flac, ogg, "
+            "mp4, avi, mov, mkv, webm, wma, 3gp."
+        )
 
     _ACCENT_LIGHT = "#3b82f6"
     _CONVERSION_BAND = 0.15
@@ -716,6 +1001,13 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_file_counter = QLabel("")
         self.lbl_file_counter.setStyleSheet(self._transparent_label_style(c["accent"], font_pt=11, font_weight="bold"))
         head_row.addWidget(self.lbl_file_counter)
+        self.btn_cancel = QPushButton("Отменить")
+        self.btn_cancel.setObjectName("cancel_button")
+        self.btn_cancel.setToolTip("Остановить обработку после текущего файла  (Esc)")
+        self.btn_cancel.setFixedHeight(self._px(28))
+        self.btn_cancel.clicked.connect(self._cancel_processing)
+        self.btn_cancel.setVisible(False)
+        head_row.addWidget(self.btn_cancel)
         frame_layout.addLayout(head_row)
 
         self.progress_bar_total = self._make_progress_bar(height=22, font_pt=10)
@@ -747,65 +1039,181 @@ class GigaTranscriberQtApp(QMainWindow):
         )
         frame_layout.addWidget(self.lbl_status)
 
+        self.btn_open_result = QPushButton("Открыть папку с результатами")
+        self.btn_open_result.setObjectName("open_result_button")
+        self.btn_open_result.setToolTip("Открыть папку с готовыми файлами в проводнике")
+        self.btn_open_result.setFixedHeight(self._px(34))
+        self.btn_open_result.clicked.connect(self._open_results_folder)
+        self.btn_open_result.setVisible(False)
+        frame_layout.addWidget(self.btn_open_result)
+
         parent_layout.addWidget(progress_frame)
 
     def _create_files_group(self) -> QGroupBox:
         group = QGroupBox("1. Выбор файлов")
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
-        main_layout.setSpacing(self._px(10))
+        main_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        main_layout.setSpacing(self._px(6))
 
         row1 = QHBoxLayout()
         row1.setSpacing(self._px(10))
         btn_select_files = QPushButton("Выбрать файлы")
+        btn_select_files.setToolTip("Выбрать аудио/видео файлы для обработки  (Ctrl+O)")
         btn_select_files.clicked.connect(self._select_files)
         btn_select_files.setFixedHeight(self._px(36))
-        btn_select_files.setMinimumWidth(self._px(180))
+        btn_select_files.setMinimumWidth(self._px(160))
         row1.addWidget(btn_select_files)
 
-        self.lbl_files_count = QLabel("Файлы не выбраны")
-        self.lbl_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
-        self.lbl_files_count.setFixedWidth(self._px(180))
-        row1.addWidget(self.lbl_files_count)
+        btn_select_folder = QPushButton("Выбрать папку")
+        btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок")
+        btn_select_folder.clicked.connect(self._select_files_folder)
+        btn_select_folder.setFixedHeight(self._px(36))
+        btn_select_folder.setMinimumWidth(self._px(150))
+        row1.addWidget(btn_select_folder)
 
         self.input_path = QLineEdit()
-        self.input_path.setPlaceholderText("Ссылка на медиа")
-        self.input_path.setFixedHeight(self._px(24))
-        self.input_path.setMinimumWidth(self._px(220))
-        row1.addWidget(self.input_path)
+        self.input_path.setPlaceholderText("Ссылка на медиа (YouTube и др.)")
+        self.input_path.setToolTip("Вставьте ссылку и нажмите «Загрузить»")
+        self.input_path.setFixedHeight(self._px(36))
+        self.input_path.setMinimumWidth(self._px(200))
+        self.input_path.returnPressed.connect(self._start_download)
+        row1.addWidget(self.input_path, 1)
 
         self.btn_upload = QPushButton("Загрузить")
+        self.btn_upload.setToolTip("Скачать медиа по ссылке и добавить в очередь")
         self.btn_upload.setFixedHeight(self._px(36))
         self.btn_upload.setMinimumWidth(self._px(100))
         self.btn_upload.clicked.connect(self._start_download)
         row1.addWidget(self.btn_upload)
 
         self.progress_upload = QProgressBar()
-        self.progress_upload.setFixedHeight(self._px(24))
+        self.progress_upload.setFixedHeight(self._px(36))
         self.progress_upload.setFixedWidth(self._px(90))
         self.progress_upload.setValue(0)
         self.progress_upload.setTextVisible(True)
+        self.progress_upload.setVisible(False)
         row1.addWidget(self.progress_upload)
-        row1.addStretch()
         main_layout.addLayout(row1)
 
-        row2 = QHBoxLayout()
-        row2.setSpacing(self._px(10))
-        btn_select_folder = QPushButton("Выбрать папку с файлами")
-        btn_select_folder.clicked.connect(self._select_files_folder)
-        btn_select_folder.setFixedHeight(self._px(36))
-        btn_select_folder.setMinimumWidth(self._px(180))
-        row2.addWidget(btn_select_folder)
-
+        # Подсказка о выбранной папке источника
         self.lbl_input_folder = QLabel("Папка не выбрана")
-        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
-        self.lbl_input_folder.setFixedWidth(self._px(180))
-        row2.addWidget(self.lbl_input_folder)
-        row2.addStretch()
-        main_layout.addLayout(row2)
+        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"], font_pt=9))
+        main_layout.addWidget(self.lbl_input_folder)
+
+        # Очередь файлов + пустое состояние (drop-зона)
+        self.drop_hint = QLabel("Перетащите сюда файлы или папки  ·  либо нажмите «Выбрать файлы»")
+        self.drop_hint.setObjectName("drop_hint")
+        self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_hint.setMinimumHeight(self._px(50))
+        main_layout.addWidget(self.drop_hint)
+
+        self.files_list = QListWidget()
+        self.files_list.setObjectName("files_list")
+        self.files_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.files_list.setMinimumHeight(self._px(72))
+        self.files_list.setMaximumHeight(self._px(150))
+        self.files_list.setToolTip("Очередь файлов. Выделите и нажмите Delete, чтобы убрать.")
+        self.files_list.itemSelectionChanged.connect(self._update_files_controls)
+        self.files_list.setVisible(False)
+        main_layout.addWidget(self.files_list)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(self._px(10))
+        self.lbl_files_count = QLabel("Файлы не выбраны")
+        self.lbl_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        controls.addWidget(self.lbl_files_count)
+        controls.addStretch()
+        self.btn_remove_file = QPushButton("Убрать выбранное")
+        self.btn_remove_file.setToolTip("Убрать выделенные файлы из очереди  (Delete)")
+        self.btn_remove_file.setFixedHeight(self._px(32))
+        self.btn_remove_file.setEnabled(False)
+        self.btn_remove_file.clicked.connect(self._remove_selected_files)
+        controls.addWidget(self.btn_remove_file)
+        self.btn_clear_files = QPushButton("Очистить список")
+        self.btn_clear_files.setToolTip("Убрать все файлы из очереди (настройки сохранятся)")
+        self.btn_clear_files.setFixedHeight(self._px(32))
+        self.btn_clear_files.setEnabled(False)
+        self.btn_clear_files.clicked.connect(self._clear_files_list)
+        controls.addWidget(self.btn_clear_files)
+        main_layout.addLayout(controls)
 
         group.setLayout(main_layout)
         return group
+
+    def _refresh_files_list(self):
+        """Синхронизирует QListWidget и пустое состояние с self.files_to_process."""
+        if not hasattr(self, "files_list"):
+            return
+        self.files_list.clear()
+        for path in self.files_to_process:
+            item = QListWidgetItem(os.path.basename(path))
+            item.setToolTip(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.files_list.addItem(item)
+        has_files = bool(self.files_to_process)
+        self.files_list.setVisible(has_files)
+        self.drop_hint.setVisible(not has_files)
+        c = self._colors()
+        if has_files:
+            self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
+            self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_sub"]))
+        else:
+            self.lbl_files_count.setText("Файлы не выбраны")
+            self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_mute"]))
+        self._update_files_controls()
+
+    def _update_files_controls(self):
+        if not hasattr(self, "btn_clear_files"):
+            return
+        has_files = bool(self.files_to_process)
+        self.btn_clear_files.setEnabled(has_files and not self.is_processing)
+        self.btn_remove_file.setEnabled(
+            bool(self.files_list.selectedItems()) and not self.is_processing
+        )
+
+    def _remove_selected_files(self):
+        if self.is_processing:
+            return
+        selected = {
+            item.data(Qt.ItemDataRole.UserRole) for item in self.files_list.selectedItems()
+        }
+        if not selected:
+            return
+        removed = len(selected)
+        self.files_to_process = [p for p in self.files_to_process if p not in selected]
+        self._refresh_files_list()
+        self.log(f"Убрано из очереди: {removed} файлов")
+
+    def _clear_files_list(self):
+        if self.is_processing or not self.files_to_process:
+            return
+        self.files_to_process = []
+        self._refresh_files_list()
+        self.log("Очередь файлов очищена")
+
+    def keyPressEvent(self, event):
+        if (
+            event.key() == Qt.Key.Key_Delete
+            and hasattr(self, "files_list")
+            and self.files_list.hasFocus()
+        ):
+            self._remove_selected_files()
+            return
+        super().keyPressEvent(event)
+
+    def _style_drop_hint(self):
+        if not hasattr(self, "drop_hint"):
+            return
+        c = self._colors()
+        active = getattr(self, "_drop_active", False)
+        border = c["accent"] if active else c["border"]
+        bg = c["btn_hover_bg"] if active else c["bg_card"]
+        text = c["accent"] if active else c["text_mute2"]
+        self.drop_hint.setStyleSheet(
+            f"#drop_hint {{ border: 2px dashed {border}; border-radius: {self._px(10)}px;"
+            f"  background-color: {bg}; color: {text};"
+            f"  font-size: {self._pt_css(11)}pt; padding: {self._px(8)}px; }}"
+        )
 
     def _create_output_group(self) -> QGroupBox:
         group = QGroupBox("2. Папка сохранения результатов")
@@ -829,17 +1237,21 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
         layout.setSpacing(self._px(8))
         self.cb_diarization = QCheckBox("Включить диаризацию спикеров")
+        self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)")
         self.cb_diarization.stateChanged.connect(self._toggle_diarization)
         layout.addWidget(self.cb_diarization)
         speakers_layout = QHBoxLayout()
         speakers_layout.setSpacing(self._px(12))
         speakers_layout.addWidget(QLabel("Кол-во спикеров:"))
-        self.entry_num_speakers = QLineEdit()
-        self.entry_num_speakers.setPlaceholderText("Пусто = автоопределение")
+        self.entry_num_speakers = QSpinBox()
+        self.entry_num_speakers.setRange(0, 20)
+        self.entry_num_speakers.setValue(0)
+        self.entry_num_speakers.setSpecialValueText("Авто")
+        self.entry_num_speakers.setToolTip("0 = автоопределение количества спикеров")
         self.entry_num_speakers.setEnabled(False)
         self.entry_num_speakers.setFixedHeight(self._px(32))
-        self.entry_num_speakers.setMinimumWidth(self._px(250))
-        self.entry_num_speakers.setMaximumWidth(self._px(350))
+        self.entry_num_speakers.setMinimumWidth(self._px(140))
+        self.entry_num_speakers.setMaximumWidth(self._px(200))
         speakers_layout.addWidget(self.entry_num_speakers)
         speakers_layout.addStretch()
         layout.addLayout(speakers_layout)
@@ -957,7 +1369,7 @@ class GigaTranscriberQtApp(QMainWindow):
         if self.enable_diarization:
             self.log("Диаризация спикеров: ВКЛЮЧЕНА")
         else:
-            self.entry_num_speakers.clear()
+            self.entry_num_speakers.setValue(0)
             self.log("Диаризация спикеров: ВЫКЛЮЧЕНА")
 
     def _toggle_format(self, fmt: str):
@@ -1013,17 +1425,27 @@ class GigaTranscriberQtApp(QMainWindow):
             file_dir = os.path.dirname(unique_files[0])
             self.input_dir = file_dir
             self.user_settings.set_last_files_dir(file_dir)
-        self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
-        self.lbl_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+        self._refresh_files_list()
         self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
         for f in unique_files:
             self.log(f" + {os.path.basename(f)}")
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
+            self._set_drop_active(True)
             event.acceptProposedAction()
 
+    def dragLeaveEvent(self, event):
+        self._set_drop_active(False)
+        super().dragLeaveEvent(event)
+
+    def _set_drop_active(self, active: bool):
+        self._drop_active = active
+        if hasattr(self, "drop_hint"):
+            self._style_drop_hint()
+
     def dropEvent(self, event: QDropEvent):
+        self._set_drop_active(False)
         urls = event.mimeData().urls()
         if not urls:
             event.acceptProposedAction()
@@ -1062,8 +1484,7 @@ class GigaTranscriberQtApp(QMainWindow):
                         files.append(os.path.join(root, f))
             if files:
                 self.files_to_process = files
-                self.lbl_files_count.setText(f"Выбрано файлов: {len(files)}")
-                self.lbl_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+                self._refresh_files_list()
                 self.log(f"Добавлено из папки (включая подпапки): {len(files)} файлов")
                 for f in files:
                     self.log(f" + {os.path.relpath(f, folder)}")
@@ -1080,9 +1501,9 @@ class GigaTranscriberQtApp(QMainWindow):
             self.log(f"Папка для сохранения: {folder}")
 
     def _update_input_dir_label(self, path: str):
-        display_path = path if len(path) < 60 else f"...{path[-60:]}"
-        self.lbl_input_folder.setText(display_path)
-        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+        display_path = path if len(path) < 70 else f"...{path[-70:]}"
+        self.lbl_input_folder.setText(f"Папка источника: {display_path}")
+        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"], font_pt=9))
 
     def _update_output_dir_label(self, path: str):
         display_path = path if len(path) < 60 else f"...{path[-60:]}"
@@ -1121,7 +1542,9 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_upload.setEnabled(False)
         self.btn_start.setEnabled(False)
         self.progress_upload.setValue(0)
+        self.progress_upload.setVisible(True)
         self.lbl_status.setText("Загрузка медиа по ссылке...")
+        self._set_status("Загрузка по ссылке…")
         self.log(f"Загрузка медиа по ссылке в папку: {download_dir}")
         threading.Thread(target=self._download_media, args=(url, download_dir), daemon=True).start()
 
@@ -1147,6 +1570,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_upload.setEnabled(True)
         self.btn_start.setEnabled(True)
         self.progress_upload.setValue(0)
+        self.progress_upload.setVisible(False)
         if files:
             self._apply_dropped_or_selected_files(files, append=True, remember_dir=False)
             self.input_path.clear()
@@ -1165,6 +1589,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_upload.setEnabled(True)
         self.btn_start.setEnabled(True)
         self.progress_upload.setValue(0)
+        self.progress_upload.setVisible(False)
         self.lbl_status.setText("Ошибка загрузки")
         self.log(f"Ошибка загрузки: {message}")
         QMessageBox.warning(self, "Ошибка загрузки", message)
@@ -1199,26 +1624,43 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_stage = None
         self.current_stage_progress = 0.0
         self.start_processing_after_download = False
+        self._last_result_dir = ""
         self.log_text.clear()
         self.progress_bar_total.setValue(0)
         self.progress_bar_file.setValue(0)
         self.progress_upload.setValue(0)
+        self.progress_upload.setVisible(False)
         self.lbl_current_file.setText("")
         self.lbl_stage.setText("")
         self.lbl_file_counter.setText("")
         self.detail_row.setVisible(False)
         self.lbl_status.setText("Готов к работе")
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.setEnabled(True)
+        self.btn_cancel.setText("Отменить")
+        self.btn_open_result.setVisible(False)
         c = self._colors()
-        self.lbl_files_count.setText("Файлы не выбраны")
-        self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_mute"]))
+        self._refresh_files_list()
         self.lbl_input_folder.setText("Папка не выбрана")
-        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(c["text_mute"]))
+        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(c["text_mute"], font_pt=9))
         self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)")
         self.lbl_output_folder.setStyleSheet(self._transparent_label_style(c["text_mute"]))
         self.input_path.clear()
         self.btn_start.setEnabled(True)
         self.btn_upload.setEnabled(True)
+        self._set_status("Готов к работе")
         self.log("Все настройки сброшены")
+
+    def _cancel_processing(self):
+        if not self.is_processing or self._cancel_requested:
+            return
+        self._cancel_requested = True
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.setText("Отмена…")
+        self.lbl_stage.setText("●  Останавливаем после текущего файла…")
+        self.lbl_status.setText("Отмена: дождитесь завершения текущего файла…")
+        self._set_status("Отмена обработки…")
+        self.log("Запрошена отмена обработки — остановимся после текущего файла")
 
     def _start_processing_thread(self):
         if self.is_processing:
@@ -1268,23 +1710,22 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_bar_file.setValue(0)
         self._stage_start_time = 0.0
         self.detail_row.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self.btn_cancel.setText("Отменить")
+        self.btn_cancel.setVisible(True)
+        self.btn_open_result.setVisible(False)
+        self._last_result_dir = self.output_dir or os.path.dirname(self.files_to_process[0])
         self.lbl_file_counter.setText(f"Файл 1 / {self.total_files}")
         self.lbl_current_file.setText("")
         self.lbl_stage.setText("●  Подготовка…")
         self.lbl_status.setText(f"Оценка: ~{estimate_str}")
+        self._set_status(f"Обработка {self.total_files} файлов…")
         self.progress_timer.start(500)
         num_speakers = None
         if self.enable_diarization:
-            try:
-                speakers_text = self.entry_num_speakers.text().strip()
-                if speakers_text:
-                    value = int(speakers_text)
-                    if value > 0:
-                        num_speakers = value
-                    else:
-                        self.log("ПРЕДУПРЕЖДЕНИЕ: число спикеров должно быть > 0, используется автоопределение")
-            except ValueError:
-                self.log("ПРЕДУПРЕЖДЕНИЕ: некорректное число спикеров, используется автоопределение")
+            value = self.entry_num_speakers.value()
+            if value > 0:
+                num_speakers = value
         snapshot = {
             "num_speakers": num_speakers,
             "enable_diarization": self.enable_diarization,
@@ -1300,6 +1741,8 @@ class GigaTranscriberQtApp(QMainWindow):
         self.cb_diarization.setEnabled(enabled)
         self.entry_num_speakers.setEnabled(enabled and self.enable_diarization)
         self.btn_upload.setEnabled(enabled)
+        self.input_path.setEnabled(enabled)
+        self._update_files_controls()
         for cb in self.format_checkboxes.values():
             cb.setEnabled(enabled)
         if enabled:
@@ -1328,6 +1771,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 self.log(f"Количество спикеров: {num_speakers if num_speakers else 'автоопределение'}")
             files_processed = 0
             files_failed = 0
+            failed_names = []
             time_spent = 0.0
             for i, filepath in enumerate(files):
                 if self._cancel_requested:
@@ -1355,9 +1799,11 @@ class GigaTranscriberQtApp(QMainWindow):
                         files_processed += 1
                     else:
                         files_failed += 1
+                        failed_names.append(os.path.basename(filepath))
                     time_spent += result['total_time']
                 except Exception as e:
                     files_failed += 1
+                    failed_names.append(os.path.basename(filepath))
                     self.log(f"Ошибка при обработке файла {os.path.basename(filepath)}: {str(e)}")
                     continue
                 finally:
@@ -1376,6 +1822,11 @@ class GigaTranscriberQtApp(QMainWindow):
                 message = f"Готово с ошибками: {files_processed}/{total_files} успешно за {duration_str}"
             else:
                 message = f"Завершено за {duration_str}"
+            if failed_names:
+                shown = ", ".join(failed_names[:5])
+                if len(failed_names) > 5:
+                    shown += f" и ещё {len(failed_names) - 5}"
+                message += f"\nНе удалось: {shown}\nПодробности — на вкладке «Журнал обработки»."
             success = (files_processed > 0) and (files_failed == 0) and not cancelled
             self.signals.processing_finished.emit(success, message)
         except Exception as e:
@@ -1455,15 +1906,30 @@ class GigaTranscriberQtApp(QMainWindow):
         self.progress_timer.stop()
         self.btn_start.setEnabled(True)
         self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ")
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.setEnabled(True)
+        self.btn_cancel.setText("Отменить")
         self.progress_bar_total.setValue(100 if success else self.progress_bar_total.value())
         self.progress_bar_file.setValue(100 if success else self.progress_bar_file.value())
         self.lbl_stage.setText("✓  Готово" if success else "✕  Остановлено")
-        self.lbl_status.setText(message)
+        self.lbl_status.setText(message.split("\n")[0])
+        self._set_status(message.split("\n")[0])
         self._set_processing_controls_enabled(True)
-        if success:
-            QMessageBox.information(self, "Готово", f"Обработка завершена!\n{message}")
-        else:
-            QMessageBox.warning(self, "Завершено", message)
+
+        has_results = bool(self._last_result_dir) and os.path.isdir(self._last_result_dir)
+        self.btn_open_result.setVisible(has_results)
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Готово" if success else "Завершено")
+        box.setIcon(QMessageBox.Icon.Information if success else QMessageBox.Icon.Warning)
+        box.setText(("Обработка завершена!\n" + message) if success else message)
+        open_btn = None
+        if has_results:
+            open_btn = box.addButton("Открыть папку с результатами", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if open_btn is not None and box.clickedButton() is open_btn:
+            self._open_results_folder()
 
     def closeEvent(self, event):
         if self.is_processing or self.is_downloading:
@@ -1482,6 +1948,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.user_settings.set_last_output_dir(self.output_dir)
         if self.input_dir:
             self.user_settings.set_last_files_dir(self.input_dir)
+        self._save_geometry()
         self.app_logger.log_session_end()
         event.accept()
 

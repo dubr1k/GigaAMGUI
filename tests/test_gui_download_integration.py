@@ -188,3 +188,116 @@ def test_url_download_asks_for_download_folder(monkeypatch, tmp_path):
     assert started["daemon"] is True
     assert started["started"] is True
     _autoclose(window, monkeypatch)
+
+
+_APP = None
+
+
+def _new_window():
+    global _APP
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    _APP = QApplication.instance() or QApplication([])
+    return GigaTranscriberQtApp()
+
+
+def test_file_queue_list_reflects_and_removes():
+    window = _new_window()
+    # Пустое состояние: показывается подсказка, список скрыт
+    assert window.drop_hint.isHidden() is False
+    assert window.files_list.isHidden() is True
+
+    window.files_to_process = ["/tmp/a.mp3", "/tmp/b.mp3", "/tmp/c.mp3"]
+    window._refresh_files_list()
+    assert window.files_list.count() == 3
+    assert window.files_list.isHidden() is False
+    assert window.drop_hint.isHidden() is True
+    assert "3" in window.lbl_files_count.text()
+
+    # Убираем один файл по выделению
+    window.files_list.item(1).setSelected(True)
+    window._remove_selected_files()
+    assert window.files_to_process == ["/tmp/a.mp3", "/tmp/c.mp3"]
+    assert window.files_list.count() == 2
+
+    # Полная очистка списка
+    window._clear_files_list()
+    assert window.files_to_process == []
+    assert window.files_list.isHidden() is True
+    assert window.drop_hint.isHidden() is False
+    window.close()
+
+
+def test_speakers_spinbox_auto_value():
+    window = _new_window()
+    assert window.entry_num_speakers.value() == 0
+    assert window.entry_num_speakers.specialValueText() == "Авто"
+    window.entry_num_speakers.setValue(3)
+    assert window.entry_num_speakers.value() == 3
+    window.close()
+
+
+def test_cancel_button_lifecycle():
+    window = _new_window()
+    # Скрыта, пока нет обработки
+    assert window.btn_cancel.isVisible() is False
+    # Имитация активной обработки
+    window.is_processing = True
+    window._cancel_processing()
+    assert window._cancel_requested is True
+    assert window.btn_cancel.isEnabled() is False
+    window.is_processing = False
+    window.close()
+
+
+def test_upload_bar_hidden_until_download(monkeypatch, tmp_path):
+    window = _new_window()
+    assert window.progress_upload.isHidden() is True
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.StandardButton.Ok)
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: types.SimpleNamespace(start=lambda: None))
+    window.input_dir = str(tmp_path)
+    window.input_path.setText("https://example.test/video")
+    window._start_download()
+    assert window.progress_upload.isHidden() is False
+
+    window._on_download_failed("boom")
+    assert window.progress_upload.isHidden() is True
+    window.close()
+
+
+def test_open_results_folder_uses_last_dir(monkeypatch, tmp_path):
+    window = _new_window()
+    opened = {}
+    monkeypatch.setattr(app_qt.QDesktopServices, "openUrl", lambda url: opened.setdefault("url", url))
+    window._last_result_dir = str(tmp_path)
+    window._open_results_folder()
+    assert "url" in opened
+    assert opened["url"].toLocalFile() == str(tmp_path)
+    window.close()
+
+
+def test_log_copy_and_clear():
+    window = _new_window()
+    window.log("строка журнала")
+    window._copy_log()
+    assert "строка журнала" in QApplication.clipboard().text()
+    window._clear_log()
+    assert window.log_text.toPlainText().strip() == ""
+    window.close()
+
+
+def test_menu_bar_has_core_menus():
+    window = _new_window()
+    titles = [a.text() for a in window.menuBar().actions()]
+    assert "Файл" in titles
+    assert "Вид" in titles
+    assert "Справка" in titles
+    window.close()
+
+
+def test_geometry_not_persisted_in_headless():
+    window = _new_window()
+    window.user_settings.settings.pop("window_geometry", None)
+    window._save_geometry()
+    assert "window_geometry" not in window.user_settings.settings
+    window.close()
