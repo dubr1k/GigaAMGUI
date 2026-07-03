@@ -1,5 +1,50 @@
 # Сборка EXE — инструкция
 
+## 🆕 Портативная onefile-версия с выбором CPU/GPU (рекомендуется)
+
+Один-единственный файл `dist\GigaAMTranscriber_portable.exe`, который **не содержит
+PyTorch внутри**. Нужная сборка PyTorch скачивается при первом запуске, в
+зависимости от выбранного устройства:
+
+- **CPU** — работает везде, без видеокарты;
+- **GPU (RTX 20xx/30xx/40xx)** — CUDA 12.4;
+- **GPU (RTX 50xx / Blackwell)** — CUDA 12.8.
+
+Всё (сборки torch + кэш моделей HuggingFace) хранится в общей папке
+`C:\GigaAMGUICash`. Ранее скачанные сборки не удаляются — повторное переключение
+устройства происходит мгновенно, без загрузки. Сменить устройство позже можно в
+меню **Настройки → Устройство (CPU / GPU)**.
+
+### Сборка
+
+```bat
+venv\Scripts\activate            &:: или conda activate gigaam
+build_exe_portable.bat
+```
+или вручную:
+```bat
+pyinstaller gigaam_app_portable.spec --noconfirm
+```
+
+### Как это работает
+
+1. `.exe` собирается **без** torch/torchaudio/torchvision (spec их исключает), но
+   **с** pip внутри.
+2. При первом запуске показывается диалог выбора устройства; приложение в фоне
+   выполняет `pip install torch ... --target C:\GigaAMGUICash\torch\<вариант>`.
+   В onefile нет отдельного `python.exe`, поэтому pip запускается перезапуском
+   самого `.exe` с аргументом `--run-pip` (см. `app.py` и `runtime_manager.py`).
+3. На старте выбранная папка подставляется в `sys.path` **до** `import torch`
+   (`runtime_manager.activate`), и `model_loader` использует именно её.
+
+> Требуется интернет **только при первой настройке** каждого варианта.
+> `numpy` из скачанного torch удаляется — используется собранный в `.exe`, чтобы
+> не было ABI-конфликта со scipy.
+
+---
+
+## Обычная сборка (torch вшит в EXE)
+
 ## Что получится
 
 Папка `dist/GigaAMTranscriber/` с `GigaAMTranscriber.exe` и всеми DLL-зависимостями.  

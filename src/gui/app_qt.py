@@ -312,6 +312,23 @@ class GigaTranscriberQtApp(QMainWindow):
         self._apply_theme()
         self._btn_theme.setText(self._colors()["theme_btn"])
 
+    def _change_device(self):
+        """Смена вычислительного устройства (CPU / GPU / GPU 50xx) из меню."""
+        from .device_dialog import change_device_interactive
+        from PyQt6.QtWidgets import QMessageBox
+
+        if self.is_processing:
+            QMessageBox.information(
+                self, "Устройство",
+                "Дождитесь окончания обработки перед сменой устройства.",
+            )
+            return
+
+        changed = change_device_interactive(self)
+        if changed:
+            # Модель уже загружена под старую сборку torch — нужен перезапуск.
+            self.model_loader.unload()
+
     def _apply_theme(self):
         c = self._colors()
         palette = QPalette()
@@ -872,6 +889,12 @@ class GigaTranscriberQtApp(QMainWindow):
         self._act_theme.setStatusTip("Светлая / тёмная тема оформления")
         self._act_theme.triggered.connect(self._toggle_theme)
         view_menu.addAction(self._act_theme)
+
+        settings_menu = menubar.addMenu("Настройки")
+        act_device = QAction("Устройство (CPU / GPU)…", self)
+        act_device.setStatusTip("Выбрать CPU или видеокарту NVIDIA для распознавания")
+        act_device.triggered.connect(self._change_device)
+        settings_menu.addAction(act_device)
 
         help_menu = menubar.addMenu("Справка")
         act_about = QAction("О программе", self)
@@ -1960,8 +1983,11 @@ class GigaTranscriberQtApp(QMainWindow):
         QMessageBox.warning(self, "Ошибка загрузки", message)
 
 
-def run_qt_app():
-    """Запускает приложение на PyQt6"""
+def run_qt_app(app=None):
+    """Запускает приложение на PyQt6.
+
+    app: уже созданный QApplication (используется на этапе выбора устройства).
+    """
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     if sys.platform == 'win32':
@@ -1971,7 +1997,7 @@ def run_qt_app():
         except Exception:
             pass
 
-    app = QApplication(sys.argv)
+    app = app or QApplication.instance() or QApplication(sys.argv)
     app.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
 
     icon_path = os.path.join(

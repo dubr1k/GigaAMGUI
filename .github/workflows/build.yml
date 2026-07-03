@@ -1,0 +1,104 @@
+name: Build portable
+
+# Собирает портативные бинарники GigaAM Transcriber для трёх платформ.
+# Во всех случаях используется ОДИН подход (как на Windows): PyTorch НЕ вшивается
+# в бинарник, а скачивается при первом запуске в общий кэш с выбором устройства.
+# torch в окружении сборки нужен только чтобы PyInstaller смог проанализировать
+# gigaam/pyannote — в итоговый файл он не попадает (см. gigaam_app_portable.spec).
+
+on:
+  workflow_dispatch:        # ручной запуск из вкладки Actions
+  push:
+    tags:
+      - "v*"                # сборка релиза по тегу vX.Y.Z
+
+permissions:
+  contents: write            # нужно для прикрепления файлов к релизу
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x64
+            asset: GigaAMTranscriber-windows-x64.exe
+            built: dist/GigaAMTranscriber_portable.exe
+            torch_index: "--index-url https://download.pytorch.org/whl/cpu"
+          - os: macos-14           # Apple Silicon (arm64)
+            label: macOS arm64
+            asset: GigaAMTranscriber-macos-arm64
+            built: dist/GigaAMTranscriber_portable
+            torch_index: ""        # PyPI: сборка с поддержкой MPS
+          - os: ubuntu-latest
+            label: Linux x64
+            asset: GigaAMTranscriber-linux-x64
+            built: dist/GigaAMTranscriber_portable
+            torch_index: "--index-url https://download.pytorch.org/whl/cpu"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"     # версия определяет теги колёс torch при загрузке
+          cache: pip
+
+      # ffmpeg нужен приложению в рантайме; в Linux ставим системный для сборки IO-зависимостей.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Upgrade pip toolchain
+        run: python -m pip install --upgrade pip wheel setuptools
+
+      # torch в окружении сборки — только для анализа PyInstaller (в бинарник не попадёт).
+      - name: Install build-time torch
+        run: python -m pip install torch torchaudio torchvision ${{ matrix.torch_index }}
+
+      # Ставим зависимости БЕЗ torchcodec (хрупкая линковка с ffmpeg; приложение
+      # использует soundfile) и БЕЗ editable-строки gigaam (её ставим отдельно).
+      - name: Install project requirements
+        shell: bash
+        run: |
+          grep -viE '^\s*(-e\s+)?git\+.*gigaam|^\s*torchcodec' requirements.txt > requirements.ci.txt
+          python -m pip install -r requirements.ci.txt
+
+      # gigaam собирается из git и требует уже установленный torch → --no-build-isolation.
+      - name: Install gigaam
+        run: python -m pip install "git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam" --no-build-isolation
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Build (PyInstaller, portable spec)
+        run: python -m PyInstaller gigaam_app_portable.spec --noconfirm
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "${{ matrix.built }}" "out/${{ matrix.asset }}"
+
+      - name: Make executable (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: chmod +x "out/${{ matrix.asset }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/${{ matrix.asset }}
+          if-no-files-found: error
+
+      # По тегу vX.Y.Z — прикрепляем бинарники к GitHub Release.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/${{ matrix.asset }}

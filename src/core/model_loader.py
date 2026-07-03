@@ -16,7 +16,25 @@ class ModelLoader:
         self.device = None
 
     def _select_device(self) -> str:
-        """Выбирает устройство вычисления в порядке приоритета."""
+        """Выбирает устройство вычисления.
+
+        Приоритет отдаётся варианту, выбранному пользователем при первом запуске
+        (CPU / GPU / GPU 50xx) — он определяет, какая сборка torch активирована.
+        Если пользователь выбрал GPU-вариант, но CUDA почему-то недоступна
+        (нет драйвера/видеокарты), безопасно откатываемся на CPU.
+        """
+        try:
+            from ..utils.runtime_manager import get_selected_variant, torch_device_for
+            preferred = torch_device_for(get_selected_variant())
+        except Exception:
+            preferred = None
+
+        if preferred == "cuda":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        if preferred == "cpu":
+            return "cpu"
+
+        # Вариант не выбран — авто-определение по возможностям torch.
         if torch.cuda.is_available():
             return "cuda"
         if hasattr(torch, "xpu") and torch.xpu.is_available():

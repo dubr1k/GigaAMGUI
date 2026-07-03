@@ -18,58 +18,31 @@ def _has_cyrillic(text: str) -> bool:
 
 def _setup_huggingface_cache():
     """
-    Настраивает директорию кэша HuggingFace для избежания проблем на Windows.
+    Настраивает директорию кэша HuggingFace.
 
-    Проблемы на Windows:
-    1. Символьные ссылки требуют прав администратора
-    2. Пути с кириллицей могут вызывать ошибки
-
-    Решение: устанавливаем HF_HOME в путь без кириллицы
+    Кэш моделей хранится в общей папке приложения ``C:\\GigaAMGUICash\\hf``
+    (рядом с рантаймами torch). Путь без кириллицы решает две проблемы Windows:
+    символьные ссылки без прав администратора и ошибки на кириллических путях.
+    Переопределяется переменной окружения HF_HOME.
     """
-    # Определяем текущий путь к домашней директории
-    home_path = os.path.expanduser("~")
-
-    # Проверяем наличие кириллицы в пути
-    if _has_cyrillic(home_path):
-        print("=" * 60)
-        print("⚠️  ПРЕДУПРЕЖДЕНИЕ: Путь к профилю пользователя содержит кириллицу!")
-        print(f"    Путь: {home_path}")
-        print()
-        print("    Это может вызвать проблемы с кэшированием моделей HuggingFace.")
-        print()
-        print("    Рекомендации:")
-        print("    1. Создайте папку для кэша без кириллицы в пути")
-        print("       Например: C:\\HuggingFaceCache")
-        print()
-        print("    2. Установите переменную окружения HF_HOME:")
-        print("       set HF_HOME=C:\\HuggingFaceCache")
-        print()
-        print("    Или добавьте в файл .env:")
-        print("       HF_HOME=C:\\HuggingFaceCache")
-        print("=" * 60)
-
-    # На Windows устанавливаем специальные настройки
     if sys.platform == 'win32':
         # Отключаем использование символьных ссылок в HuggingFace
         # Это предотвращает ошибки с правами доступа
         if 'HF_HUB_DISABLE_SYMLINKS_WARNING' not in os.environ:
             os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 
-        # Если HF_HOME не установлен и путь содержит кириллицу,
-        # предлагаем альтернативный путь
-        if 'HF_HOME' not in os.environ and _has_cyrillic(home_path):
-            # Пробуем использовать C:\HuggingFaceCache как альтернативу
-            alt_cache = Path("C:/HuggingFaceCache")
-            if not alt_cache.exists():
-                try:
-                    alt_cache.mkdir(parents=True, exist_ok=True)
-                    os.environ['HF_HOME'] = str(alt_cache)
-                    print(f"    Создана альтернативная директория кэша: {alt_cache}")
-                except Exception as e:
-                    print(f"    Не удалось создать альтернативную директорию: {e}")
-            else:
-                os.environ['HF_HOME'] = str(alt_cache)
-                print(f"    Используется альтернативная директория кэша: {alt_cache}")
+    # Если HF_HOME не задан явно — используем общий кэш приложения.
+    if 'HF_HOME' not in os.environ:
+        try:
+            from .utils.runtime_manager import hf_cache_dir
+            hf_dir = hf_cache_dir()
+        except Exception:
+            hf_dir = Path("C:/GigaAMGUICash/hf")
+        try:
+            hf_dir.mkdir(parents=True, exist_ok=True)
+            os.environ['HF_HOME'] = str(hf_dir)
+        except OSError as e:
+            print(f"Не удалось создать директорию кэша HuggingFace: {e}")
 
 
 # Загрузка переменных из .env файла
