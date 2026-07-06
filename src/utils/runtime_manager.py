@@ -175,10 +175,16 @@ def set_selected_variant(variant: str) -> None:
 
 
 def torch_device_for(variant: str | None) -> str:
-    """Строка устройства torch для выбранного варианта."""
+    """Строка устройства torch для выбранного варианта.
+
+    Если вариант не выбран (None) — возвращает 'auto', чтобы вызывающая
+    сторона сама определила устройство по возможностям torch. Это важно
+    для Docker-сборки, где torch с CUDA уже предустановлен системно
+    и выбор варианта через диалог не выполняется.
+    """
     if variant and variant in VARIANTS:
         return VARIANTS[variant]["torch_device"]
-    return "cpu"
+    return "auto"
 
 
 # ── Проверка установленных вариантов ──────────────────────────────────────────
