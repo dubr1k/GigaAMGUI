@@ -27,8 +27,14 @@ def main():
     warnings.filterwarnings("ignore", message=".*torchaudio.*deprecated.*")
     warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.*")
 
+    from PyQt6.QtGui import QGuiApplication
+    from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QApplication
 
+    if QApplication.instance() is None:
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
     app = QApplication.instance() or QApplication(sys.argv)
 
     # torch НЕ вшит в портативную сборку — выбираем и при необходимости качаем.

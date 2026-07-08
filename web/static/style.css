@@ -66,7 +66,7 @@ body {
     background: var(--bg-input);
     border: 1px solid var(--border-light);
     border-radius: var(--radius);
-    padding: 12px 16px;
+    padding: 10px 16px;
     color: var(--text);
     font-size: 15px;
     outline: none;
@@ -133,7 +133,7 @@ body {
     background: transparent;
     border: 1px solid var(--border-light);
     color: var(--text);
-    padding: 6px 16px;
+    padding: 10px 16px;
     border-radius: var(--radius);
     cursor: pointer;
     font-size: 13px;
@@ -182,14 +182,14 @@ body {
     font-size: 15px;
     font-weight: 700;
     color: #e0e0e0;
-    margin-bottom: 12px;
+    margin-bottom: 22px;
 }
 
 /* ===== ROW ===== */
 .row {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 22px;
     flex-wrap: wrap;
 }
 
@@ -197,7 +197,7 @@ body {
 .btn {
     border: 1px solid var(--border-light);
     border-radius: 4px;
-    padding: 8px 18px;
+    padding: 10px 18px;
     color: var(--text);
     font-size: 14px;
     cursor: pointer;
@@ -243,7 +243,7 @@ body {
     background: var(--bg-input);
     border: 1px solid var(--border-light);
     border-radius: 4px;
-    padding: 8px 12px;
+    padding: 10px 12px;
     color: var(--text);
     font-size: 14px;
     outline: none;
@@ -254,11 +254,12 @@ body {
 .input:focus { border-color: var(--accent); }
 .input:disabled { opacity: 0.5; }
 .input-small { max-width: 250px; flex: 0 0 250px; }
+.llm-textarea { width: 100%; min-height: 140px; resize: vertical; }
 
 /* ===== LABELS ===== */
 .label { color: var(--text); font-size: 14px; white-space: nowrap; }
 .label-muted { color: var(--text-muted); font-size: 14px; }
-.hint { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
+.hint { color: var(--text-muted); font-size: 12px; margin-top: 18px; }
 
 /* ===== CHECKBOX ===== */
 .checkbox-label {
@@ -292,7 +293,7 @@ body {
     border-radius: var(--radius);
     padding: 24px;
     text-align: center;
-    margin-top: 12px;
+    margin-top: 22px;
     transition: all 0.2s;
     cursor: pointer;
 }
@@ -307,7 +308,7 @@ body {
 
 /* ===== FILE LIST ===== */
 .file-list {
-    margin-top: 12px;
+    margin-top: 22px;
     max-height: 200px;
     overflow-y: auto;
     border: 1px solid var(--border);
@@ -535,7 +536,7 @@ body {
     background: #4a4a4d;
     border: 1px solid var(--border-light);
     border-radius: 4px;
-    padding: 6px 14px;
+    padding: 10px 14px;
     color: var(--text);
     font-size: 13px;
     cursor: pointer;
@@ -553,7 +554,7 @@ body {
     color: #fff;
     border: none;
     border-radius: 4px;
-    padding: 6px 14px;
+    padding: 10px 14px;
     font-size: 13px;
     cursor: pointer;
     transition: background 0.2s;
@@ -572,7 +573,7 @@ body {
     border: 1px solid var(--danger);
     color: var(--danger);
     border-radius: 4px;
-    padding: 6px 14px;
+    padding: 10px 14px;
     font-size: 13px;
     line-height: 1.2;
     cursor: pointer;

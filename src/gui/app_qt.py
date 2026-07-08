@@ -177,6 +177,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.media_downloader = MediaDownloader()
 
         self._theme = self.user_settings.settings.get("theme", "dark")
+        self._lang = self.user_settings.settings.get("language", "ru")
         self._ui_scale = self._effective_ui_scale()
 
         self.signals = WorkerSignals()
@@ -372,6 +373,101 @@ class GigaTranscriberQtApp(QMainWindow):
         self._apply_theme()
         self._btn_theme.setText(self._colors()["theme_btn"])
 
+    def _toggle_language(self):
+        self._lang = "en" if self._lang == "ru" else "ru"
+        self.user_settings.settings["language"] = self._lang
+        self.user_settings._save_settings()
+        self._apply_language()
+
+    def _t(self, ru: str, en: str) -> str:
+        return ru if self._lang == "ru" else en
+
+    def _apply_language(self):
+        is_ru = self._lang == "ru"
+        self._btn_lang.setText("EN" if is_ru else "RU")
+        self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
+        if hasattr(self, "_title_label"):
+            self._title_label.setText("GigaAM v3: Транскрибация" if is_ru else "GigaAM v3: Transcription")
+        if hasattr(self, "tabs"):
+            self.tabs.setTabText(0, "Обработка" if is_ru else "Process")
+            self.tabs.setTabText(1, "LLM")
+            self.tabs.setTabText(2, "Журнал обработки" if is_ru else "Processing log")
+        if hasattr(self, "btn_start"):
+            self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ" if is_ru else "START PROCESSING")
+        if hasattr(self, "btn_clear"):
+            self.btn_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+        if hasattr(self, "btn_llm_process"):
+            self.btn_llm_process.setText("ОБРАБОТАТЬ" if is_ru else "PROCESS")
+        if hasattr(self, "btn_llm_clear"):
+            self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+        if hasattr(self, "status_bar"):
+            self.status_bar.showMessage("Готов к работе" if is_ru else "Ready to work")
+        if hasattr(self, "grp_files"):
+            self.grp_files.setTitle("1. Выбор файлов" if is_ru else "1. File selection")
+            self.grp_output.setTitle("2. Папка сохранения результатов" if is_ru else "2. Output folder")
+            self.grp_diarization.setTitle("3. Диаризация спикеров" if is_ru else "3. Speaker diarization")
+            self.grp_formats.setTitle("4. Форматы вывода" if is_ru else "4. Output formats")
+            self.lbl_overall.setText("Общий прогресс" if is_ru else "Overall progress")
+            self.btn_select_files.setText("Выбрать файлы" if is_ru else "Choose files")
+            self.btn_select_files.setToolTip("Выбрать аудио/видео файлы для обработки  (Ctrl+O)" if is_ru else "Choose audio/video files for processing  (Ctrl+O)")
+            self.btn_select_folder.setText("Выбрать папку" if is_ru else "Choose folder")
+            self.btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок" if is_ru else "Add all media files from the folder and subfolders")
+            self.btn_upload.setText("Загрузить" if is_ru else "Download")
+            self.btn_upload.setToolTip("Скачать медиа по ссылке и добавить в очередь" if is_ru else "Download media by URL and add it to the queue")
+            self.btn_output_select.setText("Выбрать папку" if is_ru else "Choose folder")
+            self.btn_open_result.setText("Открыть папку с результатами" if is_ru else "Open results folder")
+            self.btn_cancel.setText("Отменить" if is_ru else "Cancel")
+            self.cb_diarization.setText("Включить диаризацию спикеров" if is_ru else "Enable speaker diarization")
+            self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)" if is_ru else "Detect which speaker is talking (HF_TOKEN required)")
+            self.lbl_num_speakers.setText("Кол-во спикеров:" if is_ru else "Speakers count:")
+            self.lbl_diarization_info.setText("Автоматическое определение спикеров (требуется HF_TOKEN)" if is_ru else "Automatic speaker detection (HF_TOKEN required)")
+            self.input_path.setPlaceholderText("Ссылка на медиа (YouTube и др.)" if is_ru else "Media URL (YouTube, etc.)")
+            self.input_path.setToolTip("Вставьте ссылку и нажмите «Загрузить»" if is_ru else "Paste a link and press 'Download'")
+            if not self.files_to_process:
+                self.lbl_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
+            self.btn_remove_file.setText("Убрать выбранное" if is_ru else "Remove selected")
+            self.btn_remove_file.setToolTip("Убрать выделенные файлы из очереди  (Delete)" if is_ru else "Remove selected files from the queue  (Delete)")
+            self.btn_clear_files.setText("Очистить список" if is_ru else "Clear list")
+            self.btn_clear_files.setToolTip("Убрать все файлы из очереди (настройки сохранятся)" if is_ru else "Remove all files from the queue (settings will be kept)")
+            self.files_list.setToolTip("Очередь файлов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "File queue. Select items and press Delete to remove them.")
+            if self.lbl_input_folder.text().startswith("Папка не выбрана") or self.lbl_input_folder.text().startswith("Folder not selected"):
+                self.lbl_input_folder.setText("Папка не выбрана" if is_ru else "Folder not selected")
+            self.drop_hint.setText("Перетащите сюда файлы или папки  ·  либо нажмите «Выбрать файлы»" if is_ru else "Drop files or folders here  ·  or click 'Choose files'")
+        if hasattr(self, "grp_llm_source"):
+            self.grp_llm_source.setTitle("1. Источник транскрипта" if is_ru else "1. Transcript source")
+            self.grp_llm_output.setTitle("2. Куда сохранить" if is_ru else "2. Save location")
+            self.grp_llm_actions.setTitle("3. Что сделать" if is_ru else "3. What to do")
+            self.grp_llm_save.setTitle("4. Форматы вывода" if is_ru else "4. Output formats")
+            self.grp_llm_result.setTitle("5. Результат LLM" if is_ru else "5. LLM result")
+            self.btn_select_transcripts.setText("Выбрать транскрипты" if is_ru else "Choose transcripts")
+            self.btn_llm_output.setText("Выбрать папку" if is_ru else "Choose folder")
+            self.btn_llm_process.setToolTip("Запустить LLM-обработку выбранных транскриптов" if is_ru else "Run LLM processing for selected transcripts")
+            self.btn_llm_clear.setToolTip("Сбросить выбранные транскрипты, ручной текст и результат LLM" if is_ru else "Reset selected transcripts, manual text and LLM result")
+            self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
+            self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
+            self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
+            self.lbl_llm_status.setText("Готово к LLM-обработке" if is_ru else "Ready for LLM processing")
+            self.lbl_llm_files.setText("Файлы не выбраны" if is_ru and not self.transcript_files_for_llm else ("No files selected" if not is_ru and not self.transcript_files_for_llm else self.lbl_llm_files.text()))
+            self.txt_llm_transcript.setPlaceholderText(
+                "Вставьте сюда транскрипт, если не хотите выбирать файлы"
+                if is_ru else
+                "Paste transcript here if you do not want to choose files"
+            )
+        if hasattr(self, "_menu_file"):
+            self._menu_file.setTitle("Файл" if is_ru else "File")
+            self._menu_view.setTitle("Вид" if is_ru else "View")
+            self._menu_settings.setTitle("Настройки" if is_ru else "Settings")
+            self._menu_help.setTitle("Справка" if is_ru else "Help")
+            self._act_files.setText("Выбрать файлы…" if is_ru else "Choose files…")
+            self._act_folder.setText("Выбрать папку с файлами…" if is_ru else "Choose folder with files…")
+            self._act_out.setText("Папка сохранения…" if is_ru else "Output folder…")
+            self._act_open_res.setText("Открыть папку с результатами" if is_ru else "Open results folder")
+            self._act_quit.setText("Выход" if is_ru else "Exit")
+            self._act_theme.setText("Переключить тему" if is_ru else "Toggle theme")
+            self._act_device.setText("Устройство (CPU / GPU)…" if is_ru else "Device (CPU / GPU)…")
+            self._act_llm.setText("LLM API…")
+            self._act_about.setText("О программе" if is_ru else "About")
+
     def _change_device(self):
         """Смена вычислительного устройства (CPU / GPU / GPU 50xx) из меню."""
         from .device_dialog import change_device_interactive
@@ -379,8 +475,9 @@ class GigaTranscriberQtApp(QMainWindow):
 
         if self.is_processing:
             QMessageBox.information(
-                self, "Устройство",
-                "Дождитесь окончания обработки перед сменой устройства.",
+                self,
+                self._t("Устройство", "Device"),
+                self._t("Дождитесь окончания обработки перед сменой устройства.", "Wait for processing to finish before changing the device."),
             )
             return
 
@@ -448,7 +545,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 font-size: {self._pt_css(11)}pt;
                 border: 1px solid {c["border"]};
                 border-radius: {self._px(8)}px;
-                margin-top: {self._px(14)}px;
+                margin-top: {self._px(26)}px;
                 padding-top: {self._px(6)}px;
                 background-color: {c["bg_card"]};
                 color: {c["text"]};
@@ -457,7 +554,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 left: {self._px(14)}px;
-                padding: 0 {self._px(6)}px;
+                padding: 0 {self._px(6)}px {self._px(14)}px {self._px(6)}px;
                 color: {c["text_sub"]};
                 background: transparent;
             }}
@@ -465,7 +562,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 background-color: {c["btn_bg"]};
                 border: 1px solid {c["btn_border"]};
                 border-radius: {self._px(6)}px;
-                padding: {self._px(6)}px {self._px(16)}px;
+                padding: {self._px(10)}px {self._px(17)}px {self._px(10)}px {self._px(17)}px;
                 color: {c["btn_text"]};
                 font-size: {self._pt_css(10)}pt;
             }}
@@ -542,7 +639,7 @@ class GigaTranscriberQtApp(QMainWindow):
             QLineEdit {{
                 border: 1px solid {c["btn_border"]};
                 border-radius: {self._px(6)}px;
-                padding: {self._px(4)}px {self._px(10)}px;
+                padding: {self._px(10)}px {self._px(11)}px {self._px(10)}px {self._px(11)}px;
                 background-color: {c["input_bg"]};
                 color: {c["text"]};
                 selection-background-color: {c["input_sel"]};
@@ -558,6 +655,7 @@ class GigaTranscriberQtApp(QMainWindow):
             QTextEdit {{
                 border: 1px solid {c["border"]};
                 border-radius: {self._px(6)}px;
+                padding: {self._px(10)}px;
                 background-color: {c["input_bg"]};
                 color: {c["text"]};
                 selection-background-color: {c["input_sel"]};
@@ -803,11 +901,18 @@ class GigaTranscriberQtApp(QMainWindow):
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
 
-        title_label = QLabel("GigaAM v3: Транскрибация")
-        title_label.setFont(self._font(18, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setFixedHeight(self._px(40))
-        header_row.addWidget(title_label, 1)
+        self._title_label = QLabel("GigaAM v3: Транскрибация")
+        self._title_label.setFont(self._font(18, QFont.Weight.Bold))
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_label.setFixedHeight(self._px(40))
+        header_row.addWidget(self._title_label, 1)
+
+        self._btn_lang = QPushButton("EN" if self._lang == "ru" else "RU")
+        self._btn_lang.setObjectName("theme_button")
+        self._btn_lang.setFixedSize(self._px(48), self._px(36))
+        self._btn_lang.setToolTip("Switch language")
+        self._btn_lang.clicked.connect(self._toggle_language)
+        header_row.addWidget(self._btn_lang)
 
         self._btn_theme = QPushButton(self._colors()["theme_btn"])
         self._btn_theme.setObjectName("theme_button")
@@ -899,6 +1004,7 @@ class GigaTranscriberQtApp(QMainWindow):
         log_layout.addWidget(self.log_text, 1)
         tabs.addTab(log_tab, "Журнал обработки")
         self.tabs = tabs
+        self._apply_language()
 
         # Статус-бар: краткие подсказки и состояние
         self.status_bar = self.statusBar()
@@ -923,56 +1029,68 @@ class GigaTranscriberQtApp(QMainWindow):
         menubar = self.menuBar()
         menubar.clear()
 
-        file_menu = menubar.addMenu("Файл")
-        act_files = QAction("Выбрать файлы…", self)
+        self._menu_file = menubar.addMenu("Файл")
+        file_menu = self._menu_file
+        self._act_files = QAction("Выбрать файлы…", self)
+        act_files = self._act_files
         act_files.setShortcut(QKeySequence.StandardKey.Open)
         act_files.setStatusTip("Добавить аудио- или видеофайлы в очередь")
         act_files.triggered.connect(self._select_files)
         file_menu.addAction(act_files)
 
-        act_folder = QAction("Выбрать папку с файлами…", self)
+        self._act_folder = QAction("Выбрать папку с файлами…", self)
+        act_folder = self._act_folder
         act_folder.setStatusTip("Добавить все медиафайлы из папки и подпапок")
         act_folder.triggered.connect(self._select_files_folder)
         file_menu.addAction(act_folder)
 
-        act_out = QAction("Папка сохранения…", self)
+        self._act_out = QAction("Папка сохранения…", self)
+        act_out = self._act_out
         act_out.setStatusTip("Выбрать папку для результатов транскрибации")
         act_out.triggered.connect(self._select_output_folder)
         file_menu.addAction(act_out)
 
         file_menu.addSeparator()
-        act_open_res = QAction("Открыть папку с результатами", self)
+        self._act_open_res = QAction("Открыть папку с результатами", self)
+        act_open_res = self._act_open_res
         act_open_res.setStatusTip("Открыть папку с готовыми файлами")
         act_open_res.triggered.connect(self._open_results_folder)
         file_menu.addAction(act_open_res)
 
         file_menu.addSeparator()
-        act_quit = QAction("Выход", self)
+        self._act_quit = QAction("Выход", self)
+        act_quit = self._act_quit
         act_quit.setShortcut(QKeySequence.StandardKey.Quit)
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
-        view_menu = menubar.addMenu("Вид")
+        self._menu_view = menubar.addMenu("Вид")
+        view_menu = self._menu_view
         self._act_theme = QAction("Переключить тему", self)
         self._act_theme.setShortcut(QKeySequence("Ctrl+T"))
         self._act_theme.setStatusTip("Светлая / тёмная тема оформления")
         self._act_theme.triggered.connect(self._toggle_theme)
         view_menu.addAction(self._act_theme)
 
-        settings_menu = menubar.addMenu("Настройки")
-        act_device = QAction("Устройство (CPU / GPU)…", self)
+        self._menu_settings = menubar.addMenu("Настройки")
+        settings_menu = self._menu_settings
+        self._act_device = QAction("Устройство (CPU / GPU)…", self)
+        act_device = self._act_device
         act_device.setStatusTip("Выбрать CPU или видеокарту NVIDIA для распознавания")
         act_device.triggered.connect(self._change_device)
         settings_menu.addAction(act_device)
 
         settings_menu.addSeparator()
-        act_llm = QAction("LLM API…", self)
+        self._act_llm = QAction("LLM API…", self)
+        act_llm = self._act_llm
         act_llm.setStatusTip("Настроить API URL, ключ, модель и папку результатов LLM")
         act_llm.triggered.connect(self._open_llm_settings_dialog)
         settings_menu.addAction(act_llm)
 
-        help_menu = menubar.addMenu("Справка")
-        act_about = QAction("О программе", self)
+        self._menu_help = menubar.addMenu("Справка")
+        help_menu = self._menu_help
+        self._act_about = QAction("О программе", self)
+        act_about = self._act_about
         act_about.triggered.connect(self._show_about)
         help_menu.addAction(act_about)
 
@@ -1016,7 +1134,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _save_log(self):
         if not self.log_text.toPlainText().strip():
-            QMessageBox.information(self, "Журнал пуст", "Журнал пока пуст — нечего сохранять.")
+            QMessageBox.information(self, self._t("Журнал пуст", "Empty log"), self._t("Журнал пока пуст — нечего сохранять.", "The log is empty — nothing to save."))
             return
         initial_dir = self.user_settings.get_last_output_dir() or self.output_dir or os.path.expanduser("~")
         path, _ = QFileDialog.getSaveFileName(
@@ -1032,7 +1150,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self._set_status(f"Журнал сохранён: {os.path.basename(path)}")
             self.log(f"Журнал сохранён в {path}")
         except OSError as e:
-            QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить журнал:\n{e}")
+            QMessageBox.warning(self, self._t("Ошибка", "Error"), self._t("Не удалось сохранить журнал:\n", "Failed to save the log:\n") + str(e))
 
     def _clear_log(self):
         self.log_text.clear()
@@ -1042,23 +1160,28 @@ class GigaTranscriberQtApp(QMainWindow):
         target = self._last_result_dir or self.output_dir or self.input_dir
         if not target or not os.path.isdir(target):
             QMessageBox.information(
-                self, "Папка недоступна",
-                "Папка с результатами ещё не определена.\n"
-                "Запустите обработку или выберите папку сохранения."
+                self,
+                self._t("Папка недоступна", "Folder unavailable"),
+                self._t("Папка с результатами ещё не определена.\nЗапустите обработку или выберите папку сохранения.", "The results folder has not been determined yet.\nStart processing or choose an output folder."),
             )
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
     def _show_about(self):
         QMessageBox.about(
-            self, "О программе",
-            f"<b>{APP_TITLE}</b><br><br>"
-            "Локальная транскрибация аудио и видео на модели "
-            "<b>GigaAM v3</b> с поддержкой диаризации спикеров.<br><br>"
-            "Возможности: пакетная обработка, загрузка по ссылке, "
-            "таймкоды, экспорт в TXT / Markdown / SRT / VTT.<br><br>"
-            "Поддерживаемые форматы ввода: mp3, wav, m4a, aac, flac, ogg, "
-            "mp4, avi, mov, mkv, webm, wma, 3gp."
+            self,
+            self._t("О программе", "About"),
+            (
+                f"<b>{APP_TITLE}</b><br><br>"
+                "Локальная транскрибация аудио и видео на модели <b>GigaAM v3</b> с поддержкой диаризации спикеров.<br><br>"
+                "Возможности: пакетная обработка, загрузка по ссылке, таймкоды, экспорт в TXT / Markdown / SRT / VTT.<br><br>"
+                "Поддерживаемые форматы ввода: mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, 3gp."
+            ) if self._lang == "ru" else (
+                f"<b>{APP_TITLE}</b><br><br>"
+                "Local audio and video transcription powered by <b>GigaAM v3</b> with speaker diarization support.<br><br>"
+                "Features: batch processing, URL download, timecodes, export to TXT / Markdown / SRT / VTT.<br><br>"
+                "Supported input formats: mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, 3gp."
+            )
         )
 
     _ACCENT_LIGHT = "#3b82f6"
@@ -1092,7 +1215,8 @@ class GigaTranscriberQtApp(QMainWindow):
         frame_layout.setSpacing(self._px(6))
 
         head_row = QHBoxLayout()
-        lbl_overall = QLabel("Общий прогресс")
+        self.lbl_overall = QLabel("Общий прогресс")
+        lbl_overall = self.lbl_overall
         lbl_overall.setStyleSheet(self._transparent_label_style(c["text_sub"], font_pt=11, font_weight="bold"))
         head_row.addWidget(lbl_overall)
         head_row.addStretch()
@@ -1149,20 +1273,23 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _create_files_group(self) -> QGroupBox:
         group = QGroupBox("1. Выбор файлов")
+        self.grp_files = group
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
         main_layout.setSpacing(self._px(6))
 
         row1 = QHBoxLayout()
         row1.setSpacing(self._px(10))
-        btn_select_files = QPushButton("Выбрать файлы")
+        self.btn_select_files = QPushButton("Выбрать файлы")
+        btn_select_files = self.btn_select_files
         btn_select_files.setToolTip("Выбрать аудио/видео файлы для обработки  (Ctrl+O)")
         btn_select_files.clicked.connect(self._select_files)
         btn_select_files.setFixedHeight(self._px(36))
         btn_select_files.setMinimumWidth(self._px(160))
         row1.addWidget(btn_select_files)
 
-        btn_select_folder = QPushButton("Выбрать папку")
+        self.btn_select_folder = QPushButton("Выбрать папку")
+        btn_select_folder = self.btn_select_folder
         btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок")
         btn_select_folder.clicked.connect(self._select_files_folder)
         btn_select_folder.setFixedHeight(self._px(36))
@@ -1315,10 +1442,12 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _create_output_group(self) -> QGroupBox:
         group = QGroupBox("2. Папка сохранения результатов")
+        self.grp_output = group
         layout = QHBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
         layout.setSpacing(self._px(12))
-        btn_output = QPushButton("Выбрать папку")
+        self.btn_output_select = QPushButton("Выбрать папку")
+        btn_output = self.btn_output_select
         btn_output.clicked.connect(self._select_output_folder)
         btn_output.setMinimumWidth(self._px(220))
         btn_output.setFixedHeight(self._px(36))
@@ -1331,6 +1460,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _create_diarization_group(self) -> QGroupBox:
         group = QGroupBox("3. Диаризация спикеров")
+        self.grp_diarization = group
         layout = QVBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
         layout.setSpacing(self._px(8))
@@ -1340,7 +1470,8 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addWidget(self.cb_diarization)
         speakers_layout = QHBoxLayout()
         speakers_layout.setSpacing(self._px(12))
-        speakers_layout.addWidget(QLabel("Кол-во спикеров:"))
+        self.lbl_num_speakers = QLabel("Кол-во спикеров:")
+        speakers_layout.addWidget(self.lbl_num_speakers)
         self.entry_num_speakers = QSpinBox()
         self.entry_num_speakers.setRange(0, 20)
         self.entry_num_speakers.setValue(0)
@@ -1353,7 +1484,8 @@ class GigaTranscriberQtApp(QMainWindow):
         speakers_layout.addWidget(self.entry_num_speakers)
         speakers_layout.addStretch()
         layout.addLayout(speakers_layout)
-        info_label = QLabel("Автоматическое определение спикеров (требуется HF_TOKEN)")
+        self.lbl_diarization_info = QLabel("Автоматическое определение спикеров (требуется HF_TOKEN)")
+        info_label = self.lbl_diarization_info
         info_label.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
         layout.addWidget(info_label)
         group.setLayout(layout)
@@ -1361,6 +1493,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _create_formats_group(self) -> QGroupBox:
         group = QGroupBox("4. Форматы вывода")
+        self.grp_formats = group
         layout = QVBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
         layout.setSpacing(self._px(6))
@@ -1400,28 +1533,25 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.setSpacing(self._px(4))
 
         layout.addWidget(self._create_llm_source_group())
-        layout.addWidget(self._create_llm_prompt_group())
+        layout.addWidget(self._create_llm_output_group())
         layout.addWidget(self._create_llm_actions_group())
         layout.addWidget(self._create_llm_save_group())
-        layout.addWidget(self._create_llm_result_group(), 1)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(self._px(10))
         self.btn_llm_process = QPushButton("ОБРАБОТАТЬ")
         self.btn_llm_process.setObjectName("start_button")
-        self.btn_llm_process.setFixedHeight(self._px(44))
-        self.btn_llm_process.setMinimumWidth(self._px(230))
+        self.btn_llm_process.setFixedHeight(self._px(52))
+        self.btn_llm_process.setToolTip("Запустить LLM-обработку выбранных транскриптов")
         self.btn_llm_process.clicked.connect(self._start_llm_processing)
-        action_row.addWidget(self.btn_llm_process)
+        layout.addWidget(self.btn_llm_process)
 
-        self.btn_llm_clear = QPushButton("Очистить результат")
+        layout.addWidget(self._create_llm_result_group(), 1)
+
+        self.btn_llm_clear = QPushButton("ОЧИСТИТЬ ВСЕ")
         self.btn_llm_clear.setObjectName("clear_button")
-        self.btn_llm_clear.setFixedHeight(self._px(38))
-        self.btn_llm_clear.setMinimumWidth(self._px(180))
-        self.btn_llm_clear.clicked.connect(self._clear_llm_result)
-        action_row.addWidget(self.btn_llm_clear)
-        action_row.addStretch()
-        layout.insertLayout(4, action_row)
+        self.btn_llm_clear.setFixedHeight(self._px(40))
+        self.btn_llm_clear.setToolTip("Сбросить выбранные транскрипты, ручной текст и результат LLM")
+        self.btn_llm_clear.clicked.connect(self._clear_llm_all)
+        layout.addWidget(self.btn_llm_clear)
 
         return tab
 
@@ -1614,31 +1744,25 @@ class GigaTranscriberQtApp(QMainWindow):
         prompts_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
         prompts_layout.setSpacing(self._px(8))
 
-        prompts_layout.addWidget(QLabel("Промпт для выжимки:"))
+        self.lbl_llm_summary_prompt = QLabel("Промпт для выжимки:")
+        prompts_layout.addWidget(self.lbl_llm_summary_prompt)
         self.txt_llm_summary_prompt = QTextEdit()
         self.txt_llm_summary_prompt.setMinimumHeight(self._px(100))
         prompts_layout.addWidget(self.txt_llm_summary_prompt)
 
-        prompts_layout.addWidget(QLabel("Промпт для задач:"))
+        self.lbl_llm_tasks_prompt = QLabel("Промпт для задач:")
+        prompts_layout.addWidget(self.lbl_llm_tasks_prompt)
         self.txt_llm_tasks_prompt = QTextEdit()
         self.txt_llm_tasks_prompt.setMinimumHeight(self._px(100))
         prompts_layout.addWidget(self.txt_llm_tasks_prompt)
+        self.txt_llm_custom_prompt = QTextEdit()
         prompts_group.setLayout(prompts_layout)
         layout.addWidget(prompts_group)
 
-        note_group = QGroupBox("Папка и сохранение")
+        note_group = QGroupBox("Сохранение настроек")
         note_layout = QVBoxLayout()
         note_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
         note_layout.setSpacing(self._px(8))
-        row = QHBoxLayout()
-        btn_output = QPushButton("Папка результатов LLM")
-        btn_output.setFixedHeight(self._px(36))
-        btn_output.clicked.connect(self._select_llm_output_folder)
-        row.addWidget(btn_output)
-        self.lbl_llm_output = QLabel("Папка не выбрана (по умолчанию - рядом с транскриптом)")
-        self.lbl_llm_output.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
-        row.addWidget(self.lbl_llm_output, 1)
-        note_layout.addLayout(row)
         note = QLabel("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env.")
         note.setWordWrap(True)
         note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
@@ -1659,7 +1783,7 @@ class GigaTranscriberQtApp(QMainWindow):
         try:
             self._collect_llm_settings()
         except ValueError as e:
-            QMessageBox.warning(self, "Внимание", str(e))
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), str(e))
             return
         self._save_ui_settings()
         QMessageBox.information(self, "Настройки", "LLM-настройки сохранены")
@@ -1669,7 +1793,8 @@ class GigaTranscriberQtApp(QMainWindow):
         self._llm_settings_dialog.exec()
 
     def _create_llm_actions_group(self) -> QGroupBox:
-        group = QGroupBox("3. Что делать")
+        group = QGroupBox("3. Что сделать")
+        self.grp_llm_actions = group
         layout = QVBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
@@ -1689,7 +1814,33 @@ class GigaTranscriberQtApp(QMainWindow):
         row.addStretch()
         layout.addLayout(row)
 
-        note = QLabel("Отметьте один или несколько режимов обработки. Для «Свой промпт» заполните поле выше.")
+        note = QLabel("Отметьте один или несколько режимов обработки. Для «Свой промпт» текст задается в меню «Настройки → LLM API…».")
+        note.setWordWrap(True)
+        note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        layout.addWidget(note)
+        group.setLayout(layout)
+        return group
+
+    def _create_llm_output_group(self) -> QGroupBox:
+        group = QGroupBox("2. Куда сохранить")
+        self.grp_llm_output = group
+        layout = QVBoxLayout()
+        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setSpacing(self._px(6))
+
+        row = QHBoxLayout()
+        row.setSpacing(self._px(10))
+        self.btn_llm_output = QPushButton("Выбрать папку")
+        btn_output = self.btn_llm_output
+        btn_output.setFixedHeight(self._px(36))
+        btn_output.clicked.connect(self._select_llm_output_folder)
+        row.addWidget(btn_output)
+        self.lbl_llm_output = QLabel("Папка не выбрана (по умолчанию - рядом с транскриптом)")
+        self.lbl_llm_output.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        row.addWidget(self.lbl_llm_output, 1)
+        layout.addLayout(row)
+
+        note = QLabel("Если папка не выбрана, результат будет сохранен рядом с исходным транскриптом.")
         note.setWordWrap(True)
         note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
         layout.addWidget(note)
@@ -1697,7 +1848,8 @@ class GigaTranscriberQtApp(QMainWindow):
         return group
 
     def _create_llm_save_group(self) -> QGroupBox:
-        group = QGroupBox("4. Сохранение результатов")
+        group = QGroupBox("4. Форматы вывода")
+        self.grp_llm_save = group
         layout = QVBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
@@ -1712,33 +1864,19 @@ class GigaTranscriberQtApp(QMainWindow):
             self.llm_export_checkboxes[key] = cb
         row1.addStretch()
         layout.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(self._px(10))
-        btn_output = QPushButton("Папка результатов LLM")
-        btn_output.setFixedHeight(self._px(36))
-        btn_output.clicked.connect(self._select_llm_output_folder)
-        row2.addWidget(btn_output)
-        self.lbl_llm_output = QLabel("Папка не выбрана (по умолчанию - рядом с транскриптом)")
-        self.lbl_llm_output.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
-        row2.addWidget(self.lbl_llm_output, 1)
-        layout.addLayout(row2)
-
-        note = QLabel("Если папка не выбрана, результат будет сохранен рядом с исходным транскриптом.")
-        note.setWordWrap(True)
-        note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
-        layout.addWidget(note)
         group.setLayout(layout)
         return group
 
     def _create_llm_source_group(self) -> QGroupBox:
         group = QGroupBox("1. Источник транскрипта")
+        self.grp_llm_source = group
         layout = QVBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
 
         files_row = QHBoxLayout()
-        btn_select_transcripts = QPushButton("Выбрать транскрипты")
+        self.btn_select_transcripts = QPushButton("Выбрать транскрипты")
+        btn_select_transcripts = self.btn_select_transcripts
         btn_select_transcripts.setFixedHeight(self._px(36))
         btn_select_transcripts.clicked.connect(self._select_llm_transcript_files)
         files_row.addWidget(btn_select_transcripts)
@@ -1747,7 +1885,8 @@ class GigaTranscriberQtApp(QMainWindow):
         files_row.addWidget(self.lbl_llm_files, 1)
         layout.addLayout(files_row)
 
-        info = QLabel("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже")
+        self.lbl_llm_supported = QLabel("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже")
+        info = self.lbl_llm_supported
         info.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
         layout.addWidget(info)
 
@@ -1761,23 +1900,19 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_llm_prompt_group(self) -> QGroupBox:
         group = QGroupBox("2. Промпт")
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setContentsMargins(self._px(12), self._px(19), self._px(12), self._px(9))
         layout.setSpacing(self._px(6))
 
-        hint = QLabel("Кнопки «Выжимка» и «Задачи» используют готовые prompt. Ниже можно задать свой prompt для третьей кнопки.")
+        hint = QLabel("Все промпты настраиваются в меню «Настройки → LLM API…». Здесь достаточно выбрать режимы обработки. Для режима «Свой промпт» заранее заполните пользовательский промпт в настройках.")
         hint.setWordWrap(True)
         hint.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
         layout.addWidget(hint)
-
-        self.txt_llm_custom_prompt = QTextEdit()
-        self.txt_llm_custom_prompt.setPlaceholderText("Например: Составь список задач, рисков и решений по этому голосовому сообщению")
-        self.txt_llm_custom_prompt.setMinimumHeight(self._px(110))
-        layout.addWidget(self.txt_llm_custom_prompt)
         group.setLayout(layout)
         return group
 
     def _create_llm_result_group(self) -> QGroupBox:
         group = QGroupBox("5. Результат LLM")
+        self.grp_llm_result = group
         layout = QVBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
@@ -1835,7 +1970,7 @@ class GigaTranscriberQtApp(QMainWindow):
             return False
         token = token_input.text().strip()
         if not token.startswith("hf_"):
-            QMessageBox.warning(self, "Неверный токен", "Токен должен начинаться с 'hf_'")
+            QMessageBox.warning(self, self._t("Неверный токен", "Invalid token"), self._t("Токен должен начинаться с 'hf_'", "The token must start with 'hf_'."))
             return False
         os.environ["HF_TOKEN"] = token
         env_path = os.path.join(
@@ -1964,7 +2099,10 @@ class GigaTranscriberQtApp(QMainWindow):
         if not urls:
             event.acceptProposedAction()
             return
-        files = []
+
+        transcript_exts = (".txt", ".md", ".srt", ".vtt")
+        media_files = []
+        transcript_files = []
         for url in urls:
             path = url.toLocalFile()
             if not path:
@@ -1972,16 +2110,37 @@ class GigaTranscriberQtApp(QMainWindow):
             if os.path.isdir(path):
                 for root, _dirs, filenames in os.walk(path):
                     for f in filenames:
-                        if f.lower().endswith(MEDIA_EXTENSIONS):
-                            files.append(os.path.join(root, f))
-            elif os.path.isfile(path) and path.lower().endswith(MEDIA_EXTENSIONS):
-                files.append(path)
-        if files:
-            self._apply_dropped_or_selected_files(files)
+                        lower = f.lower()
+                        full = os.path.join(root, f)
+                        if lower.endswith(MEDIA_EXTENSIONS):
+                            media_files.append(full)
+                        elif lower.endswith(transcript_exts):
+                            transcript_files.append(full)
+            elif os.path.isfile(path):
+                lower = path.lower()
+                if lower.endswith(MEDIA_EXTENSIONS):
+                    media_files.append(path)
+                elif lower.endswith(transcript_exts):
+                    transcript_files.append(path)
+
+        current_tab = self.tabs.currentIndex() if hasattr(self, "tabs") else 0
+        if transcript_files and current_tab == 1:
+            self.transcript_files_for_llm = transcript_files
+            folder = os.path.dirname(transcript_files[0])
+            self.llm_transcript_dir = folder
+            self.user_settings.set_value("llm_transcript_dir", folder)
+            self.user_settings.set_value("last_selected_transcript_files", transcript_files)
+            self.lbl_llm_files.setText(self._t(f"Выбрано транскриптов: {len(transcript_files)}", f"Selected transcripts: {len(transcript_files)}"))
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+            self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
+        elif media_files:
+            self._apply_dropped_or_selected_files(media_files)
         elif urls:
-            QMessageBox.information(self, "Неподдерживаемый формат",
-                "Сброшенные файлы не являются поддерживаемыми медиа "
-                "(mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, qta, 3gp).")
+            QMessageBox.information(
+                self,
+                self._t("Неподдерживаемый формат", "Unsupported format"),
+                self._t("Сброшенные файлы не являются поддерживаемыми медиа или транскриптами (.txt, .md, .srt, .vtt).", "Dropped files are not supported media or transcript files (.txt, .md, .srt, .vtt)."),
+            )
         event.acceptProposedAction()
 
     def _select_files_folder(self):
@@ -2004,7 +2163,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 for f in files:
                     self.log(f" + {os.path.relpath(f, folder)}")
             else:
-                QMessageBox.information(self, "Информация", "В выбранной папке и подпапках нет поддерживаемых файлов")
+                QMessageBox.information(self, self._t("Информация", "Information"), self._t("В выбранной папке и подпапках нет поддерживаемых файлов", "No supported files were found in the selected folder or its subfolders."))
 
     def _select_output_folder(self):
         initial_dir = self.user_settings.get_last_output_dir() or self.output_dir or os.path.expanduser("~")
@@ -2167,16 +2326,16 @@ class GigaTranscriberQtApp(QMainWindow):
     def _start_download(self, start_after_download: bool = False):
         url = self.input_path.text().strip()
         if not url:
-            QMessageBox.warning(self, "Внимание", "Введите ссылку для загрузки.")
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), self._t("Введите ссылку для загрузки.", "Enter a URL to download."))
             return
         if not (url.startswith("http://") or url.startswith("https://")):
-            QMessageBox.warning(self, "Внимание", "Ссылка должна начинаться с http:// или https://.")
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), self._t("Ссылка должна начинаться с http:// или https://.", "The URL must start with http:// or https://."))
             return
         if self.is_processing:
-            QMessageBox.warning(self, "Внимание", "Дождитесь завершения обработки файлов.")
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), self._t("Дождитесь завершения обработки файлов.", "Wait for file processing to finish."))
             return
         if self.is_downloading:
-            QMessageBox.information(self, "Информация", "Загрузка уже выполняется.")
+            QMessageBox.information(self, self._t("Информация", "Information"), self._t("Загрузка уже выполняется.", "A download is already in progress."))
             return
         download_dir = self.input_dir
         if not download_dir:
@@ -2224,10 +2383,10 @@ class GigaTranscriberQtApp(QMainWindow):
         if files:
             self._apply_dropped_or_selected_files(files, append=True, remember_dir=False)
             self.input_path.clear()
-            self.lbl_status.setText("Медиа загружено и добавлено в очередь")
+            self.lbl_status.setText(self._t("Медиа загружено и добавлено в очередь", "Media downloaded and added to the queue"))
             self.log(f"Загрузка завершена: {len(files)} файлов")
         else:
-            QMessageBox.warning(self, "Загрузка", "Не удалось получить медиафайлы по ссылке.")
+            QMessageBox.warning(self, self._t("Загрузка", "Download"), self._t("Не удалось получить медиафайлы по ссылке.", "Failed to get media files from the URL."))
             self.log("Загрузка завершилась без файлов")
         if self.start_processing_after_download:
             self.start_processing_after_download = False
@@ -2240,18 +2399,30 @@ class GigaTranscriberQtApp(QMainWindow):
         self.btn_start.setEnabled(True)
         self.progress_upload.setValue(0)
         self.progress_upload.setVisible(False)
-        self.lbl_status.setText("Ошибка загрузки")
+        self.lbl_status.setText(self._t("Ошибка загрузки", "Download error"))
         self.log(f"Ошибка загрузки: {message}")
-        QMessageBox.warning(self, "Ошибка загрузки", message)
+        QMessageBox.warning(self, self._t("Ошибка загрузки", "Download error"), message)
 
     def _clear_llm_result(self):
         if self.is_llm_processing:
-            QMessageBox.information(self, "Внимание", "LLM-обработка уже выполняется")
+            QMessageBox.information(self, self._t("Внимание", "Attention"), self._t("LLM-обработка уже выполняется", "LLM processing is already running."))
             return
         self.txt_llm_result.clear()
         self.llm_last_result_text = ""
         self.llm_last_result_name = "llm_result"
         self.lbl_llm_status.setText("Готово к LLM-обработке")
+
+    def _clear_llm_all(self):
+        if self.is_llm_processing:
+            QMessageBox.information(self, self._t("Внимание", "Attention"), self._t("LLM-обработка уже выполняется", "LLM processing is already running."))
+            return
+        self.transcript_files_for_llm = []
+        self.txt_llm_transcript.clear()
+        self.lbl_llm_files.setText("Файлы не выбраны")
+        self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        self._clear_llm_result()
+        self.user_settings.set_value("last_selected_transcript_files", [])
+        self.user_settings.set_value("llm_manual_transcript", "")
 
     def _selected_llm_modes(self):
         modes = []
@@ -2264,7 +2435,7 @@ class GigaTranscriberQtApp(QMainWindow):
         if self.llm_action_checkboxes["custom"].isChecked():
             custom_prompt = self.txt_llm_custom_prompt.toPlainText().strip()
             if not custom_prompt:
-                raise ValueError("Для режима «Свой промпт» заполните поле промпта")
+                raise ValueError("Для режима «Свой промпт» укажите пользовательский промпт в меню «Настройки → LLM API…»")
             modes.append(("custom", "Свой промпт", custom_prompt))
         if not modes:
             raise ValueError("Выберите хотя бы один чекбокс в блоке «Что делать»")
@@ -2285,7 +2456,7 @@ class GigaTranscriberQtApp(QMainWindow):
             modes = self._selected_llm_modes()
             export_formats = self._selected_llm_export_formats()
         except ValueError as e:
-            QMessageBox.warning(self, "Внимание", str(e))
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), str(e))
             return
 
         self._save_ui_settings()
@@ -2607,14 +2778,14 @@ class GigaTranscriberQtApp(QMainWindow):
             self.llm_last_result_text = ""
             self.txt_llm_result.setPlainText(message)
         if success:
-            QMessageBox.information(self, "Готово", message)
+            QMessageBox.information(self, self._t("Готово", "Done"), message)
         else:
-            QMessageBox.warning(self, "Ошибка", message)
+            QMessageBox.warning(self, self._t("Ошибка", "Error"), message)
 
     def _export_llm_result(self, export_format: str):
         result_text = self.txt_llm_result.toPlainText().strip()
         if not result_text:
-            QMessageBox.information(self, "Внимание", "Нет результата для экспорта")
+            QMessageBox.information(self, self._t("Внимание", "Attention"), self._t("Нет результата для экспорта", "There is no result to export."))
             return
         suffix = {"txt": "txt", "md": "md", "docx": "docx"}[export_format]
         initial_dir = self.llm_output_dir or self.output_dir or os.path.expanduser("~")
@@ -2637,7 +2808,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 try:
                     from docx import Document
                 except Exception:
-                    QMessageBox.warning(self, "Ошибка", "Для экспорта в DOCX установите пакет python-docx")
+                    QMessageBox.warning(self, self._t("Ошибка", "Error"), self._t("Для экспорта в DOCX установите пакет python-docx", "Install the python-docx package to export to DOCX."))
                     return
                 doc = Document()
                 for block in result_text.split("\n\n"):
@@ -2650,7 +2821,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 self._update_llm_output_dir_label(target_dir)
             self.lbl_llm_status.setText(f"Результат экспортирован: {os.path.basename(save_path)}")
         except Exception as e:
-            QMessageBox.warning(self, "Ошибка", f"Не удалось экспортировать результат: {e}")
+            QMessageBox.warning(self, self._t("Ошибка", "Error"), self._t("Не удалось экспортировать результат: ", "Failed to export the result: ") + str(e))
 
     # ──────────────────────────────────────────────────────────────
     # Обработка файлов
@@ -2659,8 +2830,9 @@ class GigaTranscriberQtApp(QMainWindow):
     def _clear_all(self):
         if self.is_processing:
             reply = QMessageBox.question(
-                self, "Внимание",
-                "Идет обработка файлов. Вы уверены, что хотите сбросить все настройки?",
+                self,
+                self._t("Внимание", "Attention"),
+                self._t("Идет обработка файлов. Вы уверены, что хотите сбросить все настройки?", "File processing is in progress. Are you sure you want to reset all settings?"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.No:
@@ -2724,16 +2896,16 @@ class GigaTranscriberQtApp(QMainWindow):
         if self.is_processing:
             return
         if self.is_downloading:
-            QMessageBox.information(self, "Информация", "Дождитесь завершения загрузки по ссылке.")
+            QMessageBox.information(self, self._t("Информация", "Information"), self._t("Дождитесь завершения загрузки по ссылке.", "Wait for the URL download to finish."))
             return
         if self.input_path.text().strip():
             self._start_download(start_after_download=True)
             return
         if not self.files_to_process:
-            QMessageBox.warning(self, "Внимание", "Выберите хотя бы один файл для обработки!")
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), self._t("Выберите хотя бы один файл для обработки!", "Choose at least one file for processing!"))
             return
         if not any(self.output_formats.values()):
-            QMessageBox.warning(self, "Внимание", "Выберите хотя бы один формат вывода!")
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), self._t("Выберите хотя бы один формат вывода!", "Choose at least one output format!"))
             return
         if not self.output_dir:
             self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
@@ -2993,16 +3165,16 @@ class GigaTranscriberQtApp(QMainWindow):
             if not self.llm_output_dir:
                 self.llm_output_dir = self.llm_transcript_dir
                 self._update_llm_output_dir_label(self.llm_output_dir)
-            self.lbl_llm_files.setText(f"Выбрано транскриптов: {len(generated_files)}")
+            self.lbl_llm_files.setText(self._t(f"Выбрано транскриптов: {len(generated_files)}", f"Selected transcripts: {len(generated_files)}"))
             self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
 
         box = QMessageBox(self)
-        box.setWindowTitle("Готово" if success else "Завершено")
+        box.setWindowTitle(self._t("Готово", "Done") if success else self._t("Завершено", "Finished"))
         box.setIcon(QMessageBox.Icon.Information if success else QMessageBox.Icon.Warning)
-        box.setText(("Обработка завершена!\n" + message) if success else message)
+        box.setText((self._t("Обработка завершена!\n", "Processing completed!\n") + message) if success else message)
         open_btn = None
         if has_results:
-            open_btn = box.addButton("Открыть папку с результатами", QMessageBox.ButtonRole.AcceptRole)
+            open_btn = box.addButton(self._t("Открыть папку с результатами", "Open results folder"), QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Ok)
         box.exec()
         if open_btn is not None and box.clickedButton() is open_btn:
@@ -3011,8 +3183,9 @@ class GigaTranscriberQtApp(QMainWindow):
     def closeEvent(self, event):
         if self.is_processing or self.is_downloading:
             reply = QMessageBox.question(
-                self, "Внимание",
-                "Идёт обработка/загрузка. Закрыть приложение и прервать её?",
+                self,
+                self._t("Внимание", "Attention"),
+                self._t("Идёт обработка/загрузка. Закрыть приложение и прервать её?", "Processing/download is in progress. Close the app and interrupt it?"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -3035,7 +3208,7 @@ class GigaTranscriberQtApp(QMainWindow):
     # ──────────────────────────────────────────────────────────────
 
     def _show_model_error(self, message: str):
-        QMessageBox.warning(self, "Ошибка загрузки", message)
+        QMessageBox.warning(self, self._t("Ошибка загрузки", "Model loading error"), message)
 
 
 def run_qt_app(app=None):
@@ -3043,8 +3216,6 @@ def run_qt_app(app=None):
 
     app: уже созданный QApplication (используется на этапе выбора устройства).
     """
-    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-
     if sys.platform == 'win32':
         try:
             import ctypes

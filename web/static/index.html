@@ -13,11 +13,11 @@
 <div id="login-screen" class="login-screen">
     <div class="login-card">
         <h1 class="login-title">GigaAM v3</h1>
-        <p class="login-subtitle">Транскрибация аудио и видео</p>
+        <p class="login-subtitle" data-i18n="loginSubtitle">Транскрибация аудио и видео</p>
         <form id="login-form" class="login-form">
-            <input type="text" id="login-username" placeholder="Логин" autocomplete="username" required>
-            <input type="password" id="login-password" placeholder="Пароль" autocomplete="current-password" required>
-            <button type="submit" class="btn-login">Войти</button>
+            <input type="text" id="login-username" placeholder="Логин" data-i18n-placeholder="loginPlaceholder" autocomplete="username" required>
+            <input type="password" id="login-password" placeholder="Пароль" data-i18n-placeholder="passwordPlaceholder" autocomplete="current-password" required>
+            <button type="submit" class="btn-login" data-i18n="login">Войти</button>
             <div id="login-error" class="login-error"></div>
         </form>
     </div>
@@ -28,18 +28,20 @@
 
     <!-- Заголовок -->
     <header class="app-header">
-        <h1>GigaAM v3: Транскрибация</h1>
+        <h1 data-i18n="title">GigaAM v3: Транскрибация</h1>
         <div class="header-right">
             <span id="device-badge" class="device-badge">CPU</span>
-            <button id="btn-logout" class="btn-logout" type="button" title="Выйти">Выйти</button>
+            <button id="btn-lang" class="btn-logout" type="button" title="Switch language">EN</button>
+            <button id="btn-logout" class="btn-logout" type="button" title="Выйти" data-i18n="logout" data-i18n-title="logout">Выйти</button>
         </div>
     </header>
 
     <!-- Вкладки -->
     <div class="tabs">
-        <button class="tab-btn active" type="button" data-tab="process">Обработка</button>
-        <button class="tab-btn" type="button" data-tab="log">Журнал</button>
-        <button class="tab-btn" type="button" data-tab="results">Результаты</button>
+        <button class="tab-btn active" type="button" data-tab="process" data-i18n="process">Обработка</button>
+        <button class="tab-btn" type="button" data-tab="llm" data-i18n="llm">LLM</button>
+        <button class="tab-btn" type="button" data-tab="log" data-i18n="log">Журнал</button>
+        <button class="tab-btn" type="button" data-tab="results" data-i18n="results">Результаты</button>
     </div>
 
     <!-- ===== ВКЛАДКА: ОБРАБОТКА ===== -->
@@ -47,23 +49,23 @@
 
         <!-- 1. Выбор файлов -->
         <div class="card">
-            <h2 class="card-title">1. Выбор файлов</h2>
+            <h2 class="card-title" data-i18n="cardFiles">1. Выбор файлов</h2>
 
             <div class="row">
-                <button id="btn-select-files" class="btn btn-secondary" type="button">Выбрать файлы</button>
-                <span id="files-count" class="label-muted">Файлы не выбраны</span>
+                <button id="btn-select-files" class="btn btn-secondary" type="button" data-i18n="chooseFiles">Выбрать файлы</button>
+                <span id="files-count" class="label-muted" data-i18n="filesNone">Файлы не выбраны</span>
                 <input type="file" id="file-input" multiple accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.mp4,.avi,.mov,.mkv,.webm,.wma,.qta,.3gp" hidden>
             </div>
 
             <div class="row mt-8">
-                <button id="btn-select-folder" class="btn btn-secondary" type="button">Выбрать папку</button>
-                <span id="folder-label" class="label-muted">Папка не выбрана</span>
+                <button id="btn-select-folder" class="btn btn-secondary" type="button" data-i18n="chooseFolder">Выбрать папку</button>
+                <span id="folder-label" class="label-muted" data-i18n="folderNone">Папка не выбрана</span>
                 <input type="file" id="folder-input" webkitdirectory multiple hidden>
             </div>
 
             <div class="row mt-8">
-                <input type="text" id="url-input" class="input" placeholder="Ссылка на медиа (YouTube, и т.д.)">
-                <button id="btn-download-url" class="btn btn-secondary" type="button">Загрузить</button>
+                <input type="text" id="url-input" class="input" placeholder="Ссылка на медиа (YouTube, и т.д.)" data-i18n-placeholder="mediaUrlPlaceholder">
+                <button id="btn-download-url" class="btn btn-secondary" type="button" data-i18n="download">Загрузить</button>
                 <div id="download-progress" class="download-progress hidden">
                     <div class="progress-bar-small"><div id="download-bar" class="progress-fill-small"></div></div>
                     <span id="download-pct" class="progress-text">0%</span>
@@ -72,7 +74,7 @@
 
             <!-- Drag & Drop зона -->
             <div id="drop-zone" class="drop-zone">
-                <p>Перетащите файлы сюда</p>
+                <p data-i18n="dropFiles">Перетащите файлы сюда</p>
                 <p class="drop-zone-hint">mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, qta, 3gp</p>
             </div>
 
@@ -82,21 +84,21 @@
 
         <!-- 2. Диаризация -->
         <div class="card">
-            <h2 class="card-title">2. Диаризация спикеров</h2>
+            <h2 class="card-title" data-i18n="cardDiarization">2. Диаризация спикеров</h2>
             <label class="checkbox-label">
                 <input type="checkbox" id="cb-diarization">
-                <span>Включить диаризацию спикеров</span>
+                <span data-i18n="enableDiarization">Включить диаризацию спикеров</span>
             </label>
             <div class="row mt-8">
-                <label for="num-speakers" class="label">Кол-во спикеров:</label>
-                <input type="number" id="num-speakers" class="input input-small" placeholder="Пусто = авто" min="1" disabled>
+                <label for="num-speakers" class="label" data-i18n="speakersCount">Кол-во спикеров:</label>
+                <input type="number" id="num-speakers" class="input input-small" placeholder="Пусто = авто" data-i18n-placeholder="speakersAutoPlaceholder" min="1" disabled>
             </div>
-            <p class="hint">Автоматическое определение спикеров (требуется HF_TOKEN)</p>
+            <p class="hint" data-i18n="diarizationHint">Автоматическое определение спикеров (требуется HF_TOKEN)</p>
         </div>
 
         <!-- 3. Форматы вывода -->
         <div class="card">
-            <h2 class="card-title">3. Форматы вывода</h2>
+            <h2 class="card-title" data-i18n="cardFormats">3. Форматы вывода</h2>
             <div class="formats-row">
                 <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt" checked><span>Текст (.txt)</span></label>
                 <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt_timecodes" checked><span>Таймкоды (_timecodes.txt)</span></label>
@@ -111,12 +113,12 @@
         </div>
 
         <!-- Кнопка запуска -->
-        <button id="btn-start" class="btn btn-start" type="button">ЗАПУСТИТЬ ОБРАБОТКУ</button>
+        <button id="btn-start" class="btn btn-start" type="button" data-i18n="start">ЗАПУСТИТЬ ОБРАБОТКУ</button>
 
         <!-- Прогресс -->
         <div id="progress-section" class="progress-card hidden">
             <div class="progress-header">
-                <span class="progress-title">Общий прогресс</span>
+                <span class="progress-title" data-i18n="overallProgress">Общий прогресс</span>
                 <span id="file-counter" class="progress-counter"></span>
             </div>
             <div class="progress-bar"><div id="bar-total" class="progress-fill"></div></div>
@@ -125,11 +127,104 @@
                 <span id="current-file" class="current-file"></span>
             </div>
             <div class="progress-bar progress-bar-thin"><div id="bar-file" class="progress-fill"></div></div>
-            <div id="status-label" class="status-label">Готов к работе</div>
+            <div id="status-label" class="status-label" data-i18n="ready">Готов к работе</div>
         </div>
 
         <!-- Кнопка очистки -->
-        <button id="btn-clear" class="btn btn-clear" type="button">ОЧИСТИТЬ ВСЁ</button>
+        <button id="btn-clear" class="btn btn-clear" type="button" data-i18n="clear">ОЧИСТИТЬ ВСЁ</button>
+    </div>
+
+    <!-- ===== ВКЛАДКА: LLM ===== -->
+    <div id="tab-llm" class="tab-content">
+        <div class="card">
+            <h2 class="card-title" data-i18n="llmSource">1. Источник транскрипта</h2>
+            <div class="row">
+                <button id="btn-llm-select-files" class="btn btn-secondary" type="button" data-i18n="llmChooseFiles">Выбрать транскрипты</button>
+                <span id="llm-files-count" class="label-muted" data-i18n="llmFilesNone">Файлы не выбраны</span>
+                <input type="file" id="llm-file-input" multiple accept=".txt,.md,.srt,.vtt" hidden>
+            </div>
+            <div id="llm-drop-zone" class="drop-zone">
+                <p data-i18n="llmDropFiles">Перетащите транскрипты сюда</p>
+                <p class="drop-zone-hint">txt, md, srt, vtt</p>
+            </div>
+            <div id="llm-file-list" class="file-list hidden"></div>
+            <textarea id="llm-manual-text" class="input llm-textarea" placeholder="Или вставьте транскрипт вручную" data-i18n-placeholder="llmManualPlaceholder"></textarea>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title" data-i18n="llmSaveWhere">2. Куда сохранить</h2>
+            <p class="hint" data-i18n="llmSaveHint">Результаты сохраняются на сервере и доступны для скачивания после обработки.</p>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title" data-i18n="llmWhatToDo">3. Что сделать</h2>
+            <div class="formats-row">
+                <label class="checkbox-label"><input type="checkbox" id="llm-summary" checked><span data-i18n="llmSummary">Выжимка</span></label>
+                <label class="checkbox-label"><input type="checkbox" id="llm-tasks"><span data-i18n="llmTasks">Задачи</span></label>
+                <label class="checkbox-label"><input type="checkbox" id="llm-custom"><span data-i18n="llmCustom">Свой промпт</span></label>
+            </div>
+            <p class="hint" data-i18n="llmModesHint">Промпты и настройки ниже. Для режима «Свой промпт» заполните поле в настройках провайдера.</p>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title" data-i18n="llmFormats">4. Форматы вывода</h2>
+            <div class="formats-row">
+                <label class="checkbox-label"><input type="checkbox" class="llm-fmt-cb" data-fmt="txt" checked><span>TXT (.txt)</span></label>
+                <label class="checkbox-label"><input type="checkbox" class="llm-fmt-cb" data-fmt="md"><span>Markdown (.md)</span></label>
+                <label class="checkbox-label"><input type="checkbox" class="llm-fmt-cb" data-fmt="docx"><span>DOCX (.docx)</span></label>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title" data-i18n="llmSettings">Настройки LLM</h2>
+            <div class="row mt-8">
+                <label class="label" data-i18n="provider">Провайдер:</label>
+                <select id="llm-provider" class="input input-small">
+                    <option>API</option><option>Claude Code</option><option>Codex</option><option>OpenCode</option><option>Pi</option><option>Другое</option>
+                </select>
+                <label class="label" data-i18n="model">Модель:</label>
+                <input id="llm-model" class="input" placeholder="gpt-4.1-mini / sonnet / o3 / qwen ...">
+                <label class="label" data-i18n="temperature">Temperature:</label>
+                <input id="llm-temperature" class="input input-small" value="0.2">
+            </div>
+            <div id="llm-provider-api" class="mt-8">
+                <div class="row mt-8"><input id="llm-api-url" class="input" placeholder="https://api.openai.com/v1"></div>
+                <div class="row mt-8"><input id="llm-api-key" class="input" placeholder="API key"></div>
+            </div>
+            <div id="llm-provider-claude" class="mt-8 hidden">
+                <div class="row mt-8"><input id="llm-claude-path" class="input" placeholder="claude"></div>
+                <div class="row mt-8"><input id="llm-claude-args" class="input" placeholder="Доп. аргументы Claude" data-i18n-placeholder="claudeArgsPlaceholder"></div>
+            </div>
+            <div id="llm-provider-codex" class="mt-8 hidden">
+                <div class="row mt-8"><input id="llm-codex-path" class="input" placeholder="codex"></div>
+                <div class="row mt-8"><input id="llm-codex-args" class="input" placeholder="Доп. аргументы Codex" data-i18n-placeholder="codexArgsPlaceholder"></div>
+            </div>
+            <div id="llm-provider-opencode" class="mt-8 hidden">
+                <div class="row mt-8"><input id="llm-opencode-path" class="input" placeholder="opencode"></div>
+                <div class="row mt-8"><input id="llm-opencode-args" class="input" placeholder="Доп. аргументы OpenCode" data-i18n-placeholder="opencodeArgsPlaceholder"></div>
+            </div>
+            <div id="llm-provider-pi" class="mt-8 hidden">
+                <div class="row mt-8"><input id="llm-pi-path" class="input" placeholder="pi"></div>
+                <div class="row mt-8"><input id="llm-pi-provider" class="input" placeholder="openai / anthropic / google"></div>
+                <div class="row mt-8"><input id="llm-pi-args" class="input" placeholder="Доп. аргументы Pi" data-i18n-placeholder="piArgsPlaceholder"></div>
+            </div>
+            <div id="llm-provider-other" class="mt-8 hidden">
+                <div class="row mt-8"><input id="llm-other-path" class="input" placeholder="команда" data-i18n-placeholder="otherPathPlaceholder"></div>
+                <div class="row mt-8"><input id="llm-other-args" class="input" placeholder="аргументы" data-i18n-placeholder="otherArgsPlaceholder"></div>
+            </div>
+            <div class="row mt-8"><textarea id="llm-summary-prompt" class="input llm-textarea" placeholder="Промпт для выжимки" data-i18n-placeholder="summaryPromptPlaceholder"></textarea></div>
+            <div class="row mt-8"><textarea id="llm-tasks-prompt" class="input llm-textarea" placeholder="Промпт для задач" data-i18n-placeholder="tasksPromptPlaceholder"></textarea></div>
+            <div class="row mt-8"><textarea id="llm-custom-prompt" class="input llm-textarea" placeholder="Пользовательский промпт" data-i18n-placeholder="customPromptPlaceholder"></textarea></div>
+        </div>
+
+        <button id="btn-llm-process" class="btn btn-start" type="button" data-i18n="llmProcess">ОБРАБОТАТЬ</button>
+        <div class="card">
+            <h2 class="card-title" data-i18n="llmResult">5. Результат LLM</h2>
+            <div id="llm-status" class="status-label" data-i18n="llmReady">Готово к LLM-обработке</div>
+            <div id="llm-result-actions" class="result-files mt-8"></div>
+            <pre id="llm-result" class="result-text-preview"></pre>
+        </div>
+        <button id="btn-llm-clear" class="btn btn-clear" type="button" data-i18n="llmClear">ОЧИСТИТЬ ВСЁ</button>
     </div>
 
     <!-- ===== ВКЛАДКА: ЖУРНАЛ ===== -->
@@ -140,14 +235,14 @@
     <!-- ===== ВКЛАДКА: РЕЗУЛЬТАТЫ ===== -->
     <div id="tab-results" class="tab-content">
         <div id="results-list" class="results-list">
-            <p class="label-muted">Нет завершённых задач</p>
+            <p class="label-muted" data-i18n="noResults">Нет завершённых задач</p>
         </div>
         <div class="results-danger-zone">
             <div class="results-danger-copy">
-                <div class="results-danger-title">Опасная зона</div>
-                <p>Удалить все данные пользователя: задачи, загруженные файлы и результаты транскрибации. Действие необратимо.</p>
+                <div class="results-danger-title" data-i18n="dangerZone">Опасная зона</div>
+                <p data-i18n="dangerZoneText">Удалить все данные пользователя: задачи, загруженные файлы и результаты транскрибации. Действие необратимо.</p>
             </div>
-            <button id="btn-delete-all-user-data" class="results-delete-all-btn" type="button">Удалить все мои данные</button>
+            <button id="btn-delete-all-user-data" class="results-delete-all-btn" type="button" data-i18n="deleteMyData">Удалить все мои данные</button>
         </div>
     </div>
 
