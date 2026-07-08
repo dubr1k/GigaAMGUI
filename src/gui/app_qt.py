@@ -443,11 +443,21 @@ class GigaTranscriberQtApp(QMainWindow):
             self.btn_llm_output.setText("Выбрать папку" if is_ru else "Choose folder")
             self.btn_llm_process.setToolTip("Запустить LLM-обработку выбранных транскриптов" if is_ru else "Run LLM processing for selected transcripts")
             self.btn_llm_clear.setToolTip("Сбросить выбранные транскрипты, ручной текст и результат LLM" if is_ru else "Reset selected transcripts, manual text and LLM result")
-            self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
-            self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
+            if hasattr(self, "lbl_llm_summary_prompt"):
+                self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
+            if hasattr(self, "lbl_llm_tasks_prompt"):
+                self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
             self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
             self.lbl_llm_status.setText("Готово к LLM-обработке" if is_ru else "Ready for LLM processing")
+            if hasattr(self, "llm_drop_hint"):
+                self.llm_drop_hint.setText("Перетащите сюда транскрипты  ·  либо нажмите «Выбрать транскрипты»" if is_ru else "Drop transcripts here  ·  or click 'Choose transcripts'")
+            if hasattr(self, "btn_remove_llm_file"):
+                self.btn_remove_llm_file.setText("Убрать выбранное" if is_ru else "Remove selected")
+            if hasattr(self, "btn_clear_llm_files"):
+                self.btn_clear_llm_files.setText("Очистить список" if is_ru else "Clear list")
             self.lbl_llm_files.setText("Файлы не выбраны" if is_ru and not self.transcript_files_for_llm else ("No files selected" if not is_ru and not self.transcript_files_for_llm else self.lbl_llm_files.text()))
+            if hasattr(self, "lbl_llm_files_count") and not self.transcript_files_for_llm:
+                self.lbl_llm_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
             self.txt_llm_transcript.setPlaceholderText(
                 "Вставьте сюда транскрипт, если не хотите выбирать файлы"
                 if is_ru else
@@ -546,7 +556,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 border: 1px solid {c["border"]};
                 border-radius: {self._px(8)}px;
                 margin-top: {self._px(26)}px;
-                padding-top: {self._px(6)}px;
+                padding-top: {self._px(10)}px;
                 background-color: {c["bg_card"]};
                 color: {c["text"]};
             }}
@@ -1424,21 +1434,33 @@ class GigaTranscriberQtApp(QMainWindow):
         ):
             self._remove_selected_files()
             return
+        if (
+            event.key() == Qt.Key.Key_Delete
+            and hasattr(self, "llm_files_list")
+            and self.llm_files_list.hasFocus()
+        ):
+            self._remove_selected_llm_files()
+            return
         super().keyPressEvent(event)
 
     def _style_drop_hint(self):
-        if not hasattr(self, "drop_hint"):
-            return
         c = self._colors()
         active = getattr(self, "_drop_active", False)
         border = c["accent"] if active else c["border"]
         bg = c["btn_hover_bg"] if active else c["bg_card"]
         text = c["accent"] if active else c["text_mute2"]
-        self.drop_hint.setStyleSheet(
-            f"#drop_hint {{ border: 2px dashed {border}; border-radius: {self._px(10)}px;"
-            f"  background-color: {bg}; color: {text};"
-            f"  font-size: {self._pt_css(11)}pt; padding: {self._px(8)}px; }}"
-        )
+        if hasattr(self, "drop_hint"):
+            self.drop_hint.setStyleSheet(
+                f"#drop_hint {{ border: 2px dashed {border}; border-radius: {self._px(10)}px;"
+                f"  background-color: {bg}; color: {text};"
+                f"  font-size: {self._pt_css(11)}pt; padding: {self._px(8)}px; }}"
+            )
+        if hasattr(self, "llm_drop_hint"):
+            self.llm_drop_hint.setStyleSheet(
+                f"#llm_drop_hint {{ border: 2px dashed {border}; border-radius: {self._px(10)}px;"
+                f"  background-color: {bg}; color: {text};"
+                f"  font-size: {self._pt_css(11)}pt; padding: {self._px(8)}px; }}"
+            )
 
     def _create_output_group(self) -> QGroupBox:
         group = QGroupBox("2. Папка сохранения результатов")
@@ -1885,6 +1907,40 @@ class GigaTranscriberQtApp(QMainWindow):
         files_row.addWidget(self.lbl_llm_files, 1)
         layout.addLayout(files_row)
 
+        self.llm_drop_hint = QLabel("Перетащите сюда транскрипты  ·  либо нажмите «Выбрать транскрипты»")
+        self.llm_drop_hint.setObjectName("llm_drop_hint")
+        self.llm_drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.llm_drop_hint.setMinimumHeight(self._px(50))
+        layout.addWidget(self.llm_drop_hint)
+
+        self.llm_files_list = QListWidget()
+        self.llm_files_list.setObjectName("llm_files_list")
+        self.llm_files_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.llm_files_list.setMinimumHeight(self._px(72))
+        self.llm_files_list.setMaximumHeight(self._px(150))
+        self.llm_files_list.setToolTip("Список транскриптов. Выделите и нажмите Delete, чтобы убрать.")
+        self.llm_files_list.itemSelectionChanged.connect(self._update_llm_files_controls)
+        self.llm_files_list.setVisible(False)
+        layout.addWidget(self.llm_files_list)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(self._px(10))
+        self.lbl_llm_files_count = QLabel("Файлы не выбраны")
+        self.lbl_llm_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        controls.addWidget(self.lbl_llm_files_count)
+        controls.addStretch()
+        self.btn_remove_llm_file = QPushButton("Убрать выбранное")
+        self.btn_remove_llm_file.setFixedHeight(self._px(32))
+        self.btn_remove_llm_file.setEnabled(False)
+        self.btn_remove_llm_file.clicked.connect(self._remove_selected_llm_files)
+        controls.addWidget(self.btn_remove_llm_file)
+        self.btn_clear_llm_files = QPushButton("Очистить список")
+        self.btn_clear_llm_files.setFixedHeight(self._px(32))
+        self.btn_clear_llm_files.setEnabled(False)
+        self.btn_clear_llm_files.clicked.connect(self._clear_llm_files_list)
+        controls.addWidget(self.btn_clear_llm_files)
+        layout.addLayout(controls)
+
         self.lbl_llm_supported = QLabel("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже")
         info = self.lbl_llm_supported
         info.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
@@ -2130,8 +2186,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.llm_transcript_dir = folder
             self.user_settings.set_value("llm_transcript_dir", folder)
             self.user_settings.set_value("last_selected_transcript_files", transcript_files)
-            self.lbl_llm_files.setText(self._t(f"Выбрано транскриптов: {len(transcript_files)}", f"Selected transcripts: {len(transcript_files)}"))
-            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+            self._refresh_llm_files_list()
             self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
         elif media_files:
             self._apply_dropped_or_selected_files(media_files)
@@ -2253,9 +2308,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
         saved_llm_files = self.user_settings.get_value("last_selected_transcript_files", []) or []
         self.transcript_files_for_llm = [path for path in saved_llm_files if os.path.isfile(path)]
-        if self.transcript_files_for_llm:
-            self.lbl_llm_files.setText(f"Выбрано транскриптов: {len(self.transcript_files_for_llm)}")
-            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+        self._refresh_llm_files_list()
 
     def _save_ui_settings(self):
         self.user_settings.set_value("output_formats", self.output_formats)
@@ -2290,6 +2343,57 @@ class GigaTranscriberQtApp(QMainWindow):
         if self.llm_transcript_dir:
             self.user_settings.set_value("llm_transcript_dir", self.llm_transcript_dir)
 
+    def _refresh_llm_files_list(self):
+        if not hasattr(self, "llm_files_list"):
+            return
+        self.llm_files_list.clear()
+        for path in self.transcript_files_for_llm:
+            item = QListWidgetItem(os.path.basename(path))
+            item.setToolTip(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.llm_files_list.addItem(item)
+        has_files = bool(self.transcript_files_for_llm)
+        self.llm_files_list.setVisible(has_files)
+        self.llm_drop_hint.setVisible(not has_files)
+        c = self._colors()
+        if has_files:
+            text = self._t(f"Выбрано транскриптов: {len(self.transcript_files_for_llm)}", f"Selected transcripts: {len(self.transcript_files_for_llm)}")
+            self.lbl_llm_files.setText(text)
+            self.lbl_llm_files_count.setText(text)
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(c["text_sub"]))
+            self.lbl_llm_files_count.setStyleSheet(self._transparent_label_style(c["text_sub"]))
+        else:
+            text = self._t("Файлы не выбраны", "No files selected")
+            self.lbl_llm_files.setText(text)
+            self.lbl_llm_files_count.setText(text)
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(c["text_mute"]))
+            self.lbl_llm_files_count.setStyleSheet(self._transparent_label_style(c["text_mute"]))
+        self._update_llm_files_controls()
+
+    def _update_llm_files_controls(self):
+        if not hasattr(self, "btn_clear_llm_files"):
+            return
+        has_files = bool(self.transcript_files_for_llm)
+        self.btn_clear_llm_files.setEnabled(has_files and not self.is_llm_processing)
+        self.btn_remove_llm_file.setEnabled(bool(self.llm_files_list.selectedItems()) and not self.is_llm_processing)
+
+    def _remove_selected_llm_files(self):
+        if self.is_llm_processing:
+            return
+        selected = {item.data(Qt.ItemDataRole.UserRole) for item in self.llm_files_list.selectedItems()}
+        if not selected:
+            return
+        self.transcript_files_for_llm = [p for p in self.transcript_files_for_llm if p not in selected]
+        self._refresh_llm_files_list()
+        self.user_settings.set_value("last_selected_transcript_files", [p for p in self.transcript_files_for_llm if os.path.isfile(p)])
+
+    def _clear_llm_files_list(self):
+        if self.is_llm_processing or not self.transcript_files_for_llm:
+            return
+        self.transcript_files_for_llm = []
+        self._refresh_llm_files_list()
+        self.user_settings.set_value("last_selected_transcript_files", [])
+
     def _select_llm_transcript_files(self):
         initial_dir = self.user_settings.get_value("llm_transcript_dir", self.llm_transcript_dir)
         files, _ = QFileDialog.getOpenFileNames(
@@ -2307,9 +2411,8 @@ class GigaTranscriberQtApp(QMainWindow):
                 self._update_llm_output_dir_label(folder)
             self.user_settings.set_value("llm_transcript_dir", folder)
             self.user_settings.set_value("last_selected_transcript_files", files)
-            self.lbl_llm_files.setText(f"Выбрано транскриптов: {len(files)}")
-            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
-            self.lbl_llm_status.setText("Транскрипты готовы к LLM-обработке")
+            self._refresh_llm_files_list()
+            self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
 
     def _select_llm_output_folder(self):
         initial_dir = self.llm_output_dir or self.output_dir or os.path.expanduser("~")
@@ -2410,7 +2513,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.txt_llm_result.clear()
         self.llm_last_result_text = ""
         self.llm_last_result_name = "llm_result"
-        self.lbl_llm_status.setText("Готово к LLM-обработке")
+        self.lbl_llm_status.setText(self._t("Готово к LLM-обработке", "Ready for LLM processing"))
 
     def _clear_llm_all(self):
         if self.is_llm_processing:
@@ -2418,8 +2521,7 @@ class GigaTranscriberQtApp(QMainWindow):
             return
         self.transcript_files_for_llm = []
         self.txt_llm_transcript.clear()
-        self.lbl_llm_files.setText("Файлы не выбраны")
-        self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        self._refresh_llm_files_list()
         self._clear_llm_result()
         self.user_settings.set_value("last_selected_transcript_files", [])
         self.user_settings.set_value("llm_manual_transcript", "")
