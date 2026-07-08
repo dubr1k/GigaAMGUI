@@ -6,11 +6,39 @@ Monkey patching для pyannote.audio чтобы использовать soundf
 где из torchaudio удалены устаревшие функции backend-а.
 """
 
+import importlib.machinery
 import logging
 import os
+import sys
+import types
 import warnings
 
 import numpy as np
+
+# Mock torchcodec: pyannote.audio пытается импортировать torchcodec при загрузке
+# io.py. В окружениях без torchcodec (портативная сборка) или со сломанным
+# torchcodec (Docker, хрупкая линковка ffmpeg) вставляем заглушку, чтобы
+# import не падал и не выводил warning. Аудио и так грузится через soundfile.
+if 'torchcodec' not in sys.modules:
+    try:
+        import torchcodec  # noqa: F401
+    except Exception:
+        _mock_tc = types.ModuleType('torchcodec')
+        _mock_tc.__version__ = '0.0.0-mock'
+        _mock_tc.__path__ = []
+        _mock_tc.__spec__ = importlib.machinery.ModuleSpec('torchcodec', None)
+
+        class _MockClass:
+            pass
+
+        _mock_decoders = types.ModuleType('torchcodec.decoders')
+        _mock_decoders.__spec__ = importlib.machinery.ModuleSpec('torchcodec.decoders', None)
+        _mock_decoders.AudioDecoder = _MockClass
+        _mock_decoders.AudioStreamMetadata = _MockClass
+        _mock_tc.AudioSamples = _MockClass
+        _mock_tc.decoders = _mock_decoders
+        sys.modules['torchcodec'] = _mock_tc
+        sys.modules['torchcodec.decoders'] = _mock_decoders
 
 # ВАЖНО: Применяем патч для torch.load ДО импорта других библиотек
 from .torch_patch import apply_torch_load_patch
