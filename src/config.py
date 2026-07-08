@@ -86,6 +86,12 @@ APP_THEME = os.getenv("APP_THEME", "blue")
 # Файл статистики
 STATS_FILE = os.getenv("STATS_FILE", "processing_stats.json")
 
+# Настройки LLM API (OpenAI-compatible или Anthropic Messages API)
+LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+
 # Поддерживаемые форматы файлов (входные)
 SUPPORTED_FORMATS = (
     'Media files',

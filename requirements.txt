@@ -164,6 +164,7 @@ questionary>=2.0.0
 
 # GUI (PyQt6 - строгий профессиональный интерфейс)
 PyQt6>=6.10.0
+python-docx>=1.1.2
 
 # Web GUI (web/web_app.py)
 PyJWT>=2.8.0

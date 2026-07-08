@@ -4,9 +4,14 @@
 """
 
 import os
+import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
@@ -26,6 +31,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -48,13 +54,43 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..config import APP_TITLE, MEDIA_EXTENSIONS, OUTPUT_FORMATS, STATS_FILE
+from ..config import (
+    APP_TITLE, MEDIA_EXTENSIONS, OUTPUT_FORMATS, STATS_FILE,
+    LLM_API_URL, LLM_API_KEY, LLM_MODEL, LLM_TEMPERATURE,
+)
 from ..core import ModelLoader, TranscriptionProcessor
-from ..utils import AppLogger, AudioConverter, MediaDownloader, ProcessingStats, TimeFormatter, UserSettings
+from ..utils import (
+    AppLogger, AudioConverter, MediaDownloader, ProcessingStats,
+    TimeFormatter, UserSettings, LLMClient, LLMSettings,
+)
 
 _BASE_FONT_PT = 12.0
 _MIN_UI_SCALE = 0.85
 _MAX_UI_SCALE = 1.75
+
+SUMMARY_PROMPT = (
+    "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
+    "Убери повторы, слова-паразиты и шум распознавания. Сохрани только смысл. "
+    "\n\nСтруктура ответа:" 
+    "\n1. Краткое резюме в 3-6 пунктах." 
+    "\n2. Ключевые договоренности и решения." 
+    "\n3. Важные факты, цифры, сроки, имена и роли — если они есть." 
+    "\n4. Риски, спорные места или открытые вопросы — если они есть." 
+    "\n\nПиши четко, по делу, без воды. Если часть информации в транскрипте неясна, пометь это явно и не выдумывай."
+)
+
+TASKS_PROMPT = (
+    "Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде на русском языке. "
+    "Игнорируй рассуждения, повторы и фоновые фразы. Не выдумывай задачи, которых нет в тексте. "
+    "\n\nДля каждой задачи укажи:" 
+    "\n- Что нужно сделать" 
+    "\n- Кто ответственный / исполнитель, если это можно понять" 
+    "\n- Срок, дедлайн или ориентир по времени, если упомянут" 
+    "\n- Контекст или комментарий, если он важен" 
+    "\n- Приоритет, если он читается из разговора" 
+    "\n\nСначала дай список задач. Затем отдельным коротким блоком выведи: " 
+    "«Открытые вопросы / неясности». Если задач нет, напиши: «Явных задач не найдено»."
+)
 
 
 def _read_ui_scale() -> float:
@@ -81,6 +117,7 @@ class WorkerSignals(QObject):
     download_progress = pyqtSignal(int)
     download_finished = pyqtSignal(list)
     download_failed = pyqtSignal(str)
+    llm_finished = pyqtSignal(bool, str, str)
 
 
 class GigaTranscriberQtApp(QMainWindow):
@@ -93,6 +130,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.output_dir = ""
         self.input_dir = ""
         self.is_processing = False
+        self._last_generated_transcript_files = []
         self._cancel_requested = False
         self.start_time = None
         self.files_processed = 0
@@ -109,8 +147,16 @@ class GigaTranscriberQtApp(QMainWindow):
         self.start_processing_after_download = False
         self._last_result_dir = ""
 
+        self.transcript_files_for_llm = []
+        self.llm_output_dir = ""
+        self.llm_transcript_dir = os.path.expanduser("~")
+        self.is_llm_processing = False
+        self.llm_last_result_text = ""
+        self.llm_last_result_name = "llm_result"
+
         self.enable_diarization = False
         self.num_speakers = None
+        self._diarization_prompt_open = False
 
         self.output_formats = {
             'txt': True,
@@ -143,25 +189,39 @@ class GigaTranscriberQtApp(QMainWindow):
         self.signals.download_progress.connect(self._update_download_progress)
         self.signals.download_finished.connect(self._on_download_finished)
         self.signals.download_failed.connect(self._on_download_failed)
+        self.signals.llm_finished.connect(self._on_llm_finished)
 
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self._update_progress_display)
 
         saved_output_dir = self.user_settings.get_last_output_dir()
         saved_input_dir = self.user_settings.get_last_files_dir()
+        saved_llm_output_dir = self.user_settings.get_value("llm_output_dir", "")
+        saved_llm_transcript_dir = self.user_settings.get_value("llm_transcript_dir", "")
 
         if saved_output_dir:
             self.output_dir = saved_output_dir
         if saved_input_dir:
             self.input_dir = saved_input_dir
+        if saved_llm_output_dir and os.path.isdir(saved_llm_output_dir):
+            self.llm_output_dir = saved_llm_output_dir
+        elif saved_output_dir:
+            self.llm_output_dir = saved_output_dir
+        if saved_llm_transcript_dir and os.path.isdir(saved_llm_transcript_dir):
+            self.llm_transcript_dir = saved_llm_transcript_dir
+        elif saved_input_dir:
+            self.llm_transcript_dir = saved_input_dir
 
         self._init_ui()
+        self._restore_ui_settings()
         self.setAcceptDrops(True)
 
         if saved_output_dir:
             self._update_output_dir_label(saved_output_dir)
         if saved_input_dir:
             self._update_input_dir_label(saved_input_dir)
+        if self.llm_output_dir:
+            self._update_llm_output_dir_label(self.llm_output_dir)
 
         self.app_logger.cleanup_old_logs()
 
@@ -799,6 +859,13 @@ class GigaTranscriberQtApp(QMainWindow):
         proc_scroll.setWidget(content_widget)
         tabs.addTab(proc_scroll, "Обработка")
 
+        llm_scroll = QScrollArea()
+        llm_scroll.setWidgetResizable(True)
+        llm_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        llm_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        llm_scroll.setWidget(self._create_llm_tab())
+        tabs.addTab(llm_scroll, "LLM")
+
         # ── Вкладка «Журнал» ──
         log_tab = QWidget()
         log_layout = QVBoxLayout(log_tab)
@@ -836,6 +903,8 @@ class GigaTranscriberQtApp(QMainWindow):
         # Статус-бар: краткие подсказки и состояние
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Готов к работе")
+
+        self._ensure_llm_settings_dialog()
 
         # Esc — отмена текущей обработки
         esc = QAction(self)
@@ -895,6 +964,12 @@ class GigaTranscriberQtApp(QMainWindow):
         act_device.setStatusTip("Выбрать CPU или видеокарту NVIDIA для распознавания")
         act_device.triggered.connect(self._change_device)
         settings_menu.addAction(act_device)
+
+        settings_menu.addSeparator()
+        act_llm = QAction("LLM API…", self)
+        act_llm.setStatusTip("Настроить API URL, ключ, модель и папку результатов LLM")
+        act_llm.triggered.connect(self._open_llm_settings_dialog)
+        settings_menu.addAction(act_llm)
 
         help_menu = menubar.addMenu("Справка")
         act_about = QAction("О программе", self)
@@ -1318,6 +1393,411 @@ class GigaTranscriberQtApp(QMainWindow):
         group.setLayout(layout)
         return group
 
+    def _create_llm_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(6))
+        layout.setSpacing(self._px(4))
+
+        layout.addWidget(self._create_llm_source_group())
+        layout.addWidget(self._create_llm_prompt_group())
+        layout.addWidget(self._create_llm_actions_group())
+        layout.addWidget(self._create_llm_save_group())
+        layout.addWidget(self._create_llm_result_group(), 1)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(self._px(10))
+        self.btn_llm_process = QPushButton("ОБРАБОТАТЬ")
+        self.btn_llm_process.setObjectName("start_button")
+        self.btn_llm_process.setFixedHeight(self._px(44))
+        self.btn_llm_process.setMinimumWidth(self._px(230))
+        self.btn_llm_process.clicked.connect(self._start_llm_processing)
+        action_row.addWidget(self.btn_llm_process)
+
+        self.btn_llm_clear = QPushButton("Очистить результат")
+        self.btn_llm_clear.setObjectName("clear_button")
+        self.btn_llm_clear.setFixedHeight(self._px(38))
+        self.btn_llm_clear.setMinimumWidth(self._px(180))
+        self.btn_llm_clear.clicked.connect(self._clear_llm_result)
+        action_row.addWidget(self.btn_llm_clear)
+        action_row.addStretch()
+        layout.insertLayout(4, action_row)
+
+        return tab
+
+    def _create_llm_api_group(self) -> QGroupBox:
+        group = QGroupBox("LLM API")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setSpacing(self._px(8))
+
+        provider_row = QHBoxLayout()
+        provider_row.addWidget(QLabel("Провайдер:"))
+        self.combo_llm_provider = QComboBox()
+        self.combo_llm_provider.addItems(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Другое"])
+        self.combo_llm_provider.setMinimumWidth(self._px(180))
+        provider_row.addWidget(self.combo_llm_provider)
+        provider_row.addStretch()
+        layout.addLayout(provider_row)
+
+        common_row = QHBoxLayout()
+        common_row.addWidget(QLabel("Модель:"))
+        self.entry_llm_model = QLineEdit()
+        self.entry_llm_model.setPlaceholderText("gpt-4.1-mini / sonnet / o3 / qwen ...")
+        common_row.addWidget(self.entry_llm_model, 1)
+        common_row.addWidget(QLabel("Temperature:"))
+        self.entry_llm_temperature = QLineEdit()
+        self.entry_llm_temperature.setMaximumWidth(self._px(110))
+        common_row.addWidget(self.entry_llm_temperature)
+        layout.addLayout(common_row)
+
+        self.llm_api_settings_widget = QWidget()
+        api_layout = QVBoxLayout(self.llm_api_settings_widget)
+        api_layout.setContentsMargins(0, 0, 0, 0)
+        api_layout.setSpacing(self._px(8))
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("API URL:"))
+        self.entry_llm_api_url = QLineEdit()
+        self.entry_llm_api_url.setPlaceholderText("https://api.openai.com/v1")
+        row1.addWidget(self.entry_llm_api_url, 1)
+        api_layout.addLayout(row1)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("API Key:"))
+        self.entry_llm_api_key = QLineEdit()
+        self.entry_llm_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.entry_llm_api_key.setPlaceholderText("Bearer token / API key")
+        row2.addWidget(self.entry_llm_api_key, 1)
+        api_layout.addLayout(row2)
+        layout.addWidget(self.llm_api_settings_widget)
+
+        self.llm_claude_settings_widget = QWidget()
+        claude_layout = QVBoxLayout(self.llm_claude_settings_widget)
+        claude_layout.setContentsMargins(0, 0, 0, 0)
+        claude_layout.setSpacing(self._px(8))
+        row4 = QHBoxLayout()
+        row4.addWidget(QLabel("Claude Code путь:"))
+        self.entry_llm_claude_path = QLineEdit()
+        self.entry_llm_claude_path.setPlaceholderText("claude")
+        row4.addWidget(self.entry_llm_claude_path, 1)
+        claude_layout.addLayout(row4)
+        row5 = QHBoxLayout()
+        row5.addWidget(QLabel("Claude доп. аргументы:"))
+        self.entry_llm_claude_args = QLineEdit()
+        self.entry_llm_claude_args.setPlaceholderText("например: --permission-mode bypassPermissions")
+        row5.addWidget(self.entry_llm_claude_args, 1)
+        claude_layout.addLayout(row5)
+        layout.addWidget(self.llm_claude_settings_widget)
+
+        self.llm_codex_settings_widget = QWidget()
+        codex_layout = QVBoxLayout(self.llm_codex_settings_widget)
+        codex_layout.setContentsMargins(0, 0, 0, 0)
+        codex_layout.setSpacing(self._px(8))
+        row6 = QHBoxLayout()
+        row6.addWidget(QLabel("Codex путь:"))
+        self.entry_llm_codex_path = QLineEdit()
+        self.entry_llm_codex_path.setPlaceholderText("codex")
+        row6.addWidget(self.entry_llm_codex_path, 1)
+        codex_layout.addLayout(row6)
+        row7 = QHBoxLayout()
+        row7.addWidget(QLabel("Codex доп. аргументы:"))
+        self.entry_llm_codex_args = QLineEdit()
+        self.entry_llm_codex_args.setPlaceholderText("например: --dangerously-bypass-approvals-and-sandbox")
+        row7.addWidget(self.entry_llm_codex_args, 1)
+        codex_layout.addLayout(row7)
+        layout.addWidget(self.llm_codex_settings_widget)
+
+        self.llm_opencode_settings_widget = QWidget()
+        opencode_layout = QVBoxLayout(self.llm_opencode_settings_widget)
+        opencode_layout.setContentsMargins(0, 0, 0, 0)
+        opencode_layout.setSpacing(self._px(8))
+        row8 = QHBoxLayout()
+        row8.addWidget(QLabel("OpenCode путь:"))
+        self.entry_llm_opencode_path = QLineEdit()
+        self.entry_llm_opencode_path.setPlaceholderText("opencode")
+        row8.addWidget(self.entry_llm_opencode_path, 1)
+        opencode_layout.addLayout(row8)
+        row9 = QHBoxLayout()
+        row9.addWidget(QLabel("OpenCode доп. аргументы:"))
+        self.entry_llm_opencode_args = QLineEdit()
+        self.entry_llm_opencode_args.setPlaceholderText("например: --print")
+        row9.addWidget(self.entry_llm_opencode_args, 1)
+        opencode_layout.addLayout(row9)
+        layout.addWidget(self.llm_opencode_settings_widget)
+
+        self.llm_pi_settings_widget = QWidget()
+        pi_layout = QVBoxLayout(self.llm_pi_settings_widget)
+        pi_layout.setContentsMargins(0, 0, 0, 0)
+        pi_layout.setSpacing(self._px(8))
+        row10 = QHBoxLayout()
+        row10.addWidget(QLabel("Pi путь:"))
+        self.entry_llm_pi_path = QLineEdit()
+        self.entry_llm_pi_path.setPlaceholderText("pi")
+        row10.addWidget(self.entry_llm_pi_path, 1)
+        pi_layout.addLayout(row10)
+        row11 = QHBoxLayout()
+        row11.addWidget(QLabel("Pi provider:"))
+        self.entry_llm_pi_provider = QLineEdit()
+        self.entry_llm_pi_provider.setPlaceholderText("openai / anthropic / google ...")
+        row11.addWidget(self.entry_llm_pi_provider, 1)
+        pi_layout.addLayout(row11)
+        row12 = QHBoxLayout()
+        row12.addWidget(QLabel("Pi доп. аргументы:"))
+        self.entry_llm_pi_args = QLineEdit()
+        self.entry_llm_pi_args.setPlaceholderText("например: --no-tools --thinking low")
+        row12.addWidget(self.entry_llm_pi_args, 1)
+        pi_layout.addLayout(row12)
+        layout.addWidget(self.llm_pi_settings_widget)
+
+        self.llm_other_settings_widget = QWidget()
+        other_layout = QVBoxLayout(self.llm_other_settings_widget)
+        other_layout.setContentsMargins(0, 0, 0, 0)
+        other_layout.setSpacing(self._px(8))
+        row13 = QHBoxLayout()
+        row13.addWidget(QLabel("Команда:"))
+        self.entry_llm_other_path = QLineEdit()
+        self.entry_llm_other_path.setPlaceholderText("путь к CLI, например my-llm")
+        row13.addWidget(self.entry_llm_other_path, 1)
+        other_layout.addLayout(row13)
+        row14 = QHBoxLayout()
+        row14.addWidget(QLabel("Аргументы:"))
+        self.entry_llm_other_args = QLineEdit()
+        self.entry_llm_other_args.setPlaceholderText("аргументы; промпт будет добавлен в конец как последний параметр")
+        row14.addWidget(self.entry_llm_other_args, 1)
+        other_layout.addLayout(row14)
+        layout.addWidget(self.llm_other_settings_widget)
+
+        self.lbl_llm_provider_info = QLabel()
+        self.lbl_llm_provider_info.setWordWrap(True)
+        self.lbl_llm_provider_info.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        layout.addWidget(self.lbl_llm_provider_info)
+
+        self.combo_llm_provider.currentTextChanged.connect(self._update_llm_provider_fields)
+        self._update_llm_provider_fields(self.combo_llm_provider.currentText())
+        group.setLayout(layout)
+        return group
+
+    def _update_llm_provider_fields(self, provider: str):
+        widgets = {
+            "API": self.llm_api_settings_widget,
+            "Claude Code": self.llm_claude_settings_widget,
+            "Codex": self.llm_codex_settings_widget,
+            "OpenCode": self.llm_opencode_settings_widget,
+            "Pi": self.llm_pi_settings_widget,
+            "Другое": self.llm_other_settings_widget,
+        }
+        for name, widget in widgets.items():
+            widget.setVisible(name == provider)
+
+        info_map = {
+            "API": "Режим автоопределения API: поддерживает OpenAI-compatible и Anthropic Messages API. localhost/local network тоже поддерживается, если сервер совместим с одним из этих форматов.",
+            "Claude Code": "Локальный Claude CLI. Используются путь к claude, модель и доп. аргументы.",
+            "Codex": "Локальный Codex CLI. Используются путь к codex, модель и доп. аргументы.",
+            "OpenCode": "Локальный OpenCode CLI. Будет запущен как команда + аргументы + промпт в конце.",
+            "Pi": "Локальный pi CLI. Можно указать внутренний provider для pi, модель и доп. аргументы.",
+            "Другое": "Произвольный CLI. Укажи команду и аргументы; промпт будет передан последним аргументом.",
+        }
+        self.lbl_llm_provider_info.setText(info_map.get(provider, ""))
+
+    def _ensure_llm_settings_dialog(self):
+        if getattr(self, "_llm_settings_dialog", None) is not None:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Настройки LLM")
+        dialog.setMinimumWidth(self._px(760))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
+        layout.setSpacing(self._px(8))
+        layout.addWidget(self._create_llm_api_group())
+
+        prompts_group = QGroupBox("Готовые промпты")
+        prompts_layout = QVBoxLayout()
+        prompts_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        prompts_layout.setSpacing(self._px(8))
+
+        prompts_layout.addWidget(QLabel("Промпт для выжимки:"))
+        self.txt_llm_summary_prompt = QTextEdit()
+        self.txt_llm_summary_prompt.setMinimumHeight(self._px(100))
+        prompts_layout.addWidget(self.txt_llm_summary_prompt)
+
+        prompts_layout.addWidget(QLabel("Промпт для задач:"))
+        self.txt_llm_tasks_prompt = QTextEdit()
+        self.txt_llm_tasks_prompt.setMinimumHeight(self._px(100))
+        prompts_layout.addWidget(self.txt_llm_tasks_prompt)
+        prompts_group.setLayout(prompts_layout)
+        layout.addWidget(prompts_group)
+
+        note_group = QGroupBox("Папка и сохранение")
+        note_layout = QVBoxLayout()
+        note_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        note_layout.setSpacing(self._px(8))
+        row = QHBoxLayout()
+        btn_output = QPushButton("Папка результатов LLM")
+        btn_output.setFixedHeight(self._px(36))
+        btn_output.clicked.connect(self._select_llm_output_folder)
+        row.addWidget(btn_output)
+        self.lbl_llm_output = QLabel("Папка не выбрана (по умолчанию - рядом с транскриптом)")
+        self.lbl_llm_output.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        row.addWidget(self.lbl_llm_output, 1)
+        note_layout.addLayout(row)
+        note = QLabel("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env.")
+        note.setWordWrap(True)
+        note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        note_layout.addWidget(note)
+        note_group.setLayout(note_layout)
+        layout.addWidget(note_group)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить")
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
+        buttons.accepted.connect(self._save_llm_settings_from_dialog)
+        buttons.rejected.connect(dialog.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+        self._llm_settings_dialog = dialog
+
+    def _save_llm_settings_from_dialog(self):
+        try:
+            self._collect_llm_settings()
+        except ValueError as e:
+            QMessageBox.warning(self, "Внимание", str(e))
+            return
+        self._save_ui_settings()
+        QMessageBox.information(self, "Настройки", "LLM-настройки сохранены")
+
+    def _open_llm_settings_dialog(self):
+        self._ensure_llm_settings_dialog()
+        self._llm_settings_dialog.exec()
+
+    def _create_llm_actions_group(self) -> QGroupBox:
+        group = QGroupBox("3. Что делать")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setSpacing(self._px(6))
+        self.llm_action_checkboxes = {}
+
+        row = QHBoxLayout()
+        row.setSpacing(self._px(20))
+        for key, label, checked in (
+            ("summary", "Выжимка", True),
+            ("tasks", "Задачи", False),
+            ("custom", "Свой промпт", False),
+        ):
+            cb = QCheckBox(label)
+            cb.setChecked(checked)
+            row.addWidget(cb)
+            self.llm_action_checkboxes[key] = cb
+        row.addStretch()
+        layout.addLayout(row)
+
+        note = QLabel("Отметьте один или несколько режимов обработки. Для «Свой промпт» заполните поле выше.")
+        note.setWordWrap(True)
+        note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        layout.addWidget(note)
+        group.setLayout(layout)
+        return group
+
+    def _create_llm_save_group(self) -> QGroupBox:
+        group = QGroupBox("4. Сохранение результатов")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setSpacing(self._px(6))
+        self.llm_export_checkboxes = {}
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(self._px(20))
+        for key, label, checked in (("txt", "TXT (.txt)", True), ("md", "Markdown (.md)", False), ("docx", "DOCX (.docx)", False)):
+            cb = QCheckBox(label)
+            cb.setChecked(checked)
+            row1.addWidget(cb)
+            self.llm_export_checkboxes[key] = cb
+        row1.addStretch()
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(self._px(10))
+        btn_output = QPushButton("Папка результатов LLM")
+        btn_output.setFixedHeight(self._px(36))
+        btn_output.clicked.connect(self._select_llm_output_folder)
+        row2.addWidget(btn_output)
+        self.lbl_llm_output = QLabel("Папка не выбрана (по умолчанию - рядом с транскриптом)")
+        self.lbl_llm_output.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        row2.addWidget(self.lbl_llm_output, 1)
+        layout.addLayout(row2)
+
+        note = QLabel("Если папка не выбрана, результат будет сохранен рядом с исходным транскриптом.")
+        note.setWordWrap(True)
+        note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        layout.addWidget(note)
+        group.setLayout(layout)
+        return group
+
+    def _create_llm_source_group(self) -> QGroupBox:
+        group = QGroupBox("1. Источник транскрипта")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setSpacing(self._px(6))
+
+        files_row = QHBoxLayout()
+        btn_select_transcripts = QPushButton("Выбрать транскрипты")
+        btn_select_transcripts.setFixedHeight(self._px(36))
+        btn_select_transcripts.clicked.connect(self._select_llm_transcript_files)
+        files_row.addWidget(btn_select_transcripts)
+        self.lbl_llm_files = QLabel("Файлы не выбраны")
+        self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
+        files_row.addWidget(self.lbl_llm_files, 1)
+        layout.addLayout(files_row)
+
+        info = QLabel("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже")
+        info.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        layout.addWidget(info)
+
+        self.txt_llm_transcript = QTextEdit()
+        self.txt_llm_transcript.setPlaceholderText("Вставьте сюда транскрипт, если не хотите выбирать файлы")
+        self.txt_llm_transcript.setMinimumHeight(self._px(170))
+        layout.addWidget(self.txt_llm_transcript)
+        group.setLayout(layout)
+        return group
+
+    def _create_llm_prompt_group(self) -> QGroupBox:
+        group = QGroupBox("2. Промпт")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setSpacing(self._px(6))
+
+        hint = QLabel("Кнопки «Выжимка» и «Задачи» используют готовые prompt. Ниже можно задать свой prompt для третьей кнопки.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        layout.addWidget(hint)
+
+        self.txt_llm_custom_prompt = QTextEdit()
+        self.txt_llm_custom_prompt.setPlaceholderText("Например: Составь список задач, рисков и решений по этому голосовому сообщению")
+        self.txt_llm_custom_prompt.setMinimumHeight(self._px(110))
+        layout.addWidget(self.txt_llm_custom_prompt)
+        group.setLayout(layout)
+        return group
+
+    def _create_llm_result_group(self) -> QGroupBox:
+        group = QGroupBox("5. Результат LLM")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setSpacing(self._px(6))
+
+        self.lbl_llm_status = QLabel("Готово к LLM-обработке")
+        self.lbl_llm_status.setWordWrap(True)
+        self.lbl_llm_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_llm_status.setStyleSheet(
+            self._transparent_label_style(self._colors()["text_sub"], font_pt=10, font_weight="bold")
+        )
+        layout.addWidget(self.lbl_llm_status)
+
+        self.txt_llm_result = QTextEdit()
+        self.txt_llm_result.setReadOnly(True)
+        self.txt_llm_result.setFont(self._font(10, fixed=True))
+        self.txt_llm_result.setMinimumHeight(self._px(260))
+        layout.addWidget(self.txt_llm_result, 1)
+        group.setLayout(layout)
+        return group
+
     # ──────────────────────────────────────────────────────────────
     # Диалог HF токена
     # ──────────────────────────────────────────────────────────────
@@ -1376,13 +1856,27 @@ class GigaTranscriberQtApp(QMainWindow):
         return True
 
     def _toggle_diarization(self, state):
+        if self._diarization_prompt_open:
+            return
         enabling = (state == Qt.CheckState.Checked.value)
         if enabling and not os.getenv("HF_TOKEN", "").startswith("hf_"):
-            if not self._show_hf_token_dialog():
-                self.cb_diarization.blockSignals(True)
-                self.cb_diarization.setChecked(False)
-                self.cb_diarization.blockSignals(False)
-                return
+            self._diarization_prompt_open = True
+            self.cb_diarization.setEnabled(False)
+            try:
+                if not self._show_hf_token_dialog():
+                    self.cb_diarization.blockSignals(True)
+                    self.cb_diarization.setChecked(False)
+                    self.cb_diarization.blockSignals(False)
+                    self.enable_diarization = False
+                    self.entry_num_speakers.setEnabled(False)
+                    for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
+                        cb = self.format_checkboxes.get(fmt)
+                        if cb:
+                            cb.setEnabled(False)
+                    return
+            finally:
+                self.cb_diarization.setEnabled(True)
+                self._diarization_prompt_open = False
         self.enable_diarization = enabling
         self.entry_num_speakers.setEnabled(self.enable_diarization)
         for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
@@ -1397,10 +1891,6 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _toggle_format(self, fmt: str):
         self.output_formats[fmt] = self.format_checkboxes[fmt].isChecked()
-        if not any(self.output_formats.values()):
-            self.output_formats['txt'] = True
-            self.format_checkboxes['txt'].setChecked(True)
-            self.log("ПРЕДУПРЕЖДЕНИЕ: Выбран хотя бы один формат по умолчанию (txt)")
 
     def _get_selected_formats(self) -> list:
         return [fmt for fmt, enabled in self.output_formats.items() if enabled]
@@ -1449,6 +1939,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.input_dir = file_dir
             self.user_settings.set_last_files_dir(file_dir)
         self._refresh_files_list()
+        self.user_settings.set_value("last_selected_audio_files", [p for p in self.files_to_process if os.path.isfile(p)])
         self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
         for f in unique_files:
             self.log(f" + {os.path.basename(f)}")
@@ -1508,6 +1999,7 @@ class GigaTranscriberQtApp(QMainWindow):
             if files:
                 self.files_to_process = files
                 self._refresh_files_list()
+                self.user_settings.set_value("last_selected_audio_files", [p for p in self.files_to_process if os.path.isfile(p)])
                 self.log(f"Добавлено из папки (включая подпапки): {len(files)} файлов")
                 for f in files:
                     self.log(f" + {os.path.relpath(f, folder)}")
@@ -1532,6 +2024,141 @@ class GigaTranscriberQtApp(QMainWindow):
         display_path = path if len(path) < 60 else f"...{path[-60:]}"
         self.lbl_output_folder.setText(display_path)
         self.lbl_output_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+
+    def _update_llm_output_dir_label(self, path: str):
+        display_path = path if len(path) < 60 else f"...{path[-60:]}"
+        self.lbl_llm_output.setText(display_path)
+        self.lbl_llm_output.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+
+    def _restore_ui_settings(self):
+        saved_formats = self.user_settings.get_value("output_formats", {}) or {}
+        for fmt, cb in self.format_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(bool(saved_formats.get(fmt, self.output_formats.get(fmt, False))))
+            cb.blockSignals(False)
+            self.output_formats[fmt] = cb.isChecked()
+
+        diarization_enabled = bool(self.user_settings.get_value("enable_diarization", False))
+        num_speakers = int(self.user_settings.get_value("num_speakers", 0) or 0)
+        self.cb_diarization.blockSignals(True)
+        self.cb_diarization.setChecked(diarization_enabled)
+        self.cb_diarization.blockSignals(False)
+        self.enable_diarization = diarization_enabled
+        self.entry_num_speakers.setEnabled(diarization_enabled)
+        self.entry_num_speakers.setValue(num_speakers)
+        for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
+            cb = self.format_checkboxes.get(fmt)
+            if cb:
+                cb.setEnabled(diarization_enabled)
+
+        provider = self.user_settings.get_value("llm_provider", "API")
+        index = self.combo_llm_provider.findText(provider)
+        self.combo_llm_provider.setCurrentIndex(index if index >= 0 else 0)
+        self.entry_llm_api_url.setText(self.user_settings.get_value("llm_api_url", LLM_API_URL))
+        self.entry_llm_api_key.setText(LLM_API_KEY)
+        self.entry_llm_model.setText(self.user_settings.get_value("llm_model", LLM_MODEL))
+        self.entry_llm_temperature.setText(str(self.user_settings.get_value("llm_temperature", LLM_TEMPERATURE)))
+        self.entry_llm_claude_path.setText(self.user_settings.get_value("llm_claude_path", shutil.which("claude") or "claude"))
+        self.entry_llm_claude_args.setText(self.user_settings.get_value("llm_claude_args", ""))
+        self.entry_llm_codex_path.setText(self.user_settings.get_value("llm_codex_path", shutil.which("codex") or "codex"))
+        self.entry_llm_codex_args.setText(self.user_settings.get_value("llm_codex_args", ""))
+        self.entry_llm_opencode_path.setText(self.user_settings.get_value("llm_opencode_path", shutil.which("opencode") or "opencode"))
+        self.entry_llm_opencode_args.setText(self.user_settings.get_value("llm_opencode_args", ""))
+        self.entry_llm_pi_path.setText(self.user_settings.get_value("llm_pi_path", shutil.which("pi") or "pi"))
+        self.entry_llm_pi_provider.setText(self.user_settings.get_value("llm_pi_provider", ""))
+        self.entry_llm_pi_args.setText(self.user_settings.get_value("llm_pi_args", ""))
+        self.entry_llm_other_path.setText(self.user_settings.get_value("llm_other_path", ""))
+        self.entry_llm_other_args.setText(self.user_settings.get_value("llm_other_args", ""))
+        self._update_llm_provider_fields(self.combo_llm_provider.currentText())
+        self.txt_llm_summary_prompt.setPlainText(self.user_settings.get_value("llm_summary_prompt", SUMMARY_PROMPT))
+        self.txt_llm_tasks_prompt.setPlainText(self.user_settings.get_value("llm_tasks_prompt", TASKS_PROMPT))
+        self.txt_llm_custom_prompt.setPlainText(self.user_settings.get_value("llm_custom_prompt", ""))
+        self.txt_llm_transcript.setPlainText(self.user_settings.get_value("llm_manual_transcript", ""))
+
+        tab_index = int(self.user_settings.get_value("active_tab_index", 0) or 0)
+        if 0 <= tab_index < self.tabs.count():
+            self.tabs.setCurrentIndex(tab_index)
+
+        saved_audio_files = self.user_settings.get_value("last_selected_audio_files", []) or []
+        self.files_to_process = [path for path in saved_audio_files if os.path.isfile(path)]
+        if self.files_to_process:
+            self._refresh_files_list()
+
+        saved_llm_actions = self.user_settings.get_value("llm_actions", {}) or {}
+        for key, cb in self.llm_action_checkboxes.items():
+            cb.setChecked(bool(saved_llm_actions.get(key, cb.isChecked())))
+
+        saved_llm_exports = self.user_settings.get_value("llm_export_formats", {}) or {}
+        for key, cb in self.llm_export_checkboxes.items():
+            cb.setChecked(bool(saved_llm_exports.get(key, cb.isChecked())))
+
+        saved_llm_files = self.user_settings.get_value("last_selected_transcript_files", []) or []
+        self.transcript_files_for_llm = [path for path in saved_llm_files if os.path.isfile(path)]
+        if self.transcript_files_for_llm:
+            self.lbl_llm_files.setText(f"Выбрано транскриптов: {len(self.transcript_files_for_llm)}")
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+
+    def _save_ui_settings(self):
+        self.user_settings.set_value("output_formats", self.output_formats)
+        self.user_settings.set_value("enable_diarization", self.cb_diarization.isChecked())
+        self.user_settings.set_value("num_speakers", self.entry_num_speakers.value())
+        self.user_settings.set_value("llm_provider", self.combo_llm_provider.currentText())
+        self.user_settings.set_value("llm_api_url", self.entry_llm_api_url.text().strip())
+        self.user_settings.set_value("llm_model", self.entry_llm_model.text().strip())
+        self.user_settings.set_value("llm_temperature", self.entry_llm_temperature.text().strip())
+        self.user_settings.set_value("llm_claude_path", self.entry_llm_claude_path.text().strip())
+        self.user_settings.set_value("llm_claude_args", self.entry_llm_claude_args.text().strip())
+        self.user_settings.set_value("llm_codex_path", self.entry_llm_codex_path.text().strip())
+        self.user_settings.set_value("llm_codex_args", self.entry_llm_codex_args.text().strip())
+        self.user_settings.set_value("llm_opencode_path", self.entry_llm_opencode_path.text().strip())
+        self.user_settings.set_value("llm_opencode_args", self.entry_llm_opencode_args.text().strip())
+        self.user_settings.set_value("llm_pi_path", self.entry_llm_pi_path.text().strip())
+        self.user_settings.set_value("llm_pi_provider", self.entry_llm_pi_provider.text().strip())
+        self.user_settings.set_value("llm_pi_args", self.entry_llm_pi_args.text().strip())
+        self.user_settings.set_value("llm_other_path", self.entry_llm_other_path.text().strip())
+        self.user_settings.set_value("llm_other_args", self.entry_llm_other_args.text().strip())
+        self.user_settings.set_value("llm_summary_prompt", self.txt_llm_summary_prompt.toPlainText())
+        self.user_settings.set_value("llm_tasks_prompt", self.txt_llm_tasks_prompt.toPlainText())
+        self.user_settings.set_value("llm_custom_prompt", self.txt_llm_custom_prompt.toPlainText())
+        self.user_settings.set_value("llm_manual_transcript", self.txt_llm_transcript.toPlainText())
+        self.user_settings.set_value("active_tab_index", self.tabs.currentIndex())
+        self.user_settings.set_value("llm_actions", {k: cb.isChecked() for k, cb in self.llm_action_checkboxes.items()})
+        self.user_settings.set_value("llm_export_formats", {k: cb.isChecked() for k, cb in self.llm_export_checkboxes.items()})
+        self.user_settings.set_value("last_selected_audio_files", [p for p in self.files_to_process if os.path.isfile(p)])
+        self.user_settings.set_value("last_selected_transcript_files", [p for p in self.transcript_files_for_llm if os.path.isfile(p)])
+        if self.llm_output_dir:
+            self.user_settings.set_value("llm_output_dir", self.llm_output_dir)
+        if self.llm_transcript_dir:
+            self.user_settings.set_value("llm_transcript_dir", self.llm_transcript_dir)
+
+    def _select_llm_transcript_files(self):
+        initial_dir = self.user_settings.get_value("llm_transcript_dir", self.llm_transcript_dir)
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Выберите транскрипты",
+            initial_dir,
+            "Транскрипты (*.txt *.md *.srt *.vtt);;Текстовые файлы (*.txt *.md);;Все файлы (*.*)"
+        )
+        if files:
+            self.transcript_files_for_llm = files
+            folder = os.path.dirname(files[0])
+            self.llm_transcript_dir = folder
+            if not self.llm_output_dir:
+                self.llm_output_dir = folder
+                self._update_llm_output_dir_label(folder)
+            self.user_settings.set_value("llm_transcript_dir", folder)
+            self.user_settings.set_value("last_selected_transcript_files", files)
+            self.lbl_llm_files.setText(f"Выбрано транскриптов: {len(files)}")
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+            self.lbl_llm_status.setText("Транскрипты готовы к LLM-обработке")
+
+    def _select_llm_output_folder(self):
+        initial_dir = self.llm_output_dir or self.output_dir or os.path.expanduser("~")
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения LLM-результатов", initial_dir)
+        if folder:
+            self.llm_output_dir = folder
+            self.user_settings.set_value("llm_output_dir", folder)
+            self._update_llm_output_dir_label(folder)
 
     # ──────────────────────────────────────────────────────────────
     # Загрузка по ссылке
@@ -1617,6 +2244,414 @@ class GigaTranscriberQtApp(QMainWindow):
         self.log(f"Ошибка загрузки: {message}")
         QMessageBox.warning(self, "Ошибка загрузки", message)
 
+    def _clear_llm_result(self):
+        if self.is_llm_processing:
+            QMessageBox.information(self, "Внимание", "LLM-обработка уже выполняется")
+            return
+        self.txt_llm_result.clear()
+        self.llm_last_result_text = ""
+        self.llm_last_result_name = "llm_result"
+        self.lbl_llm_status.setText("Готово к LLM-обработке")
+
+    def _selected_llm_modes(self):
+        modes = []
+        if self.llm_action_checkboxes["summary"].isChecked():
+            prompt = self.txt_llm_summary_prompt.toPlainText().strip() or SUMMARY_PROMPT
+            modes.append(("summary", "Выжимка", prompt))
+        if self.llm_action_checkboxes["tasks"].isChecked():
+            prompt = self.txt_llm_tasks_prompt.toPlainText().strip() or TASKS_PROMPT
+            modes.append(("tasks", "Задачи", prompt))
+        if self.llm_action_checkboxes["custom"].isChecked():
+            custom_prompt = self.txt_llm_custom_prompt.toPlainText().strip()
+            if not custom_prompt:
+                raise ValueError("Для режима «Свой промпт» заполните поле промпта")
+            modes.append(("custom", "Свой промпт", custom_prompt))
+        if not modes:
+            raise ValueError("Выберите хотя бы один чекбокс в блоке «Что делать»")
+        return modes
+
+    def _selected_llm_export_formats(self):
+        formats = [key for key, cb in self.llm_export_checkboxes.items() if cb.isChecked()]
+        if not formats:
+            raise ValueError("Выберите хотя бы один формат сохранения результата")
+        return formats
+
+    def _start_llm_processing(self):
+        if self.is_llm_processing:
+            return
+        try:
+            llm_settings = self._collect_llm_settings()
+            items = self._collect_llm_inputs()
+            modes = self._selected_llm_modes()
+            export_formats = self._selected_llm_export_formats()
+        except ValueError as e:
+            QMessageBox.warning(self, "Внимание", str(e))
+            return
+
+        self._save_ui_settings()
+        self.is_llm_processing = True
+        self._set_llm_buttons_enabled(False)
+        self.lbl_llm_status.setText("Идет LLM-обработка...")
+        self.txt_llm_result.clear()
+        threading.Thread(
+            target=self._run_llm_processing,
+            args=(llm_settings, items, modes, export_formats),
+            daemon=True,
+        ).start()
+
+    def _collect_llm_settings(self) -> dict:
+        provider = self.combo_llm_provider.currentText().strip() or "API"
+        api_url = self.entry_llm_api_url.text().strip()
+        api_key = self.entry_llm_api_key.text().strip()
+        model = self.entry_llm_model.text().strip()
+        temperature_text = self.entry_llm_temperature.text().strip() or str(LLM_TEMPERATURE)
+        try:
+            temperature = float(temperature_text)
+        except ValueError:
+            raise ValueError("Temperature должно быть числом")
+        if not 0 <= temperature <= 2:
+            raise ValueError("Temperature должно быть в диапазоне 0..2")
+
+        if provider == "API":
+            if not api_url:
+                raise ValueError("Укажите API URL")
+            if not api_key:
+                raise ValueError("Укажите API Key")
+            if not model:
+                raise ValueError("Укажите модель")
+        elif provider == "Claude Code":
+            claude_path = self.entry_llm_claude_path.text().strip() or "claude"
+            if not (shutil.which(claude_path) or os.path.isfile(claude_path)):
+                raise ValueError(f"Не найден Claude Code: {claude_path}")
+        elif provider == "Codex":
+            codex_path = self.entry_llm_codex_path.text().strip() or "codex"
+            if not (shutil.which(codex_path) or os.path.isfile(codex_path)):
+                raise ValueError(f"Не найден Codex: {codex_path}")
+        elif provider == "OpenCode":
+            opencode_path = self.entry_llm_opencode_path.text().strip() or "opencode"
+            if not (shutil.which(opencode_path) or os.path.isfile(opencode_path)):
+                raise ValueError(f"Не найден OpenCode: {opencode_path}")
+        elif provider == "Pi":
+            pi_path = self.entry_llm_pi_path.text().strip() or "pi"
+            if not (shutil.which(pi_path) or os.path.isfile(pi_path)):
+                raise ValueError(f"Не найден Pi: {pi_path}")
+        elif provider == "Другое":
+            other_path = self.entry_llm_other_path.text().strip()
+            if not other_path:
+                raise ValueError("Укажите команду для провайдера «Другое»")
+            if not (shutil.which(other_path) or os.path.isfile(other_path)):
+                raise ValueError(f"Не найдена команда: {other_path}")
+        return {
+            "provider": provider,
+            "api_url": api_url,
+            "api_key": api_key,
+            "model": model,
+            "temperature": temperature,
+            "claude_path": self.entry_llm_claude_path.text().strip() or "claude",
+            "claude_args": self.entry_llm_claude_args.text().strip(),
+            "codex_path": self.entry_llm_codex_path.text().strip() or "codex",
+            "codex_args": self.entry_llm_codex_args.text().strip(),
+            "opencode_path": self.entry_llm_opencode_path.text().strip() or "opencode",
+            "opencode_args": self.entry_llm_opencode_args.text().strip(),
+            "pi_path": self.entry_llm_pi_path.text().strip() or "pi",
+            "pi_provider": self.entry_llm_pi_provider.text().strip(),
+            "pi_args": self.entry_llm_pi_args.text().strip(),
+            "other_path": self.entry_llm_other_path.text().strip(),
+            "other_args": self.entry_llm_other_args.text().strip(),
+        }
+
+    def _collect_llm_inputs(self):
+        manual_text = self.txt_llm_transcript.toPlainText().strip()
+        items = []
+        if manual_text:
+            base_name = "manual_transcript"
+            if self.transcript_files_for_llm:
+                base_name = Path(self.transcript_files_for_llm[0]).stem
+            items.append({"name": base_name, "text": manual_text, "source_path": self.transcript_files_for_llm[0] if self.transcript_files_for_llm else None})
+        for path in self.transcript_files_for_llm:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read().strip()
+            except OSError:
+                continue
+            if text:
+                items.append({"name": Path(path).stem, "text": text, "source_path": path})
+        if not items:
+            raise ValueError("Выберите хотя бы один транскрипт или вставьте текст вручную")
+        return items
+
+    def _build_llm_prompt_text(self, transcript_text: str, prompt: str) -> str:
+        return (
+            "Ты обрабатываешь транскрипт на русском языке. "
+            "Не выдумывай факты, явно помечай неясности.\n\n"
+            f"Инструкция:\n{prompt.strip()}\n\n"
+            f"Транскрипт:\n{transcript_text.strip()}\n"
+        )
+
+    def _run_api_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+        client = LLMClient(LLMSettings(
+            api_url=llm_settings["api_url"],
+            api_key=llm_settings["api_key"],
+            model=llm_settings["model"],
+            temperature=llm_settings["temperature"],
+        ))
+        return client.process_transcript(transcript_text, prompt)
+
+    def _run_claude_code_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+        command = [llm_settings["claude_path"], "-p", "--output-format", "text"]
+        if llm_settings.get("model"):
+            command += ["--model", llm_settings["model"]]
+        if llm_settings.get("claude_args"):
+            command += shlex.split(llm_settings["claude_args"])
+        command.append(self._build_llm_prompt_text(transcript_text, prompt))
+        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "Claude Code завершился с ошибкой").strip())
+        answer = (result.stdout or "").strip()
+        if not answer:
+            raise RuntimeError("Claude Code вернул пустой ответ")
+        return answer
+
+    def _run_codex_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
+            output_path = tmp.name
+        try:
+            command = [llm_settings["codex_path"], "exec", "-o", output_path]
+            if llm_settings.get("model"):
+                command += ["-m", llm_settings["model"]]
+            if llm_settings.get("codex_args"):
+                command += shlex.split(llm_settings["codex_args"])
+            command.append("-")
+            result = subprocess.run(
+                command,
+                input=self._build_llm_prompt_text(transcript_text, prompt),
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "Codex завершился с ошибкой").strip())
+            with open(output_path, "r", encoding="utf-8") as f:
+                answer = f.read().strip()
+            if not answer:
+                raise RuntimeError("Codex вернул пустой ответ")
+            return answer
+        finally:
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+
+    def _run_generic_cli_prompt(self, command: list[str], error_name: str) -> str:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or f"{error_name} завершился с ошибкой").strip())
+        answer = (result.stdout or "").strip()
+        if not answer:
+            raise RuntimeError(f"{error_name} вернул пустой ответ")
+        return answer
+
+    def _run_opencode_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+        command = [llm_settings["opencode_path"]]
+        if llm_settings.get("model"):
+            command += ["--model", llm_settings["model"]]
+        if llm_settings.get("opencode_args"):
+            command += shlex.split(llm_settings["opencode_args"])
+        command.append(self._build_llm_prompt_text(transcript_text, prompt))
+        return self._run_generic_cli_prompt(command, "OpenCode")
+
+    def _run_pi_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+        command = [llm_settings["pi_path"], "-p", "--mode", "text"]
+        if llm_settings.get("pi_provider"):
+            command += ["--provider", llm_settings["pi_provider"]]
+        if llm_settings.get("model"):
+            command += ["--model", llm_settings["model"]]
+        if llm_settings.get("pi_args"):
+            command += shlex.split(llm_settings["pi_args"])
+        command.append(self._build_llm_prompt_text(transcript_text, prompt))
+        return self._run_generic_cli_prompt(command, "Pi")
+
+    def _run_other_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+        command = [llm_settings["other_path"]]
+        if llm_settings.get("other_args"):
+            command += shlex.split(llm_settings["other_args"])
+        command.append(self._build_llm_prompt_text(transcript_text, prompt))
+        return self._run_generic_cli_prompt(command, "Внешний CLI")
+
+    def _run_llm_provider(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+        provider = llm_settings.get("provider", "API")
+        if provider == "API":
+            return self._run_api_llm(llm_settings, transcript_text, prompt)
+        if provider == "Claude Code":
+            return self._run_claude_code_llm(llm_settings, transcript_text, prompt)
+        if provider == "Codex":
+            return self._run_codex_llm(llm_settings, transcript_text, prompt)
+        if provider == "OpenCode":
+            return self._run_opencode_llm(llm_settings, transcript_text, prompt)
+        if provider == "Pi":
+            return self._run_pi_llm(llm_settings, transcript_text, prompt)
+        if provider == "Другое":
+            return self._run_other_llm(llm_settings, transcript_text, prompt)
+        raise RuntimeError(f"Неизвестный LLM-провайдер: {provider}")
+
+    def _run_llm_processing(self, llm_settings: dict, items: list, modes: list, export_formats: list):
+        try:
+            results = []
+            total = len(items)
+            last_name = "llm_result"
+            provider = llm_settings.get("provider", "API")
+            for item_index, item in enumerate(items, start=1):
+                name = item["name"]
+                last_name = name
+                item_blocks = []
+                for mode_suffix, mode_label, prompt in modes:
+                    self.log(f"LLM: обработка {item_index}/{total} — {name} — {mode_label} — {provider}")
+                    answer = self._run_llm_provider(llm_settings, item["text"], prompt)
+                    saved_paths = self._save_llm_result(item, answer, mode_suffix, export_formats)
+                    block = f"=== {name} / {mode_label} / {provider} ===\n{answer}"
+                    if saved_paths:
+                        block += "\n\nСохранено:\n" + "\n".join(saved_paths)
+                    item_blocks.append(block)
+                results.append("\n\n".join(item_blocks))
+            mode_suffixes = "_".join(mode[0] for mode in modes)
+            self.llm_last_result_name = f"{last_name}_llm_{mode_suffixes}"
+            final_text = "\n\n".join(results)
+            self.signals.llm_finished.emit(True, f"LLM-обработка завершена: {total} файл(ов)", final_text)
+        except Exception as e:
+            error_text = str(e).strip() or "Неизвестная ошибка"
+            self.signals.llm_finished.emit(False, f"Ошибка LLM: {self._compact_llm_error(error_text)}", error_text)
+
+    def _compact_llm_error(self, error_text: str, limit: int = 180) -> str:
+        raw_text = (error_text or "").strip()
+        lowered = raw_text.lower()
+
+        friendly_rules = [
+            (("refresh token was revoked", "please log out and sign in again"), "Codex: сессия истекла или токен отозван — нужно заново войти в Codex"),
+            (("token_invalidated", "authentication token has been invalidated"), "Codex: токен недействителен — перелогиньтесь"),
+            (("your session has ended", "refresh_token_invalidated"), "Codex: сессия завершилась — выполните codex logout и codex login"),
+            (("connection refused", "127.0.0.1", "/v1/responses"), "Codex: локальный backend недоступен — проверьте, запущен ли нужный сервер/провайдер"),
+            (("failed to refresh available models", "missing field `base_instructions`"), "Codex: сервер моделей отдает несовместимый формат ответа — провайдер/прокси не полностью совместим с Codex"),
+            (("failed to decode models response",), "Codex: провайдер вернул неожиданный формат списка моделей"),
+            (("401", "anthropic"), "Anthropic API: ошибка авторизации (401) — проверьте API key"),
+            (("401", "openai"), "OpenAI-compatible API: ошибка авторизации (401) — проверьте API key"),
+            (("401", "unauthorized"), "Ошибка авторизации (401) — проверьте ключ, токен или логин выбранного провайдера"),
+            (("403", "forbidden"), "Доступ запрещен (403) — у аккаунта или ключа не хватает прав"),
+            (("404",), "Endpoint не найден (404) — проверьте URL API и путь /v1/..."),
+            (("429", "rate"), "Превышен лимит запросов (429) — попробуйте позже или смените тариф/провайдера"),
+            (("insufficient_quota",), "Закончилась квота API — проверьте биллинг или лимиты"),
+            (("model_not_found",), "Указанная модель не найдена — проверьте точное имя модели"),
+            (("does not exist", "model"), "Указанная модель не существует у выбранного провайдера"),
+            (("invalid x-api-key",), "Неверный Anthropic API key"),
+            (("incorrect api key",), "Неверный API key"),
+            (("could not resolve host",), "Не удалось найти хост — проверьте URL и интернет-соединение"),
+            (("name or service not known",), "Не удалось найти сервер — проверьте адрес API"),
+            (("max retries exceeded",), "Не удалось подключиться к API после нескольких попыток"),
+            (("read timed out", "timeout"), "Сервер слишком долго отвечает — попробуйте позже или увеличьте timeout"),
+            (("connection timed out",), "Таймаут соединения — сервер недоступен или отвечает слишком долго"),
+            (("ssl", "certificate"), "Ошибка SSL-сертификата — проверьте HTTPS/сертификат сервера"),
+            (("command not found",), "Не найдена команда CLI-провайдера — проверьте путь в настройках"),
+            (("not found", "claude"), "Claude Code не найден — проверьте путь к команде claude"),
+            (("not found", "codex"), "Codex не найден — проверьте путь к команде codex"),
+            (("not found", "opencode"), "OpenCode не найден — проверьте путь к команде opencode"),
+            (("not found", "pi"), "Pi не найден — проверьте путь к команде pi"),
+        ]
+        for needles, message in friendly_rules:
+            if all(needle in lowered for needle in needles):
+                return message
+
+        text = " ".join(raw_text.split())
+        if len(text) <= limit:
+            return text
+        return text[:limit - 1] + "…"
+
+    def _write_llm_output_file(self, save_path: str, content: str, export_format: str):
+        if export_format in ("txt", "md"):
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return
+        if export_format == "docx":
+            from docx import Document
+            doc = Document()
+            for block in content.split("\n\n"):
+                doc.add_paragraph(block)
+            doc.save(save_path)
+
+    def _save_llm_result(self, item: dict, answer: str, mode_suffix: str, export_formats: list) -> list[str]:
+        source_path = item.get("source_path")
+        if self.llm_output_dir:
+            target_dir = self.llm_output_dir
+        elif source_path:
+            target_dir = os.path.dirname(source_path)
+        else:
+            target_dir = os.getcwd()
+        os.makedirs(target_dir, exist_ok=True)
+        saved_paths = []
+        for export_format in export_formats:
+            save_path = os.path.join(target_dir, f"{item['name']}_llm_{mode_suffix}.{export_format}")
+            self._write_llm_output_file(save_path, answer, export_format)
+            saved_paths.append(save_path)
+        return saved_paths
+
+    def _set_llm_buttons_enabled(self, enabled: bool):
+        self.btn_llm_process.setEnabled(enabled)
+        self.btn_llm_clear.setEnabled(enabled)
+
+    def _on_llm_finished(self, success: bool, message: str, result_text: str):
+        self.is_llm_processing = False
+        self._set_llm_buttons_enabled(True)
+        self.lbl_llm_status.setText(message)
+        if result_text:
+            self.llm_last_result_text = result_text
+            self.txt_llm_result.setPlainText(result_text)
+        elif not success:
+            self.llm_last_result_text = ""
+            self.txt_llm_result.setPlainText(message)
+        if success:
+            QMessageBox.information(self, "Готово", message)
+        else:
+            QMessageBox.warning(self, "Ошибка", message)
+
+    def _export_llm_result(self, export_format: str):
+        result_text = self.txt_llm_result.toPlainText().strip()
+        if not result_text:
+            QMessageBox.information(self, "Внимание", "Нет результата для экспорта")
+            return
+        suffix = {"txt": "txt", "md": "md", "docx": "docx"}[export_format]
+        initial_dir = self.llm_output_dir or self.output_dir or os.path.expanduser("~")
+        default_name = f"{self.llm_last_result_name}.{suffix}"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            f"Сохранить результат как {suffix.upper()}",
+            os.path.join(initial_dir, default_name),
+            f"{suffix.upper()} files (*.{suffix})"
+        )
+        if not save_path:
+            return
+        if not save_path.lower().endswith(f".{suffix}"):
+            save_path += f".{suffix}"
+        try:
+            if export_format in ("txt", "md"):
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write(result_text)
+            else:
+                try:
+                    from docx import Document
+                except Exception:
+                    QMessageBox.warning(self, "Ошибка", "Для экспорта в DOCX установите пакет python-docx")
+                    return
+                doc = Document()
+                for block in result_text.split("\n\n"):
+                    doc.add_paragraph(block)
+                doc.save(save_path)
+            target_dir = os.path.dirname(save_path)
+            if target_dir:
+                self.llm_output_dir = target_dir
+                self.user_settings.set_value("llm_output_dir", target_dir)
+                self._update_llm_output_dir_label(target_dir)
+            self.lbl_llm_status.setText(f"Результат экспортирован: {os.path.basename(save_path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось экспортировать результат: {e}")
+
     # ──────────────────────────────────────────────────────────────
     # Обработка файлов
     # ──────────────────────────────────────────────────────────────
@@ -1696,6 +2731,9 @@ class GigaTranscriberQtApp(QMainWindow):
             return
         if not self.files_to_process:
             QMessageBox.warning(self, "Внимание", "Выберите хотя бы один файл для обработки!")
+            return
+        if not any(self.output_formats.values()):
+            QMessageBox.warning(self, "Внимание", "Выберите хотя бы один формат вывода!")
             return
         if not self.output_dir:
             self.log("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.")
@@ -1796,6 +2834,7 @@ class GigaTranscriberQtApp(QMainWindow):
             files_failed = 0
             failed_names = []
             time_spent = 0.0
+            generated_transcript_files = []
             for i, filepath in enumerate(files):
                 if self._cancel_requested:
                     self.log("Обработка отменена пользователем")
@@ -1820,6 +2859,9 @@ class GigaTranscriberQtApp(QMainWindow):
                     )
                     if result['success']:
                         files_processed += 1
+                        for saved_file in result.get('saved_files', []):
+                            if saved_file.lower().endswith(('.txt', '.md', '.srt', '.vtt')):
+                                generated_transcript_files.append(saved_file)
                     else:
                         files_failed += 1
                         failed_names.append(os.path.basename(filepath))
@@ -1851,6 +2893,7 @@ class GigaTranscriberQtApp(QMainWindow):
                     shown += f" и ещё {len(failed_names) - 5}"
                 message += f"\nНе удалось: {shown}\nПодробности — на вкладке «Журнал обработки»."
             success = (files_processed > 0) and (files_failed == 0) and not cancelled
+            self._last_generated_transcript_files = generated_transcript_files
             self.signals.processing_finished.emit(success, message)
         except Exception as e:
             self.log(f"Критическая ошибка: {str(e)}")
@@ -1942,6 +2985,17 @@ class GigaTranscriberQtApp(QMainWindow):
         has_results = bool(self._last_result_dir) and os.path.isdir(self._last_result_dir)
         self.btn_open_result.setVisible(has_results)
 
+        generated_files = [p for p in self._last_generated_transcript_files if os.path.isfile(p)]
+        if generated_files:
+            self.transcript_files_for_llm = generated_files
+            self.user_settings.set_value("last_selected_transcript_files", generated_files)
+            self.llm_transcript_dir = os.path.dirname(generated_files[0])
+            if not self.llm_output_dir:
+                self.llm_output_dir = self.llm_transcript_dir
+                self._update_llm_output_dir_label(self.llm_output_dir)
+            self.lbl_llm_files.setText(f"Выбрано транскриптов: {len(generated_files)}")
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+
         box = QMessageBox(self)
         box.setWindowTitle("Готово" if success else "Завершено")
         box.setIcon(QMessageBox.Icon.Information if success else QMessageBox.Icon.Warning)
@@ -1971,6 +3025,7 @@ class GigaTranscriberQtApp(QMainWindow):
             self.user_settings.set_last_output_dir(self.output_dir)
         if self.input_dir:
             self.user_settings.set_last_files_dir(self.input_dir)
+        self._save_ui_settings()
         self._save_geometry()
         self.app_logger.log_session_end()
         event.accept()

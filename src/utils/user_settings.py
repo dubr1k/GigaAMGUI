@@ -87,3 +87,12 @@ class UserSettings:
             self.settings["last_files_dir"] = path
             self._save_settings()
 
+    def get_value(self, key: str, default=None):
+        """Вернуть произвольную настройку."""
+        return self.settings.get(key, default)
+
+    def set_value(self, key: str, value):
+        """Сохранить произвольную настройку."""
+        self.settings[key] = value
+        self._save_settings()
+

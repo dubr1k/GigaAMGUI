@@ -17,6 +17,8 @@ _LAZY = {
     'SpeakerSegment':          ('.diarization', 'SpeakerSegment'),
     'get_diarization_manager': ('.diarization', 'get_diarization_manager'),
     'AppLogger':               ('.logger', 'AppLogger'),
+    'LLMClient':               ('.llm_client', 'LLMClient'),
+    'LLMSettings':             ('.llm_client', 'LLMSettings'),
     'LoggerAdapter':           ('.logger', 'LoggerAdapter'),
     'DownloadResult':          ('.media_downloader', 'DownloadResult'),
     'MediaDownloader':         ('.media_downloader', 'MediaDownloader'),
