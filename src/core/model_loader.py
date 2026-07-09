@@ -2,6 +2,9 @@
 Модуль загрузки и управления моделью GigaAM
 """
 
+import os
+import sys
+
 import torch
 import gigaam
 
@@ -14,6 +17,22 @@ class ModelLoader:
     def __init__(self):
         self.model = None
         self.device = None
+
+    def _bundled_download_root(self) -> str | None:
+        """Return bundled GigaAM model directory when the app ships with weights."""
+        roots = []
+        frozen_root = getattr(sys, "_MEIPASS", None)
+        if frozen_root:
+            roots.append(frozen_root)
+        roots.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+        for root in roots:
+            candidate = os.path.join(root, "models", "gigaam")
+            ckpt = os.path.join(candidate, "v3_e2e_rnnt.ckpt")
+            tokenizer = os.path.join(candidate, "v3_e2e_rnnt_tokenizer.model")
+            if os.path.isfile(ckpt) and os.path.isfile(tokenizer):
+                return candidate
+        return None
 
     def _select_device(self) -> str:
         """Выбирает устройство вычисления.
@@ -63,10 +82,14 @@ class ModelLoader:
                 logger(f"Устройство вычисления: {self.device.upper()}")
 
             use_fp16 = self.device != "cpu"
+            download_root = self._bundled_download_root()
+            if logger and download_root:
+                logger("Используется встроенная модель GigaAM из приложения.")
             self.model = gigaam.load_model(
                 "e2e_rnnt",
                 fp16_encoder=use_fp16,
                 device=self.device,
+                download_root=download_root,
             )
 
             if logger:

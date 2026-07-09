@@ -60,8 +60,9 @@ def _windows_startupinfo():
 
 
 def ffmpeg_available() -> bool:
-    """Проверяет наличие ffmpeg и ffprobe в PATH (для предполётной проверки)."""
-    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+    """Проверяет наличие ffmpeg в bundle/bin проекта или PATH."""
+    ffmpeg = _find_ffmpeg()
+    return os.path.isfile(ffmpeg) or shutil.which(ffmpeg) is not None
 
 
 class AudioConverter:
@@ -224,5 +225,5 @@ class AudioConverter:
             return temp_wav
 
         except FileNotFoundError:
-            self.logger("ОШИБКА: FFmpeg не найден! Установите ffmpeg и добавьте в PATH.")
+            self.logger("ОШИБКА: FFmpeg не найден в bundle/bin приложения и PATH.")
             return None

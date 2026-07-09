@@ -11,7 +11,7 @@ echo ""
 
 # ── Найти Python ──────────────────────────────────────────────────────────────
 PYTHON=""
-for py in python3 python; do
+for py in .venv/bin/python python3 python; do
     if command -v "$py" &>/dev/null; then
         PYTHON="$py"
         break
@@ -28,13 +28,14 @@ $PYTHON --version
 echo ""
 
 # ── Проверить gigaam ──────────────────────────────────────────────────────────
-if ! $PYTHON -c "import gigaam" 2>/dev/null; then
+if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6" 2>/dev/null; then
     echo "[ERROR] Пакет gigaam не найден. Установи зависимости:"
-    echo "  pip install -r requirements.txt"
-    echo "  pip install git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam --no-build-isolation"
+    echo "  python3 -m venv .venv"
+    echo "  .venv/bin/python -m pip install -r requirements.txt"
+    echo "  .venv/bin/python -m pip install git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam --no-build-isolation"
     exit 1
 fi
-echo "[OK] gigaam найден"
+echo "[OK] зависимости GUI найдены"
 
 # ── PyInstaller ───────────────────────────────────────────────────────────────
 echo ""
@@ -51,6 +52,7 @@ rm -rf "dist/GigaAMTranscriber.app" "dist/GigaAMTranscriber" "build/GigaAMTransc
 echo ""
 echo "[3/3] Сборка .app (может занять 5-20 минут)..."
 echo ""
+export PYTHONPATH="$(pwd)/pyinstaller_hooks${PYTHONPATH:+:$PYTHONPATH}"
 $PYTHON -m PyInstaller gigaam_app_mac.spec --noconfirm
 
 echo ""

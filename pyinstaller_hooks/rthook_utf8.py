@@ -4,6 +4,16 @@ import types
 import io
 import os
 
+try:
+    import numpy as np
+
+    if not hasattr(np, 'NaN'):
+        np.NaN = np.nan
+    if not hasattr(np, 'NAN'):
+        np.NAN = np.nan
+except Exception:
+    pass
+
 # Mock torchcodec для портативной сборки: pyannote.audio пытается импортировать
 # torchcodec при загрузке модуля io.py. В портативной сборке torchcodec исключён,
 # а аудио загружается через soundfile (см. pyannote_patch.py).

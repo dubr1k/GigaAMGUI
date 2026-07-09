@@ -7,6 +7,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from ..config import user_config_dir
+
 
 class AppLogger:
     """Класс для настройки и управления логированием"""
@@ -17,8 +19,7 @@ class AppLogger:
             base_dir: базовая директория проекта (по умолчанию - корень проекта)
         """
         if base_dir is None:
-            # Определяем корень проекта (на 2 уровня выше от utils)
-            base_dir = Path(__file__).parent.parent.parent
+            base_dir = user_config_dir()
 
         self.base_dir = Path(base_dir)
         self.logs_dir = self.base_dir / "logs"
@@ -140,7 +141,7 @@ class AppLogger:
             days: количество дней (логи старше будут удалены)
         """
         if base_dir is None:
-            base_dir = Path(__file__).parent.parent.parent
+            base_dir = user_config_dir()
 
         logs_dir = Path(base_dir) / "logs"
         if not logs_dir.exists():

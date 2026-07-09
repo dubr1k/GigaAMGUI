@@ -11,6 +11,47 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+APP_CONFIG_DIR_NAME = "GigaAMTranscriber"
+
+
+def user_config_dir() -> Path:
+    """Persistent per-user config directory outside the app bundle."""
+    override = os.environ.get("GIGAAM_CONFIG_DIR")
+    if override:
+        return Path(override)
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_CONFIG_DIR_NAME
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / APP_CONFIG_DIR_NAME
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / APP_CONFIG_DIR_NAME
+
+
+def user_env_path() -> Path:
+    return user_config_dir() / ".env"
+
+
+def project_env_path() -> Path:
+    return Path(__file__).resolve().parent.parent / ".env"
+
+
+def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
+    """Save one KEY=value pair to the persistent user .env file."""
+    target = env_path or user_env_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if target.exists():
+        lines = [
+            line for line in target.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(f"{key}=")
+        ]
+    lines.append(f"{key}={value}")
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ[key] = value
+    return target
+
+
 def _has_cyrillic(text: str) -> bool:
     """Проверяет наличие кириллических символов в строке"""
     return bool(re.search(r'[а-яА-ЯёЁ]', text))
@@ -48,14 +89,10 @@ def _setup_huggingface_cache():
 # Загрузка переменных из .env файла
 def load_env():
     """Загружает переменные окружения из .env файла"""
-    env_path = Path(__file__).parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path, override=False)
-    else:
-        # Пытаемся загрузить из корня проекта
-        root_env = Path(__file__).parent.parent.parent / '.env'
-        if root_env.exists():
-            load_dotenv(root_env, override=False)
+    # User config wins for packaged .app and survives app replacement.
+    for env_path in (user_env_path(), project_env_path(), Path(__file__).resolve().parent.parent.parent / ".env"):
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
 
 
 # Настраиваем HuggingFace cache ДО загрузки переменных окружения

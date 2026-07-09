@@ -4,6 +4,7 @@
 """
 
 import os
+import json
 import shlex
 import shutil
 import subprocess
@@ -13,7 +14,12 @@ import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QObject, Qt, QTimer, QUrl, pyqtSignal
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
+
+from PyQt6.QtCore import QByteArray, QEvent, QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QColor,
@@ -57,6 +63,7 @@ from PyQt6.QtWidgets import (
 from ..config import (
     APP_TITLE, MEDIA_EXTENSIONS, OUTPUT_FORMATS, STATS_FILE,
     LLM_API_URL, LLM_API_KEY, LLM_MODEL, LLM_TEMPERATURE,
+    save_env_value, user_config_dir,
 )
 from ..core import ModelLoader, TranscriptionProcessor
 from ..utils import (
@@ -67,6 +74,8 @@ from ..utils import (
 _BASE_FONT_PT = 12.0
 _MIN_UI_SCALE = 0.85
 _MAX_UI_SCALE = 1.75
+_INSTANCE_LOCK_NAME = "instance.lock"
+_OPEN_REQUESTS_NAME = "open_requests.jsonl"
 
 SUMMARY_PROMPT = (
     "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
@@ -118,6 +127,41 @@ class WorkerSignals(QObject):
     download_finished = pyqtSignal(list)
     download_failed = pyqtSignal(str)
     llm_finished = pyqtSignal(bool, str, str)
+
+
+class GigaApplication(QApplication):
+    """QApplication with macOS Finder/Dock open-file event support."""
+
+    file_open_requested = pyqtSignal(list)
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        self._pending_open_paths = []
+
+    def event(self, event):
+        if event.type() == QEvent.Type.FileOpen:
+            path = ""
+            try:
+                url = event.url()
+                if url.isLocalFile():
+                    path = url.toLocalFile()
+            except Exception:
+                path = ""
+            if not path:
+                try:
+                    path = event.file()
+                except Exception:
+                    path = ""
+            if path:
+                self._pending_open_paths.append(path)
+                self.file_open_requested.emit([path])
+            return True
+        return super().event(event)
+
+    def take_pending_open_paths(self):
+        paths = self._pending_open_paths[:]
+        self._pending_open_paths.clear()
+        return paths
 
 
 class GigaTranscriberQtApp(QMainWindow):
@@ -2028,22 +2072,16 @@ class GigaTranscriberQtApp(QMainWindow):
         if not token.startswith("hf_"):
             QMessageBox.warning(self, self._t("Неверный токен", "Invalid token"), self._t("Токен должен начинаться с 'hf_'", "The token must start with 'hf_'."))
             return False
-        os.environ["HF_TOKEN"] = token
-        env_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            '.env'
-        )
         try:
-            lines = []
-            if os.path.exists(env_path):
-                with open(env_path) as f:
-                    lines = [line for line in f.readlines() if not line.startswith('HF_TOKEN=')]
-            lines.append(f'HF_TOKEN={token}\n')
-            with open(env_path, 'w') as f:
-                f.writelines(lines)
-            self.log("Токен сохранён в .env")
-        except Exception:
-            pass
+            env_path = save_env_value("HF_TOKEN", token)
+            self.log(f"Токен сохранён: {env_path}")
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                self._t("Не удалось сохранить токен", "Could not save token"),
+                str(exc),
+            )
+            return False
         return True
 
     def _toggle_diarization(self, state):
@@ -2096,6 +2134,68 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _append_log(self, message: str):
         self.log_text.append(f">> {message}")
+
+    def open_paths_from_system(self, paths: list, append: bool = True):
+        """Open files received from Finder, Dock, CLI args, or another app instance."""
+        media_files, transcript_files = self._collect_supported_open_paths(paths)
+        if media_files:
+            if hasattr(self, "tabs"):
+                self.tabs.setCurrentIndex(0)
+            self._apply_dropped_or_selected_files(media_files, append=append)
+        if transcript_files:
+            if hasattr(self, "tabs"):
+                self.tabs.setCurrentIndex(1)
+            self.transcript_files_for_llm = transcript_files if not append else self._merge_paths(
+                self.transcript_files_for_llm, transcript_files
+            )
+            folder = os.path.dirname(transcript_files[0])
+            self.llm_transcript_dir = folder
+            self.user_settings.set_value("llm_transcript_dir", folder)
+            self.user_settings.set_value("last_selected_transcript_files", self.transcript_files_for_llm)
+            self._refresh_llm_files_list()
+            self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
+        if not media_files and not transcript_files and paths:
+            QMessageBox.information(
+                self,
+                self._t("Неподдерживаемый формат", "Unsupported format"),
+                self._t("Файлы не являются поддерживаемыми медиа или транскриптами (.txt, .md, .srt, .vtt).", "Files are not supported media or transcript files (.txt, .md, .srt, .vtt)."),
+            )
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _merge_paths(self, existing_paths: list, new_paths: list) -> list:
+        merged = []
+        seen = set()
+        for path in list(existing_paths) + list(new_paths):
+            normalized = os.path.abspath(path)
+            if normalized not in seen:
+                merged.append(path)
+                seen.add(normalized)
+        return merged
+
+    def _collect_supported_open_paths(self, paths: list):
+        transcript_exts = (".txt", ".md", ".srt", ".vtt")
+        media_files = []
+        transcript_files = []
+        for raw_path in paths:
+            path = os.path.abspath(os.path.expanduser(str(raw_path)))
+            if os.path.isdir(path):
+                for root, _dirs, filenames in os.walk(path):
+                    for filename in filenames:
+                        full = os.path.join(root, filename)
+                        lower = filename.lower()
+                        if lower.endswith(MEDIA_EXTENSIONS):
+                            media_files.append(full)
+                        elif lower.endswith(transcript_exts):
+                            transcript_files.append(full)
+            elif os.path.isfile(path):
+                lower = path.lower()
+                if lower.endswith(MEDIA_EXTENSIONS):
+                    media_files.append(path)
+                elif lower.endswith(transcript_exts):
+                    transcript_files.append(path)
+        return self._merge_paths([], media_files), self._merge_paths([], transcript_files)
 
     def _select_files(self):
         initial_dir = self.user_settings.get_last_files_dir() or self.input_dir or os.path.expanduser("~")
@@ -2156,46 +2256,7 @@ class GigaTranscriberQtApp(QMainWindow):
             event.acceptProposedAction()
             return
 
-        transcript_exts = (".txt", ".md", ".srt", ".vtt")
-        media_files = []
-        transcript_files = []
-        for url in urls:
-            path = url.toLocalFile()
-            if not path:
-                continue
-            if os.path.isdir(path):
-                for root, _dirs, filenames in os.walk(path):
-                    for f in filenames:
-                        lower = f.lower()
-                        full = os.path.join(root, f)
-                        if lower.endswith(MEDIA_EXTENSIONS):
-                            media_files.append(full)
-                        elif lower.endswith(transcript_exts):
-                            transcript_files.append(full)
-            elif os.path.isfile(path):
-                lower = path.lower()
-                if lower.endswith(MEDIA_EXTENSIONS):
-                    media_files.append(path)
-                elif lower.endswith(transcript_exts):
-                    transcript_files.append(path)
-
-        current_tab = self.tabs.currentIndex() if hasattr(self, "tabs") else 0
-        if transcript_files and current_tab == 1:
-            self.transcript_files_for_llm = transcript_files
-            folder = os.path.dirname(transcript_files[0])
-            self.llm_transcript_dir = folder
-            self.user_settings.set_value("llm_transcript_dir", folder)
-            self.user_settings.set_value("last_selected_transcript_files", transcript_files)
-            self._refresh_llm_files_list()
-            self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
-        elif media_files:
-            self._apply_dropped_or_selected_files(media_files)
-        elif urls:
-            QMessageBox.information(
-                self,
-                self._t("Неподдерживаемый формат", "Unsupported format"),
-                self._t("Сброшенные файлы не являются поддерживаемыми медиа или транскриптами (.txt, .md, .srt, .vtt).", "Dropped files are not supported media or transcript files (.txt, .md, .srt, .vtt)."),
-            )
+        self.open_paths_from_system([url.toLocalFile() for url in urls if url.toLocalFile()], append=True)
         event.acceptProposedAction()
 
     def _select_files_folder(self):
@@ -2316,6 +2377,12 @@ class GigaTranscriberQtApp(QMainWindow):
         self.user_settings.set_value("num_speakers", self.entry_num_speakers.value())
         self.user_settings.set_value("llm_provider", self.combo_llm_provider.currentText())
         self.user_settings.set_value("llm_api_url", self.entry_llm_api_url.text().strip())
+        llm_api_key = self.entry_llm_api_key.text().strip()
+        if llm_api_key:
+            try:
+                save_env_value("LLM_API_KEY", llm_api_key)
+            except OSError as exc:
+                self.log(f"Не удалось сохранить LLM API key: {exc}")
         self.user_settings.set_value("llm_model", self.entry_llm_model.text().strip())
         self.user_settings.set_value("llm_temperature", self.entry_llm_temperature.text().strip())
         self.user_settings.set_value("llm_claude_path", self.entry_llm_claude_path.text().strip())
@@ -3313,6 +3380,80 @@ class GigaTranscriberQtApp(QMainWindow):
         QMessageBox.warning(self, self._t("Ошибка загрузки", "Model loading error"), message)
 
 
+def _argv_open_paths(argv: list) -> list:
+    paths = []
+    for arg in argv[1:]:
+        if arg.startswith("-psn_"):
+            continue
+        path = os.path.abspath(os.path.expanduser(arg))
+        if os.path.exists(path):
+            paths.append(path)
+    return paths
+
+
+def _instance_lock_path() -> Path:
+    return user_config_dir() / _INSTANCE_LOCK_NAME
+
+
+def _open_requests_path() -> Path:
+    return user_config_dir() / _OPEN_REQUESTS_NAME
+
+
+def _try_acquire_instance_lock():
+    lock_path = _instance_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("w", encoding="utf-8")
+    if fcntl is None:
+        return lock_file
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
+def _queue_open_request(paths: list) -> None:
+    queue_path = _open_requests_path()
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"paths": paths, "pid": os.getpid(), "time": time.time()}
+    with queue_path.open("a", encoding="utf-8") as queue:
+        queue.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _install_open_request_poller(window: GigaTranscriberQtApp):
+    queue_path = _open_requests_path()
+    timer = QTimer(window)
+
+    def poll_requests():
+        if not queue_path.exists():
+            return
+        try:
+            lines = queue_path.read_text(encoding="utf-8").splitlines()
+            queue_path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            window.log(f"Не удалось прочитать очередь open requests: {exc}")
+            return
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            paths = payload.get("paths") or []
+            if isinstance(paths, list):
+                window.open_paths_from_system(paths, append=True)
+
+    timer.timeout.connect(poll_requests)
+    timer.start(500)
+    window._open_request_poller = timer
+    QTimer.singleShot(0, poll_requests)
+    return timer
+
+
 def run_qt_app(app=None):
     """Запускает приложение на PyQt6.
 
@@ -3325,8 +3466,14 @@ def run_qt_app(app=None):
         except Exception:
             pass
 
-    app = app or QApplication.instance() or QApplication(sys.argv)
+    app = app or QApplication.instance() or GigaApplication(sys.argv)
     app.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
+
+    initial_open_paths = _argv_open_paths(sys.argv)
+    instance_lock = getattr(app, "_gigaam_instance_lock_file", None) or _try_acquire_instance_lock()
+    if instance_lock is None:
+        _queue_open_request(initial_open_paths)
+        sys.exit(0)
 
     icon_path = os.path.join(
         getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
@@ -3336,7 +3483,17 @@ def run_qt_app(app=None):
         app.setWindowIcon(QIcon(icon_path))
 
     window = GigaTranscriberQtApp()
+    window._instance_lock_file = instance_lock
+    _install_open_request_poller(window)
+    if isinstance(app, GigaApplication):
+        app.file_open_requested.connect(lambda paths: window.open_paths_from_system(paths, append=True))
     window.show()
+    if initial_open_paths:
+        QTimer.singleShot(0, lambda: window.open_paths_from_system(initial_open_paths, append=True))
+    if isinstance(app, GigaApplication):
+        pending_open_paths = app.take_pending_open_paths()
+        if pending_open_paths:
+            QTimer.singleShot(0, lambda paths=pending_open_paths: window.open_paths_from_system(paths, append=True))
 
     if sys.platform == 'win32' and os.path.exists(icon_path):
         def _set_win32_icon():
