@@ -119,10 +119,16 @@ class ModelLoader:
         if self.model is None:
             raise RuntimeError("Модель не загружена")
 
+        import soundfile as sf
         import torchaudio
         SAMPLE_RATE = 16000
 
-        wav_data, sr = torchaudio.load(audio_path)
+        # TorchAudio 2.9+ delegates torchaudio.load() to TorchCodec.  Portable
+        # builds intentionally do not ship TorchCodec because its FFmpeg linkage
+        # is fragile, so decode the normalized WAV produced by AudioConverter
+        # with libsndfile instead.  This path is identical on Windows and macOS.
+        samples, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+        wav_data = torch.from_numpy(samples.T.copy())
         audio = wav_data.mean(0)
         if sr != SAMPLE_RATE:
             audio = torchaudio.functional.resample(audio, sr, SAMPLE_RATE)
