@@ -254,7 +254,28 @@ body {
 .input:focus { border-color: var(--accent); }
 .input:disabled { opacity: 0.5; }
 .input-small { max-width: 250px; flex: 0 0 250px; }
-.llm-textarea { width: 100%; min-height: 140px; resize: vertical; }
+.llm-textarea {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-height: 140px;
+    resize: vertical;
+}
+
+.llm-source-card {
+    display: flex;
+    flex-direction: column;
+}
+
+.llm-source-card .drop-zone {
+    width: 100%;
+}
+
+.llm-source-card .llm-textarea {
+    flex: 0 0 auto;
+    min-width: 0;
+    margin-top: 14px;
+}
 
 /* ===== LABELS ===== */
 .label { color: var(--text); font-size: 14px; white-space: nowrap; }
