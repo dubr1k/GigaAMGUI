@@ -7,18 +7,19 @@ name: Build portable
 # gigaam/pyannote — в итоговый файл он не попадает (см. gigaam_app_portable.spec).
 
 on:
-  workflow_dispatch:        # ручной запуск из вкладки Actions
+  workflow_dispatch:
   push:
     tags:
-      - "v*"                # сборка релиза по тегу vX.Y.Z
+      - "v*"
 
 permissions:
-  contents: write            # нужно для прикрепления файлов к релизу
+  contents: write
 
 jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+
     strategy:
       fail-fast: false
       matrix:
@@ -28,11 +29,13 @@ jobs:
             asset: GigaAMTranscriber-windows-x64.exe
             built: dist/GigaAMTranscriber_portable.exe
             torch_index: "--index-url https://download.pytorch.org/whl/cpu"
-          - os: macos-14           # Apple Silicon (arm64)
+
+          - os: macos-14
             label: macOS arm64
             asset: GigaAMTranscriber-macos-arm64
             built: dist/GigaAMTranscriber_portable
-            torch_index: ""        # PyPI: сборка с поддержкой MPS
+            torch_index: ""
+
           - os: ubuntu-latest
             label: Linux x64
             asset: GigaAMTranscriber-linux-x64
@@ -46,7 +49,7 @@ jobs:
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"     # версия определяет теги колёс torch при загрузке
+          python-version: "3.11"
           cache: pip
 
       # ffmpeg нужен приложению в рантайме; в Linux ставим системный для сборки IO-зависимостей.
@@ -54,8 +57,12 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # GigaAM на указанном коммите использует pkg_resources в setup.py.
+      # pkg_resources удалён из новых setuptools, поэтому фиксируем последнюю безопасную ветку.
       - name: Upgrade pip toolchain
-        run: python -m pip install --upgrade pip wheel setuptools
+        run: |
+          python -m pip install --upgrade pip wheel "setuptools==81.0.0"
+          python -c "import setuptools, pkg_resources; print('setuptools:', setuptools.__version__); print('pkg_resources: OK')"
 
       # torch в окружении сборки — только для анализа PyInstaller (в бинарник не попадёт).
       - name: Install build-time torch
@@ -70,8 +77,13 @@ jobs:
           python -m pip install -r requirements.ci.txt
 
       # gigaam собирается из git и требует уже установленный torch → --no-build-isolation.
+      # Перед установкой повторно фиксируем setuptools, чтобы предыдущие pip-операции
+      # не могли утащить окружение на setuptools без pkg_resources.
       - name: Install gigaam
-        run: python -m pip install "git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam" --no-build-isolation
+        run: |
+          python -m pip install --upgrade "setuptools==81.0.0" wheel
+          python -c "import pkg_resources; print('pkg_resources: OK before GigaAM install')"
+          python -m pip install "git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam" --no-build-isolation
 
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
