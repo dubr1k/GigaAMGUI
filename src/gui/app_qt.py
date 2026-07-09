@@ -410,6 +410,23 @@ class GigaTranscriberQtApp(QMainWindow):
         text_width = max(metrics.horizontalAdvance(label) for label in labels)
         return text_width + self._px(36)
 
+    def _label_column_width(self, labels: tuple[str, ...], extra: int = 6) -> int:
+        """Ширина колонки, достаточная для самого длинного лейбла из набора.
+
+        Используется, чтобы поля формы (значения справа от лейблов) всегда
+        начинались с одной и той же координаты X, даже если тексты лейблов
+        разной длины ("Провайдер:", "Модель:", "API URL:" и т.д.).
+        """
+        metrics = QFontMetrics(self._font(10))
+        text_width = max(metrics.horizontalAdvance(label) for label in labels)
+        return text_width + self._px(extra)
+
+    def _form_label(self, text: str, column_width: int) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setFixedWidth(column_width)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return lbl
+
     def _toggle_theme(self):
         self._theme = "dark" if self._theme == "light" else "light"
         self.user_settings.settings["theme"] = self._theme
@@ -570,8 +587,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 border: none;
             }}
             QTabWidget::pane {{
-                border: 1px solid {c["border"]};
-                border-radius: {self._px(6)}px;
+                border: none;
                 background-color: {c["bg"]};
             }}
             QTabBar::tab {{
@@ -599,7 +615,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 font-size: {self._pt_css(11)}pt;
                 border: 1px solid {c["border"]};
                 border-radius: {self._px(8)}px;
-                margin-top: {self._px(26)}px;
+                margin-top: {self._px(18)}px;
                 padding-top: {self._px(10)}px;
                 background-color: {c["bg_card"]};
                 color: {c["text"]};
@@ -608,7 +624,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 left: {self._px(14)}px;
-                padding: 0 {self._px(6)}px {self._px(14)}px {self._px(6)}px;
+                padding: 0 {self._px(6)}px 0 {self._px(6)}px;
                 color: {c["text_sub"]};
                 background: transparent;
             }}
@@ -616,7 +632,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 background-color: {c["btn_bg"]};
                 border: 1px solid {c["btn_border"]};
                 border-radius: {self._px(6)}px;
-                padding: {self._px(10)}px {self._px(17)}px {self._px(10)}px {self._px(17)}px;
+                padding: {self._px(7)}px {self._px(17)}px {self._px(7)}px {self._px(17)}px;
                 color: {c["btn_text"]};
                 font-size: {self._pt_css(10)}pt;
             }}
@@ -693,7 +709,7 @@ class GigaTranscriberQtApp(QMainWindow):
             QLineEdit {{
                 border: 1px solid {c["btn_border"]};
                 border-radius: {self._px(6)}px;
-                padding: {self._px(10)}px {self._px(11)}px {self._px(10)}px {self._px(11)}px;
+                padding: {self._px(7)}px {self._px(11)}px {self._px(7)}px {self._px(11)}px;
                 background-color: {c["input_bg"]};
                 color: {c["text"]};
                 selection-background-color: {c["input_sel"]};
@@ -784,7 +800,7 @@ class GigaTranscriberQtApp(QMainWindow):
                 border: none;
                 background: transparent;
             }}
-            QListWidget#files_list {{
+            QListWidget#files_list, QListWidget#llm_files_list {{
                 background-color: {c["input_bg"]};
                 border: 1px solid {c["border"]};
                 border-radius: {self._px(6)}px;
@@ -792,15 +808,15 @@ class GigaTranscriberQtApp(QMainWindow):
                 font-size: {self._pt_css(10)}pt;
                 padding: {self._px(2)}px;
             }}
-            QListWidget#files_list::item {{
+            QListWidget#files_list::item, QListWidget#llm_files_list::item {{
                 padding: {self._px(3)}px {self._px(6)}px;
                 border-radius: {self._px(4)}px;
             }}
-            QListWidget#files_list::item:selected {{
+            QListWidget#files_list::item:selected, QListWidget#llm_files_list::item:selected {{
                 background-color: {c["accent"]};
                 color: #ffffff;
             }}
-            QListWidget#files_list::item:hover:!selected {{
+            QListWidget#files_list::item:hover:!selected, QListWidget#llm_files_list::item:hover:!selected {{
                 background-color: {c["btn_hover_bg"]};
             }}
             QSpinBox {{
@@ -940,8 +956,8 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _init_ui(self):
         self.setWindowTitle(APP_TITLE)
-        self.setMinimumSize(self._px(940), self._px(600))
-        self.resize(self._px(1040), self._px(940))
+        self.setMinimumSize(self._px(940), self._px(680))
+        self.resize(self._px(1040), self._px(1000))
 
         self._build_menu_bar()
 
@@ -954,6 +970,11 @@ class GigaTranscriberQtApp(QMainWindow):
         # Заголовок + кнопка темы
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
+
+        self._header_left_spacer = QWidget()
+        header_btn_width = self._px(48) + self._px(42) + header_row.spacing()
+        self._header_left_spacer.setFixedWidth(header_btn_width)
+        header_row.addWidget(self._header_left_spacer)
 
         self._title_label = QLabel("GigaAM v3: Транскрибация")
         self._title_label.setFont(self._font(18, QFont.Weight.Bold))
@@ -984,7 +1005,7 @@ class GigaTranscriberQtApp(QMainWindow):
         # ── Вкладка «Обработка» ──
         content_widget = QWidget()
         main_layout = QVBoxLayout(content_widget)
-        main_layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(6))
+        main_layout.setContentsMargins(self._px(8), self._px(14), self._px(8), self._px(6))
         main_layout.setSpacing(self._px(4))
 
         main_layout.addWidget(self._create_files_group())
@@ -1028,7 +1049,7 @@ class GigaTranscriberQtApp(QMainWindow):
         # ── Вкладка «Журнал» ──
         log_tab = QWidget()
         log_layout = QVBoxLayout(log_tab)
-        log_layout.setContentsMargins(self._px(8), self._px(8), self._px(8), self._px(8))
+        log_layout.setContentsMargins(self._px(8), self._px(14), self._px(8), self._px(8))
         log_layout.setSpacing(self._px(6))
 
         log_toolbar = QHBoxLayout()
@@ -1329,7 +1350,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("1. Выбор файлов")
         self.grp_files = group
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        main_layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
         main_layout.setSpacing(self._px(6))
 
         row1 = QHBoxLayout()
@@ -1419,6 +1440,16 @@ class GigaTranscriberQtApp(QMainWindow):
         group.setLayout(main_layout)
         return group
 
+    def _size_list_to_contents(self, list_widget: QListWidget, min_rows: int = 1, max_rows: int = 5):
+        """Выставляет высоту списка по числу строк, вместо фиксированного
+        большого блока с пустым местом для 1-2 файлов."""
+        row_h = list_widget.sizeHintForRow(0)
+        if row_h <= 0:
+            row_h = self._px(24)
+        count = max(min_rows, min(max_rows, list_widget.count() or min_rows))
+        frame = self._px(2) * 2 + self._px(4)
+        list_widget.setFixedHeight(row_h * count + frame)
+
     def _refresh_files_list(self):
         """Синхронизирует QListWidget и пустое состояние с self.files_to_process."""
         if not hasattr(self, "files_list"):
@@ -1432,6 +1463,8 @@ class GigaTranscriberQtApp(QMainWindow):
         has_files = bool(self.files_to_process)
         self.files_list.setVisible(has_files)
         self.drop_hint.setVisible(not has_files)
+        if has_files:
+            self._size_list_to_contents(self.files_list)
         c = self._colors()
         if has_files:
             self.lbl_files_count.setText(f"Выбрано файлов: {len(self.files_to_process)}")
@@ -1510,7 +1543,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("2. Папка сохранения результатов")
         self.grp_output = group
         layout = QHBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(10))
         layout.setSpacing(self._px(12))
         self.btn_output_select = QPushButton("Выбрать папку")
         btn_output = self.btn_output_select
@@ -1528,7 +1561,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("3. Диаризация спикеров")
         self.grp_diarization = group
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(10))
         layout.setSpacing(self._px(8))
         self.cb_diarization = QCheckBox("Включить диаризацию спикеров")
         self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)")
@@ -1561,7 +1594,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("4. Форматы вывода")
         self.grp_formats = group
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(10))
         layout.setSpacing(self._px(6))
         self.format_checkboxes = {}
 
@@ -1595,7 +1628,7 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_llm_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(6))
+        layout.setContentsMargins(self._px(8), self._px(14), self._px(8), self._px(6))
         layout.setSpacing(self._px(4))
 
         layout.addWidget(self._create_llm_source_group())
@@ -1624,11 +1657,13 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_llm_api_group(self) -> QGroupBox:
         group = QGroupBox("LLM API")
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(20), self._px(12), self._px(10))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(10))
         layout.setSpacing(self._px(8))
 
+        label_col = self._label_column_width(("Провайдер:", "Модель:", "API URL:", "API Key:"))
+
         provider_row = QHBoxLayout()
-        provider_row.addWidget(QLabel("Провайдер:"))
+        provider_row.addWidget(self._form_label("Провайдер:", label_col))
         self.combo_llm_provider = QComboBox()
         self.combo_llm_provider.addItems(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Другое"])
         self.combo_llm_provider.setMinimumWidth(self._px(180))
@@ -1637,10 +1672,11 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addLayout(provider_row)
 
         common_row = QHBoxLayout()
-        common_row.addWidget(QLabel("Модель:"))
+        common_row.addWidget(self._form_label("Модель:", label_col))
         self.entry_llm_model = QLineEdit()
         self.entry_llm_model.setPlaceholderText("gpt-4.1-mini / sonnet / o3 / qwen ...")
         common_row.addWidget(self.entry_llm_model, 1)
+        common_row.addSpacing(self._px(12))
         common_row.addWidget(QLabel("Temperature:"))
         self.entry_llm_temperature = QLineEdit()
         self.entry_llm_temperature.setMaximumWidth(self._px(110))
@@ -1648,17 +1684,18 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addLayout(common_row)
 
         self.llm_api_settings_widget = QWidget()
+        self.llm_api_settings_widget.setStyleSheet("background: transparent;")
         api_layout = QVBoxLayout(self.llm_api_settings_widget)
         api_layout.setContentsMargins(0, 0, 0, 0)
         api_layout.setSpacing(self._px(8))
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("API URL:"))
+        row1.addWidget(self._form_label("API URL:", label_col))
         self.entry_llm_api_url = QLineEdit()
         self.entry_llm_api_url.setPlaceholderText("https://api.openai.com/v1")
         row1.addWidget(self.entry_llm_api_url, 1)
         api_layout.addLayout(row1)
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("API Key:"))
+        row2.addWidget(self._form_label("API Key:", label_col))
         self.entry_llm_api_key = QLineEdit()
         self.entry_llm_api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.entry_llm_api_key.setPlaceholderText("Bearer token / API key")
@@ -1667,17 +1704,19 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addWidget(self.llm_api_settings_widget)
 
         self.llm_claude_settings_widget = QWidget()
+        self.llm_claude_settings_widget.setStyleSheet("background: transparent;")
         claude_layout = QVBoxLayout(self.llm_claude_settings_widget)
         claude_layout.setContentsMargins(0, 0, 0, 0)
         claude_layout.setSpacing(self._px(8))
+        claude_col = self._label_column_width(("Claude Code путь:", "Claude доп. аргументы:"))
         row4 = QHBoxLayout()
-        row4.addWidget(QLabel("Claude Code путь:"))
+        row4.addWidget(self._form_label("Claude Code путь:", claude_col))
         self.entry_llm_claude_path = QLineEdit()
         self.entry_llm_claude_path.setPlaceholderText("claude")
         row4.addWidget(self.entry_llm_claude_path, 1)
         claude_layout.addLayout(row4)
         row5 = QHBoxLayout()
-        row5.addWidget(QLabel("Claude доп. аргументы:"))
+        row5.addWidget(self._form_label("Claude доп. аргументы:", claude_col))
         self.entry_llm_claude_args = QLineEdit()
         self.entry_llm_claude_args.setPlaceholderText("например: --permission-mode bypassPermissions")
         row5.addWidget(self.entry_llm_claude_args, 1)
@@ -1685,17 +1724,19 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addWidget(self.llm_claude_settings_widget)
 
         self.llm_codex_settings_widget = QWidget()
+        self.llm_codex_settings_widget.setStyleSheet("background: transparent;")
         codex_layout = QVBoxLayout(self.llm_codex_settings_widget)
         codex_layout.setContentsMargins(0, 0, 0, 0)
         codex_layout.setSpacing(self._px(8))
+        codex_col = self._label_column_width(("Codex путь:", "Codex доп. аргументы:"))
         row6 = QHBoxLayout()
-        row6.addWidget(QLabel("Codex путь:"))
+        row6.addWidget(self._form_label("Codex путь:", codex_col))
         self.entry_llm_codex_path = QLineEdit()
         self.entry_llm_codex_path.setPlaceholderText("codex")
         row6.addWidget(self.entry_llm_codex_path, 1)
         codex_layout.addLayout(row6)
         row7 = QHBoxLayout()
-        row7.addWidget(QLabel("Codex доп. аргументы:"))
+        row7.addWidget(self._form_label("Codex доп. аргументы:", codex_col))
         self.entry_llm_codex_args = QLineEdit()
         self.entry_llm_codex_args.setPlaceholderText("например: --dangerously-bypass-approvals-and-sandbox")
         row7.addWidget(self.entry_llm_codex_args, 1)
@@ -1703,17 +1744,19 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addWidget(self.llm_codex_settings_widget)
 
         self.llm_opencode_settings_widget = QWidget()
+        self.llm_opencode_settings_widget.setStyleSheet("background: transparent;")
         opencode_layout = QVBoxLayout(self.llm_opencode_settings_widget)
         opencode_layout.setContentsMargins(0, 0, 0, 0)
         opencode_layout.setSpacing(self._px(8))
+        opencode_col = self._label_column_width(("OpenCode путь:", "OpenCode доп. аргументы:"))
         row8 = QHBoxLayout()
-        row8.addWidget(QLabel("OpenCode путь:"))
+        row8.addWidget(self._form_label("OpenCode путь:", opencode_col))
         self.entry_llm_opencode_path = QLineEdit()
         self.entry_llm_opencode_path.setPlaceholderText("opencode")
         row8.addWidget(self.entry_llm_opencode_path, 1)
         opencode_layout.addLayout(row8)
         row9 = QHBoxLayout()
-        row9.addWidget(QLabel("OpenCode доп. аргументы:"))
+        row9.addWidget(self._form_label("OpenCode доп. аргументы:", opencode_col))
         self.entry_llm_opencode_args = QLineEdit()
         self.entry_llm_opencode_args.setPlaceholderText("например: --print")
         row9.addWidget(self.entry_llm_opencode_args, 1)
@@ -1721,23 +1764,25 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addWidget(self.llm_opencode_settings_widget)
 
         self.llm_pi_settings_widget = QWidget()
+        self.llm_pi_settings_widget.setStyleSheet("background: transparent;")
         pi_layout = QVBoxLayout(self.llm_pi_settings_widget)
         pi_layout.setContentsMargins(0, 0, 0, 0)
         pi_layout.setSpacing(self._px(8))
+        pi_col = self._label_column_width(("Pi путь:", "Pi provider:", "Pi доп. аргументы:"))
         row10 = QHBoxLayout()
-        row10.addWidget(QLabel("Pi путь:"))
+        row10.addWidget(self._form_label("Pi путь:", pi_col))
         self.entry_llm_pi_path = QLineEdit()
         self.entry_llm_pi_path.setPlaceholderText("pi")
         row10.addWidget(self.entry_llm_pi_path, 1)
         pi_layout.addLayout(row10)
         row11 = QHBoxLayout()
-        row11.addWidget(QLabel("Pi provider:"))
+        row11.addWidget(self._form_label("Pi provider:", pi_col))
         self.entry_llm_pi_provider = QLineEdit()
         self.entry_llm_pi_provider.setPlaceholderText("openai / anthropic / google ...")
         row11.addWidget(self.entry_llm_pi_provider, 1)
         pi_layout.addLayout(row11)
         row12 = QHBoxLayout()
-        row12.addWidget(QLabel("Pi доп. аргументы:"))
+        row12.addWidget(self._form_label("Pi доп. аргументы:", pi_col))
         self.entry_llm_pi_args = QLineEdit()
         self.entry_llm_pi_args.setPlaceholderText("например: --no-tools --thinking low")
         row12.addWidget(self.entry_llm_pi_args, 1)
@@ -1745,17 +1790,19 @@ class GigaTranscriberQtApp(QMainWindow):
         layout.addWidget(self.llm_pi_settings_widget)
 
         self.llm_other_settings_widget = QWidget()
+        self.llm_other_settings_widget.setStyleSheet("background: transparent;")
         other_layout = QVBoxLayout(self.llm_other_settings_widget)
         other_layout.setContentsMargins(0, 0, 0, 0)
         other_layout.setSpacing(self._px(8))
+        other_col = self._label_column_width(("Команда:", "Аргументы:"))
         row13 = QHBoxLayout()
-        row13.addWidget(QLabel("Команда:"))
+        row13.addWidget(self._form_label("Команда:", other_col))
         self.entry_llm_other_path = QLineEdit()
         self.entry_llm_other_path.setPlaceholderText("путь к CLI, например my-llm")
         row13.addWidget(self.entry_llm_other_path, 1)
         other_layout.addLayout(row13)
         row14 = QHBoxLayout()
-        row14.addWidget(QLabel("Аргументы:"))
+        row14.addWidget(self._form_label("Аргументы:", other_col))
         self.entry_llm_other_args = QLineEdit()
         self.entry_llm_other_args.setPlaceholderText("аргументы; промпт будет добавлен в конец как последний параметр")
         row14.addWidget(self.entry_llm_other_args, 1)
@@ -1807,7 +1854,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
         prompts_group = QGroupBox("Готовые промпты")
         prompts_layout = QVBoxLayout()
-        prompts_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        prompts_layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
         prompts_layout.setSpacing(self._px(8))
 
         self.lbl_llm_summary_prompt = QLabel("Промпт для выжимки:")
@@ -1825,16 +1872,11 @@ class GigaTranscriberQtApp(QMainWindow):
         prompts_group.setLayout(prompts_layout)
         layout.addWidget(prompts_group)
 
-        note_group = QGroupBox("Сохранение настроек")
-        note_layout = QVBoxLayout()
-        note_layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
-        note_layout.setSpacing(self._px(8))
         note = QLabel("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env.")
         note.setWordWrap(True)
+        note.setContentsMargins(self._px(4), self._px(2), self._px(4), self._px(2))
         note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
-        note_layout.addWidget(note)
-        note_group.setLayout(note_layout)
-        layout.addWidget(note_group)
+        layout.addWidget(note)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить")
@@ -1862,7 +1904,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("3. Что сделать")
         self.grp_llm_actions = group
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
         self.llm_action_checkboxes = {}
 
@@ -1891,7 +1933,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("2. Куда сохранить")
         self.grp_llm_output = group
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
 
         row = QHBoxLayout()
@@ -1917,7 +1959,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("4. Форматы вывода")
         self.grp_llm_save = group
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
         self.llm_export_checkboxes = {}
 
@@ -1937,7 +1979,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("1. Источник транскрипта")
         self.grp_llm_source = group
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
 
         files_row = QHBoxLayout()
@@ -1946,10 +1988,10 @@ class GigaTranscriberQtApp(QMainWindow):
         btn_select_transcripts.setFixedHeight(self._px(36))
         btn_select_transcripts.clicked.connect(self._select_llm_transcript_files)
         files_row.addWidget(btn_select_transcripts)
-        self.lbl_llm_files = QLabel("Файлы не выбраны")
-        self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
-        files_row.addWidget(self.lbl_llm_files, 1)
+        files_row.addStretch()
         layout.addLayout(files_row)
+        # Совместимость с кодом, обращающимся к self.lbl_llm_files напрямую в lbl_llm_files_count
+        # (единая видимая метка статуса вместо двух дублирующих надписей).
 
         self.llm_drop_hint = QLabel("Перетащите сюда транскрипты  ·  либо нажмите «Выбрать транскрипты»")
         self.llm_drop_hint.setObjectName("llm_drop_hint")
@@ -1972,6 +2014,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_llm_files_count = QLabel("Файлы не выбраны")
         self.lbl_llm_files_count.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
         controls.addWidget(self.lbl_llm_files_count)
+        self.lbl_llm_files = self.lbl_llm_files_count
         controls.addStretch()
         self.btn_remove_llm_file = QPushButton("Убрать выбранное")
         self.btn_remove_llm_file.setFixedHeight(self._px(32))
@@ -2000,7 +2043,7 @@ class GigaTranscriberQtApp(QMainWindow):
     def _create_llm_prompt_group(self) -> QGroupBox:
         group = QGroupBox("2. Промпт")
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(19), self._px(12), self._px(9))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(9))
         layout.setSpacing(self._px(6))
 
         hint = QLabel("Все промпты настраиваются в меню «Настройки → LLM API…». Здесь достаточно выбрать режимы обработки. Для режима «Свой промпт» заранее заполните пользовательский промпт в настройках.")
@@ -2014,7 +2057,7 @@ class GigaTranscriberQtApp(QMainWindow):
         group = QGroupBox("5. Результат LLM")
         self.grp_llm_result = group
         layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(18), self._px(12), self._px(8))
+        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
         layout.setSpacing(self._px(6))
 
         self.lbl_llm_status = QLabel("Готово к LLM-обработке")
@@ -2422,6 +2465,8 @@ class GigaTranscriberQtApp(QMainWindow):
         has_files = bool(self.transcript_files_for_llm)
         self.llm_files_list.setVisible(has_files)
         self.llm_drop_hint.setVisible(not has_files)
+        if has_files:
+            self._size_list_to_contents(self.llm_files_list)
         c = self._colors()
         if has_files:
             text = self._t(f"Выбрано транскриптов: {len(self.transcript_files_for_llm)}", f"Selected transcripts: {len(self.transcript_files_for_llm)}")
