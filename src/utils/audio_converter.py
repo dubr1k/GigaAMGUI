@@ -24,30 +24,26 @@ def _project_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _find_bundled_tool(tool_name: str) -> str | None:
+    """Возвращает совместимый с текущей ОС bundled tool из bin/, если он есть."""
+    root = _project_root()
+    candidates = [f"{tool_name}.exe"] if os.name == 'nt' else [tool_name]
+
+    for filename in candidates:
+        candidate = os.path.join(root, 'bin', filename)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def _find_ffmpeg() -> str:
-    """Ищет ffmpeg: EXE-сборка → bin/ проекта → PATH."""
-    root = _project_root()
-    for candidate in [
-        os.path.join(root, 'bin', 'ffmpeg.exe'),
-        os.path.join(root, 'bin', 'ffmpeg'),
-    ]:
-        if os.path.exists(candidate):
-            return candidate
-    return "ffmpeg"
+    """Ищет ffmpeg: совместимый bundled bin/ → PATH."""
+    return _find_bundled_tool('ffmpeg') or shutil.which("ffmpeg") or "ffmpeg"
 
 
-def _find_ffprobe() -> str:
-    """Ищет ffprobe: bin/ проекта → PATH. None если не найден (EXE без ffprobe → None)."""
-    root = _project_root()
-    for candidate in [
-        os.path.join(root, 'bin', 'ffprobe.exe'),
-        os.path.join(root, 'bin', 'ffprobe'),
-    ]:
-        if os.path.exists(candidate):
-            return candidate
-    if getattr(sys, '_MEIPASS', None):
-        return None
-    return shutil.which("ffprobe") or None
+def _find_ffprobe() -> str | None:
+    """Ищет ffprobe: совместимый bundled bin/ → PATH. None если не найден."""
+    return _find_bundled_tool('ffprobe') or shutil.which("ffprobe") or None
 
 
 def _windows_startupinfo():
@@ -60,9 +56,9 @@ def _windows_startupinfo():
 
 
 def ffmpeg_available() -> bool:
-    """Проверяет наличие ffmpeg в bundle/bin проекта или PATH."""
+    """Проверяет наличие совместимого ffmpeg в bundle/bin проекта или PATH."""
     ffmpeg = _find_ffmpeg()
-    return os.path.isfile(ffmpeg) or shutil.which(ffmpeg) is not None
+    return os.path.isfile(ffmpeg) or shutil.which("ffmpeg") is not None
 
 
 class AudioConverter:
@@ -226,4 +222,8 @@ class AudioConverter:
 
         except FileNotFoundError:
             self.logger("ОШИБКА: FFmpeg не найден в bundle/bin приложения и PATH.")
+            return None
+        except OSError as exc:
+            self.logger(f"ОШИБКА: не удалось запустить FFmpeg ({exc}).")
+            self.logger("Проверьте, что рядом с приложением нет несовместимого ffmpeg для другой ОС/архитектуры.")
             return None

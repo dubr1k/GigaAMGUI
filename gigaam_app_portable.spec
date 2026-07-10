@@ -46,7 +46,7 @@ pyannote_d,     pyannote_b,     pyannote_h     = safe_collect('pyannote.audio')
 lightning_d,    lightning_b,    lightning_h    = safe_collect('lightning_fabric')
 ptl_d,          ptl_b,          ptl_h          = safe_collect('pytorch_lightning')
 
-datas = (
+datas = list(
     transformers_d + gigaam_d + hf_d +
     safetensors_d + tokenizers_d +
     pyqt6_d + einops_d + omegaconf_d + accelerate_d + pyannote_d + lightning_d + ptl_d +
@@ -54,10 +54,14 @@ datas = (
      (os.path.join(project_root, 'icon.ico'), '.')]
 )
 
-# bin/ добавляем только если существует (ffmpeg и т.п.).
+# Добавляем только ffmpeg/ffprobe, совместимые с текущей ОС сборки.
 _bin_dir = os.path.join(project_root, 'bin')
 if os.path.isdir(_bin_dir):
-    datas.append((_bin_dir, 'bin'))
+    _tool_names = ['ffmpeg.exe', 'ffprobe.exe'] if sys.platform == 'win32' else ['ffmpeg', 'ffprobe']
+    for _tool_name in _tool_names:
+        _tool_path = os.path.join(_bin_dir, _tool_name)
+        if os.path.isfile(_tool_path):
+            datas.append((_tool_path, 'bin'))
 
 # Вспомогательные DLL/pyd (_lzma, _bz2, _sqlite3, liblzma) ищем в текущем окружении
 # сборки (best-effort, чтобы spec был переносимым между машинами).
