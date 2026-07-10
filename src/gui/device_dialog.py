@@ -26,6 +26,14 @@ from PyQt6.QtWidgets import (
 from ..utils import runtime_manager as rm
 
 
+def _lang(parent=None) -> str:
+    return getattr(parent, "_lang", "ru") if parent is not None else "ru"
+
+
+def _t(parent, ru: str, en: str) -> str:
+    return ru if _lang(parent) == "ru" else en
+
+
 class _InstallWorker(QThread):
     """Устанавливает выбранный вариант torch в фоновом потоке."""
 
@@ -40,7 +48,7 @@ class _InstallWorker(QThread):
         try:
             ok = rm.install_variant(self._variant, log_cb=self.log.emit)
         except Exception as e:  # noqa: BLE001 — показываем пользователю любую ошибку
-            self.log.emit(f"Непредвиденная ошибка: {e}")
+            self.log.emit(f"Unexpected error: {e}")
             ok = False
         self.done.emit(ok)
 
@@ -51,20 +59,21 @@ class DeviceSelectDialog(QDialog):
     def __init__(self, parent=None, recommended: str | None = None,
                  current: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Выбор вычислительного устройства")
+        self.setWindowTitle(_t(parent, "Выбор вычислительного устройства", "Select compute device"))
         self.setMinimumWidth(560)
         self._selected: str | None = None
 
         recommended = recommended or rm.detect_recommended_variant()
 
         layout = QVBoxLayout(self)
-        title = QLabel("На чём выполнять распознавание речи?")
+        title = QLabel(_t(parent, "На чём выполнять распознавание речи?", "Which device should be used for speech recognition?"))
         title.setStyleSheet("font-size: 15px; font-weight: 600;")
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Выберите один раз. Нужная сборка PyTorch скачается автоматически и "
-            "сохранится — при повторном выборе она уже не будет загружаться заново."
+            _t(parent,
+               "Выберите один раз. Нужная сборка PyTorch скачается автоматически и сохранится — при повторном выборе она уже не будет загружаться заново.",
+               "Choose once. The required PyTorch build will be downloaded automatically and saved, so it will not be downloaded again next time.")
         )
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet("color: #888; margin-bottom: 6px;")
@@ -77,8 +86,8 @@ class DeviceSelectDialog(QDialog):
             installed = rm.is_installed(variant)
             tags = []
             if variant == recommended:
-                tags.append("рекомендуется для вашего ПК")
-            tags.append("уже загружено" if installed else f"загрузка {info['size_hint']}")
+                tags.append(_t(parent, "рекомендуется для вашего ПК", "recommended for your PC"))
+            tags.append(_t(parent, "уже загружено", "already downloaded") if installed else _t(parent, f"загрузка {info['size_hint']}", f"download {info['size_hint']}"))
             tag_text = " · ".join(tags)
 
             rb = QRadioButton(f"{info['label']}")
@@ -97,10 +106,10 @@ class DeviceSelectDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self._btn_cancel = QPushButton("Отмена")
+        self._btn_cancel = QPushButton(_t(parent, "Отмена", "Cancel"))
         self._btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(self._btn_cancel)
-        self._btn_ok = QPushButton("Продолжить")
+        self._btn_ok = QPushButton(_t(parent, "Продолжить", "Continue"))
         self._btn_ok.setDefault(True)
         self._btn_ok.clicked.connect(self._accept)
         btn_row.addWidget(self._btn_ok)
@@ -112,7 +121,7 @@ class DeviceSelectDialog(QDialog):
                 self._selected = variant
                 self.accept()
                 return
-        QMessageBox.warning(self, "Выбор устройства", "Выберите вариант.")
+        QMessageBox.warning(self, _t(self.parent(), "Выбор устройства", "Device selection"), _t(self.parent(), "Выберите вариант.", "Select an option."))
 
     def selected_variant(self) -> str | None:
         return self._selected
@@ -125,14 +134,15 @@ class InstallProgressDialog(QDialog):
         super().__init__(parent)
         self._variant = variant
         self._success = False
-        self.setWindowTitle("Загрузка PyTorch")
+        self.setWindowTitle(_t(parent, "Загрузка PyTorch", "Downloading PyTorch"))
         self.setMinimumWidth(620)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
         self._label = QLabel(
-            f"Устанавливается: {rm.VARIANTS[variant]['label']}\n"
-            "Не закрывайте окно — идёт загрузка."
+            _t(parent,
+               f"Устанавливается: {rm.VARIANTS[variant]['label']}\nНе закрывайте окно — идёт загрузка.",
+               f"Installing: {rm.VARIANTS[variant]['label']}\nDo not close the window — download in progress.")
         )
         self._label.setWordWrap(True)
         layout.addWidget(self._label)
@@ -149,7 +159,7 @@ class InstallProgressDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self._btn_close = QPushButton("Закрыть")
+        self._btn_close = QPushButton(_t(parent, "Закрыть", "Close"))
         self._btn_close.setEnabled(False)
         self._btn_close.clicked.connect(self.accept)
         btn_row.addWidget(self._btn_close)
@@ -171,9 +181,9 @@ class InstallProgressDialog(QDialog):
         self._bar.setRange(0, 1)
         self._bar.setValue(1)
         if ok:
-            self._label.setText("Готово! PyTorch установлен.")
+            self._label.setText(_t(self.parent(), "Готово! PyTorch установлен.", "Done! PyTorch is installed."))
         else:
-            self._label.setText("Не удалось установить PyTorch. См. лог ниже.")
+            self._label.setText(_t(self.parent(), "Не удалось установить PyTorch. См. лог ниже.", "Failed to install PyTorch. See the log below."))
         self._btn_close.setEnabled(True)
 
     def succeeded(self) -> bool:
@@ -239,8 +249,8 @@ def ensure_device_ready(parent=None) -> str | None:
 
         # Установка не удалась — предложим выбрать снова.
         retry = QMessageBox.question(
-            parent, "Ошибка загрузки",
-            "Не удалось загрузить PyTorch. Попробовать другой вариант?",
+            parent, _t(parent, "Ошибка загрузки", "Download error"),
+            _t(parent, "Не удалось загрузить PyTorch. Попробовать другой вариант?", "Failed to download PyTorch. Try another option?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if retry != QMessageBox.StandardButton.Yes:
@@ -265,7 +275,7 @@ def change_device_interactive(parent=None) -> bool:
 
     if not rm.is_installed(chosen):
         if not _install_with_progress(chosen, parent):
-            QMessageBox.warning(parent, "Ошибка", "Не удалось загрузить выбранную сборку.")
+            QMessageBox.warning(parent, _t(parent, "Ошибка", "Error"), _t(parent, "Не удалось загрузить выбранную сборку.", "Failed to download the selected build."))
             return False
 
     if chosen == current:
@@ -273,8 +283,9 @@ def change_device_interactive(parent=None) -> bool:
 
     rm.set_selected_variant(chosen)
     QMessageBox.information(
-        parent, "Устройство изменено",
-        f"Выбрано: {rm.VARIANTS[chosen]['label']}.\n"
-        "Изменение вступит в силу после перезапуска приложения.",
+        parent, _t(parent, "Устройство изменено", "Device changed"),
+        _t(parent,
+           f"Выбрано: {rm.VARIANTS[chosen]['label']}.\nИзменение вступит в силу после перезапуска приложения.",
+           f"Selected: {rm.VARIANTS[chosen]['label']}.\nThe change will take effect after restarting the application."),
     )
     return True

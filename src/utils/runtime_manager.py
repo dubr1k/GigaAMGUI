@@ -235,6 +235,18 @@ def install_variant(variant: str, log_cb=None) -> bool:
     if variant not in VARIANTS:
         raise ValueError(f"Неизвестный вариант рантайма: {variant}")
 
+    supported_python = {(3, 10), (3, 11), (3, 12), (3, 13)}
+    current_python = (sys.version_info.major, sys.version_info.minor)
+    if current_python not in supported_python:
+        def _emit_unsupported(line: str) -> None:
+            if log_cb:
+                log_cb(line)
+        _emit_unsupported(
+            f"ОШИБКА: текущая версия Python {sys.version_info.major}.{sys.version_info.minor} не поддерживается колёсами PyTorch для этого приложения."
+        )
+        _emit_unsupported("Используйте Python 3.10–3.13. Рекомендуется Python 3.12.")
+        return False
+
     ensure_data_dir()
     target = variant_dir(variant)
     target.mkdir(parents=True, exist_ok=True)
