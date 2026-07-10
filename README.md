@@ -160,9 +160,6 @@ GigaAMGUI/
 └── assets/screenshots/
 ```
 
-## График звёзд GitHub
-
-[![Star History Chart](https://api.star-history.com/svg?repos=dubr1k/GigaAMGUI&type=Date)](https://www.star-history.com/#dubr1k/GigaAMGUI&Date)
 
 ## Благодарности
 
