@@ -160,10 +160,6 @@ GigaAMGUI/
 └── assets/screenshots/
 ```
 
-## Star history
-
-[![Star History Chart](https://api.star-history.com/svg?repos=dubr1k/GigaAMGUI&type=Date)](https://www.star-history.com/#dubr1k/GigaAMGUI&Date)
-
 ## Credits
 
 - [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
