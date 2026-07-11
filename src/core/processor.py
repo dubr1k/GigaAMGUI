@@ -13,6 +13,7 @@ from ..config import HF_TOKEN
 from ..utils.audio_converter import AudioConverter
 from ..utils.output_naming import output_path
 from ..utils.time_formatter import TimeFormatter
+from . import formatters
 from .progress import ProgressEvent, ProgressPlan
 
 if TYPE_CHECKING:
@@ -495,140 +496,14 @@ class TranscriptionProcessor:
                     utt['speaker'] = "Спикер №1"
             return utterances
 
-    @staticmethod
-    def _format_timestamp(seconds: float, ms_sep: str) -> str:
-        """
-        Форматирует время как HH:MM:SS<ms_sep>mmm.
-        ms_sep=',' для SRT, '.' для VTT.
-        """
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millis = int((seconds - int(seconds)) * 1000)
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}{ms_sep}{millis:03d}"
-
-    def _format_srt_timestamp(self, seconds: float) -> str:
-        """Форматирует время в формат SRT (HH:MM:SS,mmm)"""
-        return self._format_timestamp(seconds, ',')
-
-    def _format_vtt_timestamp(self, seconds: float) -> str:
-        """Форматирует время в формат VTT (HH:MM:SS.mmm)"""
-        return self._format_timestamp(seconds, '.')
-
-
     def _generate_srt(self, utterances: list) -> str:
-        """
-        Генерирует контент в формате SRT субтитров
-
-        Args:
-            utterances: список сегментов транскрипции
-
-        Returns:
-            str: контент в формате SRT
-        """
-        lines = []
-        index = 1
-
-        for utt in utterances:
-            text = utt.get('transcription', '')
-            if not text or not text.strip():
-                continue
-
-            boundaries = utt.get('boundaries', (0.0, 0.0))
-            start, end = boundaries
-            speaker = utt.get('speaker', None)
-
-            lines.append(str(index))
-            lines.append(f"{self._format_srt_timestamp(start)} --> {self._format_srt_timestamp(end)}")
-
-            # Добавляем имя спикера, если есть
-            if speaker:
-                lines.append(f"<{speaker}> {text}")
-            else:
-                lines.append(text)
-
-            lines.append("")  # Пустая строка между субтитрами
-            index += 1
-
-        return "\n".join(lines)
+        """Генерирует контент в формате SRT субтитров (делегирует в formatters)."""
+        return formatters.generate_srt(utterances)
 
     def _generate_vtt(self, utterances: list) -> str:
-        """
-        Генерирует контент в формате VTT субтитров
-
-        Args:
-            utterances: список сегментов транскрипции
-
-        Returns:
-            str: контент в формате VTT
-        """
-        lines = ["WEBVTT", ""]  # Заголовок VTT
-
-        for utt in utterances:
-            text = utt.get('transcription', '')
-            if not text or not text.strip():
-                continue
-
-            boundaries = utt.get('boundaries', (0.0, 0.0))
-            start, end = boundaries
-            speaker = utt.get('speaker', None)
-
-            lines.append(f"{self._format_vtt_timestamp(start)} --> {self._format_vtt_timestamp(end)}")
-
-            # Добавляем имя спикера, если есть
-            if speaker:
-                lines.append(f"<v {speaker}>{text}")
-            else:
-                lines.append(text)
-
-            lines.append("")  # Пустая строка между субтитрами
-
-        return "\n".join(lines)
+        """Генерирует контент в формате VTT субтитров (делегирует в formatters)."""
+        return formatters.generate_vtt(utterances)
 
     def _generate_markdown(self, utterances: list, filename: str) -> str:
-        """
-        Генерирует контент в формате Markdown
-
-        Args:
-            utterances: список сегментов транскрипции
-            filename: имя исходного файла
-
-        Returns:
-            str: контент в формате Markdown
-        """
-        lines = [
-            f"# Транскрипция: {filename}",
-            "",
-            "*Создано с помощью GigaAM v3 Transcriber*",
-            "",
-            "---",
-            ""
-        ]
-
-        current_speaker = None
-
-        for utt in utterances:
-            text = utt.get('transcription', '')
-            if not text or not text.strip():
-                continue
-
-            boundaries = utt.get('boundaries', (0.0, 0.0))
-            start, end = boundaries
-            speaker = utt.get('speaker', None)
-
-            # Форматируем время
-            time_str = f"`{self.time_formatter.format_timestamp(start)} - {self.time_formatter.format_timestamp(end)}`"
-
-            if speaker:
-                # Если спикер изменился, добавляем заголовок
-                if speaker != current_speaker:
-                    lines.append("")
-                    lines.append(f"### {speaker}")
-                    lines.append("")
-                    current_speaker = speaker
-
-                lines.append(f"- {time_str} {text}")
-            else:
-                lines.append(f"- {time_str} {text}")
-
-        return "\n".join(lines)
+        """Генерирует контент в формате Markdown (делегирует в formatters)."""
+        return formatters.generate_markdown(utterances, filename, self.time_formatter)
