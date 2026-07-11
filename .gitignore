@@ -198,3 +198,7 @@ gigaam-gui.desktop
 
 # Generated knowledge graph (graphify)
 graphify-out/
+
+# Agent instructions (local only)
+AGENTS.md
+CLAUDE.md
