@@ -7,24 +7,25 @@ GigaAM v3 Transcriber - Web GUI
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import shlex
 import shutil
 import subprocess
 import tempfile
-import time
 import traceback
 import uuid
 import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Final, Literal
+from platform import machine
+from platform import platform as runtime_platform
+from typing import Final
 
 import aiofiles
 import jwt
 import yt_dlp
+from dotenv import load_dotenv
 from fastapi import (
     Depends,
     FastAPI,
@@ -36,9 +37,21 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
+
+from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
+from src.core.model_loader import ModelLoader
+from src.core.processor import TranscriptionProcessor
+from src.utils.atomic_json import load_json, save_json_atomic
+from src.utils.audio_converter import ffmpeg_available
+from src.utils.llm_client import LLMClient, LLMSettings
+from src.utils.media_downloader import MediaDownloader
+from src.utils.output_naming import find_result_file, output_filename
+from src.utils.processing_stats import ProcessingStats
+from src.utils.time_formatter import TimeFormatter
 
 # Third-party ML libraries emit noisy deprecation/reproducibility warnings on
 # supported pinned versions. Keep runtime logs focused on actionable failures.
@@ -47,24 +60,13 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pyannote.audio.p
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote.audio.tasks.segmentation.mixins")
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote.audio.utils.reproducibility")
 warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.*", category=UserWarning)
-from starlette.middleware.sessions import SessionMiddleware
 
-# Импорты проекта
-from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS, SUPPORTED_FORMATS
-from src.core.model_loader import ModelLoader
-from src.core.processor import TranscriptionProcessor
-from src.utils.atomic_json import load_json, save_json_atomic
-from src.utils.audio_converter import AudioConverter, ffmpeg_available
-from src.utils.media_downloader import MediaDownloader
-from src.utils.llm_client import LLMClient, LLMSettings
-from src.utils.output_naming import find_result_file, output_filename
-from src.utils.processing_stats import ProcessingStats
-from src.utils.pyannote_patch import apply_pyannote_patch
-from src.utils.time_formatter import TimeFormatter
-
-apply_pyannote_patch()
-
-from dotenv import load_dotenv
+if HF_TOKEN and HF_TOKEN.startswith("hf_"):
+    try:
+        from src.utils.pyannote_patch import apply_pyannote_patch
+        apply_pyannote_patch()
+    except Exception:
+        print("ПРЕДУПРЕЖДЕНИЕ: pyannote patch не применен; продолжим без него.")
 
 env_path = Path(__file__).parent.parent / '.env'
 if env_path.exists():
@@ -152,6 +154,46 @@ def _verify_token(token: str) -> str | None:
         return None
     except jwt.InvalidTokenError:
         return None
+
+
+def _asr_health() -> dict[str, object]:
+    if model_loader is None:
+        return {
+            "requested_backend": None,
+            "active_backend": None,
+            "fallback_reason": None,
+            "model": None,
+            "device": "N/A",
+            "repo": None,
+            "cache_root": None,
+            "loader_loaded": False,
+            "error": None,
+        }
+
+    diagnostics = {}
+    try:
+        diagnostics = model_loader.diagnostics()
+    except Exception:
+        pass
+
+    return {
+        "requested_backend": diagnostics.get("requested_backend"),
+        "active_backend": diagnostics.get("active_backend"),
+        "fallback_reason": diagnostics.get("fallback_reason"),
+        "model": diagnostics.get("model"),
+        "device": diagnostics.get("device") or "N/A",
+        "repo": diagnostics.get("repo"),
+        "cache_root": diagnostics.get("cache_root"),
+        "loader_loaded": model_loader.is_loaded(),
+        "error": diagnostics.get("error"),
+    }
+
+
+def _runtime_info() -> dict[str, object]:
+    return {
+        "platform": runtime_platform(),
+        "machine": machine(),
+    }
 
 
 async def require_auth(request: Request) -> str:
@@ -467,7 +509,7 @@ async def _save_upload(file: UploadFile, request: Request) -> tuple:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка сохранения: {e}",
-        )
+        ) from e
 
     return task_id, file_path, filename, file_size
 
@@ -631,7 +673,7 @@ async def process_transcription(
 
 def _detect_format(filename: str, stem: str) -> str:
     """Определяет формат вывода по имени файла."""
-    for fmt, label in OUTPUT_FORMATS.items():
+    for fmt, _label in OUTPUT_FORMATS.items():
         expected = output_filename(stem, fmt)
         if filename == expected:
             return fmt
@@ -653,6 +695,7 @@ async def lifespan(app: FastAPI):
 
     if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
         print("ВНИМАНИЕ: HF_TOKEN не настроен!")
+        print("Диаризация будет недоступна без HF_TOKEN.")
 
     print("Загрузка модели GigaAM-v3...")
     model_loader = ModelLoader()
@@ -1161,8 +1204,8 @@ async def llm_process(
 ):
     try:
         temperature_value = float((temperature or "0.2").strip())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Temperature должно быть числом")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Temperature должно быть числом") from e
 
     llm_settings = {
         "provider": provider,
@@ -1282,6 +1325,7 @@ async def delete_all_tasks(
 async def progress_stream(request: Request, user: str = Depends(require_auth)):
     """SSE-стрим прогресса всех задач в реальном времени."""
     import json as json_mod
+
     from starlette.responses import StreamingResponse
 
     async def event_generator():
@@ -1360,11 +1404,11 @@ async def index():
 
 @app.get("/health")
 async def health():
-    device_name = model_loader.device.upper() if model_loader and model_loader.device else "N/A"
     return {
         "status": "healthy",
         "model_loaded": model_loader is not None and model_loader.is_loaded(),
-        "device": device_name,
+        "runtime": _runtime_info(),
+        "asr": _asr_health(),
         "active_tasks": sum(1 for t in tasks_storage.values() if t['status'] in ('processing', 'downloading')),
         "total_tasks": len(tasks_storage),
     }

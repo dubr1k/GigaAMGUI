@@ -66,6 +66,7 @@ from ..config import (
     save_env_value, user_config_dir,
 )
 from ..core import ModelLoader, TranscriptionProcessor
+from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from ..utils import (
     AppLogger, AudioConverter, MediaDownloader, ProcessingStats,
     TimeFormatter, UserSettings, LLMClient, LLMSettings,
@@ -612,9 +613,35 @@ class GigaTranscriberQtApp(QMainWindow):
             self._act_open_res.setText("Открыть папку с результатами" if is_ru else "Open results folder")
             self._act_quit.setText("Выход" if is_ru else "Exit")
             self._act_theme.setText("Переключить тему" if is_ru else "Toggle theme")
+            self._act_asr_backend.setText("Движок распознавания…" if is_ru else "Recognition engine...")
             self._act_device.setText("Устройство (CPU / GPU)…" if is_ru else "Device (CPU / GPU)…")
             self._act_llm.setText("LLM API…")
             self._act_about.setText("О программе" if is_ru else "About")
+
+    def _select_asr_backend(self):
+        if self.is_processing:
+            QMessageBox.information(
+                self,
+                self._t("Смена backend", "Backend change"),
+                self._t(
+                    "Дождитесь завершения обработки перед сменой backend.",
+                    "Wait for processing to finish before changing backend.",
+                ),
+            )
+            return
+
+        selected = ASRBackendDialog.pick(
+            self,
+            current_backend=self.model_loader.requested_backend,
+            mlx_supported=is_mlx_supported(),
+        )
+
+        if not selected or selected == self.model_loader.requested_backend:
+            return
+
+        self.model_loader.configure_backend(selected)
+        self.user_settings.set_value("asr_backend", selected)
+        self.log(f"Выбран ASR backend: {selected}" if self._lang == "ru" else f"ASR backend selected: {selected}")
 
     def _change_device(self):
         """Смена вычислительного устройства (CPU / GPU / GPU 50xx) из меню."""
@@ -1227,6 +1254,13 @@ class GigaTranscriberQtApp(QMainWindow):
 
         self._menu_settings = menubar.addMenu("Настройки")
         settings_menu = self._menu_settings
+        self._act_asr_backend = QAction("Движок распознавания…", self)
+        act_asr_backend = self._act_asr_backend
+        act_asr_backend.setStatusTip("Выбрать backend для распознавания речи")
+        act_asr_backend.triggered.connect(self._select_asr_backend)
+        settings_menu.addAction(act_asr_backend)
+
+        settings_menu.addSeparator()
         self._act_device = QAction("Устройство (CPU / GPU)…", self)
         act_device = self._act_device
         act_device.setStatusTip("Выбрать CPU или видеокарту NVIDIA для распознавания")
@@ -1394,6 +1428,17 @@ class GigaTranscriberQtApp(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
     def _show_about(self):
+        diag = self.model_loader.diagnostics() if self.model_loader is not None else {}
+        diag_lines = [
+            f"requested_backend={diag.get('requested_backend')}",
+            f"active_backend={diag.get('active_backend')}",
+            f"model={diag.get('model')}",
+            f"device={diag.get('device')}",
+            f"repo={diag.get('repo')}",
+            f"fallback_reason={diag.get('fallback_reason')}",
+            f"cache_root={diag.get('cache_root')}",
+        ]
+        diagnostics = "<br>".join(diag_lines)
         QMessageBox.about(
             self,
             self._t("О программе", "About"),
@@ -1401,11 +1446,13 @@ class GigaTranscriberQtApp(QMainWindow):
                 f"<b>{APP_TITLE}</b><br><br>"
                 "Локальная транскрибация аудио и видео на модели <b>GigaAM v3</b> с поддержкой диаризации спикеров.<br><br>"
                 "Возможности: пакетная обработка, загрузка по ссылке, таймкоды, экспорт в TXT / Markdown / SRT / VTT.<br><br>"
+                f"Диагностика ASR:<br>{diagnostics}<br><br>"
                 "Поддерживаемые форматы ввода: mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, 3gp."
             ) if self._lang == "ru" else (
                 f"<b>{APP_TITLE}</b><br><br>"
                 "Local audio and video transcription powered by <b>GigaAM v3</b> with speaker diarization support.<br><br>"
                 "Features: batch processing, URL download, timecodes, export to TXT / Markdown / SRT / VTT.<br><br>"
+                f"ASR diagnostics:<br>{diagnostics}<br><br>"
                 "Supported input formats: mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, 3gp."
             )
         )
@@ -2589,6 +2636,13 @@ class GigaTranscriberQtApp(QMainWindow):
         for key, cb in self.llm_export_checkboxes.items():
             cb.setChecked(bool(saved_llm_exports.get(key, cb.isChecked())))
 
+        saved_asr_backend = self.user_settings.get_value("asr_backend", "")
+        if isinstance(saved_asr_backend, str) and saved_asr_backend:
+            try:
+                self.model_loader.configure_backend(saved_asr_backend)
+            except Exception:
+                self.model_loader.configure_backend("auto")
+
         saved_llm_files = self.user_settings.get_value("last_selected_transcript_files", []) or []
         self.transcript_files_for_llm = [path for path in saved_llm_files if os.path.isfile(path)]
         self._refresh_llm_files_list()
@@ -2597,6 +2651,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.user_settings.set_value("output_formats", self.output_formats)
         self.user_settings.set_value("enable_diarization", self.cb_diarization.isChecked())
         self.user_settings.set_value("num_speakers", self.entry_num_speakers.value())
+        self.user_settings.set_value("asr_backend", self.model_loader.requested_backend)
         self.user_settings.set_value("llm_provider", self._normalize_llm_provider(self.combo_llm_provider.currentText()))
         self.user_settings.set_value("llm_api_url", self.entry_llm_api_url.text().strip())
         llm_api_key = self.entry_llm_api_key.text().strip()

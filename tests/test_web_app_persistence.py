@@ -5,6 +5,12 @@ import os
 import pytest
 from fastapi import HTTPException
 
+try:
+    from fastapi.testclient import TestClient
+    _HAS_CLIENT = True
+except Exception:  # pragma: no cover
+    _HAS_CLIENT = False
+
 os.environ.setdefault("WEB_SECRET", "x" * 32)
 os.environ.setdefault("WEB_USERNAME", "test-user")
 os.environ.setdefault("WEB_PASSWORD", "test-password")
@@ -198,3 +204,40 @@ def test_startup_tombstone_cleanup_prevents_deleted_task_restore(web_state):
     assert web_app.load_json(str(web_app.DELETED_TASKS_PATH), []) == []
     assert not (upload_dir / "task-alice_task-alice.mp3").exists()
     assert not (results_dir / "task-alice").exists()
+
+
+@pytest.mark.skipif(not _HAS_CLIENT, reason="нужен fastapi TestClient")
+def test_health_includes_asr_and_runtime(web_state, monkeypatch):
+    class _FakeModelLoader:
+        device = "cpu"
+
+        def load_model(self, logger=None):
+            return True
+
+        def is_loaded(self):
+            return True
+
+        def diagnostics(self):
+            return {
+                "requested_backend": "pytorch",
+                "active_backend": "pytorch",
+                "fallback_reason": None,
+                "model": "e2e_rnnt",
+                "device": "cpu",
+                "repo": None,
+                "cache_root": None,
+                "loader_loaded": True,
+                "error": None,
+            }
+
+    monkeypatch.setattr(web_app, "ModelLoader", _FakeModelLoader)
+    monkeypatch.setattr(web_app, "HF_TOKEN", "")
+
+    with TestClient(web_app.app) as client:
+        response = client.get("/health")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["asr"]["requested_backend"] == "pytorch"
+        assert payload["asr"]["active_backend"] == "pytorch"
+        assert payload["runtime"]["platform"]
+        assert payload["runtime"]["machine"]

@@ -27,6 +27,19 @@ class _FakeModelLoader:
     def is_loaded(self):
         return True
 
+    def diagnostics(self):
+        return {
+            "requested_backend": "auto",
+            "active_backend": "mlx",
+            "fallback_reason": None,
+            "model": "aystream/GigaAM-v3-e2e-rnnt-mlx",
+            "device": "mps",
+            "cache_root": None,
+            "repo": "repo/test",
+            "loader_loaded": True,
+            "error": None,
+        }
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -43,6 +56,8 @@ def test_health_no_auth(client):
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["model_loaded"] is True
+    assert "asr" in r.json()
+    assert r.json()["asr"]["active_backend"] == "mlx"
 
 
 def test_upload_without_key_rejected(client):

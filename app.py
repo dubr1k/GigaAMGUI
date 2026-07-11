@@ -8,6 +8,7 @@
 
 import json
 import os
+import platform
 import sys
 import time
 import warnings
@@ -17,6 +18,9 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - macOS build uses fcntl
     fcntl = None
+
+
+from src.config import ASR_BACKEND, HF_TOKEN
 
 
 def _user_config_dir() -> Path:
@@ -74,8 +78,69 @@ def _torch_is_available() -> bool:
         return False
 
 
+def _is_mlx_available() -> bool:
+    if not (sys.platform == "darwin" and platform.machine() == "arm64"):
+        return False
+
+    import importlib.util
+
+    return (
+        importlib.util.find_spec("mlx") is not None
+        and importlib.util.find_spec("gigaam_mlx") is not None
+    )
+
+
+def _boot_requires_torch() -> bool:
+    backend = (ASR_BACKEND or "auto").strip().lower()
+    if backend == "pytorch":
+        return True
+    if backend == "mlx":
+        return not _is_mlx_available()
+    if not (sys.platform == "darwin" and platform.machine() == "arm64"):
+        return True
+    return not _is_mlx_available()
+
+
+def run_asr_runtime_smoke() -> dict[str, str]:
+    """Exercise bundled MLX native code without downloading model weights."""
+    import gigaam_mlx
+    import mlx.core as mx
+
+    value = mx.array([1.0, 2.0])
+    mx.eval(value)
+    return {
+        "backend": "mlx",
+        "gigaam_mlx": getattr(gigaam_mlx, "__version__", "unknown"),
+    }
+
+
+def run_asr_model_smoke(audio_path: str) -> dict[str, object]:
+    """Load cached MLX RNN-T weights and run end-to-end file inference."""
+    from gigaam_mlx import load_model, transcribe_file
+
+    model, tokenizer = load_model("rnnt")
+    segments = transcribe_file(
+        audio_path,
+        model=model,
+        tokenizer=tokenizer,
+        model_type="rnnt",
+        verbose=False,
+    )
+    return {"backend": "mlx", "model": "rnnt", "segments": len(segments)}
+
+
 def main():
     """Главная функция запуска приложения."""
+    if "--asr-runtime-smoke" in sys.argv:
+        print(json.dumps(run_asr_runtime_smoke(), ensure_ascii=False, sort_keys=True))
+        return
+    if "--asr-model-smoke" in sys.argv:
+        index = sys.argv.index("--asr-model-smoke")
+        if index + 1 >= len(sys.argv):
+            raise SystemExit("--asr-model-smoke requires an audio path")
+        print(json.dumps(run_asr_model_smoke(sys.argv[index + 1]), ensure_ascii=False, sort_keys=True))
+        return
+
     early_lock = _try_acquire_instance_lock()
     if early_lock is None:
         _queue_open_request(_argv_open_paths(sys.argv))
@@ -87,8 +152,8 @@ def main():
     warnings.filterwarnings("ignore", message=".*torchaudio.*deprecated.*")
     warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.*")
 
-    from PyQt6.QtGui import QGuiApplication
     from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QGuiApplication
     from PyQt6.QtWidgets import QApplication
 
     if QApplication.instance() is None:
@@ -98,19 +163,19 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv)
     app._gigaam_instance_lock_file = early_lock
 
-    # torch НЕ вшит в портативную сборку — выбираем и при необходимости качаем.
-    # Если torch уже доступен (dev-окружение или сборка с вшитым torch) — пропускаем.
-    if not _torch_is_available():
-        from src.utils import runtime_manager as rm
+    # Если выбранный backend требует PyTorch, и он ещё не установлен — предлагаем выбрать runtime.
+    if _boot_requires_torch() and not _torch_is_available():
         from src.gui.device_dialog import ensure_device_ready
+        from src.utils import runtime_manager as rm
 
         variant = ensure_device_ready()
         if not variant:
             sys.exit(0)
         rm.activate(variant)
 
-    from src.utils.pyannote_patch import apply_pyannote_patch
-    apply_pyannote_patch()
+    if HF_TOKEN and str(HF_TOKEN).startswith("hf_"):
+        from src.utils.pyannote_patch import apply_pyannote_patch
+        apply_pyannote_patch()
 
     from src.gui import run_qt_app
     run_qt_app(app=app)

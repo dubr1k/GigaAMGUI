@@ -31,7 +31,7 @@ from rich.table import Table
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты из проекта
-from src.config import HF_TOKEN, OUTPUT_FORMATS, SUPPORTED_FORMATS
+from src.config import ASR_BACKEND, OUTPUT_FORMATS, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
 from src.utils.audio_converter import ffmpeg_available
@@ -457,6 +457,12 @@ def display_results(results: list[dict]):
           'Доступно: ' + ', '.join(OUTPUT_FORMATS.keys()))
 )
 @click.option(
+    '--backend',
+    type=click.Choice(["auto", "mlx", "pytorch"]),
+    default=None,
+    help='Режим ASR backend: auto/mlx/pytorch (по умолчанию берется из ASR_BACKEND)',
+)
+@click.option(
     '--diarize/--no-diarize',
     default=False,
     help='Включить диаризацию спикеров (по умолчанию: выключено)'
@@ -467,7 +473,7 @@ def display_results(results: list[dict]):
     default=None,
     help='Количество спикеров для диаризации (если известно)'
 )
-def main(files, directory, output, interactive, verbose, formats, diarize, speakers):
+def main(files, directory, output, interactive, verbose, formats, backend, diarize, speakers):
     """
     🎙️ GigaAM v3 Transcriber - CLI
 
@@ -498,18 +504,12 @@ def main(files, directory, output, interactive, verbose, formats, diarize, speak
     # Инициализация логгера
     logger = CLILogger(verbose=verbose)
 
-    # Проверка токена
-    if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
+    # Проверка токена для диаризации
+    if diarize and not os.getenv("HF_TOKEN", "").startswith("hf_"):
         console.print(Panel(
-            "[bold red]⚠ ОШИБКА: Не настроен HuggingFace токен![/bold red]\n\n"
-            "Для работы приложения требуется токен HuggingFace.\n\n"
-            "[cyan]Шаги для настройки:[/cyan]\n"
-            "1. Зарегистрируйтесь на https://huggingface.co\n"
-            "2. Создайте токен: https://huggingface.co/settings/tokens\n"
-            "3. Примите условия: https://huggingface.co/pyannote/segmentation-3.0\n"
-            "4. Добавьте токен в файл .env",
-            title="❌ Требуется настройка",
-            border_style="red"
+            "[bold yellow]⚠ Для диаризации требуется HF_TOKEN с доступом к pyannote/segmentation-3.0.[/bold yellow]",
+            title="Внимание",
+            border_style="yellow",
         ))
         sys.exit(1)
 
@@ -523,8 +523,6 @@ def main(files, directory, output, interactive, verbose, formats, diarize, speak
             border_style="red"
         ))
         sys.exit(1)
-
-    logger.success("HuggingFace токен найден")
 
     # Определяем список файлов
     file_list = []
@@ -569,7 +567,7 @@ def main(files, directory, output, interactive, verbose, formats, diarize, speak
     logger.info("Загрузка модели GigaAM-v3...")
 
     with console.status("[bold cyan]Загрузка модели...", spinner="dots"):
-        model_loader = ModelLoader()
+        model_loader = ModelLoader(requested_backend=backend or ASR_BACKEND)
         success = model_loader.load_model(logger=lambda msg: logger.debug(msg))
 
     if not success:
@@ -636,4 +634,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-

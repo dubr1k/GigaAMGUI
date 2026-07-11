@@ -21,6 +21,8 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from platform import machine
+from platform import platform as runtime_platform
 from typing import Literal
 
 import aiofiles
@@ -44,10 +46,13 @@ from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
 from src.utils.output_naming import find_result_file, output_filename
 from src.utils.processing_stats import ProcessingStats
-from src.utils.pyannote_patch import apply_pyannote_patch
 
-# Применяем патч
-apply_pyannote_patch()
+if HF_TOKEN and HF_TOKEN.startswith("hf_"):
+    try:
+        from src.utils.pyannote_patch import apply_pyannote_patch
+        apply_pyannote_patch()
+    except Exception:
+        print("ПРЕДУПРЕЖДЕНИЕ: pyannote patch не применен; продолжаем без него.")
 
 # ==================== КОНФИГУРАЦИЯ ====================
 
@@ -164,6 +169,46 @@ _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 def _hash_key(key: str) -> str:
     """SHA-256 хэш ключа (в файле и памяти хранятся только хэши)"""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _asr_health() -> dict[str, object]:
+    if model_loader is None:
+        return {
+            "requested_backend": None,
+            "active_backend": None,
+            "fallback_reason": None,
+            "model": None,
+            "device": "N/A",
+            "repo": None,
+            "cache_root": None,
+            "loader_loaded": False,
+            "error": None,
+        }
+
+    diagnostics = {}
+    try:
+        diagnostics = model_loader.diagnostics()
+    except Exception:
+        pass
+
+    return {
+        "requested_backend": diagnostics.get("requested_backend"),
+        "active_backend": diagnostics.get("active_backend"),
+        "fallback_reason": diagnostics.get("fallback_reason"),
+        "model": diagnostics.get("model"),
+        "device": diagnostics.get("device") or "N/A",
+        "repo": diagnostics.get("repo"),
+        "cache_root": diagnostics.get("cache_root"),
+        "loader_loaded": model_loader.is_loaded(),
+        "error": diagnostics.get("error"),
+    }
+
+
+def _runtime_info() -> dict[str, object]:
+    return {
+        "platform": runtime_platform(),
+        "machine": machine(),
+    }
 
 
 def load_api_keys():
@@ -628,7 +673,7 @@ async def lifespan(app: FastAPI):
     # Проверка токена
     if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
         logger.error("HuggingFace токен не настроен!")
-        raise RuntimeError("Требуется настроить HF_TOKEN в .env")
+        logger.warning("HF_TOKEN не настроен. Диаризация будет недоступна.")
 
     # Загрузка модели
     logger.info("Загрузка модели GigaAM-v3...")
@@ -739,6 +784,8 @@ async def health_check():
         "model_loaded": model_loader is not None and model_loader.is_loaded(),
         "active_tasks": sum(1 for t in tasks_storage.values() if t['status'] == 'processing'),
         "total_tasks": len(tasks_storage),
+        "runtime": _runtime_info(),
+        "asr": _asr_health(),
         "uptime": "running"
     }
 
@@ -1342,4 +1389,3 @@ if __name__ == "__main__":
         reload=False,
         log_level="info"
     )
-
