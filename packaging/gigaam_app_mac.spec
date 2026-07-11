@@ -23,7 +23,7 @@ except Exception:
 
 block_cipher = None
 
-project_root = os.path.abspath(SPECPATH)
+project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в packaging/, корень проекта — на уровень выше
 icon_icns = os.path.join(project_root, "icon.icns")
 icon_file = icon_icns if os.path.exists(icon_icns) else None
 

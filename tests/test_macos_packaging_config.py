@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-SPEC_PATH = Path("gigaam_app_mac.spec")
+SPEC_PATH = Path("packaging/gigaam_app_mac.spec")
 REQUIREMENTS_PATH = Path("requirements-macos-mlx.txt")
 HOOK_PATH = Path("pyinstaller_hooks/hook-gigaam_mlx.py")
 
@@ -27,13 +27,13 @@ def test_hook_exists_and_collects_gigaam_mlx():
 
 
 def test_build_script_prefers_active_conda_environment():
-    text = Path("build_exe_mac.sh").read_text(encoding="utf-8")
+    text = Path("packaging/build_exe_mac.sh").read_text(encoding="utf-8")
     assert "CONDA_PREFIX" in text
     assert 'PYTHON="$CONDA_PREFIX/bin/python"' in text
 
 
 def test_build_script_calls_verifier_if_bundle_present():
-    text = Path("build_exe_mac.sh").read_text(encoding="utf-8")
+    text = Path("packaging/build_exe_mac.sh").read_text(encoding="utf-8")
     verifier = Path("scripts/verify_macos_bundle.py").read_text(encoding="utf-8")
     assert "scripts/verify_macos_bundle.py dist/GigaAMTranscriber.app" in text
     assert "--asr-runtime-smoke" in verifier

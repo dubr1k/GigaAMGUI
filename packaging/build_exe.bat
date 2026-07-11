@@ -2,6 +2,9 @@
 chcp 65001 > nul
 setlocal EnableDelayedExpansion
 
+rem cd в корень проекта (скрипт лежит в scripts\)
+cd /d "%~dp0.."
+
 echo ============================================================
 echo  GigaAM Transcriber — Сборка EXE
 echo ============================================================
@@ -56,7 +59,7 @@ if exist "build\GigaAMTranscriber" rmdir /s /q "build\GigaAMTranscriber"
 echo.
 echo [3/3] Сборка EXE (может занять 5-15 минут)...
 echo.
-%PYTHON% -m PyInstaller gigaam_app.spec --noconfirm
+%PYTHON% -m PyInstaller packaging\gigaam_app.spec --noconfirm
 
 if errorlevel 1 (
     echo.

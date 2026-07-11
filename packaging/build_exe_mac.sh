@@ -1,9 +1,12 @@
 #!/bin/bash
 # Сборка .app для macOS (GigaAM v3 Transcriber)
 # Результат: dist/GigaAMTranscriber.app
-# Запуск: bash build_exe_mac.sh
+# Запуск: bash scripts/build_exe_mac.sh
 
 set -e
+
+# Скрипт лежит в scripts/ — работаем из корня проекта.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "[ERROR] build_exe_mac.sh предназначен только для macOS."
@@ -68,7 +71,7 @@ echo ""
 echo "[3/3] Сборка .app (может занять 5-20 минут)..."
 echo ""
 export PYTHONPATH="$(pwd)/pyinstaller_hooks${PYTHONPATH:+:$PYTHONPATH}"
-$PYTHON -m PyInstaller gigaam_app_mac.spec --noconfirm
+$PYTHON -m PyInstaller packaging/gigaam_app_mac.spec --noconfirm
 
 echo ""
 echo "[4/4] Проверка итогового .app..."

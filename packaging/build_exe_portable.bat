@@ -2,6 +2,9 @@
 chcp 65001 > nul
 setlocal EnableDelayedExpansion
 
+rem cd в корень проекта (скрипт лежит в scripts\)
+cd /d "%~dp0.."
+
 echo ============================================================
 echo  GigaAM Transcriber - ПОРТАТИВНАЯ onefile сборка
 echo ============================================================
@@ -56,7 +59,7 @@ if exist "build\GigaAMTranscriber_portable" rmdir /s /q "build\GigaAMTranscriber
 echo.
 echo [3/3] Сборка onefile EXE (может занять 5-15 минут)...
 echo.
-%PYTHON% -m PyInstaller gigaam_app_portable.spec --noconfirm
+%PYTHON% -m PyInstaller packaging\gigaam_app_portable.spec --noconfirm
 
 if errorlevel 1 (
     echo.

@@ -19,11 +19,11 @@ PyTorch внутри**. Нужная сборка PyTorch скачивается
 
 ```bat
 venv\Scripts\activate            &:: или conda activate gigaam
-build_exe_portable.bat
+packaging\build_exe_portable.bat
 ```
 или вручную:
 ```bat
-pyinstaller gigaam_app_portable.spec --noconfirm
+pyinstaller packaging\gigaam_app_portable.spec --noconfirm
 ```
 
 ### Как это работает
@@ -82,13 +82,13 @@ python -c "import gigaam; import torch; import PyQt6; print('OK')"
 ## Шаг 2 — запусти сборку
 
 ```bat
-build_exe.bat
+packaging\build_exe.bat
 ```
 
 Или вручную:
 ```bat
 pip install pyinstaller --upgrade
-pyinstaller gigaam_app.spec --noconfirm
+pyinstaller packaging\gigaam_app.spec --noconfirm
 ```
 
 Сборка занимает **5–20 минут** в зависимости от скорости диска.
@@ -137,7 +137,7 @@ pip install torch torchaudio torchvision --index-url https://download.pytorch.or
 ```bat
 dist\GigaAMTranscriber\GigaAMTranscriber.exe
 ```
-Если не хватает модуля — добавь его в `hiddenimports` в `gigaam_app.spec`.
+Если не хватает модуля — добавь его в `hiddenimports` в `packaging/gigaam_app.spec`.
 
 ### Ошибка кириллицы в пути (Windows)
 Приложение автоматически переключает кэш HF в `C:\HuggingFaceCache`.

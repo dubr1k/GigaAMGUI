@@ -18,7 +18,7 @@ from PyInstaller.utils.hooks import collect_all
 block_cipher = None
 
 # Корень проекта — папка со spec-файлом (портативно, без хардкода путей).
-project_root = os.path.abspath(SPECPATH)
+project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в packaging/, корень проекта — на уровень выше
 
 # Иконка .ico — только для Windows; на macOS нужен .icns, Linux игнорирует.
 _icon = os.path.join(project_root, 'icon.ico') if sys.platform == 'win32' else None
