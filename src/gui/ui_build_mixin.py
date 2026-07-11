@@ -5,14 +5,10 @@ Mixin: методы _init_ui/_build_menu_bar/_create_*_group работают с
 """
 from __future__ import annotations
 
-import os
-
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QDialog,
-    QDialogButtonBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -30,7 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..config import APP_TITLE, OUTPUT_FORMATS, save_env_value
+from ..config import APP_TITLE, OUTPUT_FORMATS
 
 
 class UiBuildMixin:
@@ -583,60 +579,4 @@ class UiBuildMixin:
         group.setLayout(layout)
         return group
 
-    def _show_hf_token_dialog(self) -> bool:
-        dlg = QDialog(self)
-        dlg.setWindowTitle(self._t("HuggingFace токен для диаризации", "HuggingFace token for diarization"))
-        dlg.setMinimumWidth(self._px(520))
-        layout = QVBoxLayout(dlg)
-        layout.setSpacing(self._px(10))
-        info = QLabel(
-            self._t(
-                "<b>Диаризация спикеров требует HuggingFace токен</b><br><br>"
-                "1. Создайте аккаунт на <a href='https://huggingface.co'>huggingface.co</a><br>"
-                "2. Получите токен: <a href='https://huggingface.co/settings/tokens'>huggingface.co/settings/tokens</a><br>"
-                "3. Примите условия доступа к моделям:<br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/speaker-diarization-3.1'>pyannote/speaker-diarization-3.1</a><br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/segmentation-3.0'>pyannote/segmentation-3.0</a><br><br>"
-                "Вставьте ваш токен ниже (начинается с <b>hf_</b>):",
-                "<b>Speaker diarization requires a HuggingFace token</b><br><br>"
-                "1. Create an account at <a href='https://huggingface.co'>huggingface.co</a><br>"
-                "2. Get a token: <a href='https://huggingface.co/settings/tokens'>huggingface.co/settings/tokens</a><br>"
-                "3. Accept the access terms for the models:<br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/speaker-diarization-3.1'>pyannote/speaker-diarization-3.1</a><br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/segmentation-3.0'>pyannote/segmentation-3.0</a><br><br>"
-                "Paste your token below (it starts with <b>hf_</b>):"
-            )
-        )
-        info.setOpenExternalLinks(True)
-        info.setWordWrap(True)
-        layout.addWidget(info)
-        token_input = QLineEdit()
-        token_input.setPlaceholderText("hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-        token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        current_token = os.getenv("HF_TOKEN", "")
-        if current_token:
-            token_input.setText(current_token)
-        layout.addWidget(token_input)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(self._t("ОК", "OK"))
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self._t("Отмена", "Cancel"))
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return False
-        token = token_input.text().strip()
-        if not token.startswith("hf_"):
-            QMessageBox.warning(self, self._t("Неверный токен", "Invalid token"), self._t("Токен должен начинаться с 'hf_'", "The token must start with 'hf_'."))
-            return False
-        try:
-            env_path = save_env_value("HF_TOKEN", token)
-            self.log(f"Токен сохранён: {env_path}")
-        except Exception as exc:
-            QMessageBox.warning(
-                self,
-                self._t("Не удалось сохранить токен", "Could not save token"),
-                str(exc),
-            )
-            return False
-        return True
+    # _show_hf_token_dialog вынесен в FilesMixin (рядом с _toggle_diarization).

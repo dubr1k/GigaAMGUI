@@ -91,14 +91,16 @@ def test_gui_does_not_pin_windows_font_families():
 
 
 def test_ui_scale_env_is_clamped(monkeypatch):
+    from src.gui import style_mixin
+
     monkeypatch.setenv("GIGAAM_UI_SCALE", "1.25")
-    assert app_qt._read_ui_scale() == 1.25
+    assert style_mixin._read_ui_scale() == 1.25
 
     monkeypatch.setenv("GIGAAM_UI_SCALE", "0.2")
-    assert app_qt._read_ui_scale() == app_qt._MIN_UI_SCALE
+    assert style_mixin._read_ui_scale() == style_mixin._MIN_UI_SCALE
 
     monkeypatch.setenv("GIGAAM_UI_SCALE", "9")
-    assert app_qt._read_ui_scale() == app_qt._MAX_UI_SCALE
+    assert style_mixin._read_ui_scale() == style_mixin._MAX_UI_SCALE
 
 
 def _gui_source() -> str:
@@ -302,9 +304,11 @@ def test_upload_bar_hidden_until_download(monkeypatch, tmp_path):
 
 
 def test_open_results_folder_uses_last_dir(monkeypatch, tmp_path):
+    from src.gui import settings_mixin
+
     window = _new_window()
     opened = {}
-    monkeypatch.setattr(app_qt.QDesktopServices, "openUrl", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(settings_mixin.QDesktopServices, "openUrl", lambda url: opened.setdefault("url", url))
     window._last_result_dir = str(tmp_path)
     window._open_results_folder()
     assert "url" in opened

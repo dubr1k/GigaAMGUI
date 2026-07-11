@@ -6,10 +6,39 @@ Mixin: методы работают со `self` главного окна (ви
 from __future__ import annotations
 
 import os
+import shutil
+import threading
+from pathlib import Path
 
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMessageBox
 
+from ..config import LLM_TEMPERATURE
 from ..services import llm_service
+
+SUMMARY_PROMPT = (
+    "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
+    "Убери повторы, слова-паразиты и шум распознавания. Сохрани только смысл. "
+    "\n\nСтруктура ответа:"
+    "\n1. Краткое резюме в 3-6 пунктах."
+    "\n2. Ключевые договоренности и решения."
+    "\n3. Важные факты, цифры, сроки, имена и роли — если они есть."
+    "\n4. Риски, спорные места или открытые вопросы — если они есть."
+    "\n\nПиши четко, по делу, без воды. Если часть информации в транскрипте неясна, пометь это явно и не выдумывай."
+)
+
+TASKS_PROMPT = (
+    "Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде на русском языке. "
+    "Игнорируй рассуждения, повторы и фоновые фразы. Не выдумывай задачи, которых нет в тексте. "
+    "\n\nДля каждой задачи укажи:"
+    "\n- Что нужно сделать"
+    "\n- Кто ответственный / исполнитель, если это можно понять"
+    "\n- Срок, дедлайн или ориентир по времени, если упомянут"
+    "\n- Контекст или комментарий, если он важен"
+    "\n- Приоритет, если он читается из разговора"
+    "\n\nСначала дай список задач. Затем отдельным коротким блоком выведи: "
+    "«Открытые вопросы / неясности». Если задач нет, напиши: «Явных задач не найдено»."
+)
 
 
 class LlmMixin:
@@ -187,3 +216,239 @@ class LlmMixin:
             self.lbl_llm_status.setText(f"Результат экспортирован: {os.path.basename(save_path)}")
         except Exception as e:
             QMessageBox.warning(self, self._t("Ошибка", "Error"), self._t("Не удалось экспортировать результат: ", "Failed to export the result: ") + str(e))
+
+    def _refresh_llm_files_list(self):
+        if not hasattr(self, "llm_files_list"):
+            return
+        self.llm_files_list.clear()
+        for path in self.transcript_files_for_llm:
+            item = QListWidgetItem(os.path.basename(path))
+            item.setToolTip(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.llm_files_list.addItem(item)
+        has_files = bool(self.transcript_files_for_llm)
+        self.llm_files_list.setVisible(has_files)
+        self.llm_drop_hint.setVisible(not has_files)
+        if has_files:
+            self._size_list_to_contents(self.llm_files_list)
+        c = self._colors()
+        if has_files:
+            text = self._t(f"Выбрано транскриптов: {len(self.transcript_files_for_llm)}", f"Selected transcripts: {len(self.transcript_files_for_llm)}")
+            self.lbl_llm_files.setText(text)
+            self.lbl_llm_files_count.setText(text)
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(c["text_sub"]))
+            self.lbl_llm_files_count.setStyleSheet(self._transparent_label_style(c["text_sub"]))
+        else:
+            text = self._t("Файлы не выбраны", "No files selected")
+            self.lbl_llm_files.setText(text)
+            self.lbl_llm_files_count.setText(text)
+            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(c["text_mute"]))
+            self.lbl_llm_files_count.setStyleSheet(self._transparent_label_style(c["text_mute"]))
+        self._update_llm_files_controls()
+
+    def _update_llm_files_controls(self):
+        if not hasattr(self, "btn_clear_llm_files"):
+            return
+        has_files = bool(self.transcript_files_for_llm)
+        self.btn_clear_llm_files.setEnabled(has_files and not self.is_llm_processing)
+        self.btn_remove_llm_file.setEnabled(bool(self.llm_files_list.selectedItems()) and not self.is_llm_processing)
+
+    def _remove_selected_llm_files(self):
+        if self.is_llm_processing:
+            return
+        selected = {item.data(Qt.ItemDataRole.UserRole) for item in self.llm_files_list.selectedItems()}
+        if not selected:
+            return
+        self.transcript_files_for_llm = [p for p in self.transcript_files_for_llm if p not in selected]
+        self._refresh_llm_files_list()
+        self.user_settings.set_value("last_selected_transcript_files", [p for p in self.transcript_files_for_llm if os.path.isfile(p)])
+
+    def _clear_llm_files_list(self):
+        if self.is_llm_processing or not self.transcript_files_for_llm:
+            return
+        self.transcript_files_for_llm = []
+        self._refresh_llm_files_list()
+        self.user_settings.set_value("last_selected_transcript_files", [])
+
+    def _select_llm_transcript_files(self):
+        initial_dir = self.user_settings.get_value("llm_transcript_dir", self.llm_transcript_dir)
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Выберите транскрипты",
+            initial_dir,
+            "Транскрипты (*.txt *.md *.srt *.vtt);;Текстовые файлы (*.txt *.md);;Все файлы (*.*)"
+        )
+        if files:
+            self.transcript_files_for_llm = files
+            folder = os.path.dirname(files[0])
+            self.llm_transcript_dir = folder
+            if not self.llm_output_dir:
+                self.llm_output_dir = folder
+                self._update_llm_output_dir_label(folder)
+            self.user_settings.set_value("llm_transcript_dir", folder)
+            self.user_settings.set_value("last_selected_transcript_files", files)
+            self._refresh_llm_files_list()
+            self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
+
+    def _select_llm_output_folder(self):
+        initial_dir = self.llm_output_dir or self.output_dir or os.path.expanduser("~")
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения LLM-результатов", initial_dir)
+        if folder:
+            self.llm_output_dir = folder
+            self.user_settings.set_value("llm_output_dir", folder)
+            self._update_llm_output_dir_label(folder)
+
+    # ──────────────────────────────────────────────────────────────
+    # Загрузка по ссылке
+    # ──────────────────────────────────────────────────────────────
+
+    def _clear_llm_result(self):
+        if self.is_llm_processing:
+            QMessageBox.information(self, self._t("Внимание", "Attention"), self._t("LLM-обработка уже выполняется", "LLM processing is already running."))
+            return
+        self.txt_llm_result.clear()
+        self.llm_last_result_text = ""
+        self.llm_last_result_name = "llm_result"
+        self.lbl_llm_status.setText(self._t("Готово к LLM-обработке", "Ready for LLM processing"))
+
+    def _clear_llm_all(self):
+        if self.is_llm_processing:
+            QMessageBox.information(self, self._t("Внимание", "Attention"), self._t("LLM-обработка уже выполняется", "LLM processing is already running."))
+            return
+        self.transcript_files_for_llm = []
+        self.txt_llm_transcript.clear()
+        self._refresh_llm_files_list()
+        self._clear_llm_result()
+        self.user_settings.set_value("last_selected_transcript_files", [])
+        self.user_settings.set_value("llm_manual_transcript", "")
+
+    def _selected_llm_modes(self):
+        modes = []
+        if self.llm_action_checkboxes["summary"].isChecked():
+            prompt = self.txt_llm_summary_prompt.toPlainText().strip() or SUMMARY_PROMPT
+            modes.append(("summary", "Выжимка", prompt))
+        if self.llm_action_checkboxes["tasks"].isChecked():
+            prompt = self.txt_llm_tasks_prompt.toPlainText().strip() or TASKS_PROMPT
+            modes.append(("tasks", "Задачи", prompt))
+        if self.llm_action_checkboxes["custom"].isChecked():
+            custom_prompt = self.txt_llm_custom_prompt.toPlainText().strip()
+            if not custom_prompt:
+                raise ValueError("Для режима «Свой промпт» укажите пользовательский промпт в меню «Настройки → LLM API…»")
+            modes.append(("custom", "Свой промпт", custom_prompt))
+        if not modes:
+            raise ValueError("Выберите хотя бы один чекбокс в блоке «Что делать»")
+        return modes
+
+    def _selected_llm_export_formats(self):
+        formats = [key for key, cb in self.llm_export_checkboxes.items() if cb.isChecked()]
+        if not formats:
+            raise ValueError("Выберите хотя бы один формат сохранения результата")
+        return formats
+
+    def _start_llm_processing(self):
+        if self.is_llm_processing:
+            return
+        try:
+            llm_settings = self._collect_llm_settings()
+            items = self._collect_llm_inputs()
+            modes = self._selected_llm_modes()
+            export_formats = self._selected_llm_export_formats()
+        except ValueError as e:
+            QMessageBox.warning(self, self._t("Внимание", "Attention"), str(e))
+            return
+
+        self._save_ui_settings()
+        self.is_llm_processing = True
+        self._set_llm_buttons_enabled(False)
+        self.lbl_llm_status.setText("Идет LLM-обработка...")
+        self.txt_llm_result.clear()
+        threading.Thread(
+            target=self._run_llm_processing,
+            args=(llm_settings, items, modes, export_formats),
+            daemon=True,
+        ).start()
+
+    def _collect_llm_settings(self) -> dict:
+        provider = self.combo_llm_provider.currentText().strip() or "API"
+        api_url = self.entry_llm_api_url.text().strip()
+        api_key = self.entry_llm_api_key.text().strip()
+        model = self.entry_llm_model.text().strip()
+        temperature_text = self.entry_llm_temperature.text().strip() or str(LLM_TEMPERATURE)
+        try:
+            temperature = float(temperature_text)
+        except ValueError as exc:
+            raise ValueError("Temperature должно быть числом") from exc
+        if not 0 <= temperature <= 2:
+            raise ValueError("Temperature должно быть в диапазоне 0..2")
+
+        if provider == "API":
+            if not api_url:
+                raise ValueError("Укажите API URL")
+            if not api_key:
+                raise ValueError("Укажите API Key")
+            if not model:
+                raise ValueError("Укажите модель")
+        elif provider == "Claude Code":
+            claude_path = self.entry_llm_claude_path.text().strip() or "claude"
+            if not (shutil.which(claude_path) or os.path.isfile(claude_path)):
+                raise ValueError(f"Не найден Claude Code: {claude_path}")
+        elif provider == "Codex":
+            codex_path = self.entry_llm_codex_path.text().strip() or "codex"
+            if not (shutil.which(codex_path) or os.path.isfile(codex_path)):
+                raise ValueError(f"Не найден Codex: {codex_path}")
+        elif provider == "OpenCode":
+            opencode_path = self.entry_llm_opencode_path.text().strip() or "opencode"
+            if not (shutil.which(opencode_path) or os.path.isfile(opencode_path)):
+                raise ValueError(f"Не найден OpenCode: {opencode_path}")
+        elif provider == "Pi":
+            pi_path = self.entry_llm_pi_path.text().strip() or "pi"
+            if not (shutil.which(pi_path) or os.path.isfile(pi_path)):
+                raise ValueError(f"Не найден Pi: {pi_path}")
+        elif self._normalize_llm_provider(provider) == "Other":
+            other_path = self.entry_llm_other_path.text().strip()
+            if not other_path:
+                raise ValueError(self._t("Укажите команду для провайдера «Другое»", "Specify a command for the 'Other' provider"))
+            if not (shutil.which(other_path) or os.path.isfile(other_path)):
+                raise ValueError(f"Не найдена команда: {other_path}")
+        return {
+            "provider": provider,
+            "api_url": api_url,
+            "api_key": api_key,
+            "model": model,
+            "temperature": temperature,
+            "claude_path": self.entry_llm_claude_path.text().strip() or "claude",
+            "claude_args": self.entry_llm_claude_args.text().strip(),
+            "codex_path": self.entry_llm_codex_path.text().strip() or "codex",
+            "codex_args": self.entry_llm_codex_args.text().strip(),
+            "opencode_path": self.entry_llm_opencode_path.text().strip() or "opencode",
+            "opencode_args": self.entry_llm_opencode_args.text().strip(),
+            "pi_path": self.entry_llm_pi_path.text().strip() or "pi",
+            "pi_provider": self.entry_llm_pi_provider.text().strip(),
+            "pi_args": self.entry_llm_pi_args.text().strip(),
+            "other_path": self.entry_llm_other_path.text().strip(),
+            "other_args": self.entry_llm_other_args.text().strip(),
+        }
+
+    def _collect_llm_inputs(self):
+        manual_text = self.txt_llm_transcript.toPlainText().strip()
+        items = []
+        if manual_text:
+            base_name = "manual_transcript"
+            if self.transcript_files_for_llm:
+                base_name = Path(self.transcript_files_for_llm[0]).stem
+            items.append({"name": base_name, "text": manual_text, "source_path": self.transcript_files_for_llm[0] if self.transcript_files_for_llm else None})
+        for path in self.transcript_files_for_llm:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text = f.read().strip()
+            except OSError:
+                continue
+            if text:
+                items.append({"name": Path(path).stem, "text": text, "source_path": path})
+        if not items:
+            raise ValueError("Выберите хотя бы один транскрипт или вставьте текст вручную")
+        return items
+
+    # ──────────────────────────────────────────────────────────────
+    # Обработка файлов
+    # ──────────────────────────────────────────────────────────────
