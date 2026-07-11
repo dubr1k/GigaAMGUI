@@ -285,7 +285,15 @@ class LlmUiMixin:
         self.txt_llm_tasks_prompt = QTextEdit()
         self.txt_llm_tasks_prompt.setMinimumHeight(self._px(100))
         prompts_layout.addWidget(self.txt_llm_tasks_prompt)
+
+        self.lbl_llm_custom_prompt = QLabel("Свой промпт:")
+        prompts_layout.addWidget(self.lbl_llm_custom_prompt)
         self.txt_llm_custom_prompt = QTextEdit()
+        self.txt_llm_custom_prompt.setMinimumHeight(self._px(100))
+        self.txt_llm_custom_prompt.setPlaceholderText(
+            "Текст для режима «Свой промпт». Транскрипт будет добавлен ниже автоматически."
+        )
+        prompts_layout.addWidget(self.txt_llm_custom_prompt)
         self.prompts_group.setLayout(prompts_layout)
         layout.addWidget(self.prompts_group)
 

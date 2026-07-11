@@ -121,6 +121,8 @@ class I18nMixin:
                 self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
             if hasattr(self, "lbl_llm_tasks_prompt"):
                 self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
+            if hasattr(self, "lbl_llm_custom_prompt"):
+                self.lbl_llm_custom_prompt.setText("Свой промпт:" if is_ru else "Custom prompt:")
             self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
             self.lbl_llm_status.setText("Готово к LLM-обработке" if is_ru else "Ready for LLM processing")
             if hasattr(self, "llm_drop_hint"):
@@ -191,6 +193,7 @@ class I18nMixin:
                 self.prompts_group.setTitle("Готовые промпты" if is_ru else "Ready prompts")
                 self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
                 self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
+                self.lbl_llm_custom_prompt.setText("Свой промпт:" if is_ru else "Custom prompt:")
                 self.lbl_llm_settings_note.setText("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env." if is_ru else "You can use an OpenAI-compatible API, Anthropic Messages API, or local Claude Code / Codex / OpenCode / Pi. In API mode, the app auto-detects the API type from the URL or endpoint. The selected provider, model, temperature, checkboxes, prompts, and files are saved between launches. It is best to store the API key in .env.")
                 self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить" if is_ru else "Save")
                 self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть" if is_ru else "Close")
