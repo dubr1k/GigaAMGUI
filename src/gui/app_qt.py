@@ -68,6 +68,8 @@ from ..utils import (
 from ..core.progress import ProgressEvent
 from ..services import transcription_service
 from .download_mixin import DownloadMixin
+from .files_mixin import FilesMixin
+from .i18n_mixin import I18nMixin
 from .llm_mixin import LlmMixin
 from .llm_ui_mixin import LlmUiMixin
 from .processing_mixin import ProcessingMixin
@@ -116,22 +118,6 @@ def _read_ui_scale() -> float:
 
 def _format_css_number(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
-def _install_qt_translator(app: QApplication | None, language: str) -> None:
-    if app is None:
-        return
-    current = getattr(app, "_gigaam_qt_translator", None)
-    if current is not None:
-        app.removeTranslator(current)
-        app._gigaam_qt_translator = None
-    if language != "ru":
-        return
-    translator = QTranslator(app)
-    translations_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
-    if translator.load("qtbase_ru", translations_path):
-        app.installTranslator(translator)
-        app._gigaam_qt_translator = translator
 
 
 class WorkerSignals(QObject):
@@ -184,8 +170,8 @@ class GigaApplication(QApplication):
 
 
 class GigaTranscriberQtApp(
-    LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin,
-    ThemeMixin, UiBuildMixin, QMainWindow,
+    LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, FilesMixin,
+    I18nMixin, ThemeMixin, UiBuildMixin, QMainWindow,
 ):
     """Главное окно приложения для транскрибации на PyQt6"""
 
@@ -453,189 +439,9 @@ class GigaTranscriberQtApp(
         self._apply_theme()
         self._btn_theme.setText(self._colors()["theme_btn"])
 
-    def _toggle_language(self):
-        self._lang = "en" if self._lang == "ru" else "ru"
-        self.user_settings.settings["language"] = self._lang
-        self.user_settings._save_settings()
-        self._apply_language()
 
-    def _t(self, ru: str, en: str) -> str:
-        return ru if self._lang == "ru" else en
 
-    def _normalize_llm_provider(self, provider: str) -> str:
-        return "Other" if provider in {"Другое", "Other"} else provider
 
-    def _apply_language(self):
-        is_ru = self._lang == "ru"
-        _install_qt_translator(QApplication.instance(), self._lang)
-        self._btn_lang.setText("EN" if is_ru else "RU")
-        self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
-        if hasattr(self, "_title_label"):
-            self._title_label.setText("GigaAM v3: Транскрибация" if is_ru else "GigaAM v3: Transcription")
-        if hasattr(self, "tabs"):
-            self.tabs.setTabText(0, "Обработка" if is_ru else "Process")
-            self.tabs.setTabText(1, "LLM")
-            self.tabs.setTabText(2, "Журнал обработки" if is_ru else "Processing log")
-        if hasattr(self, "btn_start"):
-            self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ" if is_ru else "START PROCESSING")
-        if hasattr(self, "btn_clear"):
-            self.btn_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
-        if hasattr(self, "btn_llm_process"):
-            self.btn_llm_process.setText("ОБРАБОТАТЬ" if is_ru else "PROCESS")
-        if hasattr(self, "btn_llm_clear"):
-            self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
-        if hasattr(self, "status_bar"):
-            self.status_bar.showMessage("Готов к работе" if is_ru else "Ready to work")
-        if hasattr(self, "grp_files"):
-            self.grp_files.setTitle("1. Выбор файлов" if is_ru else "1. File selection")
-            self.grp_output.setTitle("2. Папка сохранения результатов" if is_ru else "2. Output folder")
-            self.grp_diarization.setTitle("3. Диаризация спикеров" if is_ru else "3. Speaker diarization")
-            self.grp_formats.setTitle("4. Форматы вывода" if is_ru else "4. Output formats")
-            self.lbl_overall.setText("Общий прогресс" if is_ru else "Overall progress")
-            self.btn_select_files.setText("Выбрать файлы" if is_ru else "Choose files")
-            self.btn_select_files.setToolTip("Выбрать аудио/видео файлы для обработки  (Ctrl+O)" if is_ru else "Choose audio/video files for processing  (Ctrl+O)")
-            self.btn_select_folder.setText("Выбрать папку" if is_ru else "Choose folder")
-            self.btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок" if is_ru else "Add all media files from the folder and subfolders")
-            self.btn_upload.setText("Загрузить" if is_ru else "Download")
-            self.btn_upload.setToolTip("Скачать медиа по ссылке и добавить в очередь" if is_ru else "Download media by URL and add it to the queue")
-            self.btn_output_select.setText("Выбрать папку" if is_ru else "Choose folder")
-            self.btn_open_result.setText("Открыть папку с результатами" if is_ru else "Open results folder")
-            if hasattr(self, "lbl_output_folder") and (self.lbl_output_folder.text().startswith("Папка не выбрана") or self.lbl_output_folder.text().startswith("Folder not selected")):
-                self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)" if is_ru else "Folder not selected (default: next to the file)")
-            self.btn_cancel.setText("Отменить" if is_ru else "Cancel")
-            self.cb_diarization.setText("Включить диаризацию спикеров" if is_ru else "Enable speaker diarization")
-            self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)" if is_ru else "Detect which speaker is talking (HF_TOKEN required)")
-            self.lbl_num_speakers.setText("Кол-во спикеров:" if is_ru else "Speakers count:")
-            self.lbl_diarization_info.setText("Автоматическое определение спикеров (требуется HF_TOKEN)" if is_ru else "Automatic speaker detection (HF_TOKEN required)")
-            self.entry_num_speakers.setSpecialValueText("Авто" if is_ru else "Auto")
-            self.entry_num_speakers.setToolTip("0 = автоопределение количества спикеров" if is_ru else "0 = auto-detect speaker count")
-            self.input_path.setPlaceholderText("Ссылка на медиа (YouTube и др.)" if is_ru else "Media URL (YouTube, etc.)")
-            self.input_path.setToolTip("Вставьте ссылку и нажмите «Загрузить»" if is_ru else "Paste a link and press 'Download'")
-            if not self.files_to_process:
-                self.lbl_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
-            self.btn_remove_file.setText("Убрать выбранное" if is_ru else "Remove selected")
-            self.btn_remove_file.setToolTip("Убрать выделенные файлы из очереди  (Delete)" if is_ru else "Remove selected files from the queue  (Delete)")
-            self.btn_clear_files.setText("Очистить список" if is_ru else "Clear list")
-            self.btn_clear_files.setToolTip("Убрать все файлы из очереди (настройки сохранятся)" if is_ru else "Remove all files from the queue (settings will be kept)")
-            self.files_list.setToolTip("Очередь файлов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "File queue. Select items and press Delete to remove them.")
-            if self.lbl_input_folder.text().startswith("Папка не выбрана") or self.lbl_input_folder.text().startswith("Folder not selected"):
-                self.lbl_input_folder.setText("Папка не выбрана" if is_ru else "Folder not selected")
-            self.drop_hint.setText("Перетащите сюда файлы или папки  ·  либо нажмите «Выбрать файлы»" if is_ru else "Drop files or folders here  ·  or click 'Choose files'")
-            format_labels = {
-                "txt": ("Текст (.txt)", "Text (.txt)"),
-                "txt_timecodes": ("Таймкоды (_timecodes.txt)", "Timecodes (_timecodes.txt)"),
-                "txt_diarize": ("Диаризация (_diarize.txt)", "Diarization (_diarize.txt)"),
-                "txt_diarize_timecodes": ("Диар.+тайм. (_diarize_timecodes.txt)", "Diarization+timecodes (_diarize_timecodes.txt)"),
-                "md": ("Markdown (.md)", "Markdown (.md)"),
-                "srt": ("SRT (.srt)", "SRT (.srt)"),
-                "vtt": ("VTT (.vtt)", "VTT (.vtt)"),
-            }
-            for fmt, cb in self.format_checkboxes.items():
-                ru_label, en_label = format_labels.get(fmt, (cb.text(), cb.text()))
-                cb.setText(ru_label if is_ru else en_label)
-        if hasattr(self, "grp_llm_source"):
-            self.grp_llm_source.setTitle("1. Источник транскрипта" if is_ru else "1. Transcript source")
-            self.grp_llm_output.setTitle("2. Куда сохранить" if is_ru else "2. Save location")
-            self.grp_llm_actions.setTitle("3. Что сделать" if is_ru else "3. What to do")
-            self.grp_llm_save.setTitle("4. Форматы вывода" if is_ru else "4. Output formats")
-            self.grp_llm_result.setTitle("5. Результат LLM" if is_ru else "5. LLM result")
-            self.btn_select_transcripts.setText("Выбрать транскрипты" if is_ru else "Choose transcripts")
-            self.btn_llm_output.setText("Выбрать папку" if is_ru else "Choose folder")
-            self.btn_llm_process.setToolTip("Запустить LLM-обработку выбранных транскриптов" if is_ru else "Run LLM processing for selected transcripts")
-            self.btn_llm_clear.setToolTip("Сбросить выбранные транскрипты, ручной текст и результат LLM" if is_ru else "Reset selected transcripts, manual text and LLM result")
-            if hasattr(self, "lbl_llm_summary_prompt"):
-                self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
-            if hasattr(self, "lbl_llm_tasks_prompt"):
-                self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
-            self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
-            self.lbl_llm_status.setText("Готово к LLM-обработке" if is_ru else "Ready for LLM processing")
-            if hasattr(self, "llm_drop_hint"):
-                self.llm_drop_hint.setText("Перетащите сюда транскрипты  ·  либо нажмите «Выбрать транскрипты»" if is_ru else "Drop transcripts here  ·  or click 'Choose transcripts'")
-            if hasattr(self, "btn_remove_llm_file"):
-                self.btn_remove_llm_file.setText("Убрать выбранное" if is_ru else "Remove selected")
-            if hasattr(self, "btn_clear_llm_files"):
-                self.btn_clear_llm_files.setText("Очистить список" if is_ru else "Clear list")
-            if hasattr(self, "llm_files_list"):
-                self.llm_files_list.setToolTip("Список транскриптов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "Transcript list. Select items and press Delete to remove them.")
-            self.lbl_llm_files.setText("Файлы не выбраны" if is_ru and not self.transcript_files_for_llm else ("No files selected" if not is_ru and not self.transcript_files_for_llm else self.lbl_llm_files.text()))
-            if hasattr(self, "lbl_llm_files_count") and not self.transcript_files_for_llm:
-                self.lbl_llm_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
-            self.txt_llm_transcript.setPlaceholderText(
-                "Вставьте сюда транскрипт, если не хотите выбирать файлы"
-                if is_ru else
-                "Paste transcript here if you do not want to choose files"
-            )
-            if hasattr(self, "llm_action_checkboxes"):
-                self.llm_action_checkboxes["summary"].setText("Выжимка" if is_ru else "Summary")
-                self.llm_action_checkboxes["tasks"].setText("Задачи" if is_ru else "Tasks")
-                self.llm_action_checkboxes["custom"].setText("Свой промпт" if is_ru else "Custom prompt")
-            if hasattr(self, "lbl_llm_actions_note"):
-                self.lbl_llm_actions_note.setText("Отметьте один или несколько режимов обработки. Для «Свой промпт» текст задается в меню «Настройки → LLM API…»." if is_ru else "Select one or more processing modes. For 'Custom prompt', set the text in Settings → LLM API…")
-            if hasattr(self, "lbl_llm_output") and (self.lbl_llm_output.text().startswith("Папка не выбрана") or self.lbl_llm_output.text().startswith("Folder not selected")):
-                self.lbl_llm_output.setText("Папка не выбрана (по умолчанию - рядом с транскриптом)" if is_ru else "Folder not selected (default: next to the transcript)")
-            if hasattr(self, "lbl_llm_output_note"):
-                self.lbl_llm_output_note.setText("Если папка не выбрана, результат будет сохранен рядом с исходным транскриптом." if is_ru else "If no folder is selected, the result will be saved next to the source transcript.")
-            if hasattr(self, "llm_export_checkboxes"):
-                self.llm_export_checkboxes["txt"].setText("TXT (.txt)")
-                self.llm_export_checkboxes["md"].setText("Markdown (.md)")
-                self.llm_export_checkboxes["docx"].setText("DOCX (.docx)")
-            if hasattr(self, "btn_log_copy"):
-                self.btn_log_copy.setText("Копировать" if is_ru else "Copy")
-                self.btn_log_copy.setToolTip("Скопировать весь журнал в буфер обмена" if is_ru else "Copy the entire log to the clipboard")
-                self.btn_log_save.setText("Сохранить…" if is_ru else "Save…")
-                self.btn_log_save.setToolTip("Сохранить журнал в текстовый файл" if is_ru else "Save the log to a text file")
-                self.btn_log_clear.setText("Очистить журнал" if is_ru else "Clear log")
-                self.btn_log_clear.setToolTip("Очистить только журнал, не сбрасывая настройки" if is_ru else "Clear only the log without resetting settings")
-            if hasattr(self, "_llm_settings_dialog"):
-                self._llm_settings_dialog.setWindowTitle("Настройки LLM" if is_ru else "LLM settings")
-                self.grp_llm_api_settings.setTitle("LLM API")
-                self.llm_provider_labels["provider"].setText("Провайдер:" if is_ru else "Provider:")
-                self.llm_provider_labels["model"].setText("Модель:" if is_ru else "Model:")
-                self.llm_provider_items[5] = "Другое" if is_ru else "Other"
-                current_provider = self._normalize_llm_provider(self.combo_llm_provider.currentText())
-                self.combo_llm_provider.blockSignals(True)
-                self.combo_llm_provider.setItemText(5, self.llm_provider_items[5])
-                self.combo_llm_provider.setCurrentText(self.llm_provider_items[5] if current_provider == "Other" else current_provider)
-                self.combo_llm_provider.blockSignals(False)
-                self.llm_provider_labels["claude_path"].setText("Claude Code путь:" if is_ru else "Claude Code path:")
-                self.llm_provider_labels["claude_args"].setText("Claude доп. аргументы:" if is_ru else "Claude extra args:")
-                self.entry_llm_claude_args.setPlaceholderText("например: --permission-mode bypassPermissions" if is_ru else "example: --permission-mode bypassPermissions")
-                self.llm_provider_labels["codex_path"].setText("Codex путь:" if is_ru else "Codex path:")
-                self.llm_provider_labels["codex_args"].setText("Codex доп. аргументы:" if is_ru else "Codex extra args:")
-                self.entry_llm_codex_args.setPlaceholderText("например: --dangerously-bypass-approvals-and-sandbox" if is_ru else "example: --dangerously-bypass-approvals-and-sandbox")
-                self.llm_provider_labels["opencode_path"].setText("OpenCode путь:" if is_ru else "OpenCode path:")
-                self.llm_provider_labels["opencode_args"].setText("OpenCode доп. аргументы:" if is_ru else "OpenCode extra args:")
-                self.entry_llm_opencode_args.setPlaceholderText("например: --print" if is_ru else "example: --print")
-                self.llm_provider_labels["pi_path"].setText("Pi путь:" if is_ru else "Pi path:")
-                self.llm_provider_labels["pi_provider"].setText("Pi provider:" if is_ru else "Pi provider:")
-                self.llm_provider_labels["pi_args"].setText("Pi доп. аргументы:" if is_ru else "Pi extra args:")
-                self.entry_llm_pi_args.setPlaceholderText("например: --no-tools --thinking low" if is_ru else "example: --no-tools --thinking low")
-                self.llm_provider_labels["other_path"].setText("Команда:" if is_ru else "Command:")
-                self.llm_provider_labels["other_args"].setText("Аргументы:" if is_ru else "Arguments:")
-                self.entry_llm_other_path.setPlaceholderText("путь к CLI, например my-llm" if is_ru else "CLI path, for example my-llm")
-                self.entry_llm_other_args.setPlaceholderText("аргументы; промпт будет добавлен в конец как последний параметр" if is_ru else "arguments; the prompt will be appended as the last argument")
-                self.prompts_group.setTitle("Готовые промпты" if is_ru else "Ready prompts")
-                self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
-                self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
-                self.lbl_llm_settings_note.setText("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env." if is_ru else "You can use an OpenAI-compatible API, Anthropic Messages API, or local Claude Code / Codex / OpenCode / Pi. In API mode, the app auto-detects the API type from the URL or endpoint. The selected provider, model, temperature, checkboxes, prompts, and files are saved between launches. It is best to store the API key in .env.")
-                self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить" if is_ru else "Save")
-                self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть" if is_ru else "Close")
-                self._update_llm_provider_fields(self.combo_llm_provider.currentText())
-        if hasattr(self, "_menu_file"):
-            self._menu_file.setTitle("Файл" if is_ru else "File")
-            self._menu_view.setTitle("Вид" if is_ru else "View")
-            self._menu_settings.setTitle("Настройки" if is_ru else "Settings")
-            self._menu_help.setTitle("Справка" if is_ru else "Help")
-            self._act_files.setText("Выбрать файлы…" if is_ru else "Choose files…")
-            self._act_folder.setText("Выбрать папку с файлами…" if is_ru else "Choose folder with files…")
-            self._act_out.setText("Папка сохранения…" if is_ru else "Output folder…")
-            self._act_open_res.setText("Открыть папку с результатами" if is_ru else "Open results folder")
-            self._act_quit.setText("Выход" if is_ru else "Exit")
-            self._act_theme.setText("Переключить тему" if is_ru else "Toggle theme")
-            self._act_asr_backend.setText("Движок распознавания…" if is_ru else "Recognition engine...")
-            self._act_device.setText("Устройство (CPU / GPU)…" if is_ru else "Device (CPU / GPU)…")
-            self._act_llm.setText("LLM API…")
-            self._act_about.setText("О программе" if is_ru else "About")
 
     def _select_asr_backend(self):
         if self.is_processing:
@@ -711,74 +517,6 @@ class GigaTranscriberQtApp(
         except Exception:
             pass
 
-    def _translate_runtime_text(self, message: str) -> str:
-        if self._lang == "ru" or not message:
-            return message
-        translated = str(message)
-        replacements = [
-            ("Подробности — на вкладке «Журнал обработки».", "See details in the 'Processing log' tab."),
-            ("Не удалось сохранить журнал:\n", "Failed to save the log:\n"),
-            ("Журнал скопирован в буфер обмена", "Log copied to clipboard"),
-            ("Журнал сохранён: ", "Log saved: "),
-            ("Журнал сохранён в ", "Log saved to "),
-            ("Журнал очищен", "Log cleared"),
-            ("Диаризация спикеров: ВКЛЮЧЕНА", "Speaker diarization: ENABLED"),
-            ("Диаризация спикеров: ВЫКЛЮЧЕНА", "Speaker diarization: DISABLED"),
-            ("Токен сохранён: ", "Token saved: "),
-            ("Количество спикеров: автоопределение", "Speaker count: auto-detect"),
-            ("Количество спикеров: ", "Speaker count: "),
-            ("Обработка отменена пользователем", "Processing cancelled by user"),
-            ("=== ОБРАБОТКА ЗАВЕРШЕНА ===", "=== PROCESSING FINISHED ==="),
-            ("Общее время обработки: ", "Total processing time: "),
-            (", с ошибками: ", ", with errors: "),
-            ("Успешно: ", "Successful: "),
-            ("Отменено. Обработано ", "Cancelled. Processed "),
-            ("Готово с ошибками: ", "Completed with errors: "),
-            (" успешно за ", " successful in "),
-            ("Завершено за ", "Completed in "),
-            ("Не удалось: ", "Failed: "),
-            (" и ещё ", " and "),
-            ("Критическая ошибка: ", "Critical error: "),
-            ("Ошибка: ", "Error: "),
-            ("Не удалось загрузить модель", "Failed to load model"),
-            ("Анализ файлов и оценка времени обработки...", "Analyzing files and estimating processing time..."),
-            ("Обработка ", "Processing "),
-            (" файлов…", " files…"),
-            ("Файл ", "File "),
-            ("Подготовка…", "Preparing…"),
-            ("Конвертация…", "Converting…"),
-            ("Распознавание речи…", "Speech recognition…"),
-            ("Распознавание речи (GigaAM-v3)...", "Speech recognition (GigaAM-v3)..."),
-            ("Транскрибация завершена. Получено сегментов: ", "Transcription finished. Segments received: "),
-            ("Пример структуры сегмента: keys=", "Example segment structure: keys="),
-            ("Применение диаризации спикеров...", "Applying speaker diarization..."),
-            ("Диаризация завершена. Найдено спикеров: ", "Diarization finished. Speakers found: "),
-            ("Найдено сегментов речи: ", "Speech segments found: "),
-            ("Сохранено символов: ", "Characters saved: "),
-            ("Сохранено: ", "Saved: "),
-            ("Время обработки: ", "Processing time: "),
-            ("Конверсия: ", "Conversion: "),
-            ("Транскрибация: ", "Transcription: "),
-            ("Длительность: ", "Duration: "),
-            ("неизвестна", "unknown"),
-            ("ошибка определения длительности", "duration detection error"),
-            ("длительность неизвестна", "duration unknown"),
-            ("Ошибка при обработке файла ", "Error while processing file "),
-            ("ОШИБКА при транскрибации: ", "TRANSCRIPTION ERROR: "),
-            ("ОШИБКА VAD: ", "VAD ERROR: "),
-            ("ПРЕДУПРЕЖДЕНИЕ: ", "WARNING: "),
-            ("Ошибка при обработке ", "Error while processing "),
-            ("Возможные причины:", "Possible reasons:"),
-            ("Проверьте токен HF_TOKEN в .env файле и убедитесь, что приняли условия доступа:", "Check the HF_TOKEN in the .env file and make sure you accepted the access terms:"),
-            ("Проверьте токен HF_TOKEN в src/config.py и убедитесь, что приняли условия доступа:", "Check the HF_TOKEN in src/config.py and make sure you accepted the access terms:"),
-            ("Диаризация требует токен HuggingFace.", "Diarization requires a HuggingFace token."),
-            ("Установите токен через чекбокс 'Диаризация' в интерфейсе.", "Set the token via the 'Diarization' checkbox in the interface."),
-            ("Продолжаем без диаризации...", "Continuing without diarization..."),
-            ("Спикер №", "Speaker #"),
-        ]
-        for old, new in replacements:
-            translated = translated.replace(old, new)
-        return translated
 
     def _set_status(self, message: str):
         """Дублирует ключевые сообщения в системный статус-бар."""
@@ -826,119 +564,13 @@ class GigaTranscriberQtApp(
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
-    def _refresh_files_list(self):
-        """Синхронизирует QListWidget и пустое состояние с self.files_to_process."""
-        if not hasattr(self, "files_list"):
-            return
-        self.files_list.clear()
-        for path in self.files_to_process:
-            item = QListWidgetItem(os.path.basename(path))
-            item.setToolTip(path)
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            self.files_list.addItem(item)
-        has_files = bool(self.files_to_process)
-        self.files_list.setVisible(has_files)
-        self.drop_hint.setVisible(not has_files)
-        if has_files:
-            self._size_list_to_contents(self.files_list)
-        c = self._colors()
-        if has_files:
-            self.lbl_files_count.setText(self._t(f"Выбрано файлов: {len(self.files_to_process)}", f"Selected files: {len(self.files_to_process)}"))
-            self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_sub"]))
-        else:
-            self.lbl_files_count.setText("Файлы не выбраны")
-            self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_mute"]))
-        self._update_files_controls()
 
-    def _update_files_controls(self):
-        if not hasattr(self, "btn_clear_files"):
-            return
-        has_files = bool(self.files_to_process)
-        self.btn_clear_files.setEnabled(has_files and not self.is_processing)
-        self.btn_remove_file.setEnabled(
-            bool(self.files_list.selectedItems()) and not self.is_processing
-        )
 
-    def _remove_selected_files(self):
-        if self.is_processing:
-            return
-        selected = {
-            item.data(Qt.ItemDataRole.UserRole) for item in self.files_list.selectedItems()
-        }
-        if not selected:
-            return
-        removed = len(selected)
-        self.files_to_process = [p for p in self.files_to_process if p not in selected]
-        self._refresh_files_list()
-        self.log(f"Убрано из очереди: {removed} файлов")
 
-    def _clear_files_list(self):
-        if self.is_processing or not self.files_to_process:
-            return
-        self.files_to_process = []
-        self._refresh_files_list()
-        self.log("Очередь файлов очищена")
 
-    def keyPressEvent(self, event):
-        if (
-            event.key() == Qt.Key.Key_Delete
-            and hasattr(self, "files_list")
-            and self.files_list.hasFocus()
-        ):
-            self._remove_selected_files()
-            return
-        if (
-            event.key() == Qt.Key.Key_Delete
-            and hasattr(self, "llm_files_list")
-            and self.llm_files_list.hasFocus()
-        ):
-            self._remove_selected_llm_files()
-            return
-        super().keyPressEvent(event)
 
-    def _toggle_diarization(self, state):
-        if self._diarization_prompt_open:
-            return
-        enabling = (state == Qt.CheckState.Checked.value)
-        if enabling and not os.getenv("HF_TOKEN", "").startswith("hf_"):
-            self._diarization_prompt_open = True
-            self.cb_diarization.setEnabled(False)
-            try:
-                if not self._show_hf_token_dialog():
-                    self.cb_diarization.blockSignals(True)
-                    self.cb_diarization.setChecked(False)
-                    self.cb_diarization.blockSignals(False)
-                    self.enable_diarization = False
-                    self.entry_num_speakers.setEnabled(False)
-                    for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
-                        cb = self.format_checkboxes.get(fmt)
-                        if cb:
-                            cb.setEnabled(False)
-                    return
-            finally:
-                self.cb_diarization.setEnabled(True)
-                self._diarization_prompt_open = False
-        self.enable_diarization = enabling
-        self.entry_num_speakers.setEnabled(self.enable_diarization)
-        for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
-            cb = self.format_checkboxes.get(fmt)
-            if cb:
-                cb.setEnabled(self.enable_diarization)
-        if self.enable_diarization:
-            self.log("Диаризация спикеров: ВКЛЮЧЕНА")
-        else:
-            self.entry_num_speakers.setValue(0)
-            self.log("Диаризация спикеров: ВЫКЛЮЧЕНА")
 
-    def _toggle_format(self, fmt: str):
-        self.output_formats[fmt] = self.format_checkboxes[fmt].isChecked()
 
-    def _get_selected_formats(self) -> list:
-        return [fmt for fmt, enabled in self.output_formats.items() if enabled]
-
-    # ──────────────────────────────────────────────────────────────
-    # Файлы / папки
-    # ──────────────────────────────────────────────────────────────
 
     def log(self, message: str):
         message = self._translate_runtime_text(message)
@@ -948,175 +580,19 @@ class GigaTranscriberQtApp(
     def _append_log(self, message: str):
         self.log_text.append(f">> {message}")
 
-    def open_paths_from_system(self, paths: list, append: bool = True):
-        """Open files received from Finder, Dock, CLI args, or another app instance."""
-        media_files, transcript_files = self._collect_supported_open_paths(paths)
-        if media_files:
-            if hasattr(self, "tabs"):
-                self.tabs.setCurrentIndex(0)
-            self._apply_dropped_or_selected_files(media_files, append=append)
-        if transcript_files:
-            if hasattr(self, "tabs"):
-                self.tabs.setCurrentIndex(1)
-            self.transcript_files_for_llm = transcript_files if not append else self._merge_paths(
-                self.transcript_files_for_llm, transcript_files
-            )
-            folder = os.path.dirname(transcript_files[0])
-            self.llm_transcript_dir = folder
-            self.user_settings.set_value("llm_transcript_dir", folder)
-            self.user_settings.set_value("last_selected_transcript_files", self.transcript_files_for_llm)
-            self._refresh_llm_files_list()
-            self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
-        if not media_files and not transcript_files and paths:
-            QMessageBox.information(
-                self,
-                self._t("Неподдерживаемый формат", "Unsupported format"),
-                self._t("Файлы не являются поддерживаемыми медиа или транскриптами (.txt, .md, .srt, .vtt).", "Files are not supported media or transcript files (.txt, .md, .srt, .vtt)."),
-            )
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
 
-    def _merge_paths(self, existing_paths: list, new_paths: list) -> list:
-        merged = []
-        seen = set()
-        for path in list(existing_paths) + list(new_paths):
-            normalized = os.path.abspath(path)
-            if normalized not in seen:
-                merged.append(path)
-                seen.add(normalized)
-        return merged
 
-    def _collect_supported_open_paths(self, paths: list):
-        transcript_exts = (".txt", ".md", ".srt", ".vtt")
-        media_files = []
-        transcript_files = []
-        for raw_path in paths:
-            path = os.path.abspath(os.path.expanduser(str(raw_path)))
-            if os.path.isdir(path):
-                for root, _dirs, filenames in os.walk(path):
-                    for filename in filenames:
-                        full = os.path.join(root, filename)
-                        lower = filename.lower()
-                        if lower.endswith(MEDIA_EXTENSIONS):
-                            media_files.append(full)
-                        elif lower.endswith(transcript_exts):
-                            transcript_files.append(full)
-            elif os.path.isfile(path):
-                lower = path.lower()
-                if lower.endswith(MEDIA_EXTENSIONS):
-                    media_files.append(path)
-                elif lower.endswith(transcript_exts):
-                    transcript_files.append(path)
-        return self._merge_paths([], media_files), self._merge_paths([], transcript_files)
 
-    def _select_files(self):
-        initial_dir = self.user_settings.get_last_files_dir() or self.input_dir or os.path.expanduser("~")
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Выберите аудио или видео файлы", initial_dir,
-            "Медиа файлы (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.avi *.mov *.mkv *.webm *.wma *.qta *.3gp);;Все файлы (*.*)"
-        )
-        if files:
-            self._apply_dropped_or_selected_files(files)
 
-    def _apply_dropped_or_selected_files(self, files: list, append: bool = False, remember_dir: bool = True):
-        if not files:
-            return
-        unique_files = []
-        seen = set()
-        for file_path in files:
-            normalized = os.path.abspath(file_path)
-            if normalized not in seen:
-                unique_files.append(file_path)
-                seen.add(normalized)
-        if append:
-            existing = {os.path.abspath(f) for f in self.files_to_process}
-            for file_path in unique_files:
-                normalized = os.path.abspath(file_path)
-                if normalized not in existing:
-                    self.files_to_process.append(file_path)
-                    existing.add(normalized)
-        else:
-            self.files_to_process = unique_files
-        if remember_dir:
-            file_dir = os.path.dirname(unique_files[0])
-            self.input_dir = file_dir
-            self.user_settings.set_last_files_dir(file_dir)
-        self._refresh_files_list()
-        self.user_settings.set_value("last_selected_audio_files", [p for p in self.files_to_process if os.path.isfile(p)])
-        self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
-        for f in unique_files:
-            self.log(f" + {os.path.basename(f)}")
 
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            self._set_drop_active(True)
-            event.acceptProposedAction()
 
-    def dragLeaveEvent(self, event):
-        self._set_drop_active(False)
-        super().dragLeaveEvent(event)
 
-    def _set_drop_active(self, active: bool):
-        self._drop_active = active
-        if hasattr(self, "drop_hint"):
-            self._style_drop_hint()
 
-    def dropEvent(self, event: QDropEvent):
-        self._set_drop_active(False)
-        urls = event.mimeData().urls()
-        if not urls:
-            event.acceptProposedAction()
-            return
 
-        self.open_paths_from_system([url.toLocalFile() for url in urls if url.toLocalFile()], append=True)
-        event.acceptProposedAction()
 
-    def _select_files_folder(self):
-        initial_dir = self.user_settings.get_last_files_dir() or self.input_dir or os.path.expanduser("~")
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку с аудио/видео файлами", initial_dir)
-        if folder:
-            self.input_dir = folder
-            self.user_settings.set_last_files_dir(folder)
-            self._update_input_dir_label(folder)
-            files = []
-            for root, _dirs, filenames in os.walk(folder):
-                for f in filenames:
-                    if f.lower().endswith(MEDIA_EXTENSIONS):
-                        files.append(os.path.join(root, f))
-            if files:
-                self.files_to_process = files
-                self._refresh_files_list()
-                self.user_settings.set_value("last_selected_audio_files", [p for p in self.files_to_process if os.path.isfile(p)])
-                self.log(f"Добавлено из папки (включая подпапки): {len(files)} файлов")
-                for f in files:
-                    self.log(f" + {os.path.relpath(f, folder)}")
-            else:
-                QMessageBox.information(self, self._t("Информация", "Information"), self._t("В выбранной папке и подпапках нет поддерживаемых файлов", "No supported files were found in the selected folder or its subfolders."))
 
-    def _select_output_folder(self):
-        initial_dir = self.user_settings.get_last_output_dir() or self.output_dir or os.path.expanduser("~")
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения результатов", initial_dir)
-        if folder:
-            self.output_dir = folder
-            self.user_settings.set_last_output_dir(folder)
-            self._update_output_dir_label(folder)
-            self.log(f"Папка для сохранения: {folder}")
 
-    def _update_input_dir_label(self, path: str):
-        display_path = path if len(path) < 70 else f"...{path[-70:]}"
-        self.lbl_input_folder.setText(self._t(f"Папка источника: {display_path}", f"Source folder: {display_path}"))
-        self.lbl_input_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"], font_pt=9))
 
-    def _update_output_dir_label(self, path: str):
-        display_path = path if len(path) < 60 else f"...{path[-60:]}"
-        self.lbl_output_folder.setText(display_path)
-        self.lbl_output_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
-
-    def _update_llm_output_dir_label(self, path: str):
-        display_path = path if len(path) < 60 else f"...{path[-60:]}"
-        self.lbl_llm_output.setText(display_path)
-        self.lbl_llm_output.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
 
     def _restore_ui_settings(self):
         saved_formats = self.user_settings.get_value("output_formats", {}) or {}
