@@ -6,12 +6,25 @@ from src.utils import audio_converter
 
 
 def test_find_ffmpeg_ignores_non_windows_bundled_binary_on_windows(monkeypatch):
+    monkeypatch.setattr(audio_converter, "_ffmpeg_cached", None, raising=False)
     monkeypatch.setattr(audio_converter, "_project_root", lambda: r"C:\\App")
     monkeypatch.setattr(audio_converter.os, "name", "nt", raising=False)
     monkeypatch.setattr(audio_converter.os.path, "isfile", lambda path: path.endswith("/bin/ffmpeg"))
     monkeypatch.setattr(audio_converter.shutil, "which", lambda name: r"C:\ffmpeg\bin\ffmpeg.exe" if name == "ffmpeg" else None)
+    monkeypatch.setattr(audio_converter, "_tool_executable", lambda path: True)
 
     assert audio_converter._find_ffmpeg() == r"C:\ffmpeg\bin\ffmpeg.exe"
+
+
+def test_find_ffmpeg_falls_back_when_bundled_binary_not_executable(monkeypatch):
+    """Битый/чужой по архитектуре bundled ffmpeg (WinError 193) отбрасывается → системный."""
+    monkeypatch.setattr(audio_converter, "_ffmpeg_cached", None, raising=False)
+    monkeypatch.setattr(audio_converter, "_find_bundled_tool", lambda name: "/opt/app/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(audio_converter.shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+    # bundled бинарь не запускается, системный — ок
+    monkeypatch.setattr(audio_converter, "_tool_executable", lambda path: path == "/usr/bin/ffmpeg")
+
+    assert audio_converter._find_ffmpeg() == "/usr/bin/ffmpeg"
 
 
 def test_find_ffprobe_returns_none_when_only_wrong_bundled_binary_exists_on_windows(monkeypatch):
@@ -24,10 +37,12 @@ def test_find_ffprobe_returns_none_when_only_wrong_bundled_binary_exists_on_wind
 
 
 def test_find_ffmpeg_uses_bundled_binary_on_posix(monkeypatch):
+    monkeypatch.setattr(audio_converter, "_ffmpeg_cached", None, raising=False)
     monkeypatch.setattr(audio_converter, "_project_root", lambda: "/opt/app")
     monkeypatch.setattr(audio_converter.os, "name", os.name if os.name != "nt" else "posix", raising=False)
     monkeypatch.setattr(audio_converter.os.path, "isfile", lambda path: path == "/opt/app/bin/ffmpeg")
     monkeypatch.setattr(audio_converter.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(audio_converter, "_tool_executable", lambda path: True)
 
     assert audio_converter._find_ffmpeg() == "/opt/app/bin/ffmpeg"
 
@@ -75,6 +90,7 @@ def test_convert_to_wav_reports_monotonic_progress_from_out_time(monkeypatch):
     monkeypatch.setattr(audio_converter.os.path, "abspath", lambda value: value)
     monkeypatch.setattr(audio_converter.os.path, "expanduser", lambda value: value)
     monkeypatch.setattr(audio_converter.uuid, "uuid4", lambda: type("UUID", (), {"hex": "unit-test"})())
+    monkeypatch.setattr(audio_converter, "_find_ffmpeg", lambda: "ffmpeg")
     monkeypatch.setattr(audio_converter.subprocess, "Popen", fake_popen)
     converter = audio_converter.AudioConverter(logger=lambda *_args, **_kwargs: None)
 
@@ -120,6 +136,7 @@ def test_convert_to_wav_unknown_duration_keeps_indeterminate(monkeypatch):
     monkeypatch.setattr(audio_converter.os.path, "abspath", lambda value: value)
     monkeypatch.setattr(audio_converter.os.path, "expanduser", lambda value: value)
     monkeypatch.setattr(audio_converter.uuid, "uuid4", lambda: type("UUID", (), {"hex": "unit-test"})())
+    monkeypatch.setattr(audio_converter, "_find_ffmpeg", lambda: "ffmpeg")
     monkeypatch.setattr(audio_converter.subprocess, "Popen", fake_popen)
     converter = audio_converter.AudioConverter(logger=lambda *_args, **_kwargs: None)
     converter.convert_to_wav(
@@ -166,6 +183,7 @@ def test_convert_to_wav_failed_ffmpeg_returns_none_and_logs(monkeypatch):
     def logger(*args):
         logged.append(" ".join(str(x) for x in args))
 
+    monkeypatch.setattr(audio_converter, "_find_ffmpeg", lambda: "ffmpeg")
     monkeypatch.setattr(audio_converter.subprocess, "Popen", fake_popen)
     converter = audio_converter.AudioConverter(logger=logger)
     converter.convert_to_wav("input.mkv", "/tmp")

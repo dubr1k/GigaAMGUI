@@ -38,14 +38,53 @@ def _find_bundled_tool(tool_name: str) -> str | None:
     return None
 
 
+def _tool_executable(path: str) -> bool:
+    """True, если бинарь реально запускается на этой ОС.
+
+    Ловит случай, когда в bundle попал ffmpeg для другой ОС/архитектуры
+    (напр. macOS-бинарь в Windows-сборке) — запуск такого даёт WinError 193
+    (`OSError`), и мы должны отбросить кандидата, а не падать на нём.
+    """
+    try:
+        result = subprocess.run(
+            [path, "-version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            startupinfo=_windows_startupinfo(),
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+_ffmpeg_cached: str | None = None
+
+
 def _find_ffmpeg() -> str:
-    """Ищет ffmpeg: совместимый bundled bin/ → PATH."""
-    return _find_bundled_tool('ffmpeg') or shutil.which("ffmpeg") or "ffmpeg"
+    """Рабочий ffmpeg: проверенный bundled bin/ → проверенный PATH → 'ffmpeg'.
+
+    Кандидат из bin/ берётся, только если он реально запускается — иначе
+    откатываемся на системный ffmpeg (это и чинит WinError 193, когда в bundle
+    лежит бинарь под другую ОС). Результат кэшируется на процесс.
+    """
+    global _ffmpeg_cached
+    if _ffmpeg_cached is not None:
+        return _ffmpeg_cached
+    for candidate in (_find_bundled_tool('ffmpeg'), shutil.which("ffmpeg")):
+        if candidate and _tool_executable(candidate):
+            _ffmpeg_cached = candidate
+            return candidate
+    _ffmpeg_cached = "ffmpeg"
+    return _ffmpeg_cached
 
 
 def _find_ffprobe() -> str | None:
-    """Ищет ffprobe: совместимый bundled bin/ → PATH. None если не найден."""
-    return _find_bundled_tool('ffprobe') or shutil.which("ffprobe") or None
+    """Рабочий ffprobe: проверенный bundled bin/ → проверенный PATH. None если нет."""
+    for candidate in (_find_bundled_tool('ffprobe'), shutil.which("ffprobe")):
+        if candidate and _tool_executable(candidate):
+            return candidate
+    return None
 
 
 def _windows_startupinfo():
@@ -58,9 +97,11 @@ def _windows_startupinfo():
 
 
 def ffmpeg_available() -> bool:
-    """Проверяет наличие совместимого ffmpeg в bundle/bin проекта или PATH."""
-    ffmpeg = _find_ffmpeg()
-    return os.path.isfile(ffmpeg) or shutil.which("ffmpeg") is not None
+    """True, если найден РАБОЧИЙ ffmpeg (проверенный bundle/bin или PATH)."""
+    resolved = _find_ffmpeg()
+    # _find_ffmpeg вернёт абсолютный путь только для проверенного бинаря;
+    # голое "ffmpeg" — это fallback «ничего не проверилось», тогда пробуем PATH.
+    return resolved != "ffmpeg" or _tool_executable("ffmpeg")
 
 
 class AudioConverter:
