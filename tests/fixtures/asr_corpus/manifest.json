@@ -1,0 +1,6 @@
+{
+  "version": "1.0.0",
+  "purpose": "MLX RNNT spike corpus metadata",
+  "items": [],
+  "notes": "Populate manifest with local paths before running spike scripts"
+}

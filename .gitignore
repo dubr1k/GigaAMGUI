@@ -186,3 +186,12 @@ ipython_config.py
 scripts/create_desktop_shortcut.ps1
 GIT_SETUP.md
 gigaam-gui.desktop
+
+# Syncthing conflict copies
+*.sync-conflict-*
+# Tooling backup/scratch dirs
+.deploy-backups/
+.opencode-backups/
+.omo/
+.mimocode/
+.hermes/

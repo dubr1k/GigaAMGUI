@@ -1,0 +1,15 @@
+Baseline before refactor (branch refactor/monolith-decomposition)
+Env: conda `gigaam` (/opt/anaconda3/envs/gigaam/bin/python, Python 3.10.19)
+Command: QT_QPA_PLATFORM=offscreen python -m pytest -q
+
+Collected: 177 tests
+Result: 175 passed, 2 failed
+
+Pre-existing failures (NOT caused by refactor — GUI layout assertions):
+  - tests/test_gui_download_integration.py::test_log_is_on_second_tab
+  - tests/test_gui_download_integration.py::test_speakers_spinbox_auto_value
+
+ruff check .  -> 48 pre-existing errors (baseline; not fixing unrelated ones)
+
+Gate for every subsequent phase: no NEW failures beyond these 2; no new ruff
+errors in files we touch.
