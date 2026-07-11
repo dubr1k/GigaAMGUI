@@ -42,7 +42,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
-from src.services import file_policy, llm_service
+from src.services import file_policy, llm_service, task_store
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
@@ -271,26 +271,16 @@ def _cleanup_deleted_task_tombstones() -> None:
 
 
 def _register_task(task_id: str, filename: str, file_size: int, user: str):
-    tasks_storage[task_id] = {
-        'task_id': task_id,
-        'status': 'pending',
-        'created_at': datetime.now().isoformat(),
-        'started_at': None,
-        'completed_at': None,
-        'progress': 0,
-        'stage_progress': None,
-        'processed_seconds': None,
-        'total_seconds': None,
-        'progress_indeterminate': False,
-        'filename': filename,
-        'file_size': file_size,
-        'message': 'В очереди',
-        'stage': '',
-        'output_formats': [],
-        'enable_diarization': False,
-        'num_speakers': None,
-        'user': user,
-    }
+    tasks_storage[task_id] = task_store.new_task_record(
+        task_id, filename, file_size, message="В очереди",
+        extra={
+            "stage": "",
+            "output_formats": [],
+            "enable_diarization": False,
+            "num_speakers": None,
+            "user": user,
+        },
+    )
     log_queues[task_id] = []
     _persist_tasks_index()
 

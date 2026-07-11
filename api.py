@@ -41,7 +41,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
-from src.services import file_policy
+from src.services import file_policy, task_store
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
@@ -267,21 +267,7 @@ def _fsync_path(path: Path):
 
 def _register_task(task_id: str, filename: str, file_size: int):
     """Создаёт запись о задаче в хранилище"""
-    tasks_storage[task_id] = {
-        'task_id': task_id,
-        'status': 'pending',
-        'created_at': datetime.now().isoformat(),
-        'started_at': None,
-        'completed_at': None,
-        'progress': 0,
-        'stage_progress': None,
-        'processed_seconds': None,
-        'total_seconds': None,
-        'progress_indeterminate': False,
-        'filename': filename,
-        'file_size': file_size,
-        'message': 'Задача в очереди на обработку'
-    }
+    tasks_storage[task_id] = task_store.new_task_record(task_id, filename, file_size)
 
 
 async def _save_upload(file: UploadFile, request: Request) -> tuple:
