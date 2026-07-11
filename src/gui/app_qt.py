@@ -62,14 +62,14 @@ from ..config import (
     LLM_API_URL, LLM_API_KEY, LLM_MODEL, LLM_TEMPERATURE,
     save_env_value, user_config_dir,
 )
-from ..core import ModelLoader, TranscriptionProcessor
+from ..core import ModelLoader
 from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from ..utils import (
     AppLogger, MediaDownloader, ProcessingStats,
     TimeFormatter, UserSettings,
 )
 from ..core.progress import ProgressEvent
-from ..services import llm_service
+from ..services import llm_service, transcription_service
 
 _BASE_FONT_PT = 12.0
 _MIN_UI_SCALE = 0.85
@@ -3336,9 +3336,9 @@ class GigaTranscriberQtApp(QMainWindow):
             if not self.model_loader.load_model(self.log):
                 self.signals.processing_finished.emit(False, self._t("Не удалось загрузить модель", "Failed to load model"))
                 return
-            processor = TranscriptionProcessor(
-                self.model_loader, self.stats, self.log,
-                progress_callback=self._on_file_progress
+            processor = transcription_service.build_processor(
+                self.model_loader, self.stats, logger=self.log,
+                progress_callback=self._on_file_progress,
             )
             if enable_diarization:
                 self.log(self._t(f"Количество спикеров: {num_speakers if num_speakers else 'автоопределение'}", f"Speaker count: {num_speakers if num_speakers else 'auto-detect'}"))

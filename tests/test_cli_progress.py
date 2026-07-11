@@ -88,7 +88,7 @@ class FakeModelLoader:
 def test_process_files_with_progress_maps_event_payload_to_rich(monkeypatch):
     fake_progress = FakeProgress()
     monkeypatch.setattr("cli.Progress", lambda *_, **__: fake_progress)
-    monkeypatch.setattr("cli.TranscriptionProcessor", FakeProcessor)
+    monkeypatch.setattr("cli.transcription_service.build_processor", FakeProcessor)
 
     process_files_with_progress(
         ["/tmp/a.wav"],
@@ -110,7 +110,7 @@ def test_process_files_with_progress_maps_event_payload_to_rich(monkeypatch):
 def test_process_files_with_progress_marks_indeterminate_when_stage_progress_is_none(monkeypatch):
     fake_progress = FakeProgress()
     monkeypatch.setattr("cli.Progress", lambda *_, **__: fake_progress)
-    monkeypatch.setattr("cli.TranscriptionProcessor", FakeProcessor)
+    monkeypatch.setattr("cli.transcription_service.build_processor", FakeProcessor)
 
     process_files_with_progress(
         ["/tmp/a.wav", "/tmp/b.wav"],
@@ -156,7 +156,7 @@ def test_failed_file_keeps_partial_weight_in_batch_progress(monkeypatch):
 
     fake_progress = FakeProgress()
     monkeypatch.setattr("cli.Progress", lambda *_, **__: fake_progress)
-    monkeypatch.setattr("cli.TranscriptionProcessor", PartiallyFailingProcessor)
+    monkeypatch.setattr("cli.transcription_service.build_processor", PartiallyFailingProcessor)
 
     process_files_with_progress(
         ["/tmp/a.wav", "/tmp/b.wav"],

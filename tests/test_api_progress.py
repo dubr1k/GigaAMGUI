@@ -105,7 +105,7 @@ def test_process_transcription_persists_progress_metadata_from_events(monkeypatc
 
     monkeypatch.setattr(api, "logger", _TestLogger(), raising=True)
 
-    monkeypatch.setattr(api, "TranscriptionProcessor", FakeProcessor)
+    monkeypatch.setattr(api.transcription_service, "build_processor", FakeProcessor)
     monkeypatch.setattr(api, "output_filename", lambda stem, fmt: f"{stem}.{fmt}")
 
     async def _run():

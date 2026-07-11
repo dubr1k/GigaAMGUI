@@ -33,8 +33,8 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Импорты из проекта
 from src.config import ASR_BACKEND, OUTPUT_FORMATS, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
-from src.core.processor import TranscriptionProcessor
 from src.core.progress import ProgressEvent
+from src.services import transcription_service
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
 from src.utils.processing_stats import ProcessingStats
@@ -363,11 +363,11 @@ def process_files_with_progress(
                     )
 
             # Процессор
-            processor = TranscriptionProcessor(
-                model_loader=model_loader,
-                stats_manager=stats_manager,
+            processor = transcription_service.build_processor(
+                model_loader,
+                stats_manager,
                 logger=lambda msg: logger.debug(msg),
-                progress_callback=_normalize_progress_event
+                progress_callback=_normalize_progress_event,
             )
 
             # Обработка

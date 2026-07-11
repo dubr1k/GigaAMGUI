@@ -41,8 +41,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
-from src.core.processor import TranscriptionProcessor
-from src.services import file_policy, llm_service, task_store
+from src.services import file_policy, llm_service, task_store, transcription_service
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
@@ -563,9 +562,9 @@ async def process_transcription(
             def logger(msg: str):
                 _task_log(task_id, msg)
 
-            processor = TranscriptionProcessor(
-                model_loader=model_loader,
-                stats_manager=stats_manager,
+            processor = transcription_service.build_processor(
+                model_loader,
+                stats_manager,
                 logger=logger,
                 progress_callback=progress_callback,
             )

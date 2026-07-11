@@ -40,8 +40,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Импорты проекта
 from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
-from src.core.processor import TranscriptionProcessor
-from src.services import file_policy, task_store
+from src.services import file_policy, task_store, transcription_service
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
@@ -553,11 +552,11 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 task['progress_indeterminate'] = stage_progress is None
 
             # Процессор
-            processor = TranscriptionProcessor(
-                model_loader=model_loader,
-                stats_manager=stats_manager,
+            processor = transcription_service.build_processor(
+                model_loader,
+                stats_manager,
                 logger=lambda msg: logger.debug(f"[{task_id}] {msg}"),
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
             )
 
             # Обработка в синхронном коде через executor.
