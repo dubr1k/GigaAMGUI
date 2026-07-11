@@ -6,6 +6,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
+from src.core.asr.pytorch_backend import PyTorchBackend
 from src.core.model_loader import ModelLoader
 
 
@@ -39,14 +40,15 @@ def test_transcribe_longform_reads_wav_without_torchaudio_load(tmp_path, monkeyp
     monkeypatch.setattr(torchaudio, "load", fail_if_called)
 
     loader = ModelLoader()
-    loader.device = "cpu"
-    loader.model = SimpleNamespace(
+    loader._backend = PyTorchBackend()
+    loader._backend.model = SimpleNamespace(
         _device="cpu",
         _dtype=torch.float32,
         head=object(),
         forward=lambda wav, length: (wav, length),
         decoding=SimpleNamespace(decode=lambda head, encoded, length: ["ok"]),
     )
+    loader._backend.device = "cpu"
 
     result = loader.transcribe_longform(str(wav_path))
 

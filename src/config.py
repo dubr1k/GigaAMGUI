@@ -10,8 +10,27 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 APP_CONFIG_DIR_NAME = "GigaAMTranscriber"
+
+
+def _validate_backend_name(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized not in {"auto", "mlx", "pytorch"}:
+        raise ValueError(f"Unsupported ASR backend: {normalized}")
+    return normalized
+
+
+def _parse_bool(value: str | bool | None, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off", "disable", "disabled"}:
+        return False
+    return default
 
 
 def user_config_dir() -> Path:
@@ -110,6 +129,13 @@ if HF_TOKEN and HF_TOKEN.startswith("hf_"):
 # Настройки модели
 MODEL_NAME = os.getenv("MODEL_NAME", "ai-sage/GigaAM-v3")
 MODEL_REVISION = os.getenv("MODEL_REVISION", "e2e_rnnt")
+
+# ASR backend strategy
+ASR_BACKEND = _validate_backend_name(os.getenv("ASR_BACKEND", "auto"))
+ASR_MODEL = os.getenv("ASR_MODEL", MODEL_REVISION)
+ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
+MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
+
 
 # Настройки аудио конвертации
 AUDIO_SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", "16000"))

@@ -1,185 +1,238 @@
-"""
-Модуль загрузки и управления моделью GigaAM
-"""
+"""Модуль загрузки и управления моделью GigaAM."""
 
-import os
-import sys
 
-import torch
-import gigaam
-
-from ..config import HF_TOKEN
+from ..config import (
+    ASR_ALLOW_FALLBACK,
+    ASR_BACKEND,
+    ASR_MODEL,
+    MLX_MODEL_REPO,
+    MODEL_REVISION,
+)
+from .asr.factory import create_backend_from_config
+from .asr.pytorch_backend import PyTorchBackend
 
 
 class ModelLoader:
-    """Класс для загрузки и управления моделью GigaAM"""
+    """Класс для загрузки и управления моделью GigaAM."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        requested_backend: str | None = None,
+        *,
+        allow_fallback: bool | None = None,
+        model_name: str | None = None,
+        model_revision: str | None = None,
+        mlx_model_repo: str | None = None,
+    ):
         self.model = None
         self.device = None
+        self._backend = None
+        self._requested_backend = (requested_backend or ASR_BACKEND).strip().lower() or ASR_BACKEND
+        self._allow_fallback = ASR_ALLOW_FALLBACK if allow_fallback is None else bool(allow_fallback)
+        self._model_name = model_name or ASR_MODEL
+        self._model_revision = model_revision or MODEL_REVISION
+        self._mlx_model_repo = mlx_model_repo or MLX_MODEL_REPO
+        self._fallback_reason = None
+        self._factory_error: str | None = None
 
-    def _bundled_download_root(self) -> str | None:
-        """Return bundled GigaAM model directory when the app ships with weights."""
-        roots = []
-        frozen_root = getattr(sys, "_MEIPASS", None)
-        if frozen_root:
-            roots.append(frozen_root)
-        roots.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    @property
+    def requested_backend(self) -> str:
+        return self._requested_backend
 
-        for root in roots:
-            candidate = os.path.join(root, "models", "gigaam")
-            ckpt = os.path.join(candidate, "v3_e2e_rnnt.ckpt")
-            tokenizer = os.path.join(candidate, "v3_e2e_rnnt_tokenizer.model")
-            if os.path.isfile(ckpt) and os.path.isfile(tokenizer):
-                return candidate
-        return None
+    @property
+    def active_backend(self) -> str:
+        return self.backend_name
 
-    def _select_device(self) -> str:
-        """Выбирает устройство вычисления.
+    @property
+    def backend_name(self) -> str:
+        return self._backend.name if self._backend is not None else self._requested_backend
 
-        Приоритет отдаётся варианту, выбранному пользователем при первом запуске
-        (CPU / GPU / GPU 50xx) — он определяет, какая сборка torch активирована.
-        Если пользователь выбрал GPU-вариант, но CUDA почему-то недоступна
-        (нет драйвера/видеокарты), безопасно откатываемся на CPU.
-        """
-        try:
-            from ..utils.runtime_manager import get_selected_variant, torch_device_for
-            preferred = torch_device_for(get_selected_variant())
-        except Exception:
-            preferred = None
+    def _apply_requested_backend(self, requested_backend: str) -> None:
+        requested = requested_backend.strip().lower()
+        if not requested:
+            requested = ASR_BACKEND
+        if requested == self._requested_backend and self._backend is not None:
+            return
+        self._requested_backend = requested
+        self.unload()
+        self._fallback_reason = None
+        self._factory_error = None
+        self._backend = None
 
-        if preferred == "cuda":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        if preferred == "cpu":
-            return "cpu"
+    def _ensure_backend(self) -> None:
+        if self._backend is not None:
+            return
+        backend, fallback_reason = create_backend_from_config(
+            requested_backend=self._requested_backend,
+            model_name=self._model_name,
+            model_revision=self._model_revision,
+            mlx_model_repo=self._mlx_model_repo,
+            allow_fallback=self._allow_fallback,
+        )
+        self._backend = backend
+        self._fallback_reason = fallback_reason
 
-        # Вариант не выбран — авто-определение по возможностям torch.
-        if torch.cuda.is_available():
-            return "cuda"
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            return "xpu"
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+    def _sync_from_backend(self) -> None:
+        if self._backend is None:
+            self.model = None
+            self.device = None
+            return
+
+        if hasattr(self._backend, "model"):
+            self.model = self._backend.model
+        if hasattr(self._backend, "device"):
+            self.device = self._backend.device
+
+    def _switch_to_pytorch_fallback(self) -> bool:
+        self._backend = PyTorchBackend(model=self._model_name, revision=self._model_revision)
+        self._fallback_reason = "Аварийный fallback: MLX не загрузился, использован PyTorch backend"
+        self._factory_error = None
+        return self._backend.load()
+
+    def _load_with_fallback(self, logger=None) -> bool:
+        if self._backend is None or self._backend.is_loaded():
+            return True
+
+        if self._backend.load(logger=logger):
+            self._sync_from_backend()
+            return True
+
+        if (
+            self._requested_backend == "auto"
+            and self._backend.name == "mlx"
+            and self._allow_fallback
+        ):
+            self._factory_error = "MLX не загрузился"
+            if self._backend is not None:
+                try:
+                    self._backend.unload()
+                except Exception:
+                    pass
+            try:
+                if self._switch_to_pytorch_fallback():
+                    self._sync_from_backend()
+                    return True
+            except Exception as exc:
+                self._factory_error = f"PyTorch fallback failed: {exc}"
+
+        return False
 
     def load_model(self, logger=None):
-        """
-        Загружает модель GigaAM-v3 (e2e_rnnt) через gigaam.load_model.
-
-        Returns:
-            bool: True если загрузка успешна, False иначе
-        """
-        if self.model is not None:
+        """Загружает выбранный backend ASR."""
+        if self._backend is not None and self._backend.is_loaded():
+            self._sync_from_backend()
             return True
 
         if logger:
-            logger("Инициализация модели GigaAM-v3 (e2e_rnnt)...")
-            logger("Это может занять несколько минут при первом запуске (скачивание весов).")
+            logger(f"Запрошен ASR backend: {self._requested_backend}")
 
         try:
-            self.device = self._select_device()
+            self._ensure_backend()
+        except Exception as exc:
             if logger:
-                logger(f"Устройство вычисления: {self.device.upper()}")
+                logger(f"Ошибка инициализации backend: {exc}")
+            self._factory_error = f"Backend create failed: {exc}"
+            return False
 
-            use_fp16 = self.device != "cpu"
-            download_root = self._bundled_download_root()
-            if logger and download_root:
-                logger("Используется встроенная модель GigaAM из приложения.")
-            self.model = gigaam.load_model(
-                "e2e_rnnt",
-                fp16_encoder=use_fp16,
-                device=self.device,
-                download_root=download_root,
-            )
-
+        if self._backend is None:
             if logger:
-                logger("Модель успешно загружена!")
+                logger("Не удалось создать backend для загрузки модели")
+            self._fallback_reason = None
+            return False
+
+        if self._load_with_fallback(logger=logger):
+            self._factory_error = None
             return True
 
-        except Exception as e:
-            if logger:
-                logger(f"КРИТИЧЕСКАЯ ОШИБКА загрузки модели:\n{str(e)}")
-            return False
+        if logger:
+            logger(f"Не удалось загрузить backend {self._backend.name}")
+        self._factory_error = (
+            f"Не удалось загрузить backend {self._backend.name if self._backend else 'неизвестный'}"
+        )
+        return False
+
+    @property
+    def _bundle_download_root(self) -> str | None:
+        if self._backend is None:
+            return None
+        return getattr(self._backend, "_bundled_download_root", lambda: None)()
 
     def _empty_cache(self):
         """Освобождает кэш ускорителя."""
-        try:
-            if self.device == "cuda" and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif self.device == "mps" and hasattr(torch, "mps"):
-                torch.mps.empty_cache()
-        except Exception:
-            pass
+        if self._backend is None:
+            if self.device in {"cuda", "mps"}:
+                try:
+                    import torch
+
+                    if self.device == "cuda" and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    elif self.device == "mps" and hasattr(torch, "mps"):
+                        torch.mps.empty_cache()
+                except Exception:
+                    pass
+            return
+
+        if self._backend and hasattr(self._backend, "_empty_cache"):
+            try:
+                self._backend._empty_cache()  # noqa: SLF001
+            except Exception:
+                pass
 
     def transcribe_longform(self, audio_path: str):
-        """
-        Транскрибирует длинное аудио чанками по 20 сек (без ffmpeg subprocess).
-        """
-        import traceback as _tb
-        if self.model is None:
+        """Транскрибирует длинное аудио чанками по 20 сек (без ffmpeg subprocess)."""
+        if self._backend is None:
             raise RuntimeError("Модель не загружена")
 
-        import soundfile as sf
-        import torchaudio
-        SAMPLE_RATE = 16000
+        if not self._backend.is_loaded():
+            raise RuntimeError("Модель не загружена")
 
-        # TorchAudio 2.9+ delegates torchaudio.load() to TorchCodec.  Portable
-        # builds intentionally do not ship TorchCodec because its FFmpeg linkage
-        # is fragile, so decode the normalized WAV produced by AudioConverter
-        # with libsndfile instead.  This path is identical on Windows and macOS.
-        samples, sr = sf.read(audio_path, dtype="float32", always_2d=True)
-        wav_data = torch.from_numpy(samples.T.copy())
-        audio = wav_data.mean(0)
-        if sr != SAMPLE_RATE:
-            audio = torchaudio.functional.resample(audio, sr, SAMPLE_RATE)
-
-        chunk_size = 20 * SAMPLE_RATE
-        results = []
-        total = audio.shape[0]
-        start = 0
-
-        device = self.model._device
-        dtype = self.model._dtype
-
-        try:
-            with torch.inference_mode():
-                while start < total:
-                    end = min(start + chunk_size, total)
-                    chunk = audio[start:end]
-
-                    if chunk.shape[0] < 1600:
-                        start = end
-                        continue
-
-                    wav = chunk.to(device).to(dtype).unsqueeze(0)
-                    length = torch.full([1], wav.shape[-1], device=device)
-                    encoded, encoded_len = self.model.forward(wav, length)
-                    decode_result = self.model.decoding.decode(self.model.head, encoded, encoded_len)
-                    text = decode_result[0]
-                    if isinstance(text, tuple):
-                        text = text[0] if text else ''
-                    if not isinstance(text, str):
-                        text = str(text)
-
-                    if text.strip():
-                        results.append({
-                            'transcription': text,
-                            'boundaries': (start / SAMPLE_RATE, end / SAMPLE_RATE),
-                        })
-
-                    start = end
-        except Exception as e:
-            raise RuntimeError(f"Chunk transcription error at {start}/{total}: {e}\n{_tb.format_exc()}")
-        finally:
-            self._empty_cache()
-
-        return results
+        return self._backend.transcribe_longform(audio_path)
 
     def unload(self):
         """Выгружает модель и освобождает память."""
+        if self._backend is not None:
+            try:
+                self._backend.unload()
+            except Exception:
+                pass
         self.model = None
-        self._empty_cache()
+        self.device = None
+        self._backend = None
+        self._fallback_reason = None
+        self._factory_error = None
 
     def is_loaded(self) -> bool:
-        """Проверяет, загружена ли модель"""
+        """Проверяет, загружена ли модель."""
+        if self._backend is not None:
+            return self._backend.is_loaded()
         return self.model is not None
+
+    def diagnostics(self) -> dict[str, object]:
+        model = self._model_name
+        device = "N/A"
+        active = self.backend_name
+
+        if self._backend is not None:
+            try:
+                capabilities = self._backend.capabilities()
+                model = capabilities.model
+                device = capabilities.device
+            except Exception:
+                pass
+
+        return {
+            "requested_backend": self._requested_backend,
+            "active_backend": active,
+            "fallback_reason": self._fallback_reason,
+            "model": model,
+            "device": device or "N/A",
+            "cache_root": self._bundle_download_root,
+            "repo": self._mlx_model_repo,
+            "loader_loaded": self.is_loaded(),
+            "error": self._factory_error,
+        }
+
+    def configure_backend(self, requested_backend: str | None = None) -> None:
+        """Переконфигурировать backend перед следующей загрузкой."""
+        requested = (requested_backend or ASR_BACKEND).strip().lower() or ASR_BACKEND
+        self._apply_requested_backend(requested)

@@ -2,15 +2,20 @@
 Модуль обработки транскрибации
 """
 
+from __future__ import annotations
+
 import os
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ..config import HF_TOKEN
 from ..utils.audio_converter import AudioConverter
-from ..utils.diarization import DiarizationManager
 from ..utils.output_naming import output_path
 from ..utils.time_formatter import TimeFormatter
+
+if TYPE_CHECKING:
+    from ..utils.diarization import DiarizationManager
 
 
 class TranscriptionProcessor:
@@ -37,6 +42,8 @@ class TranscriptionProcessor:
         """Ленивая загрузка менеджера диаризации"""
         if self._diarization_manager is None and HF_TOKEN:
             try:
+                from ..utils.diarization import DiarizationManager
+
                 self._diarization_manager = DiarizationManager(
                     hf_token=HF_TOKEN,
                     device="auto"
