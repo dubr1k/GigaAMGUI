@@ -8,7 +8,15 @@ import os
 import threading
 import time
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from ..core.progress import ProgressEvent
 from ..services import transcription_service
@@ -378,21 +386,76 @@ class ProcessingMixin:
             self.lbl_llm_files.setText(self._t(f"Выбрано транскриптов: {len(generated_files)}", f"Selected transcripts: {len(generated_files)}"))
             self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
 
-        box = QMessageBox(self)
-        box.setWindowTitle(self._t("Готово", "Done") if success else self._t("Завершено", "Finished"))
-        box.setIcon(QMessageBox.Icon.Information if success else QMessageBox.Icon.Warning)
-        box.setText((self._t("Обработка завершена!\n", "Processing completed!\n") + message) if success else message)
-        open_btn = None
+        self._show_completion_dialog(success, message, has_results)
+
+    def _show_completion_dialog(self, success: bool, message: str, has_results: bool):
+        """Кастомный диалог завершения.
+
+        Заменяет нативный QMessageBox: на macOS у него кнопки получались разной
+        высоты (кнопка по умолчанию рисуется нативно), а иконка-«!» выглядела
+        тревожно. Здесь обе кнопки — обычные QPushButton в одном ряду с общей
+        высотой, поэтому они всегда на одном уровне.
+        """
+        c = self._colors()
+        dlg = QDialog(self)
+        dlg.setModal(True)
+        dlg.setWindowTitle(self._t("Готово", "Done") if success else self._t("Завершено", "Finished"))
+
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(self._px(24), self._px(22), self._px(24), self._px(18))
+        outer.setSpacing(self._px(16))
+
+        head = QHBoxLayout()
+        head.setSpacing(self._px(14))
+        glyph = QLabel("✓" if success else "⚠")
+        glyph.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        glyph.setStyleSheet(
+            f"color: {c['accent'] if success else c['clear_hover_text']};"
+            f" font-size: {self._pt_css(24)}pt; font-weight: bold; background: transparent;"
+        )
+        head.addWidget(glyph)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(self._px(4))
+        title = QLabel(
+            self._t("Обработка завершена!", "Processing completed!") if success
+            else self._t("Обработка остановлена", "Processing stopped")
+        )
+        title.setStyleSheet(
+            f"color: {c['text']}; font-size: {self._pt_css(13)}pt; font-weight: bold; background: transparent;"
+        )
+        text_col.addWidget(title)
+        body = QLabel(message)
+        body.setWordWrap(True)
+        body.setStyleSheet(
+            f"color: {c['text_sub']}; font-size: {self._pt_css(10)}pt; background: transparent;"
+        )
+        text_col.addWidget(body)
+        head.addLayout(text_col, 1)
+        outer.addLayout(head)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(self._px(10))
+        btn_row.addStretch()
+        btn_h = self._px(34)
+        clicked = {"open": False}
         if has_results:
-            open_btn = box.addButton(self._t("Открыть папку с результатами", "Open results folder"), QMessageBox.ButtonRole.AcceptRole)
-        ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
-        ok_btn.setText(self._t("ОК", "OK"))
-        button_height = self._px(44)
-        for button in (open_btn, ok_btn):
-            if button is not None:
-                button.setFixedHeight(button_height)
-        box.exec()
-        if open_btn is not None and box.clickedButton() is open_btn:
+            open_btn = QPushButton(self._t("Открыть папку с результатами", "Open results folder"))
+            open_btn.setObjectName("open_result_button")
+            open_btn.setFixedHeight(btn_h)
+            open_btn.clicked.connect(lambda: (clicked.__setitem__("open", True), dlg.accept()))
+            btn_row.addWidget(open_btn)
+        ok_btn = QPushButton(self._t("ОК", "OK"))
+        ok_btn.setObjectName("start_button")
+        ok_btn.setFixedHeight(btn_h)
+        ok_btn.setMinimumWidth(self._px(96))
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(ok_btn)
+        outer.addLayout(btn_row)
+
+        dlg.exec()
+        if clicked["open"]:
             self._open_results_folder()
 
     def closeEvent(self, event):

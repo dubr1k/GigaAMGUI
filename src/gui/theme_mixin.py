@@ -154,7 +154,7 @@ class ThemeMixin:
                 font-size: {self._pt_css(10)}pt;
             }}
             QProgressBar::chunk {{
-                background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                background-color: qlineargradient(x1:0,y1:0,x2:0,y2:1,
                     stop:0 {r}, stop:1 {r2});
                 border-radius: {rad_f}px;
             }}
@@ -391,9 +391,11 @@ class ThemeMixin:
                 f"color: {c['accent']}; font-size: {self._pt_css(11)}pt; font-weight: bold;"
             )
         if hasattr(self, 'lbl_status'):
+            # Прозрачный фон: строка статуса сливается с карточкой, а не выглядит
+            # как тёмная «вдавленная» рамка (status_bg темнее bg_card).
             self.lbl_status.setStyleSheet(
                 f"color: {c['status_text']}; font-size: {self._pt_css(10)}pt; font-weight: bold;"
-                f"background-color: {c['status_bg']}; border-radius: {self._px(6)}px; padding: {self._px(2)}px;"
+                f"background: transparent; padding: {self._px(2)}px;"
             )
         if hasattr(self, 'lbl_stage'):
             self.lbl_stage.setStyleSheet(

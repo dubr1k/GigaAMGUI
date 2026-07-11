@@ -290,6 +290,11 @@ class UiBuildMixin:
         c = self._colors()
         bar = QProgressBar()
         scaled_height = self._px(height)
+        # На macOS шкала скругляется в «пилюлю», только когда border-radius РОВНО
+        # равен половине высоты. При нечётной высоте radius = height // 2 < height/2,
+        # и нативный стиль рисует прямоугольник. Поэтому высоту делаем чётной.
+        if scaled_height % 2:
+            scaled_height += 1
         bar.setFixedHeight(scaled_height)
         bar.setTextVisible(True)
         bar.setRange(0, 100)
@@ -299,8 +304,10 @@ class UiBuildMixin:
             f"QProgressBar {{ border: none; border-radius: {radius}px;"
             f"  background-color: {c['progress_bg']}; text-align: center; color: {c['text']};"
             f"  font-size: {self._pt_css(font_pt)}pt; font-weight: 600; }}"
+            # Градиент вертикальный (x2=0), а не по ширине заполнения: цвет шкалы
+            # больше не «плывёт» по мере заполнения от 0 до 100%.
             f"QProgressBar::chunk {{ border-radius: {radius}px;"
-            f"  background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            f"  background-color: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
             f"  stop:0 {r}, stop:1 {r2}); }}"
         )
         return bar
@@ -335,6 +342,9 @@ class UiBuildMixin:
         frame_layout.addWidget(self.progress_bar_total)
 
         self.detail_row = QWidget()
+        # Контейнер-QWidget иначе красится глобальным правилом QWidget в цвет фона
+        # окна (темнее карточки) и выглядит как чёрная «вдавленная» рамка.
+        self.detail_row.setStyleSheet("background: transparent;")
         detail_layout = QHBoxLayout(self.detail_row)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(self._px(10))
@@ -354,9 +364,11 @@ class UiBuildMixin:
         self.lbl_status = QLabel(self._t("Готов к работе", "Ready to work"))
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_status.setFixedHeight(self._px(28))
+        # Фон прозрачный, чтобы строка статуса сливалась с карточкой, а не
+        # выглядела как тёмная «вдавленная» рамка (status_bg темнее карточки).
         self.lbl_status.setStyleSheet(
             f"color: {c['status_text']}; font-size: {self._pt_css(10)}pt; font-weight: bold;"
-            f"background-color: {c['status_bg']}; border-radius: {self._px(6)}px; padding: {self._px(2)}px;"
+            f"background: transparent; padding: {self._px(2)}px;"
         )
         frame_layout.addWidget(self.lbl_status)
 
