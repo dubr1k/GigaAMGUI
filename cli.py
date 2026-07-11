@@ -10,7 +10,6 @@ import time
 
 # Подавляем предупреждения
 import warnings
-from pathlib import Path
 
 import click
 import questionary
@@ -31,7 +30,8 @@ from rich.table import Table
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты из проекта
-from src.config import ASR_BACKEND, OUTPUT_FORMATS, SUPPORTED_FORMATS
+from src.cli_support import interactive as cli_interactive
+from src.config import ASR_BACKEND, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.progress import ProgressEvent
 from src.services import transcription_service
@@ -116,141 +116,6 @@ def print_banner():
     ╚═══════════════════════════════════════════════════════════╝
     """
     console.print(banner)
-
-
-def get_supported_files(directory: str) -> list[str]:
-    """
-    Получает список поддерживаемых медиа-файлов в директории
-
-    Args:
-        directory: путь к директории
-
-    Returns:
-        список путей к файлам
-    """
-    extensions = SUPPORTED_FORMATS[1].split()
-    supported_files = []
-
-    for ext in extensions:
-        ext_clean = ext.replace('*', '')
-        supported_files.extend(Path(directory).glob(f"*{ext_clean}"))
-
-    return [str(f) for f in sorted(supported_files)]
-
-
-def select_files_interactive() -> list[str]:
-    """
-    Интерактивный выбор файлов
-
-    Returns:
-        список выбранных файлов
-    """
-    # Выбор режима
-    mode = questionary.select(
-        "Как вы хотите выбрать файлы?",
-        choices=[
-            "📁 Выбрать директорию (обработать все файлы)",
-            "📄 Указать отдельные файлы",
-            "❌ Отмена"
-        ],
-        style=custom_style
-    ).ask()
-
-    if not mode or "Отмена" in mode:
-        return []
-
-    if "директорию" in mode:
-        # Выбор директории
-        directory = questionary.path(
-            "Введите путь к директории:",
-            style=custom_style
-        ).ask()
-
-        if not directory or not os.path.isdir(directory):
-            console.print("[red]Директория не найдена![/red]")
-            return []
-
-        files = get_supported_files(directory)
-
-        if not files:
-            console.print("[yellow]В директории не найдено поддерживаемых файлов[/yellow]")
-            return []
-
-        console.print(f"\n[cyan]Найдено файлов: {len(files)}[/cyan]")
-
-        # Показываем список
-        for i, f in enumerate(files[:10], 1):
-            console.print(f"  {i}. {os.path.basename(f)}")
-
-        if len(files) > 10:
-            console.print(f"  ... и еще {len(files) - 10} файлов")
-
-        confirm = questionary.confirm(
-            f"\nОбработать все {len(files)} файлов?",
-            default=True,
-            style=custom_style
-        ).ask()
-
-        return files if confirm else []
-
-    else:
-        # Указание отдельных файлов
-        files = []
-
-        while True:
-            filepath = questionary.path(
-                f"Файл {len(files) + 1} (Enter для завершения):",
-                style=custom_style
-            ).ask()
-
-            if not filepath:
-                break
-
-            if not os.path.isfile(filepath):
-                console.print("[red]Файл не найден![/red]")
-                continue
-
-            files.append(filepath)
-            console.print(f"[green]✓[/green] Добавлен: {os.path.basename(filepath)}")
-
-            if not questionary.confirm("Добавить еще файл?", default=False, style=custom_style).ask():
-                break
-
-        return files
-
-
-def select_output_directory(default: str | None = None) -> str:
-    """
-    Выбор директории для сохранения результатов
-
-    Args:
-        default: директория по умолчанию
-
-    Returns:
-        путь к директории
-    """
-    if default:
-        use_default = questionary.confirm(
-            "Сохранить результаты в ту же директорию?",
-            default=True,
-            style=custom_style
-        ).ask()
-
-        if use_default:
-            return default
-
-    output_dir = questionary.path(
-        "Директория для сохранения результатов:",
-        style=custom_style
-    ).ask()
-
-    if not output_dir:
-        output_dir = default or os.getcwd()
-
-    # Создаем директорию если не существует
-    os.makedirs(output_dir, exist_ok=True)
-
-    return output_dir
 
 
 def process_files_with_progress(
@@ -570,7 +435,7 @@ def main(files, directory, output, interactive, verbose, formats, backend, diari
 
     if directory:
         # Из директории
-        file_list = get_supported_files(directory)
+        file_list = cli_interactive.get_supported_files(directory)
         logger.info(f"Найдено {len(file_list)} файлов в директории: {directory}")
     elif files:
         # Из аргументов
@@ -579,7 +444,7 @@ def main(files, directory, output, interactive, verbose, formats, backend, diari
     elif interactive:
         # Интерактивный выбор
         logger.info("Интерактивный режим выбора файлов")
-        file_list = select_files_interactive()
+        file_list = cli_interactive.select_files_interactive(console, custom_style)
     else:
         logger.error("Не указаны файлы для обработки!")
         logger.info("Используйте --help для справки")
@@ -594,7 +459,7 @@ def main(files, directory, output, interactive, verbose, formats, backend, diari
         output_dir = output
     elif interactive and not output:
         default_dir = os.path.dirname(file_list[0]) if file_list else None
-        output_dir = select_output_directory(default_dir)
+        output_dir = cli_interactive.select_output_directory(default_dir, custom_style)
     else:
         output_dir = os.path.dirname(file_list[0]) if file_list else os.getcwd()
 
