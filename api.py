@@ -41,6 +41,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
+from src.services import file_policy
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
@@ -268,21 +269,12 @@ def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")) -> str:
 
 def is_supported_format(filename: str) -> bool:
     """Проверяет поддерживаемый формат файла"""
-    extensions = SUPPORTED_FORMATS[1].split()
-    file_ext = Path(filename).suffix.lower()
-    return any(file_ext == ext.replace('*', '') for ext in extensions)
+    return file_policy.is_supported_by_glob(filename, SUPPORTED_FORMATS[1])
 
 
 def safe_filename(filename: str | None) -> str:
-    """Защита от path traversal: оставляет только базовое имя без разделителей путей.
-
-    Учитывает и POSIX (/), и Windows (\\) разделители независимо от ОС сервера,
-    т.к. имя файла приходит от клиента и может быть сформировано на другой платформе.
-    """
-    name = (filename or "").replace("\\", "/")
-    name = name.split("/")[-1]          # отбрасывает любые компоненты пути
-    name = name.replace("\x00", "").strip()
-    return name or "upload"
+    """Защита от path traversal: оставляет только базовое имя без разделителей путей."""
+    return file_policy.safe_filename(filename)
 
 
 def validated_task_id(task_id: str) -> str:

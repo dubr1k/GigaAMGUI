@@ -45,6 +45,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
+from src.services import file_policy
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.llm_client import LLMClient, LLMSettings
@@ -222,16 +223,11 @@ async def require_auth(request: Request) -> str:
 # ==================== УТИЛИТЫ ====================
 
 def is_supported_format(filename: str) -> bool:
-    extensions = MEDIA_EXTENSIONS
-    file_ext = Path(filename).suffix.lower()
-    return file_ext in extensions
+    return file_policy.is_supported_by_set(filename, MEDIA_EXTENSIONS)
 
 
 def safe_filename(filename: str | None) -> str:
-    name = (filename or "").replace("\\", "/")
-    name = name.split("/")[-1]
-    name = name.replace("\x00", "").strip()
-    return name or "upload"
+    return file_policy.safe_filename(filename)
 
 
 def _persist_tasks_index() -> None:
