@@ -767,7 +767,7 @@ def _run_llm_provider(llm_settings: dict, transcript_text: str, prompt: str) -> 
             provider=provider, strict_empty_cli=False,
         )
     except llm_service.UnknownLLMProvider as exc:
-        raise RuntimeError(f"Неизвестный провайдер: {exc.provider}")
+        raise RuntimeError(f"Неизвестный провайдер: {exc.provider}") from exc
 
 
 @app.post("/api/auth/login")

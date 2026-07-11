@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 sys.modules.setdefault("gigaam", types.SimpleNamespace(load_model=lambda *args, **kwargs: object()))
 sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
-from src.gui import app_qt  # noqa: E402
 from src.gui.app_qt import GigaTranscriberQtApp  # noqa: E402
 
 
