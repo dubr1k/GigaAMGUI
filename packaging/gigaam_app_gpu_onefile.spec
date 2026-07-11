@@ -39,7 +39,7 @@ datas = (
     safetensors_d + tokenizers_d +
     pyqt6_d + einops_d + omegaconf_d + accelerate_d + pyannote_d + lightning_d + ptl_d +
     [(os.path.join(project_root, 'src'), 'src'),
-     (os.path.join(project_root, 'icon.ico'), '.'),
+     (os.path.join(project_root, 'assets', 'icon.ico'), '.'),
      (os.path.join(project_root, 'bin'), 'bin')]
 )
 
@@ -142,6 +142,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(project_root, 'icon.ico'),
+    icon=os.path.join(project_root, 'assets', 'icon.ico'),
 )
 

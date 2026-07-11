@@ -21,7 +21,7 @@ block_cipher = None
 project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в packaging/, корень проекта — на уровень выше
 
 # Иконка .ico — только для Windows; на macOS нужен .icns, Linux игнорирует.
-_icon = os.path.join(project_root, 'icon.ico') if sys.platform == 'win32' else None
+_icon = os.path.join(project_root, 'assets', 'icon.ico') if sys.platform == 'win32' else None
 
 
 def safe_collect(pkg):
@@ -51,7 +51,7 @@ datas = list(
     safetensors_d + tokenizers_d +
     pyqt6_d + einops_d + omegaconf_d + accelerate_d + pyannote_d + lightning_d + ptl_d +
     [(os.path.join(project_root, 'src'), 'src'),
-     (os.path.join(project_root, 'icon.ico'), '.')]
+     (os.path.join(project_root, 'assets', 'icon.ico'), '.')]
 )
 
 # Добавляем только ffmpeg/ffprobe, совместимые с текущей ОС сборки.

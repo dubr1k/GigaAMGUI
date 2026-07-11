@@ -24,7 +24,7 @@ except Exception:
 block_cipher = None
 
 project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в packaging/, корень проекта — на уровень выше
-icon_icns = os.path.join(project_root, "icon.icns")
+icon_icns = os.path.join(project_root, "assets", "icon.icns")
 icon_file = icon_icns if os.path.exists(icon_icns) else None
 
 
@@ -77,7 +77,7 @@ for package in packages:
 
 datas += [
     (os.path.join(project_root, "src"), "src"),
-    (os.path.join(project_root, "icon.ico"), "."),
+    (os.path.join(project_root, "assets", "icon.ico"), "."),
 ]
 
 bundled_gigaam_dir = os.path.join(project_root, "models", "gigaam")

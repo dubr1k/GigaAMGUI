@@ -169,10 +169,12 @@ GigaAMGUI/
 ├── web/
 ├── src/
 ├── tests/
+├── packaging/          # PyInstaller specs + build scripts
+├── pyinstaller_hooks/
+├── docs/               # documentation
+├── assets/             # icons, screenshots
 ├── Dockerfile
-├── docker-compose.yml
-├── BUILD_INSTRUCTIONS.md
-└── assets/screenshots/
+└── docker-compose.yml
 ```
 
 

@@ -202,3 +202,6 @@ graphify-out/
 # Agent instructions (local only)
 AGENTS.md
 CLAUDE.md
+
+# Local release staging (zipped .app etc.)
+out/
