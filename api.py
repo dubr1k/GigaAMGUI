@@ -115,6 +115,11 @@ class TaskStatus(BaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     progress: int = 0  # 0-100
+    stage: str = ""
+    stage_progress: float | None = None
+    processed_seconds: float | None = None
+    total_seconds: float | None = None
+    progress_indeterminate: bool = False
     filename: str
     file_size: int
     message: str | None = None
@@ -308,6 +313,10 @@ def _register_task(task_id: str, filename: str, file_size: int):
         'started_at': None,
         'completed_at': None,
         'progress': 0,
+        'stage_progress': None,
+        'processed_seconds': None,
+        'total_seconds': None,
+        'progress_indeterminate': False,
         'filename': filename,
         'file_size': file_size,
         'message': 'Задача в очереди на обработку'
@@ -414,6 +423,10 @@ def restore_tasks_from_results():
                 'started_at': meta.get('started_at', meta.get('created_at')),
                 'completed_at': meta.get('completed_at', meta.get('created_at')),
                 'progress': 100,
+                'stage_progress': 1.0,
+                'processed_seconds': meta.get('media_duration'),
+                'total_seconds': meta.get('media_duration'),
+                'progress_indeterminate': False,
                 'filename': meta['filename'],
                 'file_size': meta.get('file_size', 0),
                 'message': 'Задача восстановлена из результатов при запуске API'
@@ -447,6 +460,10 @@ def restore_tasks_from_results():
             'started_at': created_timestamp.isoformat(),
             'completed_at': created_timestamp.isoformat(),
             'progress': 100,
+            'stage_progress': 1.0,
+            'processed_seconds': 0,
+            'total_seconds': 0,
+            'progress_indeterminate': False,
             'filename': filename_base,  # без выдуманного .ogg
             'file_size': 0,  # Неизвестно
             'message': 'Задача восстановлена из результатов при запуске API'
@@ -531,20 +548,62 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
             tasks_storage[task_id]['status'] = 'processing'
             tasks_storage[task_id]['started_at'] = datetime.now().isoformat()
             tasks_storage[task_id]['progress'] = 5
+            tasks_storage[task_id]['stage'] = 'Подготовка...'
+            tasks_storage[task_id]['stage_progress'] = 0.0
+            tasks_storage[task_id]['processed_seconds'] = 0.0
+            tasks_storage[task_id]['total_seconds'] = None
+            tasks_storage[task_id]['progress_indeterminate'] = False
 
             # Создаем директорию для результатов
             output_dir = RESULTS_DIR / task_id
             output_dir.mkdir(exist_ok=True)
 
             # Callback для обновления прогресса (с защитой от удалённой задачи)
-            def progress_callback(stage: str, progress: float):
+            def progress_callback(event_or_stage, progress: float | None = None):
                 task = tasks_storage.get(task_id)
                 if task is None:
                     return
-                if stage == 'conversion':
-                    task['progress'] = int(5 + progress * 15)
-                elif stage == 'transcription':
-                    task['progress'] = int(20 + progress * 75)
+
+                stage = None
+                stage_progress = None
+                processed_seconds = None
+                total_seconds = None
+
+                if isinstance(event_or_stage, dict):
+                    stage = event_or_stage.get('stage')
+                    stage_progress = event_or_stage.get('stage_progress')
+                    processed_seconds = event_or_stage.get('processed_seconds')
+                    total_seconds = event_or_stage.get('total_seconds')
+                    progress_value = event_or_stage.get('file_progress')
+                elif hasattr(event_or_stage, 'stage'):
+                    stage = getattr(event_or_stage, 'stage', None)
+                    stage_progress = getattr(event_or_stage, 'stage_progress', None)
+                    processed_seconds = getattr(event_or_stage, 'processed_seconds', None)
+                    total_seconds = getattr(event_or_stage, 'total_seconds', None)
+                    progress_value = getattr(event_or_stage, 'file_progress', None)
+                else:
+                    stage = event_or_stage
+                    progress_value = progress
+
+                if progress_value is None:
+                    progress_value = 0.0
+
+                progress_value = max(0.0, min(float(progress_value), 1.0))
+                stage_names = {
+                    'preparing': 'Подготовка...',
+                    'conversion': 'Конвертация...',
+                    'transcription': 'Распознавание речи...',
+                    'diarization': 'Диаризация...',
+                    'export': 'Экспорт...',
+                    'finalizing': 'Завершение...',
+                }
+                task['progress'] = int(progress_value * 100)
+                if stage:
+                    task['stage'] = stage_names.get(stage, stage)
+                task['stage_progress'] = stage_progress
+                task['processed_seconds'] = processed_seconds
+                task['total_seconds'] = total_seconds
+                task['progress_indeterminate'] = stage_progress is None
 
             # Процессор
             processor = TranscriptionProcessor(
@@ -593,6 +652,11 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     'status': 'completed',
                     'completed_at': datetime.now().isoformat(),
                     'progress': 100,
+                    'stage': 'Готово',
+                    'stage_progress': 1.0,
+                    'processed_seconds': result.get('media_duration'),
+                    'total_seconds': result.get('media_duration'),
+                    'progress_indeterminate': False,
                     'transcription': transcription,
                     'transcription_timecoded': transcription_timecoded,
                     'processing_time': result['total_time'],
@@ -625,6 +689,7 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 update = {
                     'status': 'failed',
                     'completed_at': datetime.now().isoformat(),
+                    'progress_indeterminate': False,
                     'error': 'Внутренняя ошибка обработки',
                     'message': 'Ошибка обработки файла'
                 }

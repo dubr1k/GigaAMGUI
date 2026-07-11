@@ -16,7 +16,11 @@ class ASRBackend(Protocol):
     def load(self, logger: Callable[[str], None] | None = None) -> bool:
         """Load backend resources lazily."""
 
-    def transcribe_longform(self, audio_path: str) -> list[TranscriptionSegment]:
+    def transcribe_longform(
+        self,
+        audio_path: str,
+        progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+    ) -> list[TranscriptionSegment]:
         """Transcribe audio by 20-second segments."""
 
     def unload(self) -> None:

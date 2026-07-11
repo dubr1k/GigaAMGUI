@@ -5,6 +5,7 @@
 - pyannote: Полная диаризация через pyannote/speaker-diarization-3.1
 """
 
+import inspect
 import logging
 import os
 import warnings
@@ -191,6 +192,7 @@ class DiarizationManager:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        progress_callback=None,
     ) -> list[SpeakerSegment]:
         """
         Выполнить диаризацию аудио файла.
@@ -226,7 +228,7 @@ class DiarizationManager:
             # Запуск диаризации
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                diarization = self.pipeline(str(audio_path), **kwargs)
+                diarization = self._run_pipeline(str(audio_path), kwargs, progress_callback=progress_callback)
 
             # Преобразование результатов
             segments = []
@@ -258,6 +260,60 @@ class DiarizationManager:
         except Exception as e:
             logger.error(f"Ошибка при диаризации: {e}")
             raise ValueError(f"Ошибка при диаризации: {e}") from e
+
+    def _run_pipeline(
+        self,
+        file_path: str,
+        kwargs: dict,
+        progress_callback=None,
+    ):
+        """Запускает pyannote pipeline с hook-поддержкой если доступна."""
+        pipeline = self.pipeline
+        if not self._supports_hook(pipeline):
+            return pipeline(file_path, **kwargs)
+
+        def _hook(
+            _step_name,
+            _step_artifact,
+            file=None,
+            total=None,
+            completed=None,
+        ):
+            if progress_callback is None:
+                return
+
+            if completed is None or not isinstance(completed, (int, float)):
+                return
+
+            # `completed/total` applies to the current internal pyannote step,
+            # not the whole diarization pipeline.  Expose the real work units
+            # but keep the overall stage indeterminate rather than inventing a
+            # misleading whole-pipeline percentage.
+            progress_callback(
+                None,
+                float(completed),
+                float(total) if isinstance(total, (int, float)) else None,
+            )
+
+        try:
+            return pipeline(file_path, hook=_hook, **kwargs)
+        except TypeError as exc:
+            if "hook" not in str(exc):
+                raise
+            return pipeline(file_path, **kwargs)
+
+    @staticmethod
+    def _supports_hook(pipeline) -> bool:
+        for callable_obj in (pipeline, getattr(pipeline, "apply", None)):
+            if callable_obj is None:
+                continue
+            try:
+                signature = inspect.signature(callable_obj)
+            except (TypeError, ValueError):
+                continue
+            if "hook" in signature.parameters:
+                return True
+        return False
 
     def _rename_speakers(
         self,

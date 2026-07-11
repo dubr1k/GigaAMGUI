@@ -317,6 +317,10 @@ def _register_task(task_id: str, filename: str, file_size: int, user: str):
         'started_at': None,
         'completed_at': None,
         'progress': 0,
+        'stage_progress': None,
+        'processed_seconds': None,
+        'total_seconds': None,
+        'progress_indeterminate': False,
         'filename': filename,
         'file_size': file_size,
         'message': 'В очереди',
@@ -379,6 +383,10 @@ def _restore_completed_task_from_meta(task_dir: Path) -> dict | None:
         'started_at': started_at,
         'completed_at': completed_at,
         'progress': 100,
+        'stage_progress': 1.0,
+        'processed_seconds': meta.get('media_duration') if isinstance(meta.get('media_duration'), (int, float)) else None,
+        'total_seconds': meta.get('media_duration') if isinstance(meta.get('media_duration'), (int, float)) else None,
+        'progress_indeterminate': False,
         'filename': filename,
         'file_size': meta.get('file_size', 0),
         'message': 'Задача восстановлена из результатов при запуске Web GUI',
@@ -423,6 +431,11 @@ def _restore_tasks_from_index() -> bool:
             task['message'] = TASK_RECOVERY_MESSAGE
             task['error'] = TASK_RECOVERY_MESSAGE
             changed = True
+
+        task.setdefault('stage_progress', None)
+        task.setdefault('processed_seconds', None)
+        task.setdefault('total_seconds', None)
+        task.setdefault('progress_indeterminate', False)
 
         tasks_storage[task_id] = task
         log_queues[task_id] = []
@@ -537,6 +550,10 @@ async def process_transcription(
                 'status': 'processing',
                 'started_at': datetime.now().isoformat(),
                 'progress': 5,
+                'stage_progress': 0.0,
+                'processed_seconds': 0.0,
+                'total_seconds': None,
+                'progress_indeterminate': False,
                 'stage': 'Подготовка...',
                 'message': 'Обработка началась',
             })
@@ -546,19 +563,51 @@ async def process_transcription(
             output_dir = _task_result_dir(task_id)
             output_dir.mkdir(exist_ok=True)
 
-            def progress_callback(stage: str, progress: float):
+            def progress_callback(event_or_stage, progress: float | None = None):
                 task = tasks_storage.get(task_id)
                 if task is None:
                     return
+
+                stage = None
+                stage_progress = None
+                processed_seconds = None
+                total_seconds = None
+
+                if isinstance(event_or_stage, dict):
+                    stage = event_or_stage.get('stage')
+                    stage_progress = event_or_stage.get('stage_progress')
+                    processed_seconds = event_or_stage.get('processed_seconds')
+                    total_seconds = event_or_stage.get('total_seconds')
+                    file_progress = event_or_stage.get('file_progress')
+                elif hasattr(event_or_stage, 'stage'):
+                    stage = getattr(event_or_stage, 'stage', None)
+                    stage_progress = getattr(event_or_stage, 'stage_progress', None)
+                    processed_seconds = getattr(event_or_stage, 'processed_seconds', None)
+                    total_seconds = getattr(event_or_stage, 'total_seconds', None)
+                    file_progress = getattr(event_or_stage, 'file_progress', None)
+                else:
+                    stage = event_or_stage
+                    file_progress = progress
+
+                if file_progress is None:
+                    file_progress = task.get('progress', 0) / 100
+
+                file_progress = max(0.0, min(float(file_progress), 1.0))
                 stage_names = {
+                    'preparing': 'Подготовка...',
                     'conversion': 'Конвертация...',
                     'transcription': 'Распознавание речи...',
+                    'diarization': 'Диаризация...',
+                    'export': 'Экспорт...',
+                    'finalizing': 'Завершение...',
                 }
-                task['stage'] = stage_names.get(stage, stage)
-                if stage == 'conversion':
-                    task['progress'] = int(5 + progress * 15)
-                elif stage == 'transcription':
-                    task['progress'] = int(20 + progress * 75)
+                task['progress'] = int(file_progress * 100)
+                if stage:
+                    task['stage'] = stage_names.get(stage, stage)
+                task['stage_progress'] = stage_progress
+                task['processed_seconds'] = processed_seconds
+                task['total_seconds'] = total_seconds
+                task['progress_indeterminate'] = stage_progress is None
 
             def logger(msg: str):
                 _task_log(task_id, msg)
@@ -615,6 +664,10 @@ async def process_transcription(
                 'status': 'completed',
                 'completed_at': datetime.now().isoformat(),
                 'progress': 100,
+                'stage_progress': 1.0,
+                'processed_seconds': result.get('media_duration'),
+                'total_seconds': result.get('media_duration'),
+                'progress_indeterminate': False,
                 'stage': 'Готово',
                 'message': 'Транскрибация завершена',
                 'result_files': result_files,
@@ -1341,6 +1394,11 @@ async def progress_stream(request: Request, user: str = Depends(require_auth)):
                 current[tid] = {
                     'status': task['status'],
                     'progress': task['progress'],
+                    'stage_progress': task.get('stage_progress'),
+                    'processed_seconds': task.get('processed_seconds'),
+                    'total_seconds': task.get('total_seconds'),
+                    'progress_indeterminate': task.get('progress_indeterminate', False),
+                    'file_progress': int(task['progress']),
                     'stage': task.get('stage', ''),
                     'message': task.get('message', ''),
                     'filename': task['filename'],

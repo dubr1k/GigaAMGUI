@@ -53,3 +53,37 @@ def test_transcribe_longform_reads_wav_without_torchaudio_load(tmp_path, monkeyp
     result = loader.transcribe_longform(str(wav_path))
 
     assert result == [{"transcription": "ok", "boundaries": (0.0, 0.2)}]
+
+
+def test_transcribe_longform_passes_progress_callback():
+    received = []
+
+    class DummyBackend:
+        name = "dummy"
+
+        def load(self, logger=None):
+            return True
+
+        def is_loaded(self):
+            return True
+
+        def transcribe_longform(self, audio_path, progress_callback=None):  # pragma: no cover
+            if progress_callback:
+                progress_callback(0.42, 10.0, 20.0)
+            return [{"transcription": "text", "boundaries": (0.0, 1.0)}]
+
+        def unload(self):
+            return None
+
+        def capabilities(self):
+            from src.core.asr.types import BackendCapabilities
+
+            return BackendCapabilities(backend="dummy", model="dummy", device="cpu")
+
+    loader = ModelLoader()
+    loader._backend = DummyBackend()
+
+    output = loader.transcribe_longform("x.wav", progress_callback=lambda *args: received.append(args))
+
+    assert output == [{"transcription": "text", "boundaries": (0.0, 1.0)}]
+    assert received == [(0.42, 10.0, 20.0)]

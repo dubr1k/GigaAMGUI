@@ -6,6 +6,7 @@ let selectedFiles = [];
 let selectedLlmFiles = [];
 let progressSource = null;
 let currentLogs = [];
+let completedTaskNotified = new Set();
 let currentLang = localStorage.getItem('gigaam_lang') || 'ru';
 
 const I18N = {
@@ -671,6 +672,7 @@ function clearVisibleTaskState() {
     document.getElementById('current-file').textContent = '';
     document.getElementById('status-label').textContent = t('ready');
     document.getElementById('log-panel').innerHTML = '';
+    completedTaskNotified = new Set();
     currentLogs = [];
 }
 
@@ -711,11 +713,24 @@ function updateTaskProgress(tid, task) {
     const currentFile = document.getElementById('current-file');
     const status = document.getElementById('status-label');
 
+    const fileProgress = typeof task.file_progress === 'number'
+        ? task.file_progress
+        : task.progress;
+    const isIndeterminate = Boolean(task.progress_indeterminate);
+
     if (task.status === 'processing' || task.status === 'pending' || task.status === 'downloading') {
         bar.style.width = task.progress + '%';
         bar.textContent = task.progress + '%';
-        fileBar.style.width = task.progress + '%';
-        stage.textContent = `● ${task.stage} ${task.progress}%`;
+        if (isIndeterminate) {
+            fileBar.classList.add('progress-fill-indeterminate');
+            fileBar.style.width = '100%';
+            stage.textContent = `● ${task.stage}`;
+        } else {
+            fileBar.classList.remove('progress-fill-indeterminate');
+            fileBar.style.width = fileProgress + '%';
+            fileBar.textContent = fileProgress + '%';
+            stage.textContent = `● ${task.stage} ${fileProgress}%`;
+        }
         currentFile.textContent = task.filename.length > 60 ? '…' + task.filename.slice(-60) : task.filename;
         counter.textContent = task.filename;
         status.textContent = task.message;
@@ -725,8 +740,11 @@ function updateTaskProgress(tid, task) {
         fileBar.style.width = '100%';
         stage.textContent = currentLang === 'ru' ? '✓ Готово' : '✓ Done';
         status.textContent = task.message;
-        addLog(currentLang === 'ru' ? `Готово: ${task.filename}` : `Done: ${task.filename}`, 'success');
-        loadResults();
+        if (!completedTaskNotified.has(tid)) {
+            completedTaskNotified.add(tid);
+            addLog(currentLang === 'ru' ? `Готово: ${task.filename}` : `Done: ${task.filename}`, 'success');
+            loadResults();
+        }
     } else if (task.status === 'failed') {
         stage.textContent = currentLang === 'ru' ? '✕ Ошибка' : '✕ Error';
         status.textContent = task.message;

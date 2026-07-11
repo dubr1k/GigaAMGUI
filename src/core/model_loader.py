@@ -10,6 +10,7 @@ from ..config import (
 )
 from .asr.factory import create_backend_from_config
 from .asr.pytorch_backend import PyTorchBackend
+from .asr.types import ProgressCallback
 
 
 class ModelLoader:
@@ -178,7 +179,11 @@ class ModelLoader:
             except Exception:
                 pass
 
-    def transcribe_longform(self, audio_path: str):
+    def transcribe_longform(
+        self,
+        audio_path: str,
+        progress_callback: ProgressCallback | None = None,
+    ):
         """Транскрибирует длинное аудио чанками по 20 сек (без ffmpeg subprocess)."""
         if self._backend is None:
             raise RuntimeError("Модель не загружена")
@@ -186,7 +191,7 @@ class ModelLoader:
         if not self._backend.is_loaded():
             raise RuntimeError("Модель не загружена")
 
-        return self._backend.transcribe_longform(audio_path)
+        return self._backend.transcribe_longform(audio_path, progress_callback=progress_callback)
 
     def unload(self):
         """Выгружает модель и освобождает память."""

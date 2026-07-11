@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
@@ -44,3 +45,5 @@ def parse_bool(value: str | bool | None, default: bool = False) -> bool:
     if normalized in {"0", "false", "f", "no", "n", "off", "disable", "disabled"}:
         return False
     return default
+
+ProgressCallback = Callable[[float, float | None, float | None], None]

@@ -7,6 +7,10 @@ import importlib
 _LAZY = {
     "ModelLoader": (".model_loader", "ModelLoader"),
     "TranscriptionProcessor": (".processor", "TranscriptionProcessor"),
+    "ProgressEvent": (".progress", "ProgressEvent"),
+    "ProgressPlan": (".progress", "ProgressPlan"),
+    "ProgressStage": (".progress", "ProgressStage"),
+    "ProgressCallback": (".progress", "ProgressCallback"),
 }
 
 __all__ = list(_LAZY.keys())

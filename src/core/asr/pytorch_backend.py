@@ -115,7 +115,11 @@ class PyTorchBackend:
         except Exception:
             pass
 
-    def transcribe_longform(self, audio_path: str) -> list[TranscriptionSegment]:
+    def transcribe_longform(
+        self,
+        audio_path: str,
+        progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+    ) -> list[TranscriptionSegment]:
         if self.model is None:
             raise RuntimeError("Модель не загружена")
 
@@ -136,6 +140,8 @@ class PyTorchBackend:
         results: list[TranscriptionSegment] = []
         total = int(audio.shape[0])
         start = 0
+        total_seconds = float(total) / sample_rate if sample_rate else 0.0
+        reported = 0.0
         model = cast(object, self.model)
 
         try:
@@ -173,7 +179,16 @@ class PyTorchBackend:
                             "boundaries": (start_time, end_time),
                         })
 
+                    processed_seconds = float(end) / sample_rate
+                    ratio = 1.0 if total <= 0 else min(processed_seconds / total_seconds, 1.0)
+                    if progress_callback is not None and ratio >= reported:
+                        progress_callback(ratio, processed_seconds, total_seconds)
+                        reported = ratio
+
                     start = end
+
+                if progress_callback is not None and total > 0 and reported < 1.0:
+                    progress_callback(1.0, total_seconds, total_seconds)
         finally:
             self._empty_cache()
 

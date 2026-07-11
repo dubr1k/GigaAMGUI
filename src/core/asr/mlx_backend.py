@@ -50,22 +50,22 @@ class MLXBackend:
                 )
             return False
 
-    def transcribe_longform(self, audio_path: str) -> list[TranscriptionSegment]:
+    def transcribe_longform(
+        self,
+        audio_path: str,
+        progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+    ) -> list[TranscriptionSegment]:
         if self.model is None:
             raise RuntimeError("MLX модель не загружена")
-
 
         with self._lock:
             try:
                 if self._gigaam_mlx is None:
                     raise RuntimeError("MLX backend is not initialized")
 
-                raw_segments = self._gigaam_mlx.transcribe_file(
+                raw_segments = self._transcribe_in_chunks(
                     audio_path,
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    model_type=self.model_name,
-                    verbose=False,
+                    progress_callback=progress_callback,
                 )
             except Exception as exc:
                 raise RuntimeError(
@@ -93,6 +93,45 @@ class MLXBackend:
             )
 
         return segments
+
+    def _transcribe_in_chunks(
+        self,
+        audio_path: str,
+        progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+    ) -> list[dict]:
+        gm = self._gigaam_mlx
+        if gm is None:
+            raise RuntimeError("MLX backend is not initialized")
+
+        audio = gm.load_audio(audio_path)
+        chunks = gm.audio.split_audio(audio)
+        total_samples = len(audio)
+        total_seconds = float(total_samples) / gm.audio.SAMPLE_RATE if total_samples else None
+
+        result_segments: list[dict] = []
+        for chunk in chunks:
+            chunk_audio = audio[chunk["start_sample"]:chunk["end_sample"]]
+            mel = gm.audio.compute_mel(chunk_audio)
+
+            mx = __import__("mlx.core", fromlist=["array"])  # lazy import
+            mel_mx = mx.array(mel[None, :])
+
+            encoded, seq_len = self.model.encode(mel_mx)  # type: ignore[union-attr]
+            mx.eval(encoded)
+            token_ids = self.model.decode(encoded, seq_len)  # type: ignore[union-attr]
+            text = self.tokenizer.decode(token_ids) if self.tokenizer is not None else ""
+
+            result_segments.append({
+                "start": float(chunk["start_sec"]),
+                "end": float(chunk["end_sec"]),
+                "text": text,
+            })
+
+            if progress_callback is not None and total_samples > 0 and total_seconds is not None:
+                processed = float(chunk["end_sample"]) / total_samples
+                progress_callback(min(processed, 1.0), chunk["end_sec"], total_seconds)
+
+        return result_segments
 
     def unload(self) -> None:
         self.model = None

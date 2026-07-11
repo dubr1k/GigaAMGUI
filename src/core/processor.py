@@ -13,6 +13,7 @@ from ..config import HF_TOKEN
 from ..utils.audio_converter import AudioConverter
 from ..utils.output_naming import output_path
 from ..utils.time_formatter import TimeFormatter
+from .progress import ProgressEvent, ProgressPlan
 
 if TYPE_CHECKING:
     from ..utils.diarization import DiarizationManager
@@ -36,6 +37,30 @@ class TranscriptionProcessor:
         self.audio_converter = AudioConverter(self.logger)
         self.time_formatter = TimeFormatter()
         self._diarization_manager = None
+        self._progress_plan = None
+
+    def _emit_progress(self, event: ProgressEvent) -> None:
+        if not self.progress_callback:
+            return
+
+        if self._progress_plan is not None:
+            event = self._progress_plan.normalize_event(event)
+
+        try:
+            self.progress_callback(event)
+            return
+        except TypeError:
+            self.progress_callback(event.stage, event.file_progress)
+        except Exception:
+            raise
+
+    def _emit_legacy_stage(self, stage: str, progress: float):
+        if not self.progress_callback:
+            return
+        try:
+            self.progress_callback(stage, progress)
+        except TypeError:
+            return
 
     @property
     def diarization_manager(self) -> DiarizationManager | None:
@@ -52,16 +77,23 @@ class TranscriptionProcessor:
                 self.logger(f"Не удалось инициализировать менеджер диаризации: {e}")
         return self._diarization_manager
 
-    def _update_progress(self, stage: str, progress: float):
-        """
-        Обновляет прогресс через callback
-
-        Args:
-            stage: этап обработки ('conversion' или 'transcription')
-            progress: прогресс этапа от 0.0 до 1.0
-        """
-        if self.progress_callback:
-            self.progress_callback(stage, progress)
+    def _update_progress(
+        self,
+        stage: str,
+        stage_progress: float | None,
+        *,
+        processed_seconds: float | None = None,
+        total_seconds: float | None = None,
+    ):
+        event = ProgressEvent(
+            stage=stage,
+            stage_progress=stage_progress,
+            file_progress=0.0,
+            processed_seconds=processed_seconds,
+            total_seconds=total_seconds,
+            message=None,
+        )
+        self._emit_progress(event)
 
     def process_file(self,
                      filepath: str,
@@ -125,12 +157,27 @@ class TranscriptionProcessor:
         self.logger(f"Длительность: {duration_str} | "
                    f"Оценка времени обработки: ~{self.time_formatter.format_duration(estimated_time)}")
 
+        self._progress_plan = ProgressPlan(has_diarization=enable_diarization)
+        self._update_progress("preparing", 0.0, total_seconds=media_duration, processed_seconds=0.0)
+
         # Конвертация
-        self._update_progress('conversion', 0.0)
         conversion_start = time.time()
-        temp_audio = self.audio_converter.convert_to_wav(filepath, output_dir)
+        temp_audio = self.audio_converter.convert_to_wav(
+            filepath,
+            output_dir,
+            media_duration=media_duration,
+            progress_callback=lambda value: self._update_progress(
+                "conversion",
+                value,
+                total_seconds=media_duration,
+                processed_seconds=value * media_duration if value is not None and media_duration > 0 else None,
+            ) if value is not None else self._update_progress("conversion", None, total_seconds=media_duration, processed_seconds=None),
+        )
         result['conversion_time'] = time.time() - conversion_start
-        self._update_progress('conversion', 1.0)
+        # Если конвертер вернул путь, считаем стадию завершенной даже при indeterminate-сценарии.
+        # Для известных длительностей FFmpeg уже присылает 1.0 в своем колбэке.
+        if media_duration and media_duration > 0 and result['conversion_time'] >= 0:
+            self._update_progress('conversion', 1.0, total_seconds=media_duration, processed_seconds=media_duration)
 
         if not temp_audio:
             self.logger(f"Пропуск файла {filename}")
@@ -141,11 +188,17 @@ class TranscriptionProcessor:
         transcription_start = time.time()
         try:
             self.logger("Распознавание речи (GigaAM-v3)...")
-            self._update_progress('transcription', 0.0)
-
             # Транскрибация (обновляем прогресс постепенно)
             try:
-                utterances = self.model_loader.transcribe_longform(temp_audio)
+                utterances = self.model_loader.transcribe_longform(
+                    temp_audio,
+                    progress_callback=lambda stage_progress, processed, total: self._update_progress(
+                        "transcription",
+                        stage_progress,
+                        processed_seconds=processed,
+                        total_seconds=total,
+                    ),
+                )
             except ValueError as e:
                 # Ошибка VAD (обычно связана с токеном)
                 error_msg = str(e)
@@ -188,11 +241,19 @@ class TranscriptionProcessor:
             if enable_diarization and utterances and len(utterances) > 0:
                 self.logger("Применение диаризации спикеров...")
                 try:
+                    self._update_progress("diarization", None)
                     utterances = self._apply_diarization(
                         temp_audio,
                         utterances,
-                        num_speakers=num_speakers
+                        num_speakers=num_speakers,
+                        progress_callback=lambda stage_progress, processed, total: self._update_progress(
+                            "diarization",
+                            stage_progress,
+                            processed_seconds=processed,
+                            total_seconds=total,
+                        ),
                     )
+                    self._update_progress("diarization", 1.0)
                     self.logger(f"Диаризация завершена. Найдено спикеров: {len(set(u.get('speaker', 'Неизвестный спикер') for u in utterances))}")
                 except Exception as e:
                     self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Ошибка при диаризации: {e}")
@@ -278,11 +339,13 @@ class TranscriptionProcessor:
             # Определяем форматы вывода (по умолчанию txt)
             if output_formats is None:
                 output_formats = ['txt']
+            self._update_progress("export", 0.0)
 
             # Сохранение в выбранных форматах
             saved_files = []
+            total_formats = max(len(output_formats), 1)
 
-            for fmt in output_formats:
+            for fmt_index, fmt in enumerate(output_formats, start=1):
                 if fmt == 'txt':
                     # Чистый текст без таймкодов и меток спикеров
                     path_txt = output_path(output_dir, name_without_ext, 'txt')
@@ -341,6 +404,8 @@ class TranscriptionProcessor:
                         f.write(vtt_content)
                     saved_files.append(path_vtt)
 
+                self._update_progress("export", fmt_index / total_formats)
+
             # Проверка сохраненных данных
             if not full_text.strip():
                 self.logger("ПРЕДУПРЕЖДЕНИЕ: Текст транскрипции пустой")
@@ -358,6 +423,7 @@ class TranscriptionProcessor:
             self.logger(f"Время обработки: {self.time_formatter.format_duration(result['total_time'])} " +
                        f"(Конверсия: {round(result['conversion_time'], 1)}с, " +
                        f"Транскрибация: {round(result['transcription_time'], 1)}с)")
+            self._update_progress("finalizing", 1.0)
 
         except Exception as e:
             result['transcription_time'] = time.time() - transcription_start
@@ -381,7 +447,8 @@ class TranscriptionProcessor:
         self,
         audio_path: str,
         utterances: list,
-        num_speakers: int | None = None
+        num_speakers: int | None = None,
+        progress_callback=None,
     ) -> list:
         """
         Применяет диаризацию к сегментам транскрипции.
@@ -410,7 +477,8 @@ class TranscriptionProcessor:
 
             speaker_segments = self.diarization_manager.diarize(
                 audio_path,
-                **kwargs
+                **kwargs,
+                progress_callback=progress_callback,
             )
 
             # Сопоставляем спикеров с сегментами транскрипции

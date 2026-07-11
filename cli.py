@@ -34,6 +34,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from src.config import ASR_BACKEND, OUTPUT_FORMATS, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
+from src.core.progress import ProgressEvent
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
 from src.utils.processing_stats import ProcessingStats
@@ -303,34 +304,77 @@ def process_files_with_progress(
             total=100
         )
 
-        for i, filepath in enumerate(files):
+        stage_names = {
+            "preparing": "Подготовка...",
+            "conversion": "Конвертация...",
+            "transcription": "Распознавание речи...",
+            "diarization": "Диаризация...",
+            "export": "Экспорт...",
+            "finalizing": "Завершение...",
+        }
+
+        batch_state = {"completed": 0.0}
+        for filepath in files:
             filename = os.path.basename(filepath)
+            current_file_progress = 0.0
             progress.update(
                 current_task,
                 description=f"[green]{filename}",
                 completed=0
             )
+            def _normalize_progress_event(event_or_stage, prog=None, *, _filename=filename):
+                nonlocal current_file_progress
+                if isinstance(event_or_stage, ProgressEvent):
+                    event = event_or_stage
+                    stage = event.stage
+                    file_progress = float(event.file_progress)
+                    stage_progress = event.stage_progress
+                elif isinstance(event_or_stage, dict):
+                    stage = event_or_stage.get("stage", "preparing")
+                    file_progress = float(event_or_stage.get("file_progress", 0.0) or 0.0)
+                    stage_progress = event_or_stage.get("stage_progress")
+                else:
+                    stage = str(event_or_stage)
+                    file_progress = float(prog or 0.0)
+                    stage_progress = None
 
-            # Callback для обновления прогресса
-            def progress_callback(stage: str, prog: float):
-                if stage == 'conversion':
-                    progress.update(current_task, completed=int(prog * 20))
-                elif stage == 'transcription':
-                    progress.update(current_task, completed=20 + int(prog * 80))
+                file_progress = max(0.0, min(file_progress, 1.0))
+                current_file_progress = max(current_file_progress, file_progress)
+                task_total = 100
+                kwargs = {
+                    "description": f"[green]{_filename} — {stage_names.get(stage, stage)}",
+                    "completed": int(file_progress * 100),
+                }
+                if stage_progress is not None:
+                    kwargs["total"] = task_total
+                else:
+                    kwargs["total"] = None
+
+                progress.update(current_task, **kwargs)
+                progress.update(
+                    main_task,
+                    completed=int((batch_state["completed"] + current_file_progress) / len(files) * 100),
+                )
+
+                if stage == "finalizing":
+                    progress.update(
+                        current_task,
+                        description=f"[green]{_filename} — {stage_names.get(stage, stage)}"
+                    )
 
             # Процессор
             processor = TranscriptionProcessor(
                 model_loader=model_loader,
                 stats_manager=stats_manager,
                 logger=lambda msg: logger.debug(msg),
-                progress_callback=progress_callback
+                progress_callback=_normalize_progress_event
             )
 
             # Обработка
             result = processor.process_file(
                 filepath=filepath,
                 output_dir=output_dir,
-                file_index=i,
+                file_index=len(results),
                 total_files=len(files),
                 enable_diarization=enable_diarization,
                 num_speakers=num_speakers,
@@ -338,10 +382,7 @@ def process_files_with_progress(
             )
 
             results.append(result)
-
-            # Обновляем прогресс
-            progress.update(main_task, advance=1)
-            progress.update(current_task, completed=100)
+            batch_state["completed"] += 1.0 if result['success'] else current_file_progress
 
             # Сохраняем статистику
             if result['success'] and result['media_duration'] > 0:

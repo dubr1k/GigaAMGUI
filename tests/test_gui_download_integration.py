@@ -118,7 +118,8 @@ def test_gui_tabs_do_not_elide_labels():
 
 
 def test_stage_aware_progress():
-    import time
+    from src.core.progress import ProgressEvent
+
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
@@ -127,22 +128,49 @@ def test_stage_aware_progress():
     window.files_processed = 0
     window.files_to_process = ["/tmp/a.mp3", "/tmp/b.mp3"]
     window.file_estimates = {"/tmp/a.mp3": 100, "/tmp/b.mp3": 100}
-    window.current_file_start_time = time.time()
 
-    # Этап конвертации — прогресс в нижней «полосе» (0..15%)
-    window._on_stage_update("conversion", 0.0)
+    # Этап конвертации с детерминированным прогрессом через ProgressEvent.
+    window._on_stage_update(ProgressEvent(
+        stage="conversion",
+        stage_progress=0.0,
+        file_progress=0.0,
+    ))
     assert "Конвертация" in window.lbl_stage.text()
     assert window.progress_bar_file.value() <= 15
     assert window.lbl_file_counter.text() == "Файл 1 / 2"
 
-    # Распознавание, ~половина оценочного времени -> около середины полосы файла
-    window._on_stage_update("transcription", 0.0)
-    window._stage_start_time = time.time() - 42  # ~42 из ~85 c
-    window._refresh_progress()
+    # Переключение на распознавание — в UI должно стать событие детерминированной стадии.
+    window._on_stage_update(ProgressEvent(
+        stage="transcription",
+        stage_progress=0.5,
+        file_progress=0.5,
+    ))
     assert "Распознавание" in window.lbl_stage.text()
-    assert 40 <= window.progress_bar_file.value() <= 75
-    # Общий прогресс = доля файла / число файлов
-    assert 20 <= window.progress_bar_total.value() <= 38
+    assert window.progress_bar_file.value() >= 40
+
+    # Диаризация может быть indeterminate (нет реального завершенного прогресса).
+    window._on_stage_update(ProgressEvent(
+        stage="diarization",
+        stage_progress=None,
+        file_progress=0.7,
+    ))
+    assert window.progress_bar_file.minimum() == 0
+    assert window.progress_bar_file.maximum() == 0
+
+    # Общий прогресс должен учитывать долю текущего файла без таймерных приближений.
+    assert window.progress_bar_total.value() == 35
+
+    # Новый файл обязан сбросить монотонный guard предыдущего файла.
+    window.current_stage_file_progress = 1.0
+    window.files_processed = 1
+    window._update_current_file_info("b.mp3")
+    window._on_stage_update(ProgressEvent(
+        stage="preparing",
+        stage_progress=0.0,
+        file_progress=0.0,
+    ))
+    assert window.current_stage_file_progress == 0.0
+    assert window.progress_bar_total.value() == 50
     window.is_processing = False  # чтобы закрытие не показывало модальный диалог
     window.close()
 

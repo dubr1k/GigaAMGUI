@@ -71,6 +71,7 @@ from ..utils import (
     AppLogger, AudioConverter, MediaDownloader, ProcessingStats,
     TimeFormatter, UserSettings, LLMClient, LLMSettings,
 )
+from ..core.progress import ProgressEvent
 
 _BASE_FONT_PT = 12.0
 _MIN_UI_SCALE = 0.85
@@ -123,7 +124,7 @@ class WorkerSignals(QObject):
     file_progress_update = pyqtSignal(int)
     current_file_info = pyqtSignal(str)
     processing_finished = pyqtSignal(bool, str)
-    stage_update = pyqtSignal(str, float)
+    stage_update = pyqtSignal(object)
     download_progress = pyqtSignal(int)
     download_finished = pyqtSignal(list)
     download_failed = pyqtSignal(str)
@@ -186,6 +187,8 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_file_start_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
+        self.current_stage_file_progress = 0.0
+        self.current_stage_is_indeterminate = False
         self._stage_start_time = 0.0
         self._current_filename = ""
         self.is_downloading = False
@@ -236,9 +239,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.signals.download_finished.connect(self._on_download_finished)
         self.signals.download_failed.connect(self._on_download_failed)
         self.signals.llm_finished.connect(self._on_llm_finished)
-
-        self.progress_timer = QTimer()
-        self.progress_timer.timeout.connect(self._update_progress_display)
 
         saved_output_dir = self.user_settings.get_last_output_dir()
         saved_input_dir = self.user_settings.get_last_files_dir()
@@ -3287,7 +3287,6 @@ class GigaTranscriberQtApp(QMainWindow):
                 return
             self._cancel_requested = True
             self.is_processing = False
-            self.progress_timer.stop()
             self._set_processing_controls_enabled(True)
         self.files_to_process = []
         self.output_dir = ""
@@ -3401,7 +3400,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_stage.setText(self._t("●  Подготовка…", "●  Preparing…"))
         self.lbl_status.setText(self._t(f"Оценка: ~{estimate_str}", f"Estimate: ~{estimate_str}"))
         self._set_status(self._t(f"Обработка {self.total_files} файлов…", f"Processing {self.total_files} files…"))
-        self.progress_timer.start(500)
         num_speakers = None
         if self.enable_diarization:
             value = self.entry_num_speakers.value()
@@ -3522,57 +3520,108 @@ class GigaTranscriberQtApp(QMainWindow):
     # Прогресс
     # ──────────────────────────────────────────────────────────────
 
-    _STAGE_NAMES = {'conversion': ('Конвертация…', 'Converting…'), 'transcription': ('Распознавание речи…', 'Speech recognition…')}
+    _STAGE_NAMES = {
+        'preparing': ('Подготовка…', 'Preparing…'),
+        'conversion': ('Конвертация…', 'Converting…'),
+        'transcription': ('Распознавание речи…', 'Speech recognition…'),
+        'diarization': ('Диаризация…', 'Speaker diarization…'),
+        'export': ('Экспорт…', 'Exporting…'),
+        'finalizing': ('Завершение…', 'Finalizing…'),
+    }
 
-    def _on_file_progress(self, stage: str, progress: float):
-        self.signals.stage_update.emit(stage, progress)
+    def _on_file_progress(self, event_or_stage, progress: float | None = None):
+        if isinstance(event_or_stage, ProgressEvent):
+            event = {
+                "stage": event_or_stage.stage,
+                "file_progress": event_or_stage.file_progress,
+                "stage_progress": event_or_stage.stage_progress,
+            }
+        elif isinstance(event_or_stage, dict):
+            event = event_or_stage
+        else:
+            event = {
+                "stage": event_or_stage,
+                "file_progress": float(progress or 0.0),
+                "stage_progress": None,
+            }
 
-    def _on_stage_update(self, stage: str, progress: float):
+        self.signals.stage_update.emit(event)
+
+    def _on_stage_update(self, event, progress: float | None = None):
+        if isinstance(event, ProgressEvent):
+            stage = event.stage
+            file_progress = event.file_progress
+            stage_progress = event.stage_progress
+        elif isinstance(event, dict):
+            stage = event.get("stage")
+            file_progress = float(event.get("file_progress", 0.0) or 0.0)
+            stage_progress = event.get("stage_progress")
+        else:
+            stage = event
+            file_progress = float(progress or 0.0)
+            stage_progress = None
+
+        if not stage:
+            return
+
         if stage != self.current_stage:
-            self.current_stage = stage
+            self.current_stage = str(stage)
+            self.current_stage_progress = 0.0 if stage_progress is None else stage_progress
             self._stage_start_time = time.time()
-        self.current_stage_progress = progress
-        self._refresh_progress()
 
-    def _estimate_file_progress(self) -> float:
-        if self.current_file_start_time <= 0 or not self.files_to_process:
-            return 0.0
-        idx = min(self.files_processed, len(self.files_to_process) - 1)
-        total_est = self.file_estimates.get(self.files_to_process[idx], 30) or 30
-        band = self._CONVERSION_BAND
-        stage_elapsed = (time.time() - self._stage_start_time) if self._stage_start_time else 0.0
-        if self.current_stage == 'conversion':
-            conv_est = max(1.0, total_est * band)
-            return band * min(1.0, stage_elapsed / conv_est)
-        if self.current_stage == 'transcription':
-            trans_est = max(1.0, total_est * (1 - band))
-            return band + (0.99 - band) * min(1.0, stage_elapsed / trans_est)
-        elapsed = time.time() - self.current_file_start_time
-        return min(0.99, elapsed / total_est)
+        if file_progress < self.current_stage_file_progress:
+            file_progress = self.current_stage_file_progress
+        self.current_stage_file_progress = file_progress
+        self.current_stage_is_indeterminate = stage_progress is None
+        if stage_progress is not None:
+            self.current_stage_progress = stage_progress
+
+        self._refresh_progress()
 
     def _refresh_progress(self):
         if not self.is_processing or self.total_files == 0 or not self.files_to_process:
             return
+
         files_done = min(self.files_processed, self.total_files)
-        file_progress = self._estimate_file_progress()
-        overall = min(0.99, (files_done + file_progress) / self.total_files)
+        file_progress = self.current_stage_file_progress
+        file_progress = max(0.0, min(file_progress, 1.0))
+
+        overall = (files_done + file_progress) / self.total_files
         self.progress_bar_total.setValue(int(overall * 100))
-        self.progress_bar_file.setValue(int(file_progress * 100))
+
+        if self.current_stage_is_indeterminate:
+            self.progress_bar_file.setRange(0, 0)
+            self.progress_bar_file.setValue(0)
+            if self.current_stage_progress is None:
+                percent_label = "…"
+            else:
+                percent_label = ""
+        else:
+            self.progress_bar_file.setRange(0, 100)
+            self.progress_bar_file.setValue(int(file_progress * 100))
+            percent_label = f"  {int(file_progress * 100)}%"
+
         current_idx = min(files_done + 1, self.total_files)
         self.lbl_file_counter.setText(self._t(f"Файл {current_idx} / {self.total_files}", f"File {current_idx} / {self.total_files}"))
+
         stage_pair = self._STAGE_NAMES.get(self.current_stage or '', ('Подготовка…', 'Preparing…'))
         stage_name = stage_pair[0] if self._lang == 'ru' else stage_pair[1]
-        self.lbl_stage.setText(f"●  {stage_name}  {int(file_progress * 100)}%")
+        self.lbl_stage.setText(f"●  {stage_name}{percent_label}")
+
         remaining_files = self.total_files - files_done
         if remaining_files > 0:
             if files_done > 0 and self.time_spent > 0:
                 avg_time = self.time_spent / files_done
+            elif self.current_file_start_time > 0:
+                avg_time = (time.time() - self.current_file_start_time) if files_done > 0 else self.file_estimates.get(self.files_to_process[0], 30)
             else:
                 avg_time = self.file_estimates.get(self.files_to_process[0], 30)
             self.lbl_status.setText(self._t(f"Осталось: ~{self.time_formatter.format_duration(avg_time * remaining_files)}", f"Remaining: ~{self.time_formatter.format_duration(avg_time * remaining_files)}"))
 
-    def _update_progress_display(self):
-        self._refresh_progress()
+        if not self.current_stage_is_indeterminate:
+            self.progress_bar_file.setFormat("%p%")
+        else:
+            self.progress_bar_file.setFormat("")
 
     def _update_total_progress(self, value: int):
         self.progress_bar_total.setValue(value)
@@ -3583,19 +3632,21 @@ class GigaTranscriberQtApp(QMainWindow):
     def _update_current_file_info(self, info: str):
         self.current_stage = None
         self.current_stage_progress = 0.0
+        self.current_stage_file_progress = 0.0
+        self.current_stage_is_indeterminate = False
         display = info if len(info) <= 64 else f"…{info[-64:]}"
         self._current_filename = display
         self.lbl_current_file.setText(display)
 
     def _on_processing_finished(self, success: bool, message: str):
         self.is_processing = False
-        self.progress_timer.stop()
         self.btn_start.setEnabled(True)
         self.btn_start.setText(self._t("ЗАПУСТИТЬ ОБРАБОТКУ", "START PROCESSING"))
         self.btn_cancel.setVisible(False)
         self.btn_cancel.setEnabled(True)
         self.btn_cancel.setText(self._t("Отменить", "Cancel"))
         self.progress_bar_total.setValue(100 if success else self.progress_bar_total.value())
+        self.progress_bar_file.setRange(0, 100)
         self.progress_bar_file.setValue(100 if success else self.progress_bar_file.value())
         self.lbl_stage.setText(self._t("✓  Готово", "✓  Done") if success else self._t("✕  Остановлено", "✕  Stopped"))
         self.lbl_status.setText(message.split("\n")[0])

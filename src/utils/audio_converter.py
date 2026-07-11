@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable
+from threading import Thread
 
 from ..config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
 
@@ -148,7 +150,13 @@ class AudioConverter:
 
             return 0.0
 
-    def convert_to_wav(self, input_path: str, output_dir: str) -> str | None:
+    def convert_to_wav(
+        self,
+        input_path: str,
+        output_dir: str,
+        progress_callback: Callable[[float | None], None] | None = None,
+        media_duration: float | None = None,
+    ) -> str | None:
         """
         Конвертирует любой входной файл в 16kHz mono wav для модели
 
@@ -183,41 +191,96 @@ class AudioConverter:
         self.logger(f"DEBUG: Файл существует: {os.path.exists(input_path)}")
 
         try:
-            # FFmpeg: -i input -ar 16000 (Hz) -ac 1 (mono) -y (overwrite)
-            # Используем абсолютный путь для надежности
-            # Убеждаемся, что путь - это строка (не Path объект)
-            input_path_str = str(input_path) if not isinstance(input_path, str) else input_path
             command = [
-                _find_ffmpeg(), "-i", input_path_str,
+                _find_ffmpeg(),
+                "-hide_banner",
+                "-nostdin",
+                "-i", str(input_path),
                 "-ar", str(AUDIO_SAMPLE_RATE),
                 "-ac", str(AUDIO_CHANNELS),
-                "-vn",  # убираем видео поток
-                "-y",   # перезаписывать если есть
-                temp_wav
+                "-vn",
+                "-y",
+                temp_wav,
+                "-progress", "pipe:1",
+                "-nostats",
             ]
 
-            # Логируем команду для отладки (без полного пути для краткости)
-            self.logger(f"DEBUG: Команда FFmpeg: ffmpeg -i [файл] -ar {AUDIO_SAMPLE_RATE} -ac {AUDIO_CHANNELS} -vn -y [выход]")
+            self.logger(
+                f"DEBUG: Команда FFmpeg: ffmpeg -i [файл] -ar {AUDIO_SAMPLE_RATE} -ac {AUDIO_CHANNELS} -vn -y [выход] -progress pipe:1"
+            )
 
-            result = subprocess.run(
+            duration = media_duration if media_duration is not None and media_duration > 0 else 0.0
+            process = subprocess.Popen(
                 command,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 startupinfo=_windows_startupinfo(),
             )
 
-            if result.returncode != 0:
-                # Выводим детальную информацию об ошибке FFmpeg
-                self.logger(f"Ошибка FFmpeg: код возврата {result.returncode}")
-                stderr_text = (result.stderr or "").strip()
+            stderr_lines: list[str] = []
+
+            def _drain_stderr(pipe):
+                for line in iter(pipe.readline, ""):
+                    stderr_lines.append(line)
+
+            stderr_thread = None
+            if process.stderr is not None:
+                stderr_thread = Thread(target=_drain_stderr, args=(process.stderr,), daemon=True)
+                stderr_thread.start()
+
+            last_reported = -1.0
+            reported_unknown = False
+
+            if process.stdout is not None:
+                for raw_line in iter(process.stdout.readline, ""):
+                    if "=" not in raw_line:
+                        continue
+                    key, value = raw_line.rstrip("\n").split("=", 1)
+                    parsed_seconds: float | None = None
+                    if key == "out_time_ms":
+                        try:
+                            parsed_seconds = int(value) / 1_000_000
+                        except ValueError:
+                            parsed_seconds = None
+                    elif key == "out_time_us":
+                        try:
+                            parsed_seconds = int(value) / 1_000_000
+                        except ValueError:
+                            parsed_seconds = None
+                    if parsed_seconds is None or duration <= 0:
+                        if duration <= 0 and progress_callback is not None and not reported_unknown:
+                            progress_callback(None)
+                            reported_unknown = True
+                        continue
+                    ratio = max(0.0, min(parsed_seconds / duration, 1.0))
+                    if ratio < last_reported:
+                        continue
+                    if ratio <= last_reported + 1e-9:
+                        continue
+                    last_reported = ratio
+                    if progress_callback is not None:
+                        progress_callback(ratio)
+
+            if duration <= 0 and progress_callback is not None and not reported_unknown:
+                progress_callback(None)
+
+            returncode = process.wait()
+            if stderr_thread is not None:
+                stderr_thread.join(timeout=1.0)
+
+            if returncode != 0:
+                stderr_text = "".join(stderr_lines).strip()
+                self.logger(f"Ошибка FFmpeg: код возврата {returncode}")
                 self._log_ffmpeg_tail(stderr_text)
-                # Понятное сообщение для типичных ошибок MP4
                 if "moov atom not found" in stderr_text or "Invalid data found when processing input" in stderr_text:
                     self.logger("")
                     self.logger("Возможная причина: файл повреждён или загружен не до конца (в MP4 метаданные «moov» в конце — если файл обрезан, FFmpeg не может его прочитать).")
                     self.logger("Что попробовать: перезаписать/скачать файл заново, открыть в другом плеере и пересохранить, либо взять другой файл.")
                 return None
 
+            if progress_callback is not None and duration > 0 and last_reported < 1.0:
+                progress_callback(1.0)
             return temp_wav
 
         except FileNotFoundError:

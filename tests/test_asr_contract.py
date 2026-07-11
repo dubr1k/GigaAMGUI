@@ -37,3 +37,28 @@ def test_backend_capabilities_fields_are_typed_and_readable():
     caps = BackendCapabilities(backend="pytorch", model="e2e_rnnt", device="cpu")
     assert caps.backend == "pytorch"
     assert caps.supports_local_asr is True
+
+
+def test_progress_callback_signature_remains_optional():
+    from src.core.asr.base import ASRBackend
+
+    class _NoopBackend:
+        name = "noop"
+
+        def load(self, logger=None):
+            return True
+
+        def transcribe_longform(self, audio_path, progress_callback=None):
+            return []
+
+        def unload(self):
+            return None
+
+        def is_loaded(self):
+            return True
+
+        def capabilities(self):
+            return BackendCapabilities(backend="noop", model="noop", device="cpu")
+
+    backend: ASRBackend = _NoopBackend()
+    assert backend.transcribe_longform("x.wav") == []

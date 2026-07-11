@@ -72,3 +72,66 @@ def test_transcribe_longform_raises_on_unloaded_model():
         assert "Модель не загружена" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_transcribe_longform_reports_chunk_progress(tmp_path, monkeypatch):
+    wav_path = tmp_path / "sample.wav"
+    # 45 seconds => 3 chunks (20s,20s,5s)
+    sf.write(wav_path, np.zeros(45 * 16000, dtype=np.float32), 16000)
+
+    backend = PyTorchBackend()
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(
+            decode=lambda head, encoded, length: ["hello"]
+        ),
+    )
+    backend.device = "cpu"
+
+    events = []
+
+    segments = backend.transcribe_longform(
+        str(wav_path),
+        progress_callback=lambda progress, processed, total: events.append((progress, processed, total)),
+    )
+
+    assert segments == [
+        {"transcription": "hello", "boundaries": (0.0, 20.0)},
+        {"transcription": "hello", "boundaries": (20.0, 40.0)},
+        {"transcription": "hello", "boundaries": (40.0, 45.0)},
+    ]
+    assert events == [
+        (20.0 / 45.0, 20.0, 45.0),
+        (40.0 / 45.0, 40.0, 45.0),
+        (1.0, 45.0, 45.0),
+    ]
+
+
+def test_transcribe_longform_progress_with_short_tail_does_still_complete(tmp_path, monkeypatch):
+    # final chunk is smaller than 20ms threshold; callback should still end at 1.0
+    wav_path = tmp_path / "sample_tail.wav"
+    sf.write(wav_path, np.zeros(321000, dtype=np.float32), 16000)
+
+    backend = PyTorchBackend()
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["tail"]),
+    )
+    backend.device = "cpu"
+
+    events: list[tuple[float, float, float]] = []
+    result = backend.transcribe_longform(
+        str(wav_path),
+        progress_callback=lambda progress, processed, total: events.append((progress, processed, total)),
+    )
+
+    assert result[-1]["boundaries"][1] == 20.0
+    assert events[0][1] == 20.0
+    assert events[0][2] == 20.0625
+    assert events[-1] == (1.0, 20.0625, 20.0625)
