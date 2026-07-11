@@ -4,6 +4,9 @@ icns/
 GigaAM/
 GigaAMv3.workflow/
 scripts/
+!scripts/
+scripts/*
+!scripts/verify_macos_bundle.py
 *.py[cod]
 *$py.class
 *.so
@@ -100,6 +103,7 @@ checkpoints/
 !requirements.txt
 !requirements_macos.txt
 !requirements-dev.txt
+!requirements-macos-mlx.txt
 !web/static/robots.txt
 *.wav
 *.mp3

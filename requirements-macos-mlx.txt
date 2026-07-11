@@ -1,0 +1,13 @@
+# Apple Silicon macOS spike/develop dependencies for MLX RNNT
+--extra-index-url https://pypi.org/simple
+
+# MLX runtime (Apple Silicon)
+mlx
+
+# Upstream MLX RNNT backend (pin by full commit SHA)
+gigaam-mlx @ git+https://github.com/aystream/gigaam-mlx.git@20276ddd6173d636b37c6c6e13b4ee8f7b94d1ac
+
+# Keep speech frontend dependencies in sync with spike expectations
+soundfile
+numpy
+requests
