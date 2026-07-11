@@ -34,6 +34,26 @@ def _t(parent, ru: str, en: str) -> str:
     return ru if _lang(parent) == "ru" else en
 
 
+def _show_message(parent, icon: QMessageBox.Icon, title: str, text: str) -> None:
+    box = QMessageBox(parent)
+    box.setIcon(icon)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.addButton(_t(parent, "ОК", "OK"), QMessageBox.ButtonRole.AcceptRole)
+    box.exec()
+
+
+def _ask_yes_no(parent, title: str, text: str) -> bool:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle(title)
+    box.setText(text)
+    yes_button = box.addButton(_t(parent, "Да", "Yes"), QMessageBox.ButtonRole.YesRole)
+    box.addButton(_t(parent, "Нет", "No"), QMessageBox.ButtonRole.NoRole)
+    box.exec()
+    return box.clickedButton() is yes_button
+
+
 class _InstallWorker(QThread):
     """Устанавливает выбранный вариант torch в фоновом потоке."""
 
@@ -121,7 +141,7 @@ class DeviceSelectDialog(QDialog):
                 self._selected = variant
                 self.accept()
                 return
-        QMessageBox.warning(self, _t(self.parent(), "Выбор устройства", "Device selection"), _t(self.parent(), "Выберите вариант.", "Select an option."))
+        _show_message(self, QMessageBox.Icon.Warning, _t(self.parent(), "Выбор устройства", "Device selection"), _t(self.parent(), "Выберите вариант.", "Select an option."))
 
     def selected_variant(self) -> str | None:
         return self._selected
@@ -248,12 +268,12 @@ def ensure_device_ready(parent=None) -> str | None:
             return chosen
 
         # Установка не удалась — предложим выбрать снова.
-        retry = QMessageBox.question(
-            parent, _t(parent, "Ошибка загрузки", "Download error"),
+        retry = _ask_yes_no(
+            parent,
+            _t(parent, "Ошибка загрузки", "Download error"),
             _t(parent, "Не удалось загрузить PyTorch. Попробовать другой вариант?", "Failed to download PyTorch. Try another option?"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        if retry != QMessageBox.StandardButton.Yes:
+        if not retry:
             return None
 
 
@@ -275,15 +295,17 @@ def change_device_interactive(parent=None) -> bool:
 
     if not rm.is_installed(chosen):
         if not _install_with_progress(chosen, parent):
-            QMessageBox.warning(parent, _t(parent, "Ошибка", "Error"), _t(parent, "Не удалось загрузить выбранную сборку.", "Failed to download the selected build."))
+            _show_message(parent, QMessageBox.Icon.Warning, _t(parent, "Ошибка", "Error"), _t(parent, "Не удалось загрузить выбранную сборку.", "Failed to download the selected build."))
             return False
 
     if chosen == current:
         return False
 
     rm.set_selected_variant(chosen)
-    QMessageBox.information(
-        parent, _t(parent, "Устройство изменено", "Device changed"),
+    _show_message(
+        parent,
+        QMessageBox.Icon.Information,
+        _t(parent, "Устройство изменено", "Device changed"),
         _t(parent,
            f"Выбрано: {rm.VARIANTS[chosen]['label']}.\nИзменение вступит в силу после перезапуска приложения.",
            f"Selected: {rm.VARIANTS[chosen]['label']}.\nThe change will take effect after restarting the application."),

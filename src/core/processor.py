@@ -151,11 +151,9 @@ class TranscriptionProcessor:
         }
 
         # Логирование начала
-        estimated_time = self.stats.estimate_processing_time(filepath, media_duration)
         duration_str = f"{int(media_duration//60)}:{int(media_duration%60):02d}" if media_duration > 0 else "неизвестна"
         self.logger(f"--- Обработка файла {file_index+1}/{total_files}: {filename} ---")
-        self.logger(f"Длительность: {duration_str} | "
-                   f"Оценка времени обработки: ~{self.time_formatter.format_duration(estimated_time)}")
+        self.logger(f"Длительность: {duration_str}")
 
         self._progress_plan = ProgressPlan(has_diarization=enable_diarization)
         self._update_progress("preparing", 0.0, total_seconds=media_duration, processed_seconds=0.0)

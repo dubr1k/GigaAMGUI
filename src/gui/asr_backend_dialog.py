@@ -70,6 +70,9 @@ class ASRBackendDialog(QDialog):
         self.backend_combo.currentTextChanged.connect(self._on_selection_changed)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        is_ru = getattr(parent, "_lang", "ru") == "ru"
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("ОК" if is_ru else "OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена" if is_ru else "Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 

@@ -19,7 +19,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX fallback
     fcntl = None
 
-from PyQt6.QtCore import QByteArray, QEvent, QObject, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEvent, QLibraryInfo, QObject, Qt, QTimer, QTranslator, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QColor,
@@ -117,6 +117,22 @@ def _format_css_number(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+def _install_qt_translator(app: QApplication | None, language: str) -> None:
+    if app is None:
+        return
+    current = getattr(app, "_gigaam_qt_translator", None)
+    if current is not None:
+        app.removeTranslator(current)
+        app._gigaam_qt_translator = None
+    if language != "ru":
+        return
+    translator = QTranslator(app)
+    translations_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if translator.load("qtbase_ru", translations_path):
+        app.installTranslator(translator)
+        app._gigaam_qt_translator = translator
+
+
 class WorkerSignals(QObject):
     """Сигналы для потока обработки"""
     log_message = pyqtSignal(str)
@@ -181,8 +197,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.start_time = None
         self.files_processed = 0
         self.total_files = 0
-        self.file_estimates = {}
-        self.total_estimated_time = 0
         self.time_spent = 0
         self.current_file_start_time = 0
         self.current_stage = None
@@ -449,6 +463,7 @@ class GigaTranscriberQtApp(QMainWindow):
 
     def _apply_language(self):
         is_ru = self._lang == "ru"
+        _install_qt_translator(QApplication.instance(), self._lang)
         self._btn_lang.setText("EN" if is_ru else "RU")
         self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
         if hasattr(self, "_title_label"):
@@ -1339,12 +1354,9 @@ class GigaTranscriberQtApp(QMainWindow):
             ("Ошибка: ", "Error: "),
             ("Не удалось загрузить модель", "Failed to load model"),
             ("Анализ файлов и оценка времени обработки...", "Analyzing files and estimating processing time..."),
-            ("Ожидаемое время обработки: ~", "Estimated processing time: ~"),
             ("Обработка ", "Processing "),
             (" файлов…", " files…"),
             ("Файл ", "File "),
-            ("Оценка: ~", "Estimate: ~"),
-            ("Осталось: ~", "Remaining: ~"),
             ("Подготовка…", "Preparing…"),
             ("Конвертация…", "Converting…"),
             ("Распознавание речи…", "Speech recognition…"),
@@ -1360,7 +1372,6 @@ class GigaTranscriberQtApp(QMainWindow):
             ("Конверсия: ", "Conversion: "),
             ("Транскрибация: ", "Transcription: "),
             ("Длительность: ", "Duration: "),
-            ("Оценка времени обработки: ~", "Estimated processing time: ~"),
             ("неизвестна", "unknown"),
             ("ошибка определения длительности", "duration detection error"),
             ("длительность неизвестна", "duration unknown"),
@@ -2330,6 +2341,8 @@ class GigaTranscriberQtApp(QMainWindow):
             token_input.setText(current_token)
         layout.addWidget(token_input)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(self._t("ОК", "OK"))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self._t("Отмена", "Cancel"))
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
@@ -3296,8 +3309,6 @@ class GigaTranscriberQtApp(QMainWindow):
         self.time_spent = 0
         self.current_file_start_time = 0
         self.start_time = None
-        self.file_estimates = {}
-        self.total_estimated_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
         self.start_processing_after_download = False
@@ -3365,25 +3376,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.current_file_start_time = 0
         self.current_stage = None
         self.current_stage_progress = 0.0
-        self.log(self._t("Анализ файлов и оценка времени обработки...", "Analyzing files and estimating processing time..."))
-        files_with_durations = []
-        for filepath in self.files_to_process:
-            try:
-                duration = AudioConverter.get_media_duration(filepath)
-                if duration > 0:
-                    self.log(f"  {os.path.basename(filepath)}: {int(duration//60)}:{int(duration%60):02d}")
-                    files_with_durations.append((filepath, duration))
-                else:
-                    self.log(self._t(f"  {os.path.basename(filepath)}: длительность неизвестна", f"  {os.path.basename(filepath)}: duration unknown"))
-                    files_with_durations.append((filepath, 60))
-            except Exception:
-                self.log(self._t(f"  {os.path.basename(filepath)}: ошибка определения длительности", f"  {os.path.basename(filepath)}: duration detection error"))
-                files_with_durations.append((filepath, 60))
-        batch_estimate = self.stats.estimate_batch_time(files_with_durations)
-        self.file_estimates = batch_estimate["per_file"]
-        self.total_estimated_time = batch_estimate["total_seconds"]
-        estimate_str = self.time_formatter.format_duration(self.total_estimated_time)
-        self.log(self._t(f"Ожидаемое время обработки: ~{estimate_str}", f"Estimated processing time: ~{estimate_str}"))
+        self.log(self._t("Подготовка к обработке...", "Preparing for processing..."))
         self.btn_start.setEnabled(False)
         self.btn_start.setText(self._t("ИДЕТ ОБРАБОТКА...", "PROCESSING..."))
         self.progress_bar_total.setValue(0)
@@ -3398,7 +3391,7 @@ class GigaTranscriberQtApp(QMainWindow):
         self.lbl_file_counter.setText(self._t(f"Файл 1 / {self.total_files}", f"File 1 / {self.total_files}"))
         self.lbl_current_file.setText("")
         self.lbl_stage.setText(self._t("●  Подготовка…", "●  Preparing…"))
-        self.lbl_status.setText(self._t(f"Оценка: ~{estimate_str}", f"Estimate: ~{estimate_str}"))
+        self.lbl_status.setText(self._t(f"Обработка {self.total_files} файлов…", f"Processing {self.total_files} files…"))
         self._set_status(self._t(f"Обработка {self.total_files} файлов…", f"Processing {self.total_files} files…"))
         num_speakers = None
         if self.enable_diarization:
@@ -3608,15 +3601,6 @@ class GigaTranscriberQtApp(QMainWindow):
         stage_name = stage_pair[0] if self._lang == 'ru' else stage_pair[1]
         self.lbl_stage.setText(f"●  {stage_name}{percent_label}")
 
-        remaining_files = self.total_files - files_done
-        if remaining_files > 0:
-            if files_done > 0 and self.time_spent > 0:
-                avg_time = self.time_spent / files_done
-            elif self.current_file_start_time > 0:
-                avg_time = (time.time() - self.current_file_start_time) if files_done > 0 else self.file_estimates.get(self.files_to_process[0], 30)
-            else:
-                avg_time = self.file_estimates.get(self.files_to_process[0], 30)
-            self.lbl_status.setText(self._t(f"Осталось: ~{self.time_formatter.format_duration(avg_time * remaining_files)}", f"Remaining: ~{self.time_formatter.format_duration(avg_time * remaining_files)}"))
 
         if not self.current_stage_is_indeterminate:
             self.progress_bar_file.setFormat("%p%")
@@ -3674,7 +3658,12 @@ class GigaTranscriberQtApp(QMainWindow):
         open_btn = None
         if has_results:
             open_btn = box.addButton(self._t("Открыть папку с результатами", "Open results folder"), QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Ok)
+        ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
+        ok_btn.setText(self._t("ОК", "OK"))
+        button_height = self._px(44)
+        for button in (open_btn, ok_btn):
+            if button is not None:
+                button.setFixedHeight(button_height)
         box.exec()
         if open_btn is not None and box.clickedButton() is open_btn:
             self._open_results_folder()
