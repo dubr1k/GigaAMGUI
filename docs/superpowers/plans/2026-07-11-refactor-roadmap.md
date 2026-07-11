@@ -14,7 +14,32 @@
 | 2 | (по факту) | ✅ сделано | низкий | форматтеры вынесены из `processor.py` в `core/formatters.py` |
 | 3 | (см. ниже) | ✅ сделано (сужено) | средний | роуты делегируют в сервисы; package-split сознательно не делаем |
 | 4 | (по факту) | ✅ сделано | высокий | `app_qt.py` god-class → 4 mixin-модуля (−30%: 3735→2616) |
-| 5 | (по факту) | 🔄 в работе | низк-средн | cli-хелперы в модули, entry-файл сохранён |
+| 5 | (по факту) | ✅ сделано | низк-средн | интерактивный выбор → `src/cli_support/`, entry-файл сохранён |
+
+### Фаза 5 — что сделано
+`src/cli_support/interactive.py` — `get_supported_files`/`select_files_interactive`/`select_output_directory`
+вынесены из `cli.py` (−135 строк), зависимости `console`/`style` передаются явно. `cli.py` остаётся
+entry-файлом (`python cli.py` работает). Найден и устранён латентный баг: алиас импорта `interactive`
+конфликтовал бы с параметром `--interactive` в `main()` → импорт назван `cli_interactive`.
+
+## Итог рефакторинга
+
+| Файл | Было | Стало | Δ |
+|---|---|---|---|
+| `src/gui/app_qt.py` | 3834 | ~2616 | −32% (4 mixin-а) |
+| `cli.py` | 677 | ~540 | −20% |
+| `src/core/processor.py` | 634 | ~500 | форматтеры вынесены |
+
+**Новые модули:** `src/services/{file_policy,health,llm_service,task_store,transcription_service}.py`,
+`src/core/formatters.py`, `src/gui/{llm,llm_ui,download,theme}_mixin.py`, `src/cli_support/interactive.py`.
+
+**Устранённое дублирование:** LLM-диспетчер (был в app_qt+web), task-schema/health/file-validation
+(были в api+web), сборка процессора (была в 4 местах) — теперь в едином `src/services/`.
+
+**Тесты:** 177 → 209 (+32 характеризующих). Падений: 2 (оба pre-existing, GUI-layout, не связаны с рефакторингом).
+**Ruff:** 48 → 27 ошибок в репо (чистка). Все новые модули ruff-чисты.
+**Поведение:** строго 1:1; расхождения поверхностей сохранены флагами (`strict_empty_cli`, glob-vs-set,
+нормализация провайдера). Entrypoints (`python api.py`, `python cli.py`, `web.web_app:app`) не изменены.
 
 ### Фаза 4 — что сделано
 `GigaTranscriberQtApp` разбит на mixin-модули (класс сохраняет идентичность → GUI-тесты и entrypoint не меняются):
