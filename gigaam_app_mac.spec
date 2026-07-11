@@ -124,6 +124,10 @@ hiddenimports = sorted(set(hiddenimports + [
     "docx",
     "requests",
     "certifi",
+    # Ленивый src/gui/__init__ скрывает app_qt от анализа; явный hidden-import
+    # заставляет PyInstaller проанализировать его и подтянуть все mixins +
+    # core/utils/services штатно (в PYZ), а не только как сырые src/*.py.
+    "src.gui.app_qt",
 ]))
 
 a = Analysis(
@@ -191,8 +195,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "GigaAM Transcriber",
         "CFBundleDisplayName": "GigaAM Transcriber",
-        "CFBundleShortVersionString": "1.0.5",
-        "CFBundleVersion": "1.0.5",
+        "CFBundleShortVersionString": "1.1.0",
+        "CFBundleVersion": "1.1.0",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
         "CFBundleDocumentTypes": [

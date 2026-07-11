@@ -57,6 +57,44 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # --- Вкладываем ПРАВИЛЬНЫЙ по ОС/арх. ffmpeg в bin/, чтобы он вшился в
+      # портативный бинарник (спек забирает bin/ffmpeg.exe на Windows и
+      # bin/ffmpeg на других ОС). Так у пользователя всё работает без ручной
+      # установки ffmpeg. macOS использует уже закоммиченный arm64-бинарь bin/ffmpeg.
+      - name: Provision bundled ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract -Force
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Copy-Item (Get-ChildItem -Recurse ffmpeg_extract -Filter ffmpeg.exe  | Select-Object -First 1).FullName bin/ffmpeg.exe  -Force
+          Copy-Item (Get-ChildItem -Recurse ffmpeg_extract -Filter ffprobe.exe | Select-Object -First 1).FullName bin/ffprobe.exe -Force
+          ./bin/ffmpeg.exe -version
+
+      - name: Provision bundled ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+          curl -fL "$url" -o ffmpeg.tar.xz
+          mkdir -p ffmpeg_extract bin
+          tar -xf ffmpeg.tar.xz -C ffmpeg_extract --strip-components=1
+          cp ffmpeg_extract/bin/ffmpeg  bin/ffmpeg
+          cp ffmpeg_extract/bin/ffprobe bin/ffprobe
+          chmod +x bin/ffmpeg bin/ffprobe
+          ./bin/ffmpeg -version
+
+      - name: Verify bundled ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # macOS использует закоммиченный arm64 bin/ffmpeg — убеждаемся, что он на месте и запускается.
+          test -f bin/ffmpeg || { echo "bin/ffmpeg отсутствует в репозитории"; exit 1; }
+          chmod +x bin/ffmpeg
+          ./bin/ffmpeg -version
+
       # GigaAM на указанном коммите использует pkg_resources в setup.py.
       # pkg_resources удалён из новых setuptools, поэтому фиксируем последнюю безопасную ветку.
       - name: Upgrade pip toolchain

@@ -83,6 +83,11 @@ hiddenimports = list(set(
     'requests', 'urllib3', 'certifi',
     'tqdm', 'packaging', 'filelock', 'fsspec', 'psutil',
     'dotenv', 'dotenv.main',
+    'docx', 'yt_dlp',
+    # Ленивый src/gui/__init__ скрывает app_qt от анализа; явный hidden-import
+    # заставляет PyInstaller проанализировать его и подтянуть все mixins +
+    # core/utils/services штатно (в PYZ), а не только как сырые src/*.py.
+    'src.gui.app_qt',
     'colorlog', 'colorama',
     'yaml', 'omegaconf',
     'einops', 'sentencepiece',
