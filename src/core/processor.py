@@ -255,11 +255,13 @@ class TranscriptionProcessor:
                     self._update_progress("diarization", 1.0)
                     self.logger(f"Диаризация завершена. Найдено спикеров: {len(set(u.get('speaker', 'Неизвестный спикер') for u in utterances))}")
                 except Exception as e:
-                    self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Ошибка при диаризации: {e}")
-                    self.logger("Продолжаем без диаризации...")
-                    # Добавляем дефолтное имя спикера
-                    for utt in utterances:
-                        utt['speaker'] = "Спикер №1"
+                    # Диаризация не удалась — сохраняем транскрипт БЕЗ фиктивной
+                    # разметки «Спикер №1» и даём пользователю реальную причину.
+                    self.logger(f"ОШИБКА: диаризация не выполнена — спикеры НЕ размечены: {e}")
+                    self.logger("Частая причина: на huggingface.co не приняты условия ВСЕХ моделей —")
+                    self.logger("  pyannote/segmentation-3.0, pyannote/speaker-diarization-3.1")
+                    self.logger("  и модели эмбеддингов (wespeaker-voxceleb-resnet34-LM),")
+                    self.logger("либо у токена нет доступа read. Транскрипт сохранён без разметки спикеров.")
 
             # Проверка результатов транскрибации
             if not utterances or len(utterances) == 0:
@@ -462,11 +464,9 @@ class TranscriptionProcessor:
         """
         # Проверяем, доступен ли менеджер диаризации
         if not self.diarization_manager:
-            self.logger("ПРЕДУПРЕЖДЕНИЕ: Менеджер диаризации недоступен. Проверьте HF_TOKEN.")
-            # Добавляем дефолтное имя спикера
-            for utt in utterances:
-                utt['speaker'] = "Спикер №1"
-            return utterances
+            raise RuntimeError(
+                "Менеджер диаризации недоступен. Проверьте HF_TOKEN (нужен доступ read)."
+            )
 
         try:
             # Выполняем диаризацию
@@ -489,12 +489,13 @@ class TranscriptionProcessor:
             return utterances
 
         except Exception as e:
-            self.logger(f"Ошибка при применении диаризации: {e}")
-            # В случае ошибки добавляем дефолтное имя спикера
-            for utt in utterances:
-                if 'speaker' not in utt:
-                    utt['speaker'] = "Спикер №1"
-            return utterances
+            # НЕ маскируем сбой фиктивным «Спикер №1» — пробрасываем наверх,
+            # чтобы process_file показал настоящую причину (иначе пользователь
+            # видит «найден 1 спикер» и думает, что диаризация сработала).
+            import traceback
+            self.logger(f"ОШИБКА диаризации: {e}")
+            self.logger(traceback.format_exc().strip())
+            raise
 
     def _generate_srt(self, utterances: list) -> str:
         """Генерирует контент в формате SRT субтитров (делегирует в formatters)."""

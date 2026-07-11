@@ -127,16 +127,25 @@ class DiarizationManager:
                         model_id,
                         token=self.hf_token
                     )
-                    logger.info(f"Модель {model_id} загружена успешно")
-                    break
                 except TypeError:
                     # Fallback для старых версий
                     pipeline = Pipeline.from_pretrained(
                         model_id,
                         use_auth_token=self.hf_token
                     )
-                    logger.info(f"Модель {model_id} загружена успешно")
-                    break
+                # ВАЖНО: from_pretrained НЕ бросает исключение, а возвращает None,
+                # если не приняты условия ЗАВИСИМЫХ моделей (segmentation-3.0 /
+                # модель эмбеддингов) или у токена нет прав read. Раньше это
+                # логировалось как «успех» и молча приводило к «1 спикеру».
+                if pipeline is None:
+                    last_error = RuntimeError(
+                        f"{model_id}: from_pretrained вернул None — не приняты условия "
+                        f"зависимых моделей (segmentation-3.0 / эмбеддинги) либо у токена нет прав read"
+                    )
+                    logger.warning(str(last_error))
+                    continue
+                logger.info(f"Модель {model_id} загружена успешно")
+                break
             except Exception as e:
                 last_error = e
                 error_str = str(e)
