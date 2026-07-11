@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from src.core.processor import TranscriptionProcessor
 
@@ -15,8 +15,8 @@ def build_processor(
     model_loader,
     stats_manager,
     *,
-    logger: Optional[Callable] = None,
-    progress_callback: Optional[Callable] = None,
+    logger: Callable | None = None,
+    progress_callback: Callable | None = None,
 ) -> TranscriptionProcessor:
     return TranscriptionProcessor(
         model_loader,
