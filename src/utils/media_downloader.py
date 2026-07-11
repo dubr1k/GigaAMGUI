@@ -4,6 +4,7 @@
 
 import os
 import re
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,8 +97,15 @@ class MediaDownloader:
             "windowsfilenames": windows_filenames,
         }
 
-        with self.youtube_dl_cls(ydl_opts) as ydl:
-            exit_code = ydl.download([url])
+        exit_code = 1
+        for attempt in range(2):
+            try:
+                with self.youtube_dl_cls(ydl_opts) as ydl:
+                    exit_code = ydl.download([url])
+                break
+            except zlib.error:
+                if attempt == 1:
+                    raise
 
         if exit_code:
             raise RuntimeError(f"yt-dlp завершился с кодом {exit_code}")

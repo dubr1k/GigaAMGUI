@@ -1,4 +1,5 @@
 import os
+import zlib
 
 import pytest
 
@@ -45,10 +46,21 @@ class FakeYoutubeDLWithoutFinishedFile(FakeYoutubeDL):
         return self.exit_code
 
 
+class FakeYoutubeDLTransientDecompression(FakeYoutubeDL):
+    attempts = 0
+
+    def download(self, urls):
+        type(self).attempts += 1
+        if type(self).attempts == 1:
+            raise zlib.error("Error -3 while decompressing data: incorrect header check")
+        return super().download(urls)
+
+
 @pytest.fixture(autouse=True)
 def reset_fake_youtube_dl():
     FakeYoutubeDL.instances = []
     FakeYoutubeDL.exit_code = 0
+    FakeYoutubeDLTransientDecompression.attempts = 0
 
 
 def test_download_collects_files_and_progress(tmp_path):
@@ -125,6 +137,16 @@ def test_download_raises_on_nonzero_exit_code(tmp_path):
 
     with pytest.raises(RuntimeError, match="yt-dlp"):
         downloader.download("https://example.test/video", str(tmp_path))
+
+
+def test_download_retries_transient_zlib_decompression_error(tmp_path):
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDLTransientDecompression)
+
+    result = downloader.download("https://example.test/video", str(tmp_path))
+
+    assert FakeYoutubeDLTransientDecompression.attempts == 2
+    assert len(FakeYoutubeDLTransientDecompression.instances) == 2
+    assert result.files == [str(tmp_path / "downloaded.webm")]
 
 
 @pytest.mark.parametrize(

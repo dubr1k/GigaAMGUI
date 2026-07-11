@@ -129,6 +129,14 @@ def run_asr_model_smoke(audio_path: str) -> dict[str, object]:
     return {"backend": "mlx", "model": "rnnt", "segments": len(segments)}
 
 
+def run_media_download_smoke(url: str, target_dir: str) -> dict[str, list[str]]:
+    """Exercise the bundled yt-dlp path and return downloaded files."""
+    from src.utils.media_downloader import MediaDownloader
+
+    result = MediaDownloader().download(url, target_dir)
+    return {"files": result.files}
+
+
 def main():
     """Главная функция запуска приложения."""
     if "--asr-runtime-smoke" in sys.argv:
@@ -139,6 +147,18 @@ def main():
         if index + 1 >= len(sys.argv):
             raise SystemExit("--asr-model-smoke requires an audio path")
         print(json.dumps(run_asr_model_smoke(sys.argv[index + 1]), ensure_ascii=False, sort_keys=True))
+        return
+    if "--media-download-smoke" in sys.argv:
+        index = sys.argv.index("--media-download-smoke")
+        if index + 2 >= len(sys.argv):
+            raise SystemExit("--media-download-smoke requires URL and target directory")
+        print(
+            json.dumps(
+                run_media_download_smoke(sys.argv[index + 1], sys.argv[index + 2]),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
         return
 
     early_lock = _try_acquire_instance_lock()

@@ -49,3 +49,22 @@ def test_run_asr_model_smoke_loads_rnnt_and_transcribes(monkeypatch, tmp_path):
     assert calls["model_type"] == "rnnt"
     assert calls["audio_path"] == str(audio_path)
     assert result == {"backend": "mlx", "model": "rnnt", "segments": 0}
+
+
+def test_run_media_download_smoke_uses_project_downloader(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakeDownloader:
+        def download(self, url, target_dir):
+            calls.update(url=url, target_dir=target_dir)
+            return types.SimpleNamespace(files=[str(tmp_path / "audio.webm")])
+
+    monkeypatch.setattr("src.utils.media_downloader.MediaDownloader", FakeDownloader)
+
+    result = app.run_media_download_smoke("https://example.test/video", str(tmp_path))
+
+    assert calls == {
+        "url": "https://example.test/video",
+        "target_dir": str(tmp_path),
+    }
+    assert result == {"files": [str(tmp_path / "audio.webm")]}
