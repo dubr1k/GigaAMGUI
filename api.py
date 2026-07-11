@@ -42,6 +42,7 @@ from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
 from src.services import file_policy
+from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
@@ -178,43 +179,11 @@ def _hash_key(key: str) -> str:
 
 
 def _asr_health() -> dict[str, object]:
-    if model_loader is None:
-        return {
-            "requested_backend": None,
-            "active_backend": None,
-            "fallback_reason": None,
-            "model": None,
-            "device": "N/A",
-            "repo": None,
-            "cache_root": None,
-            "loader_loaded": False,
-            "error": None,
-        }
-
-    diagnostics = {}
-    try:
-        diagnostics = model_loader.diagnostics()
-    except Exception:
-        pass
-
-    return {
-        "requested_backend": diagnostics.get("requested_backend"),
-        "active_backend": diagnostics.get("active_backend"),
-        "fallback_reason": diagnostics.get("fallback_reason"),
-        "model": diagnostics.get("model"),
-        "device": diagnostics.get("device") or "N/A",
-        "repo": diagnostics.get("repo"),
-        "cache_root": diagnostics.get("cache_root"),
-        "loader_loaded": model_loader.is_loaded(),
-        "error": diagnostics.get("error"),
-    }
+    return health_service.asr_health(model_loader)
 
 
 def _runtime_info() -> dict[str, object]:
-    return {
-        "platform": runtime_platform(),
-        "machine": machine(),
-    }
+    return health_service.runtime_info(runtime_platform, machine)
 
 
 def load_api_keys():
