@@ -5,11 +5,8 @@
 
 import os
 import json
-import shlex
 import shutil
-import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -68,10 +65,11 @@ from ..config import (
 from ..core import ModelLoader, TranscriptionProcessor
 from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from ..utils import (
-    AppLogger, AudioConverter, MediaDownloader, ProcessingStats,
-    TimeFormatter, UserSettings, LLMClient, LLMSettings,
+    AppLogger, MediaDownloader, ProcessingStats,
+    TimeFormatter, UserSettings,
 )
 from ..core.progress import ProgressEvent
+from ..services import llm_service
 
 _BASE_FONT_PT = 12.0
 _MIN_UI_SCALE = 0.85
@@ -3013,118 +3011,21 @@ class GigaTranscriberQtApp(QMainWindow):
         return items
 
     def _build_llm_prompt_text(self, transcript_text: str, prompt: str) -> str:
-        return (
-            "Ты обрабатываешь транскрипт на русском языке. "
-            "Не выдумывай факты, явно помечай неясности.\n\n"
-            f"Инструкция:\n{prompt.strip()}\n\n"
-            f"Транскрипт:\n{transcript_text.strip()}\n"
-        )
-
-    def _run_api_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
-        client = LLMClient(LLMSettings(
-            api_url=llm_settings["api_url"],
-            api_key=llm_settings["api_key"],
-            model=llm_settings["model"],
-            temperature=llm_settings["temperature"],
-        ))
-        return client.process_transcript(transcript_text, prompt)
-
-    def _run_claude_code_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
-        command = [llm_settings["claude_path"], "-p", "--output-format", "text"]
-        if llm_settings.get("model"):
-            command += ["--model", llm_settings["model"]]
-        if llm_settings.get("claude_args"):
-            command += shlex.split(llm_settings["claude_args"])
-        command.append(self._build_llm_prompt_text(transcript_text, prompt))
-        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "Claude Code завершился с ошибкой").strip())
-        answer = (result.stdout or "").strip()
-        if not answer:
-            raise RuntimeError("Claude Code вернул пустой ответ")
-        return answer
-
-    def _run_codex_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
-            output_path = tmp.name
-        try:
-            command = [llm_settings["codex_path"], "exec", "-o", output_path]
-            if llm_settings.get("model"):
-                command += ["-m", llm_settings["model"]]
-            if llm_settings.get("codex_args"):
-                command += shlex.split(llm_settings["codex_args"])
-            command.append("-")
-            result = subprocess.run(
-                command,
-                input=self._build_llm_prompt_text(transcript_text, prompt),
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or result.stdout or "Codex завершился с ошибкой").strip())
-            with open(output_path, "r", encoding="utf-8") as f:
-                answer = f.read().strip()
-            if not answer:
-                raise RuntimeError("Codex вернул пустой ответ")
-            return answer
-        finally:
-            try:
-                os.remove(output_path)
-            except OSError:
-                pass
-
-    def _run_generic_cli_prompt(self, command: list[str], error_name: str) -> str:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or f"{error_name} завершился с ошибкой").strip())
-        answer = (result.stdout or "").strip()
-        if not answer:
-            raise RuntimeError(f"{error_name} вернул пустой ответ")
-        return answer
-
-    def _run_opencode_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
-        command = [llm_settings["opencode_path"]]
-        if llm_settings.get("model"):
-            command += ["--model", llm_settings["model"]]
-        if llm_settings.get("opencode_args"):
-            command += shlex.split(llm_settings["opencode_args"])
-        command.append(self._build_llm_prompt_text(transcript_text, prompt))
-        return self._run_generic_cli_prompt(command, "OpenCode")
-
-    def _run_pi_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
-        command = [llm_settings["pi_path"], "-p", "--mode", "text"]
-        if llm_settings.get("pi_provider"):
-            command += ["--provider", llm_settings["pi_provider"]]
-        if llm_settings.get("model"):
-            command += ["--model", llm_settings["model"]]
-        if llm_settings.get("pi_args"):
-            command += shlex.split(llm_settings["pi_args"])
-        command.append(self._build_llm_prompt_text(transcript_text, prompt))
-        return self._run_generic_cli_prompt(command, "Pi")
-
-    def _run_other_llm(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
-        command = [llm_settings["other_path"]]
-        if llm_settings.get("other_args"):
-            command += shlex.split(llm_settings["other_args"])
-        command.append(self._build_llm_prompt_text(transcript_text, prompt))
-        return self._run_generic_cli_prompt(command, "Внешний CLI")
+        return llm_service.build_prompt_text(transcript_text, prompt)
 
     def _run_llm_provider(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
-        provider = llm_settings.get("provider", "API")
-        if provider == "API":
-            return self._run_api_llm(llm_settings, transcript_text, prompt)
-        if provider == "Claude Code":
-            return self._run_claude_code_llm(llm_settings, transcript_text, prompt)
-        if provider == "Codex":
-            return self._run_codex_llm(llm_settings, transcript_text, prompt)
-        if provider == "OpenCode":
-            return self._run_opencode_llm(llm_settings, transcript_text, prompt)
-        if provider == "Pi":
-            return self._run_pi_llm(llm_settings, transcript_text, prompt)
-        if self._normalize_llm_provider(provider) == "Other":
-            return self._run_other_llm(llm_settings, transcript_text, prompt)
-        raise RuntimeError(self._t(f"Неизвестный LLM-провайдер: {provider}", f"Unknown LLM provider: {provider}"))
+        raw = llm_settings.get("provider", "API")
+        provider = "Other" if self._normalize_llm_provider(raw) == "Other" else raw
+        try:
+            return llm_service.run_provider(
+                llm_settings, transcript_text, prompt,
+                provider=provider, strict_empty_cli=True,
+            )
+        except llm_service.UnknownLLMProvider as exc:
+            raise RuntimeError(self._t(
+                f"Неизвестный LLM-провайдер: {exc.provider}",
+                f"Unknown LLM provider: {exc.provider}",
+            ))
 
     def _run_llm_processing(self, llm_settings: dict, items: list, modes: list, export_formats: list):
         try:

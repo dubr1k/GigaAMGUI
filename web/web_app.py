@@ -8,10 +8,7 @@ import asyncio
 import hashlib
 import hmac
 import os
-import shlex
 import shutil
-import subprocess
-import tempfile
 import traceback
 import uuid
 import warnings
@@ -45,11 +42,10 @@ from starlette.middleware.sessions import SessionMiddleware
 from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.processor import TranscriptionProcessor
-from src.services import file_policy
+from src.services import file_policy, llm_service
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
-from src.utils.llm_client import LLMClient, LLMSettings
 from src.utils.media_downloader import MediaDownloader
 from src.utils.output_naming import find_result_file, output_filename
 from src.utils.processing_stats import ProcessingStats
@@ -772,98 +768,17 @@ class LoginRequest(BaseModel):
     password: str
 
 
-def _build_llm_prompt_text(transcript_text: str, prompt: str) -> str:
-    return (
-        "Ты обрабатываешь транскрипт на русском языке. Не выдумывай факты, явно помечай неясности.\n\n"
-        f"Инструкция:\n{prompt.strip()}\n\n"
-        f"Транскрипт:\n{transcript_text.strip()}\n"
-    )
-
-
-def _run_api_llm(llm_settings: dict, transcript_text: str, prompt: str) -> str:
-    client = LLMClient(LLMSettings(
-        api_url=llm_settings["api_url"],
-        api_key=llm_settings["api_key"],
-        model=llm_settings["model"],
-        temperature=llm_settings["temperature"],
-    ))
-    return client.process_transcript(transcript_text, prompt)
-
-
-def _run_claude_code_llm(llm_settings: dict, transcript_text: str, prompt: str) -> str:
-    command = [llm_settings["claude_path"], "-p", "--output-format", "text"]
-    if llm_settings.get("model"):
-        command += ["--model", llm_settings["model"]]
-    if llm_settings.get("claude_args"):
-        command += shlex.split(llm_settings["claude_args"])
-    command.append(_build_llm_prompt_text(transcript_text, prompt))
-    result = subprocess.run(command, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "Claude Code завершился с ошибкой").strip())
-    return (result.stdout or "").strip()
-
-
-def _run_codex_llm(llm_settings: dict, transcript_text: str, prompt: str) -> str:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
-        output_path = tmp.name
-    try:
-        command = [llm_settings["codex_path"], "exec", "-o", output_path]
-        if llm_settings.get("model"):
-            command += ["-m", llm_settings["model"]]
-        if llm_settings.get("codex_args"):
-            command += shlex.split(llm_settings["codex_args"])
-        command.append("-")
-        result = subprocess.run(command, input=_build_llm_prompt_text(transcript_text, prompt), capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "Codex завершился с ошибкой").strip())
-        return Path(output_path).read_text(encoding="utf-8").strip()
-    finally:
-        try:
-            os.remove(output_path)
-        except OSError:
-            pass
-
-
-def _run_generic_llm(command: list[str], prompt_text: str, error_name: str) -> str:
-    result = subprocess.run(command + [prompt_text], capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or f"{error_name} завершился с ошибкой").strip())
-    answer = (result.stdout or "").strip()
-    if not answer:
-        raise RuntimeError(f"{error_name} вернул пустой ответ")
-    return answer
-
-
 def _run_llm_provider(llm_settings: dict, transcript_text: str, prompt: str) -> str:
-    provider = llm_settings.get("provider", "API")
-    if provider == "API":
-        return _run_api_llm(llm_settings, transcript_text, prompt)
-    if provider == "Claude Code":
-        return _run_claude_code_llm(llm_settings, transcript_text, prompt)
-    if provider == "Codex":
-        return _run_codex_llm(llm_settings, transcript_text, prompt)
-    if provider == "OpenCode":
-        command = [llm_settings["opencode_path"]]
-        if llm_settings.get("model"):
-            command += ["--model", llm_settings["model"]]
-        if llm_settings.get("opencode_args"):
-            command += shlex.split(llm_settings["opencode_args"])
-        return _run_generic_llm(command, _build_llm_prompt_text(transcript_text, prompt), "OpenCode")
-    if provider == "Pi":
-        command = [llm_settings["pi_path"], "-p", "--mode", "text"]
-        if llm_settings.get("pi_provider"):
-            command += ["--provider", llm_settings["pi_provider"]]
-        if llm_settings.get("model"):
-            command += ["--model", llm_settings["model"]]
-        if llm_settings.get("pi_args"):
-            command += shlex.split(llm_settings["pi_args"])
-        return _run_generic_llm(command, _build_llm_prompt_text(transcript_text, prompt), "Pi")
-    if provider == "Другое":
-        command = [llm_settings["other_path"]]
-        if llm_settings.get("other_args"):
-            command += shlex.split(llm_settings["other_args"])
-        return _run_generic_llm(command, _build_llm_prompt_text(transcript_text, prompt), "Внешний CLI")
-    raise RuntimeError(f"Неизвестный провайдер: {provider}")
+    raw = llm_settings.get("provider", "API")
+    # web исторически распознавал русский ключ "Другое" (англ. "Other" фронтенд не шлёт).
+    provider = "Other" if raw == "Другое" else raw
+    try:
+        return llm_service.run_provider(
+            llm_settings, transcript_text, prompt,
+            provider=provider, strict_empty_cli=False,
+        )
+    except llm_service.UnknownLLMProvider as exc:
+        raise RuntimeError(f"Неизвестный провайдер: {exc.provider}")
 
 
 @app.post("/api/auth/login")
