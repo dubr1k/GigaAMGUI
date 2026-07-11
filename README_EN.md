@@ -41,6 +41,7 @@ Russian speech-to-text transcription for audio and video with **Desktop GUI**, *
 - Recursive folder scan and drag & drop
 - Media download via `yt-dlp`
 - Speaker diarization via `pyannote`
+- MLX RNN-T accelerated transcription on macOS Apple Silicon
 - Export to `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`
 - Built-in LLM tab for:
   - summaries
@@ -59,6 +60,20 @@ Russian speech-to-text transcription for audio and video with **Desktop GUI**, *
 - Processing log, progress tracking, cancel support
 - Web GUI with auth, task history restore, SSE progress, Docker hardening
 - CPU, CUDA, Intel XPU, Apple Silicon MPS support
+
+## ASR backend
+
+On macOS Apple Silicon, `auto` mode uses [gigaam-mlx](https://github.com/aystream/gigaam-mlx) and MLX RNN-T. If MLX is unavailable, the application can fall back to PyTorch. Windows, Linux, and Intel Macs continue to use PyTorch.
+
+Select the engine in the Desktop GUI (`Settings → Recognition engine...`) or from the CLI:
+
+```bash
+python cli.py --backend auto -f audio.wav
+python cli.py --backend mlx -f audio.wav
+python cli.py --backend pytorch -f audio.wav
+```
+
+MLX is used only for speech recognition. Speaker diarization through `pyannote` continues to use PyTorch on every platform.
 
 ## Quick start
 
@@ -164,3 +179,4 @@ GigaAMGUI/
 
 - [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
 - [GigaAM-v3 on HuggingFace](https://huggingface.co/ai-sage/GigaAM-v3)
+- [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx) — GigaAM RNN-T MLX port and the foundation for the Apple Silicon integration

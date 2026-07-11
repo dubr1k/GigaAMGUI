@@ -41,6 +41,7 @@
 - Рекурсивное сканирование папок и drag & drop
 - Скачивание медиа через `yt-dlp`
 - Диаризация спикеров через `pyannote`
+- MLX RNN-T для ускоренного распознавания на macOS Apple Silicon
 - Экспорт в `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`
 - Встроенная LLM-вкладка для:
   - выжимок
@@ -59,6 +60,20 @@
 - Журнал обработки, прогресс, отмена
 - Web GUI с авторизацией, восстановлением истории, SSE-прогрессом и Docker hardening
 - Поддержка CPU, CUDA, Intel XPU, Apple Silicon MPS
+
+## ASR backend
+
+На macOS Apple Silicon режим `auto` использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx) и MLX RNN-T. Если MLX недоступен, приложение может переключиться на PyTorch fallback. Windows, Linux и Intel Mac продолжают использовать PyTorch.
+
+Выбрать движок можно в Desktop GUI (`Настройки → Движок распознавания…`) или в CLI:
+
+```bash
+python cli.py --backend auto -f audio.wav
+python cli.py --backend mlx -f audio.wav
+python cli.py --backend pytorch -f audio.wav
+```
+
+MLX применяется только для распознавания речи. Диаризация через `pyannote` во всех случаях использует PyTorch.
 
 ## Быстрый старт
 
@@ -165,3 +180,4 @@ GigaAMGUI/
 
 - [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
 - [GigaAM-v3 на HuggingFace](https://huggingface.co/ai-sage/GigaAM-v3)
+- [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx) — MLX-порт GigaAM RNN-T и основа интеграции для Apple Silicon
