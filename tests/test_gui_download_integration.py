@@ -102,13 +102,11 @@ def test_ui_scale_env_is_clamped(monkeypatch):
 
 
 def _gui_source() -> str:
-    # QSS темы вынесен в theme_mixin.py; setElideMode остаётся в app_qt.py.
-    # Читаем оба, чтобы source-scrape находил правила независимо от их модуля.
-    return (
-        Path("src/gui/app_qt.py").read_text(encoding="utf-8")
-        + "\n"
-        + Path("src/gui/theme_mixin.py").read_text(encoding="utf-8")
-    )
+    # GUI разбит на app_qt.py + *_mixin.py; QSS/тема/построение UI лежат в разных
+    # модулях. Читаем весь пакет src/gui, чтобы source-scrape находил правила
+    # независимо от того, в каком модуле они сейчас определены.
+    parts = [p.read_text(encoding="utf-8") for p in sorted(Path("src/gui").glob("*.py"))]
+    return "\n".join(parts)
 
 
 def test_gui_text_widgets_have_transparent_backgrounds():
