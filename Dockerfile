@@ -37,8 +37,10 @@ RUN git clone https://github.com/salute-developers/GigaAM.git /tmp/gigaam && \
     cd /tmp/gigaam && git checkout 0a3f1036d93287d5ef226911ec795bde8ef05d57 && \
     pip install --no-cache-dir --no-build-isolation . && \
     rm -rf /tmp/gigaam
-# Установка остальных зависимостей (без строки gigaam и torchcodec)
-RUN grep -viE 'gigaam|torchcodec' requirements.txt > /tmp/req.txt && \
+# Установка остальных зависимостей (без gigaam, torchcodec и PyQt6 —
+# PyQt6 это ~100МБ GUI-тулкита, который в headless-контейнере не импортируется
+# ни одним модулем web-слоя, только раздувает образ).
+RUN grep -viE 'gigaam|torchcodec|pyqt6' requirements.txt > /tmp/req.txt && \
     pip install --no-cache-dir -r /tmp/req.txt
 # Дополнительные зависимости для Web GUI
 RUN pip install --no-cache-dir itsdangerous python-multipart

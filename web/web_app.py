@@ -76,6 +76,10 @@ WEB_SECRET: Final[str] = os.getenv("WEB_SECRET", "")
 WEB_USERNAME: Final[str] = os.getenv("WEB_USERNAME", "")
 WEB_PASSWORD: Final[str] = os.getenv("WEB_PASSWORD", "")
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "72"))
+# secure-cookie требует HTTPS (или localhost). За TLS-прокси/на HTTPS оставляем
+# True; при доступе по чистому HTTP с не-localhost домена браузер молча выкинет
+# cookie и логин зациклится — тогда выставите COOKIE_SECURE=0.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
 
 if len(WEB_SECRET.encode("utf-8")) < 32:
     raise RuntimeError("WEB_SECRET must be set and contain at least 32 bytes")
@@ -779,7 +783,7 @@ async def login(req: LoginRequest):
             key="gigaam_token",
             value=token,
             httponly=True,
-            secure=True,
+            secure=COOKIE_SECURE,
             samesite="lax",
             max_age=JWT_EXPIRE_HOURS * 3600,
         )
