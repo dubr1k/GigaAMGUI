@@ -101,8 +101,18 @@ def test_ui_scale_env_is_clamped(monkeypatch):
     assert app_qt._read_ui_scale() == app_qt._MAX_UI_SCALE
 
 
+def _gui_source() -> str:
+    # QSS темы вынесен в theme_mixin.py; setElideMode остаётся в app_qt.py.
+    # Читаем оба, чтобы source-scrape находил правила независимо от их модуля.
+    return (
+        Path("src/gui/app_qt.py").read_text(encoding="utf-8")
+        + "\n"
+        + Path("src/gui/theme_mixin.py").read_text(encoding="utf-8")
+    )
+
+
 def test_gui_text_widgets_have_transparent_backgrounds():
-    source = Path("src/gui/app_qt.py").read_text(encoding="utf-8")
+    source = _gui_source()
     assert re.search(r"QLabel \{\{\s+background: transparent;", source)
     assert re.search(r"QCheckBox \{\{\s+background: transparent;", source)
     group_title_block = source.split("QGroupBox::title {{", 1)[1].split("            }}", 1)[0]
@@ -111,7 +121,7 @@ def test_gui_text_widgets_have_transparent_backgrounds():
 
 
 def test_gui_tabs_do_not_elide_labels():
-    source = Path("src/gui/app_qt.py").read_text(encoding="utf-8")
+    source = _gui_source()
     tab_block = source.split("QTabBar::tab {{", 1)[1].split("            }}", 1)[0]
     assert "min-width: {tab_min_width}px;" in tab_block
     assert "setElideMode(Qt.TextElideMode.ElideNone)" in source
