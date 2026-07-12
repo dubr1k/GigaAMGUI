@@ -18,6 +18,82 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+# Репозитории, нужные пайплайну pyannote/speaker-diarization-3.1.
+_DIARIZATION_REQUIRED_REPOS = [
+    "pyannote/speaker-diarization-3.1",
+    "pyannote/segmentation-3.0",
+    "pyannote/wespeaker-voxceleb-resnet34-LM",
+]
+
+
+def diagnose_hf_access(token: str | None) -> str:
+    """Точно определяет, почему pyannote from_pretrained вернул None.
+
+    Пробует каждый нужный репозиторий через HfApi и возвращает человекочитаемый
+    отчёт: валиден ли токен и к какому именно репозиторию нет доступа и почему
+    (не приняты условия / fine-grained токен без доступа к gated-репам / 401 / сеть).
+    Никогда не бросает исключение — только возвращает строку.
+    """
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import (
+            GatedRepoError,
+            HfHubHTTPError,
+            RepositoryNotFoundError,
+        )
+    except Exception as e:  # noqa: BLE001
+        return f"Не удалось выполнить диагностику доступа (huggingface_hub): {e}"
+
+    if not token:
+        return "HF-токен не задан. Укажите read-токен: https://huggingface.co/settings/tokens"
+
+    api = HfApi()
+    lines: list[str] = []
+
+    # 1) Валиден ли сам токен.
+    try:
+        who = api.whoami(token=token)
+        name = who.get("name") if isinstance(who, dict) else None
+        lines.append(f"Токен валиден (пользователь: {name or '?'}).")
+    except Exception as e:  # noqa: BLE001
+        return (
+            "Токен НЕвалиден или не даёт доступа (whoami: "
+            f"{type(e).__name__}). Создайте новый read-токен: "
+            "https://huggingface.co/settings/tokens"
+        )
+
+    # 2) Доступ к каждому нужному репозиторию.
+    for repo in _DIARIZATION_REQUIRED_REPOS:
+        try:
+            api.model_info(repo, token=token)
+            lines.append(f"  OK  {repo}")
+        except GatedRepoError:
+            lines.append(
+                f"  НЕТ {repo}: не приняты условия — откройте "
+                f"https://huggingface.co/{repo} и нажмите 'Agree and access repository'."
+            )
+        except RepositoryNotFoundError:
+            lines.append(
+                f"  НЕТ {repo}: репозиторий не виден токену. Если токен fine-grained, "
+                "включите 'Read access to contents of all public gated repos you can access'."
+            )
+        except HfHubHTTPError as e:
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code == 403:
+                lines.append(
+                    f"  НЕТ {repo}: 403 — примите условия и/или дайте токену доступ к "
+                    "gated-репозиториям (fine-grained токен: 'Read access to public gated repos')."
+                )
+            elif code == 401:
+                lines.append(f"  НЕТ {repo}: 401 — токен недействителен.")
+            else:
+                lines.append(f"  НЕТ {repo}: HTTP {code}: {e}")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"  НЕТ {repo}: {type(e).__name__}: {e}")
+
+    return "\n".join(lines)
+
+
 class SpeakerSegment:
     """Сегмент с информацией о спикере"""
 
@@ -166,24 +242,19 @@ class DiarizationManager:
                     continue
 
         if pipeline is None:
-            # Если все попытки не удались
-            if last_error:
-                error_str = str(last_error)
-                if "403" in error_str or "gated" in error_str.lower():
-                    raise ValueError(
-                        "Нет доступа к моделям диаризации. "
-                        "Примите условия использования на HuggingFace:\n"
-                        "- https://huggingface.co/pyannote/speaker-diarization-3.1\n"
-                        "- https://huggingface.co/pyannote/segmentation-3.0\n"
-                        "- https://huggingface.co/pyannote/speaker-diarization\n"
-                        "\nПосле принятия условий повторите попытку."
-                    )
-                else:
-                    raise ValueError(
-                        f"Не удалось загрузить модель диаризации: {last_error}"
-                    )
-            else:
-                raise ValueError("Не удалось загрузить модель диаризации")
+            # from_pretrained вернул None или упал — выясняем ТОЧНУЮ причину пробой
+            # каждого нужного репозитория, а не гадаем «условия/токен».
+            diagnosis = diagnose_hf_access(self.hf_token)
+            base = str(last_error) if last_error else "from_pretrained вернул None"
+            raise ValueError(
+                "Не удалось загрузить модель диаризации.\n"
+                f"Причина: {base}\n\n"
+                "Диагностика доступа HuggingFace:\n"
+                f"{diagnosis}\n\n"
+                "Подсказка: чаще всего это fine-grained токен без права "
+                "'Read access to public gated repos' — включите его в настройках токена "
+                "или создайте classic read-токен."
+            )
 
         # Перемещение на устройство
         try:
