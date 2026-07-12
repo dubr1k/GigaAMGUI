@@ -130,7 +130,7 @@ jobs:
         run: python -m PyInstaller packaging/gigaam_app_portable.spec --noconfirm
 
       # Гейт: гоняем СОБРАННЫЙ бинарь с --selfcheck. Он скачивает torch под ОС и
-      # импортирует всю цепочку (torchvision→PIL, pyannote, docx).
+      # импортирует всю цепочку (torchvision→PIL, torchmetrics, pyannote, docx).
       # Любая недостающая зависимость сборки → job падает, релиз не публикуется (issue #19).
       - name: Smoke-test built binary (import self-check)
         shell: bash
