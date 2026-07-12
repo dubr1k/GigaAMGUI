@@ -512,12 +512,16 @@ def run_qt_app(app=None):
         _queue_open_request(initial_open_paths)
         sys.exit(0)
 
-    icon_path = os.path.join(
-        getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-        'icon.ico'
-    )
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
+    # На macOS иконку приложения задаёт .app bundle через icon.icns. Если
+    # переопределить её здесь Windows-файлом icon.ico, Qt заменит Dock-иконку
+    # после запуска и macOS покажет неадаптированный квадратный вариант.
+    if sys.platform != 'darwin':
+        icon_path = os.path.join(
+            getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            'icon.ico'
+        )
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
 
     window = GigaTranscriberQtApp()
     window._instance_lock_file = instance_lock
