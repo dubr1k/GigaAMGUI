@@ -64,6 +64,26 @@ def _import_module(name: str) -> None:
     importlib.import_module(name)
 
 
+def _apply_app_patches() -> None:
+    """Применяет те же рантайм-патчи, что и приложение ПЕРЕД импортом pyannote.
+
+    Реальный путь диаризации (src/utils/diarization.py::_load_pipeline) сначала
+    вызывает apply_pyannote_patch(), и только потом импортирует pyannote.audio.
+    Импорт модуля pyannote_patch на уровне модуля ставит заглушки torchaudio
+    backend (set_audio_backend/get_audio_backend удалены в torchaudio 2.10+),
+    а apply_pyannote_patch() переключает загрузку аудио на soundfile.
+
+    Без этого `import pyannote.audio` в свежем torchaudio падает на
+    `AttributeError: module 'torchaudio' has no attribute 'set_audio_backend'` —
+    то есть selfcheck без патча проверял бы нереалистичный сценарий и давал
+    ложное падение. Патчи НЕ маскируют отсутствующие в бандле модули: любой
+    реально недостающий модуль всё равно бросит ImportError ниже по цепочке.
+    """
+    from src.utils.pyannote_patch import apply_pyannote_patch
+
+    apply_pyannote_patch()
+
+
 def _ensure_torch() -> None:
     """Активирует/ставит CPU-вариант torch, чтобы импорт torchvision прошёл."""
     from src.utils import runtime_manager
@@ -83,6 +103,12 @@ def run_selfcheck(check_torch: bool = True) -> int:
             _ensure_torch()
         except Exception:
             _emit("SELFCHECK FAIL: torch runtime setup")
+            _emit(traceback.format_exc())
+            return 1
+        try:
+            _apply_app_patches()
+        except Exception:
+            _emit("SELFCHECK FAIL: applying app runtime patches (pyannote/torchaudio)")
             _emit(traceback.format_exc())
             return 1
     for name in _CHAIN:
