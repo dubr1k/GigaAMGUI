@@ -70,7 +70,10 @@ def _ensure_torch() -> None:
 
     variant = runtime_manager.DEFAULT_VARIANT
     if not runtime_manager.is_installed(variant):
-        runtime_manager.install_variant(variant, log_cb=print)
+        # log_cb=_emit (не print): на windowed-сборке sys.stdout может быть None,
+        # и голый print во время загрузки torch кинул бы исключение → ложный
+        # "torch runtime setup FAIL" на исправном билде.
+        runtime_manager.install_variant(variant, log_cb=_emit)
     runtime_manager.activate(variant)
 
 
