@@ -364,3 +364,7 @@ class FilesMixin:
             )
             return False
         return True
+
+    def _edit_hf_token(self):
+        """Открыть диалог токена независимо от его текущего состояния."""
+        self._show_hf_token_dialog()

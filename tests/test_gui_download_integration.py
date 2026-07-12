@@ -83,6 +83,33 @@ def test_log_is_on_second_tab():
     window.close()
 
 
+def test_hf_token_button_always_opens_token_dialog(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    opened = []
+
+    monkeypatch.setenv("HF_TOKEN", "hf_existing_token")
+    monkeypatch.setattr(window, "_show_hf_token_dialog", lambda: opened.append(True) or True)
+
+    window.btn_hf_token.click()
+
+    assert opened == [True]
+    window.close()
+
+
+def test_hf_token_button_is_retranslated():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+
+    window._lang = "en"
+    window._apply_language()
+
+    assert window.btn_hf_token.text() == "Set / change HF token"
+    window.close()
+
+
 def test_gui_does_not_pin_windows_font_families():
     source = Path("src/gui/app_qt.py").read_text(encoding="utf-8")
     assert 'QFont("Arial"' not in source
