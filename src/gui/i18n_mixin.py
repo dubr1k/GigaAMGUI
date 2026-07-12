@@ -79,6 +79,8 @@ class I18nMixin:
             self.btn_cancel.setText("Отменить" if is_ru else "Cancel")
             self.cb_diarization.setText("Включить диаризацию спикеров" if is_ru else "Enable speaker diarization")
             self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)" if is_ru else "Detect which speaker is talking (HF_TOKEN required)")
+            self.btn_hf_token.setText("Указать / изменить HF-токен" if is_ru else "Set / change HF token")
+            self.btn_hf_token.setToolTip("Открыть настройку токена HuggingFace для диаризации" if is_ru else "Open the HuggingFace token setting for diarization")
             self.lbl_num_speakers.setText("Кол-во спикеров:" if is_ru else "Speakers count:")
             self.lbl_diarization_info.setText("Автоматическое определение спикеров (требуется HF_TOKEN)" if is_ru else "Automatic speaker detection (HF_TOKEN required)")
             self.entry_num_speakers.setSpecialValueText("Авто" if is_ru else "Auto")
