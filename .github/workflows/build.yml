@@ -140,7 +140,11 @@ jobs:
         run: |
           BIN="${{ matrix.built }}"
           chmod +x "$BIN" || true
-          "$BIN" --selfcheck
+          if ! "$BIN" --selfcheck; then
+            echo "=== selfcheck.log ==="
+            cat "$GIGAAM_RUNTIME_DIR/selfcheck.log" 2>/dev/null || echo "(no selfcheck.log written)"
+            exit 1
+          fi
 
       - name: Rename artifact
         shell: bash

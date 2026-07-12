@@ -9,7 +9,11 @@ pyannote.audio, torchmetrics, docx). Возвращает 0, если всё и�
 from __future__ import annotations
 
 import importlib
+import os
+import sys
+import tempfile
 import traceback
+from pathlib import Path
 
 # Порядок важен: torchvision тянет PIL.ImageEnhance (это и был #19),
 # torchmetrics тянет torchvision, pyannote тянет всё лестницей.
@@ -23,6 +27,37 @@ _CHAIN = [
     "pyannote.audio",
     "docx",
 ]
+
+
+def _log_path() -> Path:
+    base = os.environ.get("GIGAAM_RUNTIME_DIR") or tempfile.gettempdir()
+    return Path(base) / "selfcheck.log"
+
+
+_log_lines: list[str] = []
+
+
+def _emit(msg: str) -> None:
+    """Пишет строку в stderr/stdout (если доступны) и в лог-файл.
+
+    На windowed-сборке (console=False) sys.stdout/stderr могут быть None —
+    поэтому каждый вывод защищён, а полный лог всегда дублируется в файл,
+    чтобы CI мог показать причину падения.
+    """
+    _log_lines.append(msg)
+    for stream in (sys.stderr, sys.stdout):
+        try:
+            if stream is not None:
+                stream.write(msg + "\n")
+                stream.flush()
+        except Exception:
+            pass
+    try:
+        p = _log_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("\n".join(_log_lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _import_module(name: str) -> None:
@@ -44,16 +79,16 @@ def run_selfcheck(check_torch: bool = True) -> int:
         try:
             _ensure_torch()
         except Exception:
-            print("SELFCHECK FAIL: torch runtime setup")
-            traceback.print_exc()
+            _emit("SELFCHECK FAIL: torch runtime setup")
+            _emit(traceback.format_exc())
             return 1
     for name in _CHAIN:
         try:
             _import_module(name)
-            print(f"SELFCHECK ok: {name}")
+            _emit(f"SELFCHECK ok: {name}")
         except Exception as e:
-            print(f"SELFCHECK FAIL: {name}: {type(e).__name__}: {e}")
-            traceback.print_exc()
+            _emit(f"SELFCHECK FAIL: {name}: {type(e).__name__}: {e}")
+            _emit(traceback.format_exc())
             return 1
-    print("SELFCHECK PASS")
+    _emit("SELFCHECK PASS")
     return 0
