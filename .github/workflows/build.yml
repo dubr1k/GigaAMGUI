@@ -129,6 +129,23 @@ jobs:
       - name: Build (PyInstaller, portable spec)
         run: python -m PyInstaller packaging/gigaam_app_portable.spec --noconfirm
 
+      # Гейт: гоняем СОБРАННЫЙ бинарь с --selfcheck. Он скачивает torch под ОС и
+      # импортирует всю цепочку (torchvision→PIL, torchmetrics, pyannote, docx).
+      # Любая недостающая зависимость сборки → job падает, релиз не публикуется (issue #19).
+      - name: Smoke-test built binary (import self-check)
+        shell: bash
+        timeout-minutes: 20
+        env:
+          GIGAAM_RUNTIME_DIR: ${{ runner.temp }}/gigaam_selfcheck
+        run: |
+          BIN="${{ matrix.built }}"
+          chmod +x "$BIN" || true
+          if ! "$BIN" --selfcheck; then
+            echo "=== selfcheck.log ==="
+            cat "$GIGAAM_RUNTIME_DIR/selfcheck.log" 2>/dev/null || echo "(no selfcheck.log written)"
+            exit 1
+          fi
+
       - name: Rename artifact
         shell: bash
         run: |

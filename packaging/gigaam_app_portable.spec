@@ -15,6 +15,10 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_all
 
+sys.path.insert(0, os.path.abspath(SPECPATH))
+from _spec_common import collect_pure_runtime_deps
+pil_d, pil_b, pil_h = collect_pure_runtime_deps()
+
 block_cipher = None
 
 # Корень проекта — папка со spec-файлом (портативно, без хардкода путей).
@@ -50,6 +54,7 @@ datas = list(
     transformers_d + gigaam_d + hf_d +
     safetensors_d + tokenizers_d +
     pyqt6_d + einops_d + omegaconf_d + accelerate_d + pyannote_d + lightning_d + ptl_d +
+    pil_d +
     [(os.path.join(project_root, 'src'), 'src'),
      (os.path.join(project_root, 'assets', 'icon.ico'), '.')]
 )
@@ -87,19 +92,21 @@ binaries = (
     transformers_b + gigaam_b + hf_b +
     safetensors_b + tokenizers_b +
     pyqt6_b + einops_b + omegaconf_b + accelerate_b + pyannote_b + lightning_b + ptl_b +
+    pil_b +
     _extra_bins
 )
 
 hiddenimports = list(set(
     transformers_h + gigaam_h + hf_h +
     safetensors_h + tokenizers_h +
-    pyqt6_h + einops_h + omegaconf_h + accelerate_h + pyannote_h + lightning_h + ptl_h + [
+    pyqt6_h + einops_h + omegaconf_h + accelerate_h + pyannote_h + lightning_h + ptl_h +
+    pil_h + [
     'gigaam',
     'transformers', 'transformers.models', 'transformers.models.auto',
     'transformers.modeling_utils', 'transformers.tokenization_utils_base',
     'huggingface_hub', 'huggingface_hub.file_download',
     'soundfile', 'librosa', 'scipy', 'scipy.signal',
-    'audioread', 'numpy', 'PIL', 'PIL.Image',
+    'audioread', 'numpy',
     'PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.sip',
     'requests', 'urllib3', 'certifi',
     'tqdm', 'packaging', 'filelock', 'fsspec', 'psutil',

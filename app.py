@@ -20,6 +20,14 @@ except ImportError:  # pragma: no cover - macOS build uses fcntl
     fcntl = None
 
 
+# Проверка целостности сборки: импортирует всю ML-цепочку и выходит 0/1.
+# Должна идти ДО любого импорта, тянущего torch (активация варианта — внутри).
+if "--selfcheck" in sys.argv:
+    from src.selfcheck import run_selfcheck
+
+    raise SystemExit(run_selfcheck())
+
+
 from src.config import ASR_BACKEND, HF_TOKEN
 
 
