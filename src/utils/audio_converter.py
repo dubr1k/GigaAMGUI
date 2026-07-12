@@ -8,15 +8,17 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Callable
-from threading import Thread
+from threading import Event, Thread
 
 from ..config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
 
 # Таймауты для проб длительности (защита от зависания на битых файлах)
 _PROBE_TIMEOUT = 30       # ffprobe
 _FFMPEG_PROBE_TIMEOUT = 120  # ffmpeg -f null (полное декодирование как fallback)
+_CONVERSION_STALL_TIMEOUT = 600  # сек без активности ffmpeg → зависание, убиваем процесс (issue #20)
 
 
 def _project_root() -> str:
@@ -149,6 +151,8 @@ class AudioConverter:
                 command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=True,
                 startupinfo=_windows_startupinfo(),
                 timeout=_PROBE_TIMEOUT,
@@ -173,6 +177,8 @@ class AudioConverter:
                     command,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     startupinfo=_windows_startupinfo(),
                     timeout=_FFMPEG_PROBE_TIMEOUT,
                 )
@@ -256,25 +262,61 @@ class AudioConverter:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 startupinfo=_windows_startupinfo(),
             )
 
             stderr_lines: list[str] = []
+            # Отметка последней активности ffmpeg. Запись одного float атомарна под GIL,
+            # поэтому общий список без блокировки безопасен. Watchdog убивает процесс,
+            # если активности нет дольше _CONVERSION_STALL_TIMEOUT (issue #20).
+            last_activity = [time.monotonic()]
+            watchdog_stop = Event()
+            killed_by_watchdog = [False]
+
+            def _bump():
+                last_activity[0] = time.monotonic()
 
             def _drain_stderr(pipe):
-                for line in iter(pipe.readline, ""):
-                    stderr_lines.append(line)
+                # try/except: поток дренажа не должен молча падать и оставлять ffmpeg
+                # заблокированным на записи в переполненный stderr-пайп (первопричина #20).
+                try:
+                    for line in iter(pipe.readline, ""):
+                        stderr_lines.append(line)
+                        _bump()
+                except Exception:
+                    pass
+
+            def _watchdog():
+                poll = max(0.05, min(5.0, _CONVERSION_STALL_TIMEOUT / 4))
+                while not watchdog_stop.wait(poll):
+                    if time.monotonic() - last_activity[0] > _CONVERSION_STALL_TIMEOUT:
+                        killed_by_watchdog[0] = True
+                        self.logger(
+                            f"ОШИБКА: FFmpeg не подаёт признаков активности дольше "
+                            f"{_CONVERSION_STALL_TIMEOUT}s — принудительно останавливаю (issue #20)."
+                        )
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+                        return
 
             stderr_thread = None
             if process.stderr is not None:
                 stderr_thread = Thread(target=_drain_stderr, args=(process.stderr,), daemon=True)
                 stderr_thread.start()
 
+            watchdog_thread = Thread(target=_watchdog, daemon=True)
+            watchdog_thread.start()
+
             last_reported = -1.0
             reported_unknown = False
 
             if process.stdout is not None:
                 for raw_line in iter(process.stdout.readline, ""):
+                    _bump()
                     if "=" not in raw_line:
                         continue
                     key, value = raw_line.rstrip("\n").split("=", 1)
@@ -307,8 +349,13 @@ class AudioConverter:
                 progress_callback(None)
 
             returncode = process.wait()
+            watchdog_stop.set()
             if stderr_thread is not None:
                 stderr_thread.join(timeout=1.0)
+
+            if killed_by_watchdog[0]:
+                self.logger("Конвертация прервана watchdog'ом — файл не обработан (issue #20).")
+                return None
 
             if returncode != 0:
                 stderr_text = "".join(stderr_lines).strip()
@@ -320,6 +367,7 @@ class AudioConverter:
                     self.logger("Что попробовать: перезаписать/скачать файл заново, открыть в другом плеере и пересохранить, либо взять другой файл.")
                 return None
 
+            self.logger(f"Конвертация завершена: {os.path.basename(temp_wav)} (ffmpeg код {returncode}).")
             if progress_callback is not None and duration > 0 and last_reported < 1.0:
                 progress_callback(1.0)
             return temp_wav
