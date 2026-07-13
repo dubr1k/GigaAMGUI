@@ -29,10 +29,20 @@ use ratatui_image::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(default)]
 struct TuiSettings {
     pet_enabled: bool,
+    backend: String,
+}
+
+impl Default for TuiSettings {
+    fn default() -> Self {
+        Self {
+            pet_enabled: false,
+            backend: "auto".into(),
+        }
+    }
 }
 
 struct App {
@@ -253,9 +263,10 @@ fn save_settings(settings: &TuiSettings) -> Result<(), String> {
     fs::write(path, contents).map_err(|error| format!("Cannot save settings: {error}"))
 }
 
-fn save_pet_setting(app: &mut App) {
+fn save_app_settings(app: &mut App) {
     if let Err(error) = save_settings(&TuiSettings {
         pet_enabled: app.pet_enabled,
+        backend: app.backend.clone(),
     }) {
         app.status = error;
         app.log(app.status.clone());
@@ -428,6 +439,8 @@ const PET_RUN_FRAMES: [&[u8]; 3] = [
     include_bytes!("../../assets/pets/unicorn-run-03.png"),
 ];
 
+const BACK_MENU_OPTION: &str = "← Back";
+
 const COMMANDS: [(&str, &str); 10] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
@@ -441,40 +454,24 @@ const COMMANDS: [(&str, &str); 10] = [
     ("/exit", "exit the terminal UI"),
 ];
 
-fn backend_menu_options() -> Vec<String> {
+fn selectable_backends() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     {
-        ["PyTorch (standard)", "MLX (Apple Silicon)"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
+        &["pytorch", "mlx"]
     }
     #[cfg(not(target_os = "macos"))]
     {
-        ["Automatic", "PyTorch"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
+        &["auto", "pytorch"]
     }
 }
 
-fn backend_from_menu_option(option: &str) -> Option<&'static str> {
-    #[cfg(target_os = "macos")]
-    {
-        match option {
-            "PyTorch (standard)" => Some("pytorch"),
-            "MLX (Apple Silicon)" => Some("mlx"),
-            _ => None,
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        match option {
-            "Automatic" => Some("auto"),
-            "PyTorch" => Some("pytorch"),
-            _ => None,
-        }
-    }
+fn next_backend(current: &str) -> &'static str {
+    let backends = selectable_backends();
+    let current_index = backends
+        .iter()
+        .position(|backend| *backend == current)
+        .unwrap_or(backends.len() - 1);
+    backends[(current_index + 1) % backends.len()]
 }
 
 fn backend_is_supported(backend: &str) -> bool {
@@ -520,12 +517,25 @@ fn is_command(input: &str) -> bool {
 
 fn command_menu_options(app: &App) -> Vec<String> {
     match app.command_menu.as_deref() {
-        Some("/backend") => backend_menu_options(),
-        Some("/diarize") => vec!["on", "off"].into_iter().map(str::to_owned).collect(),
-        Some("/speakers") => vec!["auto", "1", "2", "3", "4", "5", "6", "7", "8"]
+        Some("/diarize") => ["on", "off", BACK_MENU_OPTION]
             .into_iter()
             .map(str::to_owned)
             .collect(),
+        Some("/speakers") => [
+            "auto",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            BACK_MENU_OPTION,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
         Some("/formats") => [
             "txt",
             "txt_timecodes",
@@ -546,16 +556,17 @@ fn command_menu_options(app: &App) -> Vec<String> {
                 }
             )
         })
+        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
         .collect(),
         _ => Vec::new(),
     }
 }
 
 fn open_command_menu(app: &mut App, command: &str) -> bool {
-    if matches!(command, "/backend" | "/diarize" | "/formats" | "/speakers") {
+    if matches!(command, "/diarize" | "/formats" | "/speakers") {
         app.command_menu = Some(command.to_owned());
         app.command_menu_index = 0;
-        app.status = "Choose an option with arrows and Enter".into();
+        app.status = "Choose 1–9, 0 for Back, or arrows and Enter".into();
         true
     } else {
         false
@@ -568,18 +579,15 @@ fn apply_command_menu(app: &mut App) {
     else {
         return;
     };
+    if option == BACK_MENU_OPTION {
+        app.command_menu = None;
+        app.input.clear();
+        app.status = "Settings menu closed".into();
+        app.log(app.status.clone());
+        return;
+    }
     let command = app.command_menu.clone().unwrap_or_default();
     match command.as_str() {
-        "/backend" => {
-            let Some(backend) = backend_from_menu_option(option) else {
-                app.status = "Unknown backend option".into();
-                return;
-            };
-            app.backend = backend.into();
-            app.status = format!("Backend: {}", app.backend);
-            app.command_menu = None;
-            app.input.clear();
-        }
         "/diarize" => {
             app.diarization = option == "on";
             app.status = format!("Diarization {option}");
@@ -633,14 +641,14 @@ fn run_command(app: &mut App) {
                 app.pet_enabled = false;
                 app.pet_image = None;
                 app.status = "Pets off".into();
-                save_pet_setting(app);
+                save_app_settings(app);
             } else if let Err(error) = app.refresh_pet_image() {
                 app.status = error;
             } else {
                 app.pet_enabled = true;
                 app.pet_running = app.running;
                 app.status = "Pets on · /pets to hide".into();
-                save_pet_setting(app);
+                save_app_settings(app);
             }
         }
         "/output" => {
@@ -653,9 +661,15 @@ fn run_command(app: &mut App) {
                 app.status = "Output directory updated".into();
             }
         }
+        "/backend" if argument.is_empty() => {
+            app.backend = next_backend(&app.backend).into();
+            app.status = format!("Backend: {}", app.backend);
+            save_app_settings(app);
+        }
         "/backend" if backend_is_supported(&argument.to_ascii_lowercase()) => {
             app.backend = argument.to_ascii_lowercase();
             app.status = format!("Backend: {}", app.backend);
+            save_app_settings(app);
         }
         "/backend" => app.status = backend_usage().into(),
         "/formats" => {
@@ -745,6 +759,23 @@ fn timecode(seconds: f64) -> String {
         ((seconds / 60.0) as u64) % 60,
         seconds as u64 % 60
     )
+}
+
+fn request_exit(
+    app: &mut App,
+    quit: &mut bool,
+    last_exit_request: &mut Option<(&'static str, Instant)>,
+    trigger: &'static str,
+    label: &str,
+) {
+    if last_exit_request
+        .is_some_and(|(last_trigger, at)| last_trigger == trigger && at.elapsed() <= Duration::from_millis(700))
+    {
+        *quit = true;
+    } else {
+        *last_exit_request = Some((trigger, Instant::now()));
+        app.status = format!("Press {label} again to exit");
+    }
 }
 
 fn python_in(directory: &Path) -> Option<PathBuf> {
@@ -1030,6 +1061,14 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                             Style::default().fg(accent),
                         ),
                         Span::styled(
+                            if option == BACK_MENU_OPTION {
+                                "0. ".into()
+                            } else {
+                                format!("{}. ", index + 1)
+                            },
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
                             option,
                             Style::default()
                                 .fg(if selected { Color::White } else { Color::Gray })
@@ -1084,10 +1123,9 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             chunks[2],
         );
     }
-    let footer =
-        "Enter add path · Tab complete · type / for commands · s start · esc cancel · l logs";
+    let footer = "Enter add path · Tab complete · type / for commands · s start · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs";
     frame.render_widget(
-        Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(footer).style(Style::default().fg(Color::Gray)),
         chunks[3],
     );
 }
@@ -1100,7 +1138,11 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::default();
-    app.pet_enabled = load_settings().pet_enabled;
+    let settings = load_settings();
+    app.pet_enabled = settings.pet_enabled;
+    if backend_is_supported(&settings.backend) {
+        app.backend = settings.backend;
+    }
     app.pet_picker = Picker::from_query_stdio()
         .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
@@ -1111,7 +1153,7 @@ fn main() -> io::Result<()> {
         }
     }
     let mut quit = false;
-    let mut last_escape: Option<Instant> = None;
+    let mut last_exit_request: Option<(&'static str, Instant)> = None;
     let mut last_pet_frame = Instant::now();
     while !quit {
         while let Ok(message) = events.try_recv() {
@@ -1152,6 +1194,19 @@ fn main() -> io::Result<()> {
                         continue;
                     }
                     match key.code {
+                        KeyCode::Char('c')
+                            if !app.running
+                                && app.input.is_empty()
+                                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            request_exit(
+                                &mut app,
+                                &mut quit,
+                                &mut last_exit_request,
+                                "ctrl-c",
+                                "Ctrl+C",
+                            );
+                        }
                         KeyCode::Char('q') if !app.running && app.input.is_empty() => quit = true,
                         KeyCode::Char('l') if app.input.is_empty() => {
                             app.show_logs = !app.show_logs
@@ -1191,18 +1246,33 @@ fn main() -> io::Result<()> {
                             app.status = "Settings menu closed".into();
                         }
                         KeyCode::Esc if app.input.is_empty() => {
-                            if last_escape
-                                .is_some_and(|at| at.elapsed() <= Duration::from_millis(700))
-                            {
-                                quit = true;
-                            } else {
-                                last_escape = Some(Instant::now());
-                                app.status = "Press Esc again to exit".into();
-                            }
+                            request_exit(
+                                &mut app,
+                                &mut quit,
+                                &mut last_exit_request,
+                                "esc",
+                                "Esc",
+                            );
                         }
                         KeyCode::Esc => {
                             app.input.clear();
                             app.status = "Input cleared".into();
+                        }
+                        KeyCode::Char(digit)
+                            if !app.running
+                                && app.command_menu.is_some()
+                                && digit.is_ascii_digit() =>
+                        {
+                            let count = command_menu_options(&app).len();
+                            let index = if digit == '0' {
+                                count.saturating_sub(1)
+                            } else {
+                                digit.to_digit(10).unwrap_or_default().saturating_sub(1) as usize
+                            };
+                            if index < count {
+                                app.command_menu_index = index;
+                                apply_command_menu(&mut app);
+                            }
                         }
                         KeyCode::Enter if !app.running && app.command_menu.is_some() => {
                             apply_command_menu(&mut app);
@@ -1319,6 +1389,44 @@ mod tests {
             split_shell_paths(r#"/tmp/first\ file.mp3 "/tmp/second file.mp3""#),
             vec!["/tmp/first file.mp3", "/tmp/second file.mp3"]
         );
+    }
+
+    #[test]
+    fn settings_preserve_the_selected_backend() {
+        let settings = TuiSettings {
+            pet_enabled: true,
+            backend: "mlx".into(),
+        };
+        let restored: TuiSettings = serde_json::from_str(
+            &serde_json::to_string(&settings).expect("settings serialize"),
+        )
+        .expect("settings deserialize");
+
+        assert!(restored.pet_enabled);
+        assert_eq!(restored.backend, "mlx");
+    }
+
+    #[test]
+    fn backend_cycle_visits_each_available_runtime() {
+        let backends = selectable_backends();
+        for (index, backend) in backends.iter().enumerate() {
+            assert_eq!(next_backend(backend), backends[(index + 1) % backends.len()]);
+        }
+    }
+
+    #[test]
+    fn back_option_closes_a_settings_menu_without_applying_a_change() {
+        let mut app = App::default();
+        app.command_menu = Some("/diarize".into());
+        app.command_menu_index = command_menu_options(&app)
+            .iter()
+            .position(|option| option == BACK_MENU_OPTION)
+            .expect("Back option must be present");
+
+        apply_command_menu(&mut app);
+
+        assert!(app.command_menu.is_none());
+        assert!(!app.diarization);
     }
 
     #[test]
