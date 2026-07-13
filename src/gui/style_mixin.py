@@ -7,8 +7,8 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QFontDatabase, QFontMetrics
-from PyQt6.QtWidgets import QApplication, QLabel
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics
+from PyQt6.QtWidgets import QApplication, QColorDialog, QLabel
 
 _BASE_FONT_PT = 12.0
 _MIN_UI_SCALE = 0.85
@@ -28,9 +28,38 @@ def _format_css_number(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+def _mix_colors(color1: str, color2: str, ratio: float) -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    c1 = QColor(color1)
+    c2 = QColor(color2)
+    r = round(c1.red() * (1.0 - ratio) + c2.red() * ratio)
+    g = round(c1.green() * (1.0 - ratio) + c2.green() * ratio)
+    b = round(c1.blue() * (1.0 - ratio) + c2.blue() * ratio)
+    return QColor(r, g, b).name()
+
+
 class StyleMixin:
     def _colors(self):
-        return self._DARK if self._theme == "dark" else self._LIGHT
+        base = dict(self._DARK if self._theme == "dark" else self._LIGHT)
+        accent = str(self.user_settings.get_value("accent_color", "") or "").strip()
+        if not accent:
+            return base
+        accent_color = QColor(accent)
+        if not accent_color.isValid():
+            return base
+
+        accent = accent_color.name()
+        base["accent"] = accent
+        base["accent2"] = accent_color.darker(112 if self._theme == "light" else 118).name()
+        base["accent3"] = accent_color.darker(128 if self._theme == "light" else 138).name()
+        base["accent_dis"] = _mix_colors(accent, "#ffffff" if self._theme == "light" else base["bg"], 0.58)
+        base["btn_hover_border"] = accent
+        base["btn_hover_text"] = _mix_colors(accent, "#000000" if self._theme == "light" else "#ffffff", 0.18)
+        base["progress_chunk"] = accent
+        base["progress_chunk2"] = base["accent2"]
+        base["tab_accent"] = accent
+        base["input_sel"] = _mix_colors(accent, "#ffffff" if self._theme == "light" else "#000000", 0.72 if self._theme == "light" else 0.55)
+        return base
 
     def _effective_ui_scale(self) -> float:
         app = QApplication.instance()
@@ -98,3 +127,21 @@ class StyleMixin:
         self.user_settings._save_settings()
         self._apply_theme()
         self._btn_theme.setText(self._colors()["theme_btn"])
+
+    def _choose_accent_color(self):
+        current = QColor(self._colors()["accent"])
+        title = self._t("Выберите акцентный цвет", "Choose accent color")
+        color = QColorDialog.getColor(current, self, title)
+        if not color.isValid():
+            return
+        self.user_settings.set_value("accent_color", color.name())
+        self._apply_theme()
+        self._set_status(self._t("Акцентный цвет изменён", "Accent color changed"))
+
+    def _reset_accent_color(self):
+        if "accent_color" not in self.user_settings.settings:
+            return
+        self.user_settings.settings.pop("accent_color", None)
+        self.user_settings._save_settings()
+        self._apply_theme()
+        self._set_status(self._t("Акцентный цвет сброшен", "Accent color reset"))

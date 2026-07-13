@@ -213,6 +213,8 @@ class I18nMixin:
             self._act_open_res.setText("Открыть папку с результатами" if is_ru else "Open results folder")
             self._act_quit.setText("Выход" if is_ru else "Exit")
             self._act_theme.setText("Переключить тему" if is_ru else "Toggle theme")
+            self._act_accent.setText("Акцентный цвет…" if is_ru else "Accent color…")
+            self._act_accent_reset.setText("Сбросить акцентный цвет" if is_ru else "Reset accent color")
             self._act_asr_backend.setText("Движок распознавания…" if is_ru else "Recognition engine...")
             self._act_device.setText("Устройство (CPU / GPU)…" if is_ru else "Device (CPU / GPU)…")
             self._act_llm.setText("LLM API…")

@@ -224,6 +224,16 @@ class UiBuildMixin:
         self._act_theme.triggered.connect(self._toggle_theme)
         view_menu.addAction(self._act_theme)
 
+        self._act_accent = QAction("Акцентный цвет…", self)
+        self._act_accent.setStatusTip("Выбрать акцентный цвет интерфейса")
+        self._act_accent.triggered.connect(self._choose_accent_color)
+        view_menu.addAction(self._act_accent)
+
+        self._act_accent_reset = QAction("Сбросить акцентный цвет", self)
+        self._act_accent_reset.setStatusTip("Вернуть стандартный акцентный цвет")
+        self._act_accent_reset.triggered.connect(self._reset_accent_color)
+        view_menu.addAction(self._act_accent_reset)
+
         self._menu_settings = menubar.addMenu("Настройки")
         settings_menu = self._menu_settings
         self._act_asr_backend = QAction("Движок распознавания…", self)
