@@ -9,7 +9,6 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from ..config import HF_TOKEN
 from ..utils.audio_converter import AudioConverter
 from ..utils.output_naming import output_path
 from ..utils.time_formatter import TimeFormatter
@@ -65,13 +64,27 @@ class TranscriptionProcessor:
 
     @property
     def diarization_manager(self) -> DiarizationManager | None:
-        """Ленивая загрузка менеджера диаризации"""
-        if self._diarization_manager is None and HF_TOKEN:
+        """Ленивая загрузка менеджера с актуальным токеном из окружения."""
+        hf_token = os.getenv("HF_TOKEN", "").strip()
+
+        # Токен можно заменить в GUI уже после создания processor. Не держим
+        # менеджер (и загруженный им pipeline) со старым токеном.
+        if (
+            self._diarization_manager is not None
+            and getattr(self._diarization_manager, "hf_token", hf_token) != hf_token
+        ):
+            self._diarization_manager = None
+
+        if not hf_token:
+            self._diarization_manager = None
+            return None
+
+        if self._diarization_manager is None:
             try:
                 from ..utils.diarization import DiarizationManager
 
                 self._diarization_manager = DiarizationManager(
-                    hf_token=HF_TOKEN,
+                    hf_token=hf_token,
                     device="auto"
                 )
             except Exception as e:
