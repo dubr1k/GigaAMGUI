@@ -10,6 +10,7 @@
 которые используют torch.load (transformers, pyannote.audio, и т.д.)
 """
 
+import logging
 import os
 import warnings
 
@@ -19,10 +20,10 @@ _TORCH_PATCH_APPLIED = False
 
 def _parse_torch_version(version: str) -> tuple:
     """Извлекает (major, minor) из строки версии torch, устойчиво к суффиксам (+cu124, a0, dev)."""
-    base = version.split('+')[0]
+    base = version.split("+")[0]
     parts = []
-    for chunk in base.split('.')[:2]:
-        digits = ''.join(c for c in chunk if c.isdigit())
+    for chunk in base.split(".")[:2]:
+        digits = "".join(c for c in chunk if c.isdigit())
         parts.append(int(digits) if digits else 0)
     while len(parts) < 2:
         parts.append(0)
@@ -42,12 +43,10 @@ def apply_torch_load_patch():
     Если в этом же процессе загружаются недоверенные чекпойнты — отключите патч
     переменной окружения GIGAAM_DISABLE_TORCH_PATCH=1 (модели тогда могут не загрузиться).
 
-    Патч безопасно применяется только один раз (идемпотентно).
+    Патч идемпотентен для текущего модуля torch и повторно применяется после
+    горячей смены runtime, когда в sys.modules появляется новый torch.
     """
     global _TORCH_PATCH_APPLIED
-
-    if _TORCH_PATCH_APPLIED:
-        return True
 
     if os.getenv("GIGAAM_DISABLE_TORCH_PATCH", "").lower() in ("1", "true", "yes"):
         _TORCH_PATCH_APPLIED = True
@@ -55,6 +54,10 @@ def apply_torch_load_patch():
 
     try:
         import torch
+
+        if getattr(torch.load, "_gigaam_weights_only_patch", False):
+            _TORCH_PATCH_APPLIED = True
+            return True
 
         # Проверяем версию PyTorch (устойчиво к dev/pre-release суффиксам)
         torch_version = _parse_torch_version(torch.__version__)
@@ -71,22 +74,24 @@ def apply_torch_load_patch():
                 Если пользователь явно передал weights_only, используем его значение.
                 Иначе устанавливаем weights_only=False для совместимости.
                 """
-                if 'weights_only' not in kwargs:
-                    kwargs['weights_only'] = False
+                if "weights_only" not in kwargs:
+                    kwargs["weights_only"] = False
                 return _original_torch_load(*args, **kwargs)
 
             # Применяем патч
+            _patched_torch_load._gigaam_weights_only_patch = True
             torch.load = _patched_torch_load
 
             # Подавляем предупреждения о небезопасной загрузке
             warnings.filterwarnings(
-                "ignore",
-                message=".*You are using `torch.load` with `weights_only=False`.*",
-                category=FutureWarning
+                "ignore", message=".*You are using `torch.load` with `weights_only=False`.*", category=FutureWarning
             )
 
             _TORCH_PATCH_APPLIED = True
-            print(f"PyTorch {torch.__version__} patch: weights_only=False установлен по умолчанию")
+            logging.getLogger(__name__).debug(
+                "PyTorch %s: weights_only=False установлен по умолчанию",
+                torch.__version__,
+            )
             return True
         else:
             # Для старых версий PyTorch патч не нужен
@@ -94,10 +99,10 @@ def apply_torch_load_patch():
             return True
 
     except ImportError:
-        print("Предупреждение: PyTorch не установлен, патч не применен")
+        logging.getLogger(__name__).debug("PyTorch не установлен, патч не применён")
         return False
     except Exception as e:
-        print(f"Предупреждение: не удалось применить PyTorch patch: {e}")
+        logging.getLogger(__name__).warning("Не удалось применить PyTorch patch: %s", e)
         return False
 
 

@@ -26,8 +26,10 @@ from urllib.parse import unquote, urljoin
 class DownloadCancelled(RuntimeError):
     """Загрузка отменена пользователем."""
 
-# Пакеты сборки torch, которые качаем всегда.
-CORE_PACKAGES = ["torch", "torchaudio", "torchvision"]
+
+# Пакеты сборки torch, которые качаем всегда. Версии передаются единым стеком:
+# бинарные расширения torchaudio/torchvision несовместимы с другим torch-релизом.
+CORE_PACKAGES = ("torch", "torchaudio", "torchvision")
 
 _HREF_RE = re.compile(r'href="([^"]+?\.whl)(#sha256=([0-9a-fA-F]+))?"', re.IGNORECASE)
 
@@ -88,8 +90,9 @@ def _index_url(base: str, package: str) -> str:
     return base.rstrip("/") + "/" + _normalize(package) + "/"
 
 
-def find_wheel(base: str, package: str, version: str | None = None,
-               py_specific: bool = True, cancel_event=None) -> tuple[str, str | None, str]:
+def find_wheel(
+    base: str, package: str, version: str | None = None, py_specific: bool = True, cancel_event=None
+) -> tuple[str, str | None, str]:
     """
     Находит URL лучшего колеса пакета на индексе.
 
@@ -127,16 +130,15 @@ def find_wheel(base: str, package: str, version: str | None = None,
             best = (key, url, sha, ver)
 
     if best is None:
-        raise RuntimeError(
-            f"Не найдено подходящее колесо {package} "
-            f"({py_tag}, {sys.platform}) на {page_url}"
-        )
+        raise RuntimeError(f"Не найдено подходящее колесо {package} ({py_tag}, {sys.platform}) на {page_url}")
     return best[1], best[2], best[3]
 
 
-def _download_and_extract(url: str, sha256: str | None, target: Path,
-                          log_cb=None, name: str = "", cancel_event=None) -> None:
+def _download_and_extract(
+    url: str, sha256: str | None, target: Path, log_cb=None, name: str = "", cancel_event=None
+) -> None:
     """Скачивает колесо (с проверкой sha256) и распаковывает в target."""
+
     def _log(msg):
         if log_cb:
             log_cb(msg)
@@ -149,8 +151,7 @@ def _download_and_extract(url: str, sha256: str | None, target: Path,
     with urllib.request.urlopen(req, timeout=120) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         total_mb = total / 1024 / 1024
-        _log(f"Скачивание {name or url.split('/')[-1]} "
-             f"({total_mb:.1f} МБ)…" if total else f"Скачивание {name}…")
+        _log(f"Скачивание {name or url.split('/')[-1]} ({total_mb:.1f} МБ)…" if total else f"Скачивание {name}…")
         hasher = hashlib.sha256()
         done = 0
         last_pct = -5
@@ -167,7 +168,7 @@ def _download_and_extract(url: str, sha256: str | None, target: Path,
                     pct = int(done * 100 / total)
                     if pct >= last_pct + 5:
                         last_pct = pct
-                        _log(f"  {name}: {pct}%  ({done/1024/1024:.0f}/{total_mb:.0f} МБ)")
+                        _log(f"  {name}: {pct}%  ({done / 1024 / 1024:.0f}/{total_mb:.0f} МБ)")
 
     if sha256 and hasher.hexdigest().lower() != sha256.lower():
         tmp.unlink(missing_ok=True)
@@ -188,7 +189,7 @@ def _nvidia_requirements(target: Path) -> list[tuple[str, str]]:
         for line in text.splitlines():
             if not line.startswith("Requires-Dist:"):
                 continue
-            body = line[len("Requires-Dist:"):].strip()
+            body = line[len("Requires-Dist:") :].strip()
             if "nvidia" not in body.lower():
                 continue
             # Пример: nvidia-cudnn-cu12==9.1.0.70; platform_system == "Linux" ...
@@ -199,17 +200,27 @@ def _nvidia_requirements(target: Path) -> list[tuple[str, str]]:
     return result
 
 
-def install(base_index: str, target: Path, need_nvidia: bool = False,
-            log_cb=None, cancel_event=None) -> None:
+def install(
+    base_index: str, target: Path, versions: dict[str, str], need_nvidia: bool = False, log_cb=None, cancel_event=None
+) -> None:
     """
-    Скачивает и распаковывает torch/torchaudio/torchvision (+ nvidia-* на Linux+CUDA)
-    в target. Бросает исключение при ошибке.
+    Скачивает согласованный стек torch/torchaudio/torchvision (+ nvidia-* на
+    Linux+CUDA) в target. Бросает исключение при ошибке.
     """
     target = Path(target)
 
+    missing = [package for package in CORE_PACKAGES if package not in versions]
+    if missing:
+        raise ValueError(f"Не заданы версии runtime-пакетов: {', '.join(missing)}")
+
     for pkg in CORE_PACKAGES:
         _raise_if_cancelled(cancel_event)
-        url, sha, ver = find_wheel(base_index, pkg, cancel_event=cancel_event)
+        url, sha, ver = find_wheel(
+            base_index,
+            pkg,
+            version=versions[pkg],
+            cancel_event=cancel_event,
+        )
         if log_cb:
             log_cb(f"{pkg} {ver}")
         _download_and_extract(url, sha, target, log_cb=log_cb, name=f"{pkg} {ver}", cancel_event=cancel_event)

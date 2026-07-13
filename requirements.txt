@@ -4,9 +4,9 @@
 # Как это работает:
 # - macOS: CUDA-wheels не существуют для macOS, pip берёт torch из PyPI → MPS поддержка
 # - Linux/Windows с NVIDIA GPU (Ampere/Ada, RTX 20xx–40xx): pip находит CUDA-wheels в extra-index → GPU ускорение
-# - Linux/Windows с NVIDIA GPU (Blackwell, RTX 50xx): требуется CUDA 12.8 и torch>=2.10
-#   Установите вручную ДО pip install -r requirements.txt:
-#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# - Linux/Windows с NVIDIA GPU (Blackwell, RTX 50xx): используйте официальный
+#   совместимый стек PyTorch 2.8 / CUDA 12.8 ДО pip install -r requirements.txt:
+#   pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 # - Linux/Windows без GPU: CUDA-build работает и на CPU (просто тяжелее по размеру)
 
 --extra-index-url https://download.pytorch.org/whl/cu124
@@ -130,15 +130,17 @@ tensorboardX==2.6.4
 threadpoolctl==3.6.0
 tokenizers==0.22.1
 tomli==2.3.0
-torch>=2.6.0
+# Бинарные пакеты должны оставаться на одной официальной ветке. torchaudio 2.9+
+# удалил legacy backend API, который ещё импортирует pyannote.audio 3.1.1.
+torch>=2.6.0,<2.9.0
 torch-audiomentations==0.12.0
 torch_pitch_shift==1.2.5
-torchaudio>=2.6.0
+torchaudio>=2.6.0,<2.9.0
 # torchcodec исключён: хрупкая линковка с ffmpeg, приложение использует soundfile.
 # CI и портативная сборка уже фильтруют torchcodec; pyannote_patch.py содержит mock.
 # torchcodec==0.7.0
 torchmetrics==1.8.2
-torchvision>=0.21.0
+torchvision>=0.21.0,<0.24.0
 tqdm==4.67.1
 transformers==4.57.3
 typing_extensions==4.15.0

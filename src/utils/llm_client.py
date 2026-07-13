@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import requests
 
@@ -67,7 +66,7 @@ class LLMClient:
         self,
         transcript_text: str,
         prompt: str,
-        system_prompt: Optional[str] = None,
+        system_prompt: str | None = None,
     ) -> str:
         transcript = (transcript_text or "").strip()
         if not transcript:
@@ -82,7 +81,7 @@ class LLMClient:
             return self._process_anthropic(transcript, user_prompt, system_prompt)
         return self._process_openai(transcript, user_prompt, system_prompt)
 
-    def _process_openai(self, transcript: str, user_prompt: str, system_prompt: Optional[str]) -> str:
+    def _process_openai(self, transcript: str, user_prompt: str, system_prompt: str | None) -> str:
         endpoint = self._build_openai_endpoint(self.settings.api_url)
         headers = {
             "Authorization": f"Bearer {self.settings.api_key.strip()}",
@@ -115,7 +114,7 @@ class LLMClient:
         content = message.get("content", "")
         return self._extract_text_content(content)
 
-    def _process_anthropic(self, transcript: str, user_prompt: str, system_prompt: Optional[str]) -> str:
+    def _process_anthropic(self, transcript: str, user_prompt: str, system_prompt: str | None) -> str:
         endpoint = self._build_anthropic_endpoint(self.settings.api_url)
         headers = {
             "x-api-key": self.settings.api_key.strip(),

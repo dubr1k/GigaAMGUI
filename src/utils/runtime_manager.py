@@ -28,6 +28,7 @@ import importlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -43,10 +44,26 @@ from . import torch_downloader
 #
 # Набор вариантов зависит от ОС: на Windows/Linux доступны сборки под CUDA,
 # на macOS — единственная сборка с PyPI (Apple Silicon MPS + CPU в одном).
+# Версии берутся из официальных совместимых троек PyTorch. Ветка 2.6 сохраняет
+# старый torchaudio backend API, а 2.8 — последняя ветка до его удаления в 2.9
+# и при этом поддерживает CUDA 12.8 / Blackwell.
+
+_TORCH_26_STACK = {
+    "torch": "2.6.0",
+    "torchaudio": "2.6.0",
+    "torchvision": "0.21.0",
+}
+
+_TORCH_28_STACK = {
+    "torch": "2.8.0",
+    "torchaudio": "2.8.0",
+    "torchvision": "0.23.0",
+}
 
 _VARIANTS_CUDA: dict[str, dict] = {
     "cpu": {
         "index": "https://download.pytorch.org/whl/cpu",
+        "packages": _TORCH_26_STACK,
         "torch_device": "cpu",
         "label": "CPU (без видеокарты)",
         "hint": "Работает на любом ПК. Медленнее, но не требует GPU NVIDIA.",
@@ -54,6 +71,7 @@ _VARIANTS_CUDA: dict[str, dict] = {
     },
     "cu124": {
         "index": "https://download.pytorch.org/whl/cu124",
+        "packages": _TORCH_26_STACK,
         "torch_device": "cuda",
         "label": "GPU NVIDIA — RTX 20xx / 30xx / 40xx",
         "hint": "CUDA 12.4. Ускорение на видеокартах Turing / Ampere / Ada.",
@@ -61,6 +79,7 @@ _VARIANTS_CUDA: dict[str, dict] = {
     },
     "cu128": {
         "index": "https://download.pytorch.org/whl/cu128",
+        "packages": _TORCH_28_STACK,
         "torch_device": "cuda",
         "label": "GPU NVIDIA — RTX 50xx (Blackwell)",
         "hint": "CUDA 12.8. Нужен для новых видеокарт RTX 50xx.",
@@ -71,6 +90,7 @@ _VARIANTS_CUDA: dict[str, dict] = {
 _VARIANTS_MAC: dict[str, dict] = {
     "default": {
         "index": "https://pypi.org/simple",  # обычный PyPI — сборка с поддержкой Apple Silicon (MPS)
+        "packages": _TORCH_26_STACK,
         "torch_device": "auto",
         "label": "Apple Silicon (GPU/MPS) и CPU",
         "hint": "Единая сборка для Mac: ускорение на Apple Silicon (MPS), иначе CPU.",
@@ -154,9 +174,10 @@ def ensure_data_dir() -> None:
 # Отдельно от user_settings.json: выбор нужен ДО запуска Qt/torch, а user_settings
 # лежит в рабочей папке и завязан на GUI.
 
+
 def _read_config() -> dict:
     try:
-        with open(_config_path(), "r", encoding="utf-8") as f:
+        with open(_config_path(), encoding="utf-8") as f:
             data = json.load(f)
             return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
@@ -194,9 +215,39 @@ def torch_device_for(variant: str | None) -> str:
 
 # ── Проверка установленных вариантов ──────────────────────────────────────────
 
+
 def is_installed(variant: str) -> bool:
-    """True, если вариант полностью установлен (есть маркер успеха)."""
-    return (variant_dir(variant) / _OK_MARKER).exists()
+    """True, если маркер есть и на диске лежит ожидаемый согласованный стек."""
+    if variant not in VARIANTS:
+        return False
+    target = variant_dir(variant)
+    return (target / _OK_MARKER).exists() and _runtime_stack_matches(variant, target)
+
+
+def _installed_package_version(target: Path, package: str) -> str | None:
+    """Читает базовую версию из wheel dist-info без импорта torch/DLL."""
+    normalized = package.replace("-", "_")
+    prefix = f"{normalized}-"
+    versions = set()
+    for metadata in target.glob(f"{prefix}*.dist-info"):
+        name = metadata.name.removesuffix(".dist-info")
+        versions.add(name[len(prefix) :].split("+", 1)[0])
+    return versions.pop() if len(versions) == 1 else None
+
+
+def _runtime_stack_matches(variant: str, target: Path | None = None) -> bool:
+    """Проверяет полноту и версии runtime без импорта бинарных пакетов."""
+    if variant not in VARIANTS:
+        return False
+    target = target or variant_dir(variant)
+    expected = VARIANTS[variant]["packages"]
+    for package, version in expected.items():
+        package_dir = target / package.replace("-", "_") / "__init__.py"
+        if not package_dir.exists():
+            return False
+        if _installed_package_version(target, package) != version:
+            return False
+    return True
 
 
 def installed_variants() -> list[str]:
@@ -204,6 +255,7 @@ def installed_variants() -> list[str]:
 
 
 # ── Активация выбранного рантайма (вызывать ДО import torch) ───────────────────
+
 
 def _close_dll_handles() -> None:
     while _DLL_HANDLES:
@@ -219,10 +271,7 @@ def _close_dll_handles() -> None:
 def deactivate() -> None:
     """Убирает из sys.path все torch-рантаймы приложения и закрывает DLL handles."""
     root = _runtimes_root()
-    sys.path[:] = [
-        entry for entry in sys.path
-        if not entry or not Path(entry).resolve().is_relative_to(root.resolve())
-    ]
+    sys.path[:] = [entry for entry in sys.path if not entry or not Path(entry).resolve().is_relative_to(root.resolve())]
     _close_dll_handles()
     os.environ.pop("GIGAAM_ACTIVE_VARIANT", None)
 
@@ -303,6 +352,7 @@ def switch_runtime(variant: str, log_cb=None) -> bool:
 
 # ── Установка варианта (прямая загрузка колёс без pip) ────────────────────────
 
+
 def install_variant(variant: str, log_cb=None, cancel_event=None) -> bool:
     """
     Скачивает и устанавливает выбранный вариант torch в его папку.
@@ -318,9 +368,11 @@ def install_variant(variant: str, log_cb=None, cancel_event=None) -> bool:
     supported_python = {(3, 10), (3, 11), (3, 12), (3, 13)}
     current_python = (sys.version_info.major, sys.version_info.minor)
     if current_python not in supported_python:
+
         def _emit_unsupported(line: str) -> None:
             if log_cb:
                 log_cb(line)
+
         _emit_unsupported(
             f"ОШИБКА: текущая версия Python {sys.version_info.major}.{sys.version_info.minor} не поддерживается колёсами PyTorch для этого приложения."
         )
@@ -329,14 +381,17 @@ def install_variant(variant: str, log_cb=None, cancel_event=None) -> bool:
 
     ensure_data_dir()
     target = variant_dir(variant)
-    target.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(f".{target.name}.installing")
+    backup = target.with_name(f".{target.name}.previous")
 
-    marker = target / _OK_MARKER
-    if marker.exists():
-        try:
-            marker.unlink()
-        except OSError:
-            pass
+    # Восстанавливаем runtime после прерывания между двумя атомарными rename.
+    if backup.exists() and not target.exists():
+        os.replace(backup, target)
+    elif backup.exists():
+        shutil.rmtree(backup)
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
 
     def _emit(line: str) -> None:
         if log_cb:
@@ -344,6 +399,7 @@ def install_variant(variant: str, log_cb=None, cancel_event=None) -> bool:
 
     info = VARIANTS[variant]
     _emit(f"Установка PyTorch ({info['label']})…")
+    _emit("Стек: " + ", ".join(f"{package} {version}" for package, version in info["packages"].items()))
     _emit(f"Индекс: {info['index']}")
     _emit(f"Папка: {target}")
     _emit("Это может занять несколько минут и потребует интернет.")
@@ -355,28 +411,50 @@ def install_variant(variant: str, log_cb=None, cancel_event=None) -> bool:
     try:
         torch_downloader.install(
             base_index=info["index"],
-            target=target,
+            target=staging,
+            versions=info["packages"],
             need_nvidia=need_nvidia,
             log_cb=_emit,
             cancel_event=cancel_event,
         )
+        if not _runtime_stack_matches(variant, staging):
+            raise RuntimeError("после установки версии runtime-пакетов не совпадают")
+
+        marker_payload = {
+            "schema": 1,
+            "packages": info["packages"],
+        }
+        (staging / _OK_MARKER).write_text(
+            json.dumps(marker_payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+
+        if target.exists():
+            os.replace(target, backup)
+        try:
+            os.replace(staging, target)
+        except Exception:
+            if backup.exists() and not target.exists():
+                os.replace(backup, target)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
     except torch_downloader.DownloadCancelled as e:
         _emit(str(e))
         return False
     except Exception as e:
         _emit(f"ОШИБКА загрузки: {e}")
         return False
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
-    if not (target / "torch" / "__init__.py").exists():
-        _emit("ОШИБКА: torch не найден после установки.")
-        return False
-
-    marker.write_text("ok", encoding="utf-8")
     _emit("Готово: PyTorch установлен.")
     return True
 
 
 # ── Автоопределение GPU для подсказки в диалоге ───────────────────────────────
+
 
 def detect_recommended_variant() -> str:
     """
@@ -408,7 +486,10 @@ def _detect_gpu_name() -> str | None:
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10, creationflags=flags,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=flags,
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip().splitlines()[0].strip()
@@ -419,9 +500,11 @@ def _detect_gpu_name() -> str | None:
     if sys.platform == "win32":
         try:
             out = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 "(Get-CimInstance Win32_VideoController).Name"],
-                capture_output=True, text=True, timeout=10, creationflags=flags,
+                ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=flags,
             )
             if out.returncode == 0:
                 for line in out.stdout.splitlines():

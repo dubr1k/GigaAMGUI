@@ -44,8 +44,11 @@ RUN grep -viE 'gigaam|torchcodec|pyqt6' requirements.txt > /tmp/req.txt && \
     pip install --no-cache-dir -r /tmp/req.txt
 # Дополнительные зависимости для Web GUI
 RUN pip install --no-cache-dir itsdangerous python-multipart
-# Фикс версии torchaudio (совместима с torch 2.6.0+cu124 и gigaam)
-RUN pip install --no-cache-dir --force-reinstall torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# Фиксируем официальную согласованную тройку: бинарные расширения torchaudio и
+# torchvision нельзя смешивать с другим релизом torch.
+RUN pip install --no-cache-dir --force-reinstall \
+    torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 \
+    --index-url https://download.pytorch.org/whl/cu124
 
 # Копирование исходного кода
 COPY . /app/

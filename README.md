@@ -84,7 +84,7 @@ WEB_PASSWORD=replace_with_strong_password
 Для RTX 50xx / Blackwell сначала установите совместимый PyTorch:
 
 ```bash
-python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+python -m pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt
 ```
 

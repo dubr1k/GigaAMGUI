@@ -1,8 +1,8 @@
 import importlib.machinery
-import sys
-import types
 import io
 import os
+import sys
+import types
 
 try:
     import numpy as np
