@@ -352,6 +352,14 @@ def test_log_copy_and_clear():
     window.close()
 
 
+def test_idle_status_is_translated_when_language_changes():
+    window = _new_window()
+    assert window.lbl_status.text() == "Готов к работе"
+    window._toggle_language()
+    assert window.lbl_status.text() == "Ready to work"
+    window.close()
+
+
 def test_menu_bar_has_core_menus():
     window = _new_window()
     titles = [a.text() for a in window.menuBar().actions()]

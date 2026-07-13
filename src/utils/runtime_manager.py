@@ -23,6 +23,8 @@ PyTorch распространяется тремя несовместимыми
 
 from __future__ import annotations
 
+import gc
+import importlib
 import json
 import os
 import re
@@ -87,6 +89,15 @@ DEFAULT_VARIANT = "default" if sys.platform == "darwin" else "cpu"
 
 # Маркер успешной установки внутри папки варианта.
 _OK_MARKER = ".installed_ok"
+_DLL_HANDLES: list[object] = []
+_RUNTIME_MODULE_PREFIXES = (
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "torchcodec",
+    "gigaam",
+    "pyannote",
+)
 
 
 def _has_cyrillic(text: str) -> bool:
@@ -194,6 +205,54 @@ def installed_variants() -> list[str]:
 
 # ── Активация выбранного рантайма (вызывать ДО import torch) ───────────────────
 
+def _close_dll_handles() -> None:
+    while _DLL_HANDLES:
+        handle = _DLL_HANDLES.pop()
+        try:
+            close = getattr(handle, "close", None)
+            if close is not None:
+                close()
+        except OSError:
+            pass
+
+
+def deactivate() -> None:
+    """Убирает из sys.path все torch-рантаймы приложения и закрывает DLL handles."""
+    root = _runtimes_root()
+    sys.path[:] = [
+        entry for entry in sys.path
+        if not entry or not Path(entry).resolve().is_relative_to(root.resolve())
+    ]
+    _close_dll_handles()
+    os.environ.pop("GIGAAM_ACTIVE_VARIANT", None)
+
+
+def _module_belongs_to_runtime(module) -> bool:
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return False
+    try:
+        return Path(module_file).resolve().is_relative_to(_runtimes_root().resolve())
+    except OSError:
+        return False
+
+
+def purge_runtime_modules(log_cb=None) -> int:
+    """Удаляет из sys.modules torch/gigaam/pyannote-модули текущего рантайма."""
+    removed = []
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name.startswith(_RUNTIME_MODULE_PREFIXES) or _module_belongs_to_runtime(module):
+            removed.append(name)
+            sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+    gc.collect()
+    if log_cb and removed:
+        log_cb(f"Сброшено модулей рантайма: {len(removed)}")
+    return len(removed)
+
+
 def activate(variant: str) -> None:
     """
     Подставляет папку варианта в начало sys.path и регистрирует пути к DLL,
@@ -201,8 +260,9 @@ def activate(variant: str) -> None:
     """
     target = variant_dir(variant)
     target_str = str(target)
-    if target_str not in sys.path:
-        sys.path.insert(0, target_str)
+    if target_str in sys.path:
+        sys.path.remove(target_str)
+    sys.path.insert(0, target_str)
 
     # Регистрируем каталоги с нативными DLL (torch и nvidia-*),
     # чтобы Windows нашла cudnn/cublas/cuda-runtime.
@@ -214,16 +274,36 @@ def activate(variant: str) -> None:
         for d in dll_dirs:
             if d.is_dir():
                 try:
-                    os.add_dll_directory(str(d))
+                    handle = os.add_dll_directory(str(d))
+                    if handle is not None:
+                        _DLL_HANDLES.append(handle)
                 except OSError:
                     pass
 
     os.environ["GIGAAM_ACTIVE_VARIANT"] = variant
 
 
+def switch_runtime(variant: str, log_cb=None) -> bool:
+    """Горячо переключает активный torch runtime для следующих import-ов."""
+    if variant not in VARIANTS:
+        raise ValueError(f"Неизвестный вариант рантайма: {variant}")
+    if not is_installed(variant):
+        raise RuntimeError(f"Вариант {variant} ещё не установлен")
+
+    if log_cb:
+        log_cb(f"Переключение рантайма на {VARIANTS[variant]['label']}…")
+    deactivate()
+    purge_runtime_modules(log_cb=log_cb)
+    activate(variant)
+    set_selected_variant(variant)
+    if log_cb:
+        log_cb("Активирован новый рантайм PyTorch.")
+    return True
+
+
 # ── Установка варианта (прямая загрузка колёс без pip) ────────────────────────
 
-def install_variant(variant: str, log_cb=None) -> bool:
+def install_variant(variant: str, log_cb=None, cancel_event=None) -> bool:
     """
     Скачивает и устанавливает выбранный вариант torch в его папку.
 
@@ -278,7 +358,11 @@ def install_variant(variant: str, log_cb=None) -> bool:
             target=target,
             need_nvidia=need_nvidia,
             log_cb=_emit,
+            cancel_event=cancel_event,
         )
+    except torch_downloader.DownloadCancelled as e:
+        _emit(str(e))
+        return False
     except Exception as e:
         _emit(f"ОШИБКА загрузки: {e}")
         return False

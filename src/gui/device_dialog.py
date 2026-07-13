@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -42,6 +44,40 @@ def _show_message(parent, icon: QMessageBox.Icon, title: str, text: str) -> None
     box.exec()
 
 
+def _variant_label(parent, variant: str, info: dict) -> str:
+    labels = {
+        "cpu": ("CPU (без видеокарты)", "CPU (no graphics card)"),
+        "cu124": ("GPU NVIDIA — RTX 20xx / 30xx / 40xx", "NVIDIA GPU — RTX 20xx / 30xx / 40xx"),
+        "cu128": ("GPU NVIDIA — RTX 50xx (Blackwell)", "NVIDIA GPU — RTX 50xx (Blackwell)"),
+        "default": ("Apple Silicon (GPU/MPS) и CPU", "Apple Silicon (GPU/MPS) and CPU"),
+    }
+    ru, en = labels.get(variant, (info.get("label", variant), info.get("label", variant)))
+    return _t(parent, ru, en)
+
+
+def _variant_hint(parent, variant: str, info: dict) -> str:
+    hints = {
+        "cpu": (
+            "Работает на любом ПК. Медленнее, но не требует GPU NVIDIA.",
+            "Works on any computer. Slower, but does not require an NVIDIA GPU.",
+        ),
+        "cu124": (
+            "CUDA 12.4. Ускорение на видеокартах Turing / Ampere / Ada.",
+            "CUDA 12.4. Acceleration on Turing / Ampere / Ada GPUs.",
+        ),
+        "cu128": (
+            "CUDA 12.8. Нужен для новых видеокарт RTX 50xx.",
+            "CUDA 12.8. Required for newer RTX 50xx graphics cards.",
+        ),
+        "default": (
+            "Единая сборка для Mac: ускорение на Apple Silicon (MPS), иначе CPU.",
+            "Single Mac build: Apple Silicon acceleration (MPS), otherwise CPU.",
+        ),
+    }
+    ru, en = hints.get(variant, (info.get("hint", ""), info.get("hint", "")))
+    return _t(parent, ru, en)
+
+
 def _ask_yes_no(parent, title: str, text: str) -> bool:
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Question)
@@ -62,10 +98,17 @@ class _InstallWorker(QThread):
     def __init__(self, variant: str):
         super().__init__()
         self._variant = variant
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def cancel_requested(self) -> bool:
+        return self._cancel_event.is_set()
 
     def run(self):
         try:
-            ok = rm.install_variant(self._variant, log_cb=self.log.emit)
+            ok = rm.install_variant(self._variant, log_cb=self.log.emit, cancel_event=self._cancel_event)
         except Exception as e:  # noqa: BLE001 — показываем пользователю любую ошибку
             self.log.emit(f"Unexpected error: {e}")
             ok = False
@@ -109,13 +152,13 @@ class DeviceSelectDialog(QDialog):
             tags.append(_t(parent, "уже загружено", "already downloaded") if installed else _t(parent, f"загрузка {info['size_hint']}", f"download {info['size_hint']}"))
             tag_text = " · ".join(tags)
 
-            rb = QRadioButton(f"{info['label']}")
+            rb = QRadioButton(_variant_label(parent, variant, info))
             rb.setStyleSheet("font-size: 13px; font-weight: 600;")
             self._group.addButton(rb)
             self._buttons[variant] = rb
             layout.addWidget(rb)
 
-            hint = QLabel(f"    {info['hint']}\n    ({tag_text})")
+            hint = QLabel(f"    {_variant_hint(parent, variant, info)}\n    ({tag_text})")
             hint.setWordWrap(True)
             hint.setStyleSheet("color: #999; font-size: 11px; margin-bottom: 6px;")
             layout.addWidget(hint)
@@ -153,6 +196,7 @@ class InstallProgressDialog(QDialog):
         super().__init__(parent)
         self._variant = variant
         self._success = False
+        self._cancelled = False
         self.setWindowTitle(_t(parent, "Загрузка PyTorch", "Downloading PyTorch"))
         self.setMinimumWidth(620)
         self.setModal(True)
@@ -160,8 +204,8 @@ class InstallProgressDialog(QDialog):
         layout = QVBoxLayout(self)
         self._label = QLabel(
             _t(parent,
-               f"Устанавливается: {rm.VARIANTS[variant]['label']}\nНе закрывайте окно — идёт загрузка.",
-               f"Installing: {rm.VARIANTS[variant]['label']}\nDo not close the window — download in progress.")
+               f"Устанавливается: {_variant_label(parent, variant, rm.VARIANTS[variant])}\nНе закрывайте окно — идёт загрузка.",
+               f"Installing: {_variant_label(parent, variant, rm.VARIANTS[variant])}\nDo not close the window — download in progress.")
         )
         self._label.setWordWrap(True)
         layout.addWidget(self._label)
@@ -178,6 +222,9 @@ class InstallProgressDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        self._btn_cancel = QPushButton(_t(parent, "Отменить загрузку", "Cancel download"))
+        self._btn_cancel.clicked.connect(self._request_cancel)
+        btn_row.addWidget(self._btn_cancel)
         self._btn_close = QPushButton(_t(parent, "Закрыть", "Close"))
         self._btn_close.setEnabled(False)
         self._btn_close.clicked.connect(self.accept)
@@ -195,18 +242,32 @@ class InstallProgressDialog(QDialog):
         if line:
             self._log.appendPlainText(line)
 
+    def _request_cancel(self) -> None:
+        if self._worker.isRunning() and not self._worker.cancel_requested():
+            self._cancelled = True
+            self._worker.cancel()
+            self._btn_cancel.setEnabled(False)
+            self._label.setText(_t(self.parent(), "Отмена загрузки PyTorch…", "Cancelling PyTorch download…"))
+            self._log.appendPlainText(_t(self.parent(), "Запрошена отмена загрузки…", "Cancellation requested…"))
+
     def _on_done(self, ok: bool):
         self._success = ok
         self._bar.setRange(0, 1)
         self._bar.setValue(1)
+        self._btn_cancel.setEnabled(False)
         if ok:
             self._label.setText(_t(self.parent(), "Готово! PyTorch установлен.", "Done! PyTorch is installed."))
+        elif self._cancelled or self._worker.cancel_requested():
+            self._label.setText(_t(self.parent(), "Загрузка PyTorch отменена.", "PyTorch download cancelled."))
         else:
             self._label.setText(_t(self.parent(), "Не удалось установить PyTorch. См. лог ниже.", "Failed to install PyTorch. See the log below."))
         self._btn_close.setEnabled(True)
 
     def succeeded(self) -> bool:
         return self._success
+
+    def cancelled(self) -> bool:
+        return self._cancelled or self._worker.cancel_requested()
 
     def closeEvent(self, event):
         # Не даём закрыть окно, пока идёт установка.
@@ -216,12 +277,16 @@ class InstallProgressDialog(QDialog):
             super().closeEvent(event)
 
 
-def _install_with_progress(variant: str, parent=None) -> bool:
-    """Показывает окно загрузки и ждёт завершения. Возвращает успех."""
+def _install_with_progress(variant: str, parent=None) -> str:
+    """Показывает окно загрузки и ждёт завершения. Возвращает success/cancelled/failed."""
     dlg = InstallProgressDialog(variant, parent)
     dlg.start()
     dlg.exec()
-    return dlg.succeeded()
+    if dlg.succeeded():
+        return "success"
+    if dlg.cancelled():
+        return "cancelled"
+    return "failed"
 
 
 def ensure_device_ready(parent=None) -> str | None:
@@ -244,7 +309,11 @@ def ensure_device_ready(parent=None) -> str | None:
     # Если вариант единственный (macOS) — не показываем выбор, сразу ставим.
     if len(rm.VARIANTS) == 1:
         only = next(iter(rm.VARIANTS))
-        if rm.is_installed(only) or _install_with_progress(only, parent):
+        if rm.is_installed(only):
+            rm.set_selected_variant(only)
+            return only
+        status = _install_with_progress(only, parent)
+        if status == "success":
             rm.set_selected_variant(only)
             return only
         return None
@@ -262,9 +331,12 @@ def ensure_device_ready(parent=None) -> str | None:
             rm.set_selected_variant(chosen)
             return chosen
 
-        if _install_with_progress(chosen, parent):
+        status = _install_with_progress(chosen, parent)
+        if status == "success":
             rm.set_selected_variant(chosen)
             return chosen
+        if status == "cancelled":
+            return None
 
         # Установка не удалась — предложим выбрать снова.
         retry = _ask_yes_no(
@@ -276,37 +348,48 @@ def ensure_device_ready(parent=None) -> str | None:
             return None
 
 
-def change_device_interactive(parent=None) -> bool:
+def change_device_interactive(parent=None) -> str | None:
     """
-    Открывает выбор устройства из настроек (пункт меню).
+    Открывает выбор устройства из настроек и сразу активирует новый runtime.
 
-    Позволяет сменить вариант и, при необходимости, догрузить его. Уже
-    установленные варианты не перекачиваются. Возвращает True, если выбор
-    изменён и требуется перезапуск приложения.
+    Возвращает имя выбранного варианта, если переключение выполнено, иначе None.
     """
     current = rm.get_selected_variant()
     dlg = DeviceSelectDialog(parent, current=current)
     if dlg.exec() != QDialog.DialogCode.Accepted:
-        return False
+        return None
     chosen = dlg.selected_variant()
     if not chosen:
-        return False
+        return None
 
     if not rm.is_installed(chosen):
-        if not _install_with_progress(chosen, parent):
+        status = _install_with_progress(chosen, parent)
+        if status == "cancelled":
+            return None
+        if status != "success":
             _show_message(parent, QMessageBox.Icon.Warning, _t(parent, "Ошибка", "Error"), _t(parent, "Не удалось загрузить выбранную сборку.", "Failed to download the selected build."))
-            return False
+            return None
+
+    model_loader = getattr(parent, "model_loader", None)
+    if model_loader is not None:
+        try:
+            model_loader.unload()
+        except Exception:
+            pass
 
     if chosen == current:
-        return False
+        rm.deactivate()
+        rm.activate(chosen)
+        rm.set_selected_variant(chosen)
+        return chosen
 
-    rm.set_selected_variant(chosen)
+    rm.switch_runtime(chosen)
     _show_message(
         parent,
         QMessageBox.Icon.Information,
         _t(parent, "Устройство изменено", "Device changed"),
         _t(parent,
-           f"Выбрано: {rm.VARIANTS[chosen]['label']}.\nИзменение вступит в силу после перезапуска приложения.",
-           f"Selected: {rm.VARIANTS[chosen]['label']}.\nThe change will take effect after restarting the application."),
+           f"Выбрано: {_variant_label(parent, chosen, rm.VARIANTS[chosen])}.",
+           f"Selected: {_variant_label(parent, chosen, rm.VARIANTS[chosen])}."),
     )
-    return True
+    return chosen

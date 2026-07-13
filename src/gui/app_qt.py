@@ -356,10 +356,19 @@ class GigaTranscriberQtApp(
             )
             return
 
-        changed = change_device_interactive(self)
-        if changed:
-            # Модель уже загружена под старую сборку torch — нужен перезапуск.
-            self.model_loader.unload()
+        chosen = change_device_interactive(self)
+        if chosen:
+            label = chosen
+            try:
+                from ..utils import runtime_manager as rm
+                label = rm.VARIANTS.get(chosen, {}).get("label", chosen)
+            except Exception:
+                pass
+            self.log(
+                f"Активировано устройство: {label}"
+                if self._lang == "ru" else
+                f"Active device: {label}"
+            )
 
     # ──────────────────────────────────────────────────────────────
     # UI

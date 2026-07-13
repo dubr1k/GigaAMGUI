@@ -17,6 +17,17 @@ def test_dialog_disables_mlx_on_unsupported_platform(monkeypatch):
     assert item is not None and not item.isEnabled()
 
 
+def test_dialog_is_localized_for_russian_parent(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+
+    class Parent:
+        _lang = "ru"
+
+    dialog = ASRBackendDialog(parent=Parent(), mlx_supported=True)
+    assert dialog.windowTitle() == "Выбор движка распознавания"
+    assert dialog.note_label.text().startswith("Авто:")
+
+
 def test_dialog_returns_selected_backend(monkeypatch):
     app = QApplication.instance() or QApplication([])
     dialog = ASRBackendDialog(current_backend="pytorch", mlx_supported=True)

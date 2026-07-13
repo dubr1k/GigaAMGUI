@@ -22,6 +22,10 @@ import zipfile
 from pathlib import Path
 from urllib.parse import unquote, urljoin
 
+
+class DownloadCancelled(RuntimeError):
+    """Загрузка отменена пользователем."""
+
 # Пакеты сборки torch, которые качаем всегда.
 CORE_PACKAGES = ["torch", "torchaudio", "torchvision"]
 
@@ -66,10 +70,18 @@ def _version_key(ver: str):
     return tuple(parts)
 
 
-def _fetch(url: str, timeout: int = 60) -> bytes:
+def _raise_if_cancelled(cancel_event=None) -> None:
+    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+        raise DownloadCancelled("Загрузка отменена пользователем.")
+
+
+def _fetch(url: str, timeout: int = 60, cancel_event=None) -> bytes:
+    _raise_if_cancelled(cancel_event)
     req = urllib.request.Request(url, headers={"User-Agent": "GigaAMGUI-downloader"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        data = r.read()
+    _raise_if_cancelled(cancel_event)
+    return data
 
 
 def _index_url(base: str, package: str) -> str:
@@ -77,7 +89,7 @@ def _index_url(base: str, package: str) -> str:
 
 
 def find_wheel(base: str, package: str, version: str | None = None,
-               py_specific: bool = True) -> tuple[str, str | None, str]:
+               py_specific: bool = True, cancel_event=None) -> tuple[str, str | None, str]:
     """
     Находит URL лучшего колеса пакета на индексе.
 
@@ -87,7 +99,7 @@ def find_wheel(base: str, package: str, version: str | None = None,
     Возвращает (url, sha256|None, version). Бросает RuntimeError, если не найдено.
     """
     page_url = _index_url(base, package)
-    html = _fetch(page_url).decode("utf-8", "replace")
+    html = _fetch(page_url, cancel_event=cancel_event).decode("utf-8", "replace")
     py_tag = _py_tag()
 
     best = None  # (version_key, url, sha256, version)
@@ -123,7 +135,7 @@ def find_wheel(base: str, package: str, version: str | None = None,
 
 
 def _download_and_extract(url: str, sha256: str | None, target: Path,
-                          log_cb=None, name: str = "") -> None:
+                          log_cb=None, name: str = "", cancel_event=None) -> None:
     """Скачивает колесо (с проверкой sha256) и распаковывает в target."""
     def _log(msg):
         if log_cb:
@@ -133,6 +145,7 @@ def _download_and_extract(url: str, sha256: str | None, target: Path,
     tmp = target / ("_dl_" + url.split("/")[-1].split("#")[0])
     target.mkdir(parents=True, exist_ok=True)
 
+    _raise_if_cancelled(cancel_event)
     with urllib.request.urlopen(req, timeout=120) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         total_mb = total / 1024 / 1024
@@ -146,6 +159,7 @@ def _download_and_extract(url: str, sha256: str | None, target: Path,
                 chunk = resp.read(1024 * 256)
                 if not chunk:
                     break
+                _raise_if_cancelled(cancel_event)
                 f.write(chunk)
                 hasher.update(chunk)
                 done += len(chunk)
@@ -159,6 +173,7 @@ def _download_and_extract(url: str, sha256: str | None, target: Path,
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"Контрольная сумма {name} не совпала — файл повреждён.")
 
+    _raise_if_cancelled(cancel_event)
     _log(f"  Распаковка {name}…")
     with zipfile.ZipFile(tmp) as z:
         z.extractall(target)
@@ -185,7 +200,7 @@ def _nvidia_requirements(target: Path) -> list[tuple[str, str]]:
 
 
 def install(base_index: str, target: Path, need_nvidia: bool = False,
-            log_cb=None) -> None:
+            log_cb=None, cancel_event=None) -> None:
     """
     Скачивает и распаковывает torch/torchaudio/torchvision (+ nvidia-* на Linux+CUDA)
     в target. Бросает исключение при ошибке.
@@ -193,19 +208,21 @@ def install(base_index: str, target: Path, need_nvidia: bool = False,
     target = Path(target)
 
     for pkg in CORE_PACKAGES:
-        url, sha, ver = find_wheel(base_index, pkg)
+        _raise_if_cancelled(cancel_event)
+        url, sha, ver = find_wheel(base_index, pkg, cancel_event=cancel_event)
         if log_cb:
             log_cb(f"{pkg} {ver}")
-        _download_and_extract(url, sha, target, log_cb=log_cb, name=f"{pkg} {ver}")
+        _download_and_extract(url, sha, target, log_cb=log_cb, name=f"{pkg} {ver}", cancel_event=cancel_event)
 
     if need_nvidia:
         deps = _nvidia_requirements(target)
         if log_cb:
             log_cb(f"Дополнительно для Linux+CUDA: {len(deps)} nvidia-пакетов…")
         for name, ver in deps:
+            _raise_if_cancelled(cancel_event)
             try:
-                url, sha, got = find_wheel(base_index, name, version=ver, py_specific=False)
+                url, sha, got = find_wheel(base_index, name, version=ver, py_specific=False, cancel_event=cancel_event)
             except RuntimeError:
                 # Некоторые nvidia-пакеты лежат на обычном PyPI-индексе pytorch — пробуем без версии.
-                url, sha, got = find_wheel(base_index, name, py_specific=False)
-            _download_and_extract(url, sha, target, log_cb=log_cb, name=f"{name} {got}")
+                url, sha, got = find_wheel(base_index, name, py_specific=False, cancel_event=cancel_event)
+            _download_and_extract(url, sha, target, log_cb=log_cb, name=f"{name} {got}", cancel_event=cancel_event)

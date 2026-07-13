@@ -60,6 +60,8 @@ class I18nMixin:
             self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
         if hasattr(self, "status_bar"):
             self.status_bar.showMessage("Готов к работе" if is_ru else "Ready to work")
+        if hasattr(self, "lbl_status") and self.lbl_status.text() in {"Готов к работе", "Ready to work"}:
+            self.lbl_status.setText("Готов к работе" if is_ru else "Ready to work")
         if hasattr(self, "grp_files"):
             self.grp_files.setTitle("1. Выбор файлов" if is_ru else "1. File selection")
             self.grp_output.setTitle("2. Папка сохранения результатов" if is_ru else "2. Output folder")
