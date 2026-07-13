@@ -11,4 +11,6 @@ huggingface-hub>=0.36.0
 soundfile>=0.13.0
 librosa>=0.11.0
 pyannote.audio>=3.1.1
--e git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam
+
+# GigaAM is installed separately by each bootstrap with --no-build-isolation:
+# its pinned revision still imports pkg_resources during setup.
