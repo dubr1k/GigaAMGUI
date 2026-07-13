@@ -908,6 +908,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         ])
         .split(area);
     let accent = Color::Rgb(92, 155, 255);
+    let secondary = Color::Rgb(180, 195, 220);
     let header = Line::from(vec![
         Span::styled(
             " GigaAM",
@@ -917,7 +918,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         ),
         Span::styled(
             "  terminal transcriber",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(secondary),
         ),
         Span::raw(" "),
         Span::styled(
@@ -929,12 +930,12 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             Style::default().fg(if app.running {
                 Color::Green
             } else {
-                Color::DarkGray
+                secondary
             }),
         ),
         Span::styled(
             format!("   {} · {}", app.backend, app.formats.join(",")),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(secondary),
         ),
     ]);
     frame.render_widget(Paragraph::new(header), chunks[0]);
@@ -943,7 +944,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     if app.files.is_empty() {
         body.push(Line::styled(
             "  Drop files here or type a path",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(secondary),
         ));
     } else {
         body.push(Line::styled(
@@ -972,7 +973,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                     Style::default().fg(if current || selected {
                         accent
                     } else {
-                        Color::DarkGray
+                        secondary
                     }),
                 ),
                 Span::styled(
@@ -1024,12 +1025,12 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         body.push(Line::raw(""));
         body.push(Line::styled(
             "  ── activity ─────────────────────────",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(secondary),
         ));
         for line in app.logs.iter().rev().take(5).rev() {
             body.push(Line::styled(
                 format!("  {}", line),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(secondary),
             ));
         }
     }
