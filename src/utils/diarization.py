@@ -25,15 +25,20 @@ _DIARIZATION_REQUIRED_REPOS = [
     "pyannote/wespeaker-voxceleb-resnet34-LM",
 ]
 
+_DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
+
 
 def diagnose_hf_access(token: str | None) -> str:
-    """Точно определяет, почему pyannote from_pretrained вернул None.
+    """Дополняет ошибку pyannote проверкой доступа к нужным репозиториям.
 
     Пробует каждый нужный репозиторий через HfApi и возвращает человекочитаемый
     отчёт: валиден ли токен и к какому именно репозиторию нет доступа и почему
     (не приняты условия / fine-grained токен без доступа к gated-репам / 401 / сеть).
     Никогда не бросает исключение — только возвращает строку.
     """
+    if not token:
+        return "HF-токен не задан. Укажите read-токен: https://huggingface.co/settings/tokens"
+
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import (
@@ -44,9 +49,6 @@ def diagnose_hf_access(token: str | None) -> str:
     except Exception as e:  # noqa: BLE001
         return f"Не удалось выполнить диагностику доступа (huggingface_hub): {e}"
 
-    if not token:
-        return "HF-токен не задан. Укажите read-токен: https://huggingface.co/settings/tokens"
-
     api = HfApi()
     lines: list[str] = []
 
@@ -56,10 +58,13 @@ def diagnose_hf_access(token: str | None) -> str:
         name = who.get("name") if isinstance(who, dict) else None
         lines.append(f"Токен валиден (пользователь: {name or '?'}).")
     except Exception as e:  # noqa: BLE001
+        code = getattr(getattr(e, "response", None), "status_code", None)
+        details = f"{type(e).__name__}: {e}"
+        if code is not None:
+            details = f"HTTP {code}; {details}"
         return (
-            "Токен НЕвалиден или не даёт доступа (whoami: "
-            f"{type(e).__name__}). Создайте новый read-токен: "
-            "https://huggingface.co/settings/tokens"
+            f"Токен НЕвалиден или не даёт доступа (whoami: {details}). "
+            "Создайте новый read-токен: https://huggingface.co/settings/tokens"
         )
 
     # 2) Доступ к каждому нужному репозиторию.
@@ -176,85 +181,49 @@ class DiarizationManager:
                 "Установите: pip install pyannote.audio"
             ) from e
 
-        # Устанавливаем токен для huggingface_hub
-        try:
-            from huggingface_hub import login
-            # Пробуем логин, если токен не установлен в окружении
-            if not os.getenv("HF_TOKEN"):
-                login(token=self.hf_token, add_to_git_credential=False)
-        except Exception as e:
-            logger.debug(f"Не удалось установить токен через huggingface_hub: {e}")
+        # pyannote.audio 3.1 не передаёт use_auth_token в загрузчик ONNX-модели
+        # WeSpeaker. huggingface_hub при этом берёт токен из HF_TOKEN, поэтому
+        # синхронизируем окружение с токеном менеджера перед любыми загрузками.
+        os.environ["HF_TOKEN"] = self.hf_token
 
-        # Список моделей для попытки загрузки
-        models_to_try = [
-            "pyannote/speaker-diarization-3.1",
-            "pyannote/speaker-diarization",
-        ]
-
-        last_error = None
         pipeline = None
-
-        for model_id in models_to_try:
-            try:
-                logger.info(f"Попытка загрузки модели диаризации: {model_id}")
-                # В новых версиях pyannote.audio используется 'token' вместо 'use_auth_token'
-                try:
-                    pipeline = Pipeline.from_pretrained(
-                        model_id,
-                        token=self.hf_token
-                    )
-                except TypeError:
-                    # Fallback для старых версий
-                    pipeline = Pipeline.from_pretrained(
-                        model_id,
-                        use_auth_token=self.hf_token
-                    )
-                # ВАЖНО: from_pretrained НЕ бросает исключение, а возвращает None,
-                # если не приняты условия ЗАВИСИМЫХ моделей (segmentation-3.0 /
-                # модель эмбеддингов) или у токена нет прав read. Раньше это
-                # логировалось как «успех» и молча приводило к «1 спикеру».
-                if pipeline is None:
-                    last_error = RuntimeError(
-                        f"{model_id}: from_pretrained вернул None — не приняты условия "
-                        f"зависимых моделей (segmentation-3.0 / эмбеддинги) либо у токена нет прав read"
-                    )
-                    logger.warning(str(last_error))
-                    continue
-                logger.info(f"Модель {model_id} загружена успешно")
-                break
-            except Exception as e:
-                last_error = e
-                error_str = str(e)
-
-                # Проверяем на ошибку доступа
-                if "403" in error_str or "gated" in error_str.lower() or "authorized" in error_str.lower():
-                    logger.warning(
-                        f"Нет доступа к модели {model_id}. "
-                        f"Необходимо принять условия использования на HuggingFace:\n"
-                        f"1. Перейдите на https://huggingface.co/{model_id}\n"
-                        f"2. Нажмите 'Agree and access repository'\n"
-                        f"3. Также примите условия для pyannote/segmentation-3.0\n"
-                        f"4. Убедитесь, что токен имеет права 'read'"
-                    )
-                    continue
-                else:
-                    logger.warning(f"Ошибка при загрузке {model_id}: {e}")
-                    continue
+        load_error = None
+        try:
+            logger.info("Попытка загрузки модели диаризации: %s", _DIARIZATION_MODEL_ID)
+            parameters = inspect.signature(Pipeline.from_pretrained).parameters
+            token_parameter = "token" if "token" in parameters else "use_auth_token"
+            pipeline = Pipeline.from_pretrained(
+                _DIARIZATION_MODEL_ID,
+                **{token_parameter: self.hf_token},
+            )
+        except Exception as e:  # noqa: BLE001
+            # Не трактуем внутренний TypeError как несовместимость API: сигнатура
+            # уже определена выше, поэтому это настоящая ошибка загрузки.
+            load_error = e
+            logger.warning(
+                "Ошибка при загрузке %s: %s: %s",
+                _DIARIZATION_MODEL_ID,
+                type(e).__name__,
+                e,
+                exc_info=True,
+            )
 
         if pipeline is None:
-            # from_pretrained вернул None или упал — выясняем ТОЧНУЮ причину пробой
-            # каждого нужного репозитория, а не гадаем «условия/токен».
             diagnosis = diagnose_hf_access(self.hf_token)
-            base = str(last_error) if last_error else "from_pretrained вернул None"
+            if load_error is None:
+                base = f"{_DIARIZATION_MODEL_ID}: from_pretrained вернул None"
+            else:
+                base = f"{type(load_error).__name__}: {load_error}"
             raise ValueError(
                 "Не удалось загрузить модель диаризации.\n"
                 f"Причина: {base}\n\n"
                 "Диагностика доступа HuggingFace:\n"
                 f"{diagnosis}\n\n"
-                "Подсказка: чаще всего это fine-grained токен без права "
-                "'Read access to public gated repos' — включите его в настройках токена "
-                "или создайте classic read-токен."
+                "Если все репозитории отмечены OK, причина не в правах токена — "
+                "ориентируйтесь на исходную ошибку загрузки выше."
             )
+
+        logger.info("Модель %s загружена успешно", _DIARIZATION_MODEL_ID)
 
         # Перемещение на устройство
         try:
