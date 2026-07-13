@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Cursor, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -12,13 +12,19 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use image::ImageReader;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Margin},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph, Wrap},
     Terminal,
+};
+use ratatui_image::{
+    picker::{Picker, ProtocolType},
+    protocol::StatefulProtocol,
+    StatefulImage,
 };
 use serde_json::{json, Value};
 
@@ -48,6 +54,11 @@ struct App {
     command_menu: Option<String>,
     command_menu_index: usize,
     exit_requested: bool,
+    pet_enabled: bool,
+    pet_frame: usize,
+    pet_running: bool,
+    pet_picker: Option<Picker>,
+    pet_image: Option<StatefulProtocol>,
 }
 
 impl Default for App {
@@ -78,11 +89,34 @@ impl Default for App {
             command_menu: None,
             command_menu_index: 0,
             exit_requested: false,
+            pet_enabled: false,
+            pet_frame: 0,
+            pet_running: false,
+            pet_picker: None,
+            pet_image: None,
         }
     }
 }
 
 impl App {
+    fn refresh_pet_image(&mut self) -> Result<(), String> {
+        let Some(picker) = self.pet_picker.as_ref() else {
+            return Err("Pets require Kitty, iTerm2, or Sixel image support.".into());
+        };
+        let frame = if self.running {
+            PET_RUN_FRAMES[self.pet_frame % PET_RUN_FRAMES.len()]
+        } else {
+            PET_IDLE_FRAMES[self.pet_frame % PET_IDLE_FRAMES.len()]
+        };
+        let image = ImageReader::new(Cursor::new(frame))
+            .with_guessed_format()
+            .map_err(|error| format!("Cannot read pet image: {error}"))?
+            .decode()
+            .map_err(|error| format!("Cannot decode pet image: {error}"))?;
+        self.pet_image = Some(picker.new_resize_protocol(image));
+        Ok(())
+    }
+
     fn log(&mut self, line: impl Into<String>) {
         self.logs.push(line.into());
         if self.logs.len() > 200 {
@@ -221,7 +255,17 @@ fn complete_path(raw: &str) -> Option<String> {
     Some(completed)
 }
 
-const COMMANDS: [(&str, &str); 9] = [
+const PET_IDLE_FRAMES: [&[u8]; 2] = [
+    include_bytes!("../../assets/pets/unicorn-idle-01.png"),
+    include_bytes!("../../assets/pets/unicorn-idle-02.png"),
+];
+const PET_RUN_FRAMES: [&[u8]; 3] = [
+    include_bytes!("../../assets/pets/unicorn-run-01.png"),
+    include_bytes!("../../assets/pets/unicorn-run-02.png"),
+    include_bytes!("../../assets/pets/unicorn-run-03.png"),
+];
+
+const COMMANDS: [(&str, &str); 10] = [
     ("/output", "set the results directory"),
     ("/backend", "auto, pytorch, or mlx"),
     ("/formats", "output formats, e.g. txt,srt"),
@@ -230,6 +274,7 @@ const COMMANDS: [(&str, &str); 9] = [
     ("/remove", "remove a file from the queue by number"),
     ("/clear", "clear the queue and result list"),
     ("/settings", "show current processing settings"),
+    ("/pets", "toggle the animated unicorn companion"),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -360,6 +405,19 @@ fn run_command(app: &mut App) {
                 app.formats.join(","),
                 if app.diarization { "on" } else { "off" }
             );
+        }
+        "/pets" => {
+            if app.pet_enabled {
+                app.pet_enabled = false;
+                app.pet_image = None;
+                app.status = "Pets off".into();
+            } else if let Err(error) = app.refresh_pet_image() {
+                app.status = error;
+            } else {
+                app.pet_enabled = true;
+                app.pet_running = app.running;
+                app.status = "Pets on · /pets to hide".into();
+            }
         }
         "/output" => {
             if argument.is_empty() {
@@ -553,7 +611,7 @@ fn send(stdin: &mut ChildStdin, message: Value) -> io::Result<()> {
     stdin.flush()
 }
 
-fn draw(frame: &mut ratatui::Frame, app: &App) {
+fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
     let menu_options = if app.running {
         Vec::new()
@@ -708,6 +766,19 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
             vertical: 0,
         }),
     );
+    if app.pet_enabled {
+        if let Some(image) = app.pet_image.as_mut() {
+            let pet_area = Rect::new(
+                chunks[1].right().saturating_sub(26),
+                chunks[1].y.saturating_add(1),
+                24.min(chunks[1].width.saturating_sub(2)),
+                16.min(chunks[1].height.saturating_sub(2)),
+            );
+            if pet_area.width >= 16 && pet_area.height >= 10 {
+                frame.render_stateful_widget(StatefulImage::default(), pet_area, image);
+            }
+        }
+    }
     if app.running {
         frame.render_widget(
             Gauge::default()
@@ -805,17 +876,40 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::default();
+    app.pet_picker = Picker::from_query_stdio()
+        .ok()
+        .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
     let mut quit = false;
     let mut last_escape: Option<Instant> = None;
+    let mut last_pet_frame = Instant::now();
     while !quit {
         while let Ok(message) = events.try_recv() {
             app.handle_message(message);
+        }
+        let pet_frame_interval = 470;
+        if app.pet_enabled
+            && (app.pet_running != app.running
+                || last_pet_frame.elapsed() >= Duration::from_millis(pet_frame_interval))
+        {
+            if app.pet_running != app.running {
+                app.pet_frame = 0;
+                app.pet_running = app.running;
+            } else {
+                app.pet_frame = app.pet_frame.wrapping_add(1);
+            }
+            if let Err(error) = app.refresh_pet_image() {
+                app.pet_enabled = false;
+                app.pet_image = None;
+                app.status = error;
+                app.log(app.status.clone());
+            }
+            last_pet_frame = Instant::now();
         }
         if app.exit_requested {
             quit = true;
             continue;
         }
-        terminal.draw(|frame| draw(frame, &app))?;
+        terminal.draw(|frame| draw(frame, &mut app))?;
         if event::poll(Duration::from_millis(80))? {
             match event::read()? {
                 Event::Paste(text) if !app.running => {
