@@ -26,7 +26,14 @@ use ratatui_image::{
     protocol::StatefulProtocol,
     StatefulImage,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default)]
+struct TuiSettings {
+    pet_enabled: bool,
+}
 
 struct App {
     input: String,
@@ -197,6 +204,64 @@ impl App {
     }
 }
 
+fn settings_path() -> Option<PathBuf> {
+    if let Some(directory) = std::env::var_os("GIGAAM_CONFIG_DIR") {
+        return Some(PathBuf::from(directory).join("tui_settings.json"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("GigaAMTranscriber")
+                .join("tui_settings.json")
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(|directory| {
+                PathBuf::from(directory)
+                    .join("GigaAMTranscriber")
+                    .join("tui_settings.json")
+            })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .map(|directory| directory.join("GigaAMTranscriber").join("tui_settings.json"))
+    }
+}
+
+fn load_settings() -> TuiSettings {
+    settings_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(settings: &TuiSettings) -> Result<(), String> {
+    let path = settings_path().ok_or("Cannot determine the settings directory")?;
+    let parent = path.parent().ok_or("Cannot determine the settings directory")?;
+    fs::create_dir_all(parent).map_err(|error| format!("Cannot create settings directory: {error}"))?;
+    let contents = serde_json::to_string_pretty(settings)
+        .map_err(|error| format!("Cannot encode settings: {error}"))?;
+    fs::write(path, contents).map_err(|error| format!("Cannot save settings: {error}"))
+}
+
+fn save_pet_setting(app: &mut App) {
+    if let Err(error) = save_settings(&TuiSettings {
+        pet_enabled: app.pet_enabled,
+    }) {
+        app.status = error;
+        app.log(app.status.clone());
+    }
+}
+
 fn short_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
@@ -214,6 +279,104 @@ fn normalize_path(raw: &str) -> Result<String, String> {
         return Err(format!("Not a file: {}", path.display()));
     }
     Ok(path.to_string_lossy().into_owned())
+}
+
+fn split_shell_paths(raw: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for character in raw.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            } else {
+                current.push(character);
+            }
+        } else if character.is_whitespace() && quote.is_none() {
+            if !current.is_empty() {
+                paths.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(character);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        paths.push(current);
+    }
+    paths
+}
+
+fn queue_paths(app: &mut App, raw: &str) {
+    let lines: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let candidates = if lines.len() > 1 {
+        lines
+    } else {
+        let value = lines.first().map(String::as_str).unwrap_or(raw).trim();
+        match normalize_path(value) {
+            Ok(path) => vec![path],
+            Err(error) => {
+                let split = split_shell_paths(value);
+                if split.len() == 1 && split.first().is_some_and(|path| path != value) {
+                    split
+                } else if split.len() > 1 {
+                    split
+                } else {
+                    app.status = error;
+                    return;
+                }
+            }
+        }
+    };
+
+    let mut queued = 0;
+    let mut errors = Vec::new();
+    for candidate in candidates {
+        match normalize_path(&candidate) {
+            Ok(path) => {
+                app.files.push(path);
+                queued += 1;
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+    if queued == 0 {
+        app.status = errors
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "No input files supplied".into());
+        return;
+    }
+    app.selected_file = app.files.len().checked_sub(1);
+    app.input.clear();
+    app.status = if errors.is_empty() {
+        format!("Queued {queued} file{}", if queued == 1 { "" } else { "s" })
+    } else {
+        format!(
+            "Queued {queued} file{} · {} skipped (see log)",
+            if queued == 1 { "" } else { "s" },
+            errors.len()
+        )
+    };
+    app.log(app.status.clone());
+    for error in errors {
+        app.log(error);
+    }
 }
 
 fn complete_path(raw: &str) -> Option<String> {
@@ -267,7 +430,7 @@ const PET_RUN_FRAMES: [&[u8]; 3] = [
 
 const COMMANDS: [(&str, &str); 10] = [
     ("/output", "set the results directory"),
-    ("/backend", "auto, pytorch, or mlx"),
+    ("/backend", "select the ASR runtime"),
     ("/formats", "output formats, e.g. txt,srt"),
     ("/diarize", "turn speaker diarization on or off"),
     ("/speakers", "auto or a fixed speaker count"),
@@ -277,6 +440,64 @@ const COMMANDS: [(&str, &str); 10] = [
     ("/pets", "toggle the animated unicorn companion"),
     ("/exit", "exit the terminal UI"),
 ];
+
+fn backend_menu_options() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        ["PyTorch (standard)", "MLX (Apple Silicon)"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ["Automatic", "PyTorch"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn backend_from_menu_option(option: &str) -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        match option {
+            "PyTorch (standard)" => Some("pytorch"),
+            "MLX (Apple Silicon)" => Some("mlx"),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match option {
+            "Automatic" => Some("auto"),
+            "PyTorch" => Some("pytorch"),
+            _ => None,
+        }
+    }
+}
+
+fn backend_is_supported(backend: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        matches!(backend, "auto" | "pytorch" | "mlx")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        matches!(backend, "auto" | "pytorch")
+    }
+}
+
+fn backend_usage() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Usage: /backend pytorch|mlx (or auto)"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Usage: /backend auto|pytorch"
+    }
+}
 
 fn command_suggestions(input: &str) -> Vec<(&'static str, &'static str)> {
     let command = input
@@ -299,10 +520,7 @@ fn is_command(input: &str) -> bool {
 
 fn command_menu_options(app: &App) -> Vec<String> {
     match app.command_menu.as_deref() {
-        Some("/backend") => vec!["auto", "pytorch", "mlx"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
+        Some("/backend") => backend_menu_options(),
         Some("/diarize") => vec!["on", "off"].into_iter().map(str::to_owned).collect(),
         Some("/speakers") => vec!["auto", "1", "2", "3", "4", "5", "6", "7", "8"]
             .into_iter()
@@ -353,7 +571,11 @@ fn apply_command_menu(app: &mut App) {
     let command = app.command_menu.clone().unwrap_or_default();
     match command.as_str() {
         "/backend" => {
-            app.backend = option.clone();
+            let Some(backend) = backend_from_menu_option(option) else {
+                app.status = "Unknown backend option".into();
+                return;
+            };
+            app.backend = backend.into();
             app.status = format!("Backend: {}", app.backend);
             app.command_menu = None;
             app.input.clear();
@@ -411,12 +633,14 @@ fn run_command(app: &mut App) {
                 app.pet_enabled = false;
                 app.pet_image = None;
                 app.status = "Pets off".into();
+                save_pet_setting(app);
             } else if let Err(error) = app.refresh_pet_image() {
                 app.status = error;
             } else {
                 app.pet_enabled = true;
                 app.pet_running = app.running;
                 app.status = "Pets on · /pets to hide".into();
+                save_pet_setting(app);
             }
         }
         "/output" => {
@@ -429,11 +653,11 @@ fn run_command(app: &mut App) {
                 app.status = "Output directory updated".into();
             }
         }
-        "/backend" if matches!(argument, "auto" | "pytorch" | "mlx") => {
-            app.backend = argument.into();
+        "/backend" if backend_is_supported(&argument.to_ascii_lowercase()) => {
+            app.backend = argument.to_ascii_lowercase();
             app.status = format!("Backend: {}", app.backend);
         }
-        "/backend" => app.status = "Usage: /backend auto|pytorch|mlx".into(),
+        "/backend" => app.status = backend_usage().into(),
         "/formats" => {
             let formats: Vec<String> = argument
                 .split(',')
@@ -876,9 +1100,16 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::default();
+    app.pet_enabled = load_settings().pet_enabled;
     app.pet_picker = Picker::from_query_stdio()
         .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
+    if app.pet_enabled {
+        if let Err(error) = app.refresh_pet_image() {
+            app.status = error;
+            app.log(app.status.clone());
+        }
+    }
     let mut quit = false;
     let mut last_escape: Option<Instant> = None;
     let mut last_pet_frame = Instant::now();
@@ -991,16 +1222,7 @@ fn main() -> io::Result<()> {
                             } else if is_command(&raw) {
                                 run_command(&mut app);
                             } else if !raw.is_empty() {
-                                match normalize_path(&raw) {
-                                    Ok(path) => {
-                                        app.files.push(path.clone());
-                                        app.selected_file = app.files.len().checked_sub(1);
-                                        app.status = format!("Queued {}", short_name(&path));
-                                        app.log(app.status.clone());
-                                        app.input.clear();
-                                    }
-                                    Err(error) => app.status = error,
-                                }
+                                queue_paths(&mut app, &raw);
                             }
                         }
                         KeyCode::Tab if !app.running => {
@@ -1085,4 +1307,42 @@ fn main() -> io::Result<()> {
     terminal.show_cursor()?;
     let _ = child.kill();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_path_split_keeps_escaped_and_quoted_spaces() {
+        assert_eq!(
+            split_shell_paths(r#"/tmp/first\ file.mp3 "/tmp/second file.mp3""#),
+            vec!["/tmp/first file.mp3", "/tmp/second file.mp3"]
+        );
+    }
+
+    #[test]
+    fn queue_paths_accepts_multiple_pasted_lines() {
+        let directory = std::env::temp_dir().join(format!(
+            "gigaam-tui-queue-paths-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("first.wav");
+        let second = directory.join("second file.mp3");
+        fs::write(&first, []).unwrap();
+        fs::write(&second, []).unwrap();
+
+        let mut app = App::default();
+        queue_paths(
+            &mut app,
+            &format!("{}\n{}", first.display(), second.display()),
+        );
+
+        assert_eq!(app.files.len(), 2);
+        assert!(app.files.iter().any(|path| path.ends_with("first.wav")));
+        assert!(app.files.iter().any(|path| path.ends_with("second file.mp3")));
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
