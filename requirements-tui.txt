@@ -2,9 +2,11 @@
 # GUI, FastAPI, Docker and web-only dependencies are intentionally excluded.
 --extra-index-url https://download.pytorch.org/whl/cu124
 
-torch>=2.6.0
-torchaudio>=2.6.0
-torchvision>=0.21.0
+# GigaAM v3 supports the PyTorch 2.6–2.8 line. Keep the three packages
+# aligned: unbounded latest wheels can otherwise pull incompatible releases.
+torch>=2.6.0,<2.9.0
+torchaudio>=2.6.0,<2.9.0
+torchvision>=0.21.0,<0.24.0
 python-dotenv>=1.0.0
 transformers>=4.57.0
 huggingface-hub>=0.36.0
