@@ -465,15 +465,6 @@ fn selectable_backends() -> &'static [&'static str] {
     }
 }
 
-fn next_backend(current: &str) -> &'static str {
-    let backends = selectable_backends();
-    let current_index = backends
-        .iter()
-        .position(|backend| *backend == current)
-        .unwrap_or(backends.len() - 1);
-    backends[(current_index + 1) % backends.len()]
-}
-
 fn backend_is_supported(backend: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -515,8 +506,27 @@ fn is_command(input: &str) -> bool {
     !command_suggestions(input).is_empty()
 }
 
+fn accept_command_suggestion(app: &mut App, command: &str) {
+    if open_command_menu(app, command) {
+        app.selected_command = 0;
+        return;
+    }
+    app.input = command.into();
+    if command == "/clear" {
+        run_command(app);
+    } else {
+        app.input.push(' ');
+    }
+    app.selected_command = 0;
+}
+
 fn command_menu_options(app: &App) -> Vec<String> {
     match app.command_menu.as_deref() {
+        Some("/backend") => selectable_backends()
+            .iter()
+            .map(|backend| (*backend).to_owned())
+            .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+            .collect(),
         Some("/diarize") => ["on", "off", BACK_MENU_OPTION]
             .into_iter()
             .map(str::to_owned)
@@ -563,9 +573,16 @@ fn command_menu_options(app: &App) -> Vec<String> {
 }
 
 fn open_command_menu(app: &mut App, command: &str) -> bool {
-    if matches!(command, "/diarize" | "/formats" | "/speakers") {
+    if matches!(command, "/backend" | "/diarize" | "/formats" | "/speakers") {
         app.command_menu = Some(command.to_owned());
-        app.command_menu_index = 0;
+        app.command_menu_index = if command == "/backend" {
+            command_menu_options(app)
+                .iter()
+                .position(|option| option == &app.backend)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         app.status = "Choose 1–9, 0 for Back, or arrows and Enter".into();
         true
     } else {
@@ -588,6 +605,13 @@ fn apply_command_menu(app: &mut App) {
     }
     let command = app.command_menu.clone().unwrap_or_default();
     match command.as_str() {
+        "/backend" => {
+            app.backend = option.clone();
+            app.status = format!("Backend: {}", app.backend);
+            app.command_menu = None;
+            app.input.clear();
+            save_app_settings(app);
+        }
         "/diarize" => {
             app.diarization = option == "on";
             app.status = format!("Diarization {option}");
@@ -660,11 +684,6 @@ fn run_command(app: &mut App) {
                 app.output_dir = Some(path.to_string_lossy().into_owned());
                 app.status = "Output directory updated".into();
             }
-        }
-        "/backend" if argument.is_empty() => {
-            app.backend = next_backend(&app.backend).into();
-            app.status = format!("Backend: {}", app.backend);
-            save_app_settings(app);
         }
         "/backend" if backend_is_supported(&argument.to_ascii_lowercase()) => {
             app.backend = argument.to_ascii_lowercase();
@@ -1195,9 +1214,7 @@ fn main() -> io::Result<()> {
                     }
                     match key.code {
                         KeyCode::Char('c')
-                            if !app.running
-                                && app.input.is_empty()
-                                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            if !app.running && key.modifiers.contains(KeyModifiers::CONTROL) =>
                         {
                             request_exit(
                                 &mut app,
@@ -1274,6 +1291,9 @@ fn main() -> io::Result<()> {
                                 apply_command_menu(&mut app);
                             }
                         }
+                        KeyCode::Char(' ') if !app.running && app.command_menu.is_some() => {
+                            apply_command_menu(&mut app);
+                        }
                         KeyCode::Enter if !app.running && app.command_menu.is_some() => {
                             apply_command_menu(&mut app);
                         }
@@ -1286,8 +1306,7 @@ fn main() -> io::Result<()> {
                                 && !COMMANDS.iter().any(|(name, _)| *name == raw)
                             {
                                 let index = app.selected_command.min(suggestions.len() - 1);
-                                app.input = format!("{} ", suggestions[index].0);
-                                app.selected_command = 0;
+                                accept_command_suggestion(&mut app, suggestions[index].0);
                             } else if open_command_menu(&mut app, &raw) {
                             } else if is_command(&raw) {
                                 run_command(&mut app);
@@ -1407,11 +1426,28 @@ mod tests {
     }
 
     #[test]
-    fn backend_cycle_visits_each_available_runtime() {
-        let backends = selectable_backends();
-        for (index, backend) in backends.iter().enumerate() {
-            assert_eq!(next_backend(backend), backends[(index + 1) % backends.len()]);
-        }
+    fn backend_command_opens_its_choices_with_the_current_value_selected() {
+        let mut app = App::default();
+        app.backend = selectable_backends()[0].into();
+
+        assert!(open_command_menu(&mut app, "/backend"));
+
+        assert_eq!(app.command_menu.as_deref(), Some("/backend"));
+        assert_eq!(app.command_menu_index, 0);
+        assert!(command_menu_options(&app).iter().any(|option| option == &app.backend));
+    }
+
+    #[test]
+    fn clear_suggestion_executes_without_an_extra_enter() {
+        let mut app = App::default();
+        app.files.push("/tmp/input.wav".into());
+        app.result_files.push("/tmp/output.txt".into());
+
+        accept_command_suggestion(&mut app, "/clear");
+
+        assert!(app.files.is_empty());
+        assert!(app.result_files.is_empty());
+        assert!(app.input.is_empty());
     }
 
     #[test]
