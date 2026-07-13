@@ -11,15 +11,10 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all
 
-try:
-    import numpy as np
+sys.path.insert(0, os.path.abspath(SPECPATH))
+from _spec_common import collect_pure_runtime_deps, collect_static_package
 
-    if not hasattr(np, "NaN"):
-        np.NaN = np.nan
-    if not hasattr(np, "NAN"):
-        np.NAN = np.nan
-except Exception:
-    pass
+runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
 
 block_cipher = None
 
@@ -70,10 +65,15 @@ binaries = []
 hiddenimports = []
 
 for package in packages:
-    package_datas, package_binaries, package_hiddenimports = safe_collect(package)
+    collector = collect_static_package if package == "pyannote.audio" else safe_collect
+    package_datas, package_binaries, package_hiddenimports = collector(package)
     datas += package_datas
     binaries += package_binaries
     hiddenimports += package_hiddenimports
+
+datas += runtime_d
+binaries += runtime_b
+hiddenimports += runtime_h
 
 datas += [
     (os.path.join(project_root, "src"), "src"),
@@ -195,8 +195,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "GigaAM Transcriber",
         "CFBundleDisplayName": "GigaAM Transcriber",
-        "CFBundleShortVersionString": "1.1.4",
-        "CFBundleVersion": "1.1.4",
+        "CFBundleShortVersionString": "1.1.5",
+        "CFBundleVersion": "1.1.5",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
         "CFBundleDocumentTypes": [

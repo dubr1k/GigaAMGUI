@@ -29,6 +29,14 @@ _CHAIN = [
     # pipeline. Проверяем его явно, чтобы повторение Windows-регрессии валило CI.
     "torchaudio.backend.common",
     "pyannote.audio",
+    # Сегментационная модель загружает sincnet лениво. Верхнеуровневый импорт
+    # pyannote.audio этого не проверяет, поэтому v1.1.4 пропустил issue #26.
+    "asteroid_filterbanks",
+    "pyannote.audio.models.blocks.sincnet",
+    "pyannote.audio.models.segmentation.PyanNet",
+    "pyannote.audio.models.embedding.wespeaker",
+    "pyannote.audio.pipelines.speaker_verification",
+    "pyannote.audio.pipelines.speaker_diarization",
     "docx",
 ]
 

@@ -23,6 +23,22 @@ def test_selfcheck_passes_when_all_import(monkeypatch):
     assert selfcheck.run_selfcheck(check_torch=False) == 0
 
 
+def test_selfcheck_covers_lazy_pyannote_sincnet_dependency():
+    required_modules = {
+        "asteroid_filterbanks",
+        "pyannote.audio.models.blocks.sincnet",
+        "pyannote.audio.models.segmentation.PyanNet",
+        "pyannote.audio.models.embedding.wespeaker",
+        "pyannote.audio.pipelines.speaker_verification",
+        "pyannote.audio.pipelines.speaker_diarization",
+    }
+
+    assert required_modules <= set(selfcheck._CHAIN)
+    assert selfcheck._CHAIN.index("pyannote.audio") < selfcheck._CHAIN.index(
+        "pyannote.audio.models.blocks.sincnet"
+    )
+
+
 def test_selfcheck_applies_app_patches_before_chain(monkeypatch):
     # check_torch=True: сперва настройка torch, затем те же патчи, что и в
     # приложении (заглушка torchaudio.set_audio_backend), и только потом импорт
