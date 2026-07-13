@@ -7,6 +7,7 @@ scripts/
 !scripts/
 scripts/*
 !scripts/verify_macos_bundle.py
+!scripts/install_tui.sh
 *.py[cod]
 *$py.class
 *.so
@@ -72,6 +73,9 @@ postman/
 deploy/
 docs/
 
+# Rust build artifacts
+tui/target/
+
 # Distribution / packaging
 .Python
 build/
@@ -101,6 +105,7 @@ checkpoints/
 # Output files
 *.txt
 !requirements.txt
+!requirements-tui.txt
 !requirements_macos.txt
 !requirements-dev.txt
 !requirements-macos-mlx.txt

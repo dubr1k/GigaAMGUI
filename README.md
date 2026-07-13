@@ -1,71 +1,96 @@
 # GigaAM v3 Transcriber
 
-**🇷🇺 Русский** · [🇺🇸 English version](README_EN.md)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![Desktop: PyQt6](https://img.shields.io/badge/Desktop-PyQt6-41CD52)](https://www.riverbankcomputing.com/software/pyqt/)
+[![API: FastAPI](https://img.shields.io/badge/API-FastAPI-009688)](https://fastapi.tiangolo.com/)
+[![Web: Docker](https://img.shields.io/badge/Web-Docker-2496ED)](https://www.docker.com/)
+[![GitHub stars](https://img.shields.io/github/stars/dubr1k/GigaAMGUI?style=social)](https://github.com/dubr1k/GigaAMGUI/stargazers)
 
-Русскоязычная транскрибация аудио и видео с **Desktop GUI**, **CLI**, **REST API** и защищённым **Web GUI** на базе **GigaAM-v3**.
+**🇷🇺 Русский** · [🇺🇸 English](README_EN.md)
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![PyQt6](https://img.shields.io/badge/Desktop-PyQt6-41CD52)
-![FastAPI](https://img.shields.io/badge/API-FastAPI-009688)
-![Docker](https://img.shields.io/badge/Web-Docker-2496ED)
-![Stars](https://img.shields.io/github/stars/dubr1k/GigaAMGUI?style=social)
+Транскрибация русской речи из аудио и видео на базе **GigaAM-v3**. Один сервисный слой, пять интерфейсов: Desktop GUI, CLI, REST API, Web GUI и terminal TUI.
 
-</div>
+> GigaAM Transcriber — полноценный workflow для расшифровки, экспорта, диаризации и LLM-постобработки, а не только обёртка над моделью.
 
----
+## Содержание
 
-## Скриншоты
-
-### Обработка
-
-![Обработка](https://i.postimg.cc/1XVNkf3V/Processing.png)
-
-### Вкладка LLM
-
-![LLM](https://i.postimg.cc/7bvTwwCy/LLM-tab.png)
-
-### Настройки LLM
-
-![Настройки LLM](https://i.postimg.cc/c1PDr3Yk/LLM-settings.png)
-
----
-
-## Что это
-
-**GigaAM v3 Transcriber** — это полноценный инструмент вокруг GigaAM-v3, а не просто обёртка над моделью.
+- [Возможности](#возможности)
+- [Быстрый старт](#быстрый-старт)
+- [Интерфейсы](#интерфейсы)
+- [Конфигурация](#конфигурация)
+- [ASR backend](#asr-backend)
+- [Структура](#структура)
+- [Скриншоты](#скриншоты)
+- [Благодарности](#благодарности)
 
 ## Возможности
 
-- Desktop GUI, CLI, REST API и Web GUI
-- Пакетная обработка файлов и папок
-- Рекурсивное сканирование папок и drag & drop
-- Скачивание медиа через `yt-dlp`
-- Диаризация спикеров через `pyannote`
-- MLX RNN-T для ускоренного распознавания на macOS Apple Silicon
-- Экспорт в `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`
-- Встроенная LLM-вкладка для:
-  - выжимок
-  - задач / action items
-  - кастомных промптов
-- LLM-провайдеры:
-  - OpenAI-compatible API
-  - Claude Code
-  - Codex
-  - OpenCode
-  - Pi
-  - произвольный внешний CLI
-- Переключение интерфейса RU/EN
-- Переключение темы
-- Single-instance поведение приложения
-- Журнал обработки, прогресс, отмена
-- Web GUI с авторизацией, восстановлением истории, SSE-прогрессом и Docker hardening
-- Поддержка CPU, CUDA, Intel XPU, Apple Silicon MPS
+- Пакетная обработка файлов и папок, рекурсивный поиск, drag & drop, загрузка через `yt-dlp`.
+- Экспорт: `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`.
+- Диаризация спикеров через `pyannote`.
+- Ускорение MLX RNN-T на Apple Silicon; CPU, CUDA, Intel XPU и MPS.
+- LLM-постобработка: выжимки, задачи и свои промпты.
+- Провайдеры LLM: OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi и произвольный CLI.
+- RU/EN, светлая/тёмная тема, журнал, stage-aware progress и отмена очереди.
+- Web UI с авторизацией, SSE-прогрессом, восстановлением задач и Docker hardening.
+
+## Быстрый старт
+
+### 1. Установите зависимости
+
+```bash
+git clone https://github.com/dubr1k/GigaAMGUI.git
+cd GigaAMGUI
+cp .env.example .env
+python -m pip install -r requirements.txt
+ffmpeg -version
+```
+
+### 2. Укажите Hugging Face token
+
+```env
+HF_TOKEN=your_huggingface_token_here
+```
+
+Для диаризации нужно принять условия моделей `pyannote/speaker-diarization-3.1` и `pyannote/segmentation-3.0`.
+
+## Интерфейсы
+
+| Интерфейс | Запуск | Для чего |
+|---|---|---|
+| Desktop GUI | `python app.py` | Обычная интерактивная работа |
+| CLI | `python cli.py -f audio.wav -o output` | Скрипты и автоматизация |
+| REST API | `python api.py` | Интеграции; docs: `http://127.0.0.1:8000/docs` |
+| Web GUI | `docker compose up -d --build gigaam-web` | Локальная web-панель: `http://127.0.0.1:8001/` |
+| TUI *(preview)* | `cd tui && cargo run --release` | Терминальная интерактивная очередь |
+
+### TUI
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/install_tui.sh | bash
+gigaam
+```
+
+## Конфигурация
+
+Для Web UI задайте в `.env`:
+
+```env
+WEB_SECRET=change_me
+WEB_USERNAME=admin
+WEB_PASSWORD=replace_with_strong_password
+```
+
+Для RTX 50xx / Blackwell сначала установите совместимый PyTorch:
+
+```bash
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -r requirements.txt
+```
 
 ## ASR backend
 
-На macOS Apple Silicon режим `auto` использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx) и MLX RNN-T. Если MLX недоступен, приложение может переключиться на PyTorch fallback. Windows, Linux и Intel Mac продолжают использовать PyTorch.
-
-Выбрать движок можно в Desktop GUI (`Настройки → Движок распознавания…`) или в CLI:
+`auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. Остальные платформы используют PyTorch.
 
 ```bash
 python cli.py --backend auto -f audio.wav
@@ -73,113 +98,33 @@ python cli.py --backend mlx -f audio.wav
 python cli.py --backend pytorch -f audio.wav
 ```
 
-MLX применяется только для распознавания речи. Диаризация через `pyannote` во всех случаях использует PyTorch.
+MLX применяется только к ASR; диаризация всегда использует PyTorch.
 
-## Быстрый старт
-
-```bash
-git clone https://github.com/dubr1k/GigaAMGUI.git
-cd GigaAMGUI
-cp .env.example .env
-pip install -r requirements.txt
-```
-
-Минимальный `.env`:
-
-```env
-HF_TOKEN=your_huggingface_token_here
-```
-
-Для Web GUI:
-
-```env
-WEB_SECRET=change_me
-WEB_USERNAME=admin
-WEB_PASSWORD=strong_password
-```
-
-Проверьте FFmpeg:
-
-```bash
-ffmpeg -version
-```
-
-## Запуск
-
-Desktop GUI:
-
-```bash
-python app.py
-```
-
-CLI:
-
-```bash
-python cli.py
-python cli.py -d /path/to/files -o /path/to/output
-python cli.py -f audio.mp3 -f video.mp4 -o /path/to/output
-```
-
-REST API:
-
-```bash
-python api.py
-```
-
-Доступно:
-
-- `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/redoc`
-- `http://127.0.0.1:8000/health`
-
-Web GUI:
-
-```bash
-docker compose up -d --build gigaam-web
-```
-
-По умолчанию:
-
-- `http://127.0.0.1:8001/`
-- `http://127.0.0.1:8001/health`
-
-## Требования
-
-- Python 3.10+
-- FFmpeg в `PATH`
-- HuggingFace token
-- Для диаризации нужно принять условия:
-  - `pyannote/speaker-diarization-3.1`
-  - `pyannote/segmentation-3.0`
-
-## RTX 50xx / Blackwell
-
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install -r requirements.txt
-```
-
-## Структура проекта
+## Структура
 
 ```text
 GigaAMGUI/
-├── app.py
-├── cli.py
-├── api.py
-├── web/
-├── src/
+├── app.py                 # PyQt desktop app
+├── cli.py                 # scripting CLI
+├── api.py                 # REST API
+├── src/                   # core, services, GUI mixins, utilities
+├── tui/                   # Ratatui frontend
+├── web/                   # FastAPI Web UI
 ├── tests/
-├── packaging/          # PyInstaller specs + build scripts
-├── pyinstaller_hooks/
-├── docs/               # documentation
-├── assets/             # icons, screenshots
+├── packaging/
+├── assets/
 ├── Dockerfile
 └── docker-compose.yml
 ```
 
+## Скриншоты
+
+| Обработка | LLM | Настройки LLM |
+|---|---|---|
+| ![Обработка](https://i.postimg.cc/1XVNkf3V/Processing.png) | ![LLM](https://i.postimg.cc/7bvTwwCy/LLM-tab.png) | ![Настройки LLM](https://i.postimg.cc/c1PDr3Yk/LLM-settings.png) |
 
 ## Благодарности
 
 - [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
-- [GigaAM-v3 на HuggingFace](https://huggingface.co/ai-sage/GigaAM-v3)
-- [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx) — MLX-порт GigaAM RNN-T и основа интеграции для Apple Silicon
+- [GigaAM-v3 on Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
+- [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)

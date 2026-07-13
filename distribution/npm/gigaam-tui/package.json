@@ -1,0 +1,20 @@
+{
+  "name": "@dubr1k/gigaam-tui",
+  "version": "0.1.0",
+  "description": "Bootstrap installer for GigaAM Terminal UI",
+  "license": "MIT",
+  "bin": {
+    "gigaam": "bin/gigaam.js"
+  },
+  "files": ["bin", "lib", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dubr1k/GigaAMGUI.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

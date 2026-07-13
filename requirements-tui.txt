@@ -1,0 +1,14 @@
+# Runtime dependencies for the standalone terminal UI worker.
+# GUI, FastAPI, Docker and web-only dependencies are intentionally excluded.
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch>=2.6.0
+torchaudio>=2.6.0
+torchvision>=0.21.0
+python-dotenv>=1.0.0
+transformers>=4.57.0
+huggingface-hub>=0.36.0
+soundfile>=0.13.0
+librosa>=0.11.0
+pyannote.audio>=3.1.1
+-e git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam

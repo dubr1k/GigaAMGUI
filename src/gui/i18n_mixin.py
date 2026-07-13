@@ -283,7 +283,7 @@ class I18nMixin:
             ("Диаризация требует токен HuggingFace.", "Diarization requires a HuggingFace token."),
             ("Установите токен через чекбокс 'Диаризация' в интерфейсе.", "Set the token via the 'Diarization' checkbox in the interface."),
             ("Продолжаем без диаризации...", "Continuing without diarization..."),
-            ("Спикер №", "Speaker #"),
+            ("Спикер №", "Speaker №"),
         ]
         for old, new in replacements:
             translated = translated.replace(old, new)
