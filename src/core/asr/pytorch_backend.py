@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
+import threading
 from collections.abc import Callable
 from typing import cast
 
-from ...config import MODEL_NAME, MODEL_REVISION
+from ...config import (
+    ASR_SEGMENTATION_MODE,
+    ASR_VAD_DEVICE,
+    MODEL_NAME,
+    MODEL_REVISION,
+)
 from .types import BackendCapabilities, TranscriptionSegment
+from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError
 
 
 class PyTorchBackend:
@@ -16,12 +24,30 @@ class PyTorchBackend:
 
     name = "pytorch"
 
-    def __init__(self, model: str | None = None, *, revision: str | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        revision: str | None = None,
+        segmentation_mode: str | None = None,
+        vad_segmenter_factory: Callable[..., VadSegmenter] | None = None,
+    ):
         self.model_name = model or MODEL_NAME
         self.model_revision = revision or MODEL_REVISION
         self.model = None
         self.device = None
         self._gigaam = None
+        self._vad_segmenter_factory = vad_segmenter_factory or PyannoteVadSegmenter
+        self._vad_segmenter: VadSegmenter | None = None
+        self._vad_segmenter_key: tuple[bytes, str] | None = None
+        self._vad_failure_key: tuple[bytes, str] | None = None
+        self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
+        if self.segmentation_strategy not in {"vad", "fixed_chunks"}:
+            raise ValueError(f"Неизвестный режим сегментации: {self.segmentation_strategy}")
+        self._inference_lock = threading.Lock()
+        self.segmentation_mode = "not_run"
+        self.segmentation_fallback_reason: str | None = None
+        self._logger: Callable[[str], None] | None = None
 
     def _bundled_download_root(self) -> str | None:
         meipass_root = getattr(sys, "_MEIPASS", None)
@@ -97,6 +123,7 @@ class PyTorchBackend:
         return str(decode_result).strip()
 
     def load(self, logger: Callable[[str], None] | None = None) -> bool:
+        self._logger = logger
         if self.model is not None:
             return True
 
@@ -134,7 +161,7 @@ class PyTorchBackend:
 
     def _empty_cache(self):
         try:
-            if not self.model or not self.device:
+            if not self.device:
                 return
 
             import torch
@@ -147,6 +174,15 @@ class PyTorchBackend:
             pass
 
     def transcribe_longform(
+        self,
+        audio_path: str,
+        progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+    ) -> list[TranscriptionSegment]:
+        """Serialize access to the shared GigaAM and pyannote models."""
+        with self._inference_lock:
+            return self._transcribe_longform_unlocked(audio_path, progress_callback)
+
+    def _transcribe_longform_unlocked(
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
@@ -170,17 +206,78 @@ class PyTorchBackend:
         chunk_size = 20 * sample_rate
         results: list[TranscriptionSegment] = []
         total = int(audio.shape[0])
-        start = 0
         total_seconds = float(total) / sample_rate if sample_rate else 0.0
         reported = 0.0
         model = cast(object, self.model)
 
+        def fixed_chunk_boundaries() -> list[tuple[float, float]]:
+            return [
+                (
+                    float(start) / sample_rate,
+                    float(min(start + chunk_size, total)) / sample_rate,
+                )
+                for start in range(0, total, chunk_size)
+            ]
+
+        hf_token = os.getenv("HF_TOKEN", "").strip() or None
+        if self.segmentation_strategy == "vad":
+            vad_device = ASR_VAD_DEVICE
+            token_fingerprint = hashlib.sha256((hf_token or "").encode()).digest()
+            segmenter_key = (token_fingerprint, vad_device)
+            try:
+                if self._vad_failure_key == segmenter_key:
+                    raise VadUnavailableError("previous VAD initialization failed")
+                if self._vad_segmenter is None or self._vad_segmenter_key != segmenter_key:
+                    self._vad_segmenter = self._vad_segmenter_factory(
+                        token=hf_token,
+                        device=vad_device,
+                    )
+                    self._vad_segmenter_key = segmenter_key
+                    self._vad_failure_key = None
+                segmenter = self._vad_segmenter
+                boundaries = segmenter.segment_file(
+                    audio_path,
+                    audio_duration=total_seconds,
+                )
+                self.segmentation_mode = "vad"
+                self.segmentation_fallback_reason = None
+            except Exception as exc:
+                self._vad_segmenter = None
+                self._vad_segmenter_key = None
+                self._vad_failure_key = (
+                    segmenter_key if isinstance(exc, VadUnavailableError) else None
+                )
+                self.segmentation_mode = "fixed_chunks"
+                if isinstance(exc, VadUnavailableError):
+                    recovery_hint = (
+                        "проверьте локальный кэш или HF_TOKEN и доступ к "
+                        "pyannote/segmentation-3.0; "
+                    )
+                else:
+                    recovery_hint = ""
+                self.segmentation_fallback_reason = (
+                    f"VAD недоступен ({type(exc).__name__}): "
+                    f"{recovery_hint}использовано резервное разбиение по 20 секунд"
+                )
+                if self._logger is not None:
+                    self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                boundaries = fixed_chunk_boundaries()
+        else:
+            self.segmentation_mode = "fixed_chunks"
+            self.segmentation_fallback_reason = (
+                "VAD отключён настройкой ASR_SEGMENTATION_MODE: "
+                "использовано разбиение по 20 секунд"
+            )
+            if self._logger is not None:
+                self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+            boundaries = fixed_chunk_boundaries()
+
         try:
             with torch.inference_mode():
-                while start < total:
-                    end = min(start + chunk_size, total)
+                for raw_start, raw_end in boundaries:
+                    start = max(0, int(raw_start * sample_rate))
+                    end = min(total, int(raw_end * sample_rate))
                     if end - start < 1600:
-                        start = end
                         continue
 
                     wav = audio[start:end].to(model._device).to(model._dtype).unsqueeze(0)
@@ -190,8 +287,8 @@ class PyTorchBackend:
                     text = self._decode_text(decode_result)
 
                     if text:
-                        start_time = float(start) / sample_rate
-                        end_time = float(end) / sample_rate
+                        start_time = max(0.0, float(raw_start))
+                        end_time = min(total_seconds, float(raw_end))
                         if end_time < start_time:
                             continue
                         results.append({
@@ -205,8 +302,6 @@ class PyTorchBackend:
                         progress_callback(ratio, processed_seconds, total_seconds)
                         reported = ratio
 
-                    start = end
-
                 if progress_callback is not None and total > 0 and reported < 1.0:
                     progress_callback(1.0, total_seconds, total_seconds)
         finally:
@@ -215,8 +310,14 @@ class PyTorchBackend:
         return results
 
     def unload(self) -> None:
-        self.model = None
-        self._empty_cache()
+        with self._inference_lock:
+            self.model = None
+            self._vad_segmenter = None
+            self._vad_segmenter_key = None
+            self._vad_failure_key = None
+            self.segmentation_mode = "not_run"
+            self.segmentation_fallback_reason = None
+            self._empty_cache()
 
     def is_loaded(self) -> bool:
         return self.model is not None
@@ -226,4 +327,6 @@ class PyTorchBackend:
             backend=self.name,
             model=self.model_revision,
             device=self.device or "N/A",
+            segmentation_mode=self.segmentation_mode,
+            segmentation_fallback_reason=self.segmentation_fallback_reason,
         )

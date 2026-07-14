@@ -19,19 +19,28 @@ def test_asr_health_none_loader():
     assert result["device"] == "N/A"
     assert result["loader_loaded"] is False
     assert result["active_backend"] is None
-    # ровно 10 ключей контракта
+    # ровно 11 ключей контракта
     assert set(result) == {
         "requested_backend", "active_backend", "fallback_reason", "model",
         "device", "repo", "cache_root", "loader_loaded", "error",
+        "segmentation_mode", "segmentation_fallback_reason",
     }
 
 
 def test_asr_health_with_diagnostics():
-    loader = _Loader({"active_backend": "mlx", "device": "gpu", "model": "v3"}, True)
+    loader = _Loader({
+        "active_backend": "mlx",
+        "device": "gpu",
+        "model": "v3",
+        "segmentation_mode": "vad",
+        "segmentation_fallback_reason": None,
+    }, True)
     result = health.asr_health(loader)
     assert result["active_backend"] == "mlx"
     assert result["device"] == "gpu"
     assert result["loader_loaded"] is True
+    assert result["segmentation_mode"] == "vad"
+    assert result["segmentation_fallback_reason"] is None
 
 
 def test_asr_health_device_fallback_when_empty():

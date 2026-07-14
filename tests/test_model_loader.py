@@ -40,7 +40,7 @@ def test_transcribe_longform_reads_wav_without_torchaudio_load(tmp_path, monkeyp
     monkeypatch.setattr(torchaudio, "load", fail_if_called)
 
     loader = ModelLoader()
-    loader._backend = PyTorchBackend()
+    loader._backend = PyTorchBackend(segmentation_mode="fixed_chunks")
     loader._backend.model = SimpleNamespace(
         _device="cpu",
         _dtype=torch.float32,
@@ -87,3 +87,30 @@ def test_transcribe_longform_passes_progress_callback():
 
     assert output == [{"transcription": "text", "boundaries": (0.0, 1.0)}]
     assert received == [(0.42, 10.0, 20.0)]
+
+
+def test_diagnostics_exposes_active_segmentation_mode():
+    class DummyBackend:
+        name = "dummy"
+
+        def is_loaded(self):
+            return True
+
+        def capabilities(self):
+            from src.core.asr.types import BackendCapabilities
+
+            return BackendCapabilities(
+                backend="dummy",
+                model="dummy",
+                device="cpu",
+                segmentation_mode="fixed_chunks",
+                segmentation_fallback_reason="VAD unavailable",
+            )
+
+    loader = ModelLoader()
+    loader._backend = DummyBackend()
+
+    diagnostics = loader.diagnostics()
+
+    assert diagnostics["segmentation_mode"] == "fixed_chunks"
+    assert diagnostics["segmentation_fallback_reason"] == "VAD unavailable"

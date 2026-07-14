@@ -129,16 +129,29 @@ Recommended staged approach:
 
 A smaller alternative is an optional `ASR_USE_VAD` mode, but it must fail explicitly or fall back visibly when the gated segmentation model/token is unavailable.
 
-## Suggested acceptance checks for a future fix
+## Acceptance checks
 
 - Issue #27 fixture recognizes `Три ноля, Ольга, здравствуйте` in VAD quality mode.
-- Without `HF_TOKEN`, transcription still works through fallback and diagnostics state why.
+- Without `HF_TOKEN`, a cached VAD model still works offline; otherwise transcription uses an explicit diagnosed fallback.
 - A missing/inaccessible segmentation model does not silently produce empty output.
 - Segment boundaries remain monotonic and within media duration.
 - Long audio is never cut at a fixed boundary through active speech when VAD mode is available.
 - CPU and CUDA builds use the same checkpoint and tokenizer hashes.
 - Existing unit suite, packaged self-checks, and platform build workflows pass.
 
-## Scope decision
+## Implemented remediation
 
-This branch records the verified root cause. It intentionally does not make a production-code change: the obvious one-line switch is incompatible with the currently packaged pyannote stack, and changing the ML runtime without cross-platform build verification would create a larger regression risk than issue #27 itself.
+The investigation branch now contains a production implementation rather than the unsafe one-line `transcribe_longform()` switch:
+
+- PyTorch ASR uses a dedicated `pyannote/segmentation-3.0` adapter compatible with the pinned `pyannote.audio 3.1.1` runtime.
+- `ASR_SEGMENTATION_MODE=vad` is the explicit default; `fixed_chunks` preserves the legacy path when deliberately selected.
+- VAD runs on CPU by default so that GigaAM and the segmentation model do not compete for accelerator memory.
+- Cached VAD weights work without a token; unavailable VAD falls back to fixed chunks with sanitized health diagnostics.
+- Shared VAD and GigaAM inference is serialized because API frontends reuse one model loader across concurrent jobs.
+- Exact VAD metadata boundaries are retained while sample indices are quantized only for waveform slicing.
+
+Pinned-stack end-to-end verification on the issue attachment produced one VAD interval at
+`3.1154499151103567–19.668930390492363`, active mode `vad`, no fallback, and the expected opening
+`Три ноля, Ольга, здравствуйте`. Mono and generated stereo copies produced identical VAD boundaries.
+
+No published release was rebuilt or modified as part of this branch.
