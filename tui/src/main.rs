@@ -227,19 +227,6 @@ impl App {
     }
 }
 
-fn terminal_supports_images() -> bool {
-    let term = std::env::var("TERM").unwrap_or_default();
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    std::env::var_os("KITTY_WINDOW_ID").is_some()
-        || std::env::var_os("WEZTERM_EXECUTABLE").is_some()
-        || term.contains("kitty")
-        || term.contains("ghostty")
-        || term.contains("sixel")
-        || term_program.contains("iTerm")
-        || term_program.contains("WezTerm")
-        || term_program.contains("Ghostty")
-}
-
 fn settings_path() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("GIGAAM_CONFIG_DIR") {
         return Some(PathBuf::from(directory).join("tui_settings.json"));
@@ -553,7 +540,7 @@ fn accept_command_suggestion(app: &mut App, command: &str) {
         return;
     }
     app.input = command.into();
-    if command == "/clear" {
+    if matches!(command, "/clear" | "/pets") {
         run_command(app);
     } else {
         app.input.push(' ');
@@ -1228,9 +1215,8 @@ fn main() -> io::Result<()> {
     if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
         app.model = settings.model;
     }
-    app.pet_picker = terminal_supports_images()
-        .then(Picker::from_query_stdio)
-        .and_then(Result::ok)
+    app.pet_picker = Picker::from_query_stdio()
+        .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
     app.pet_protocol = app.pet_picker.as_ref().map(Picker::protocol_type);
     if app.pet_enabled {
@@ -1508,6 +1494,19 @@ mod tests {
 
         assert!(app.files.is_empty());
         assert!(app.result_files.is_empty());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn pets_suggestion_executes_without_an_extra_enter() {
+        let mut app = App::default();
+
+        accept_command_suggestion(&mut app, "/pets");
+
+        assert_eq!(
+            app.status,
+            "Pets require Kitty, iTerm2, or Sixel image support."
+        );
         assert!(app.input.is_empty());
     }
 
