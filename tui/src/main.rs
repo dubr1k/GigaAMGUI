@@ -1250,7 +1250,7 @@ fn main() -> io::Result<()> {
         // prior layer. Other protocols remain stable rather than leaving pixels.
         if app.pet_enabled
             && app.pet_protocol == Some(ProtocolType::Kitty)
-            && last_pet_frame.elapsed() >= Duration::from_millis(1_300)
+            && last_pet_frame.elapsed() >= Duration::from_secs(1)
         {
             app.pet_frame = app.pet_frame.wrapping_add(1);
             if let Err(error) = app.refresh_pet_image() {
