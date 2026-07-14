@@ -196,7 +196,7 @@ def main():
     from src.utils.user_settings import UserSettings
     from src.core.asr.models import ASR_MODELS
     settings = UserSettings()
-    if not settings.get_value("asr_model", ""):
+    if not _torch_is_available():
         from PyQt6.QtWidgets import QInputDialog
 
         model_ids = list(ASR_MODELS)

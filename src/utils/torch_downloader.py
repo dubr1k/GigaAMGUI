@@ -204,7 +204,10 @@ def _nvidia_requirements(target: Path) -> list[tuple[str, str]]:
             if "nvidia" not in body.lower():
                 continue
             # Пример: nvidia-cudnn-cu12==9.1.0.70; platform_system == "Linux" ...
-            m = re.match(r"([A-Za-z0-9_.\-]+)\s*==\s*([0-9][0-9A-Za-z.\-]*)", body)
+            m = re.match(
+                r"([A-Za-z0-9_.\-]+)\s*(?:\(\s*)?==\s*([0-9][0-9A-Za-z.\-]*)",
+                body,
+            )
             if m:
                 result.append((m.group(1), m.group(2)))
         break
@@ -246,5 +249,5 @@ def install(
                 url, sha, got = find_wheel(base_index, name, version=ver, py_specific=False, cancel_event=cancel_event)
             except RuntimeError:
                 # Некоторые nvidia-пакеты лежат на обычном PyPI-индексе pytorch — пробуем без версии.
-                url, sha, got = find_wheel(base_index, name, py_specific=False, cancel_event=cancel_event)
+                url, sha, got = find_wheel("https://pypi.org/simple", name, py_specific=False, cancel_event=cancel_event)
             _download_and_extract(url, sha, target, log_cb=log_cb, name=f"{name} {got}", cancel_event=cancel_event)
