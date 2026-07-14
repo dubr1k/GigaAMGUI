@@ -131,7 +131,7 @@ A smaller alternative is an optional `ASR_USE_VAD` mode, but it must fail explic
 
 ## Acceptance checks
 
-- Issue #27 fixture recognizes `Три ноля, Ольга, здравствуйте` in VAD quality mode.
+- Issue #27 fixture recognizes `Три ноля, Ольга, здравствуйте` in PyTorch VAD quality mode.
 - Without `HF_TOKEN`, a cached VAD model still works offline; otherwise transcription uses an explicit diagnosed fallback.
 - A missing/inaccessible segmentation model does not silently produce empty output.
 - Segment boundaries remain monotonic and within media duration.
@@ -155,4 +155,9 @@ Pinned-stack end-to-end verification on the issue attachment produced one VAD in
 `3.1154499151103567–19.668930390492363`, active mode `vad`, no fallback, and the expected opening
 `Три ноля, Ольга, здравствуйте`. Mono and generated stereo copies produced identical VAD boundaries.
 
-No published release was rebuilt or modified as part of this branch.
+Applying the same VAD segmentation to MLX did not reproduce the expected opening on the issue
+attachment. The MLX implementation preserves VAD boundaries, progress, chunk limits, and fallback
+diagnostics, but it is not considered a confirmed recognition-quality fix for issue #27. The
+remaining difference requires a separate MLX decoder/backend investigation.
+
+The implementation was released in `v1.1.8` with the MLX limitation above documented explicitly.
