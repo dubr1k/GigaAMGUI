@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import ssl
 import sys
 import urllib.request
 import zipfile
@@ -77,10 +78,20 @@ def _raise_if_cancelled(cancel_event=None) -> None:
         raise DownloadCancelled("Загрузка отменена пользователем.")
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Use certifi's CA bundle in frozen apps where OS certificates are absent."""
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except (ImportError, OSError):
+        return ssl.create_default_context()
+
+
 def _fetch(url: str, timeout: int = 60, cancel_event=None) -> bytes:
     _raise_if_cancelled(cancel_event)
     req = urllib.request.Request(url, headers={"User-Agent": "GigaAMGUI-downloader"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
         data = r.read()
     _raise_if_cancelled(cancel_event)
     return data
@@ -148,7 +159,7 @@ def _download_and_extract(
     target.mkdir(parents=True, exist_ok=True)
 
     _raise_if_cancelled(cancel_event)
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=120, context=_ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         total_mb = total / 1024 / 1024
         _log(f"Скачивание {name or url.split('/')[-1]} ({total_mb:.1f} МБ)…" if total else f"Скачивание {name}…")
