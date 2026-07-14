@@ -68,7 +68,10 @@ fi
 
 REPO_DIR="$PREFIX/repo"
 VENV="$REPO_DIR/.venv"
-mkdir -p "$PREFIX" "$BIN_DIR"
+# PyTorch/CUDA wheels need several GB while unpacking. /tmp is often a small
+# tmpfs, so keep pip's temporary files beside the installation on the disk.
+export TMPDIR="$PREFIX/tmp"
+mkdir -p "$PREFIX" "$BIN_DIR" "$TMPDIR"
 if [[ -d "$REPO_DIR/.git" ]]; then
   git -C "$REPO_DIR" fetch --depth 1 origin "$REF"
   git -C "$REPO_DIR" checkout --force FETCH_HEAD
