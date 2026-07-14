@@ -191,6 +191,28 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv)
     app._gigaam_instance_lock_file = early_lock
 
+    # On first launch choose the recognition model before the (larger) PyTorch
+    # runtime download. This does not load torch and is persisted for the GUI.
+    from src.utils.user_settings import UserSettings
+    from src.core.asr.models import ASR_MODELS
+    settings = UserSettings()
+    if not settings.get_value("asr_model", ""):
+        from PyQt6.QtWidgets import QInputDialog
+
+        model_ids = list(ASR_MODELS)
+        labels = [f"{ASR_MODELS[model]} [{model}]" for model in model_ids]
+        selected, accepted = QInputDialog.getItem(
+            None,
+            "Модель распознавания",
+            "Выберите модель GigaAM:" ,
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            sys.exit(0)
+        settings.set_value("asr_model", model_ids[labels.index(selected)])
+
     # Если выбранный backend требует PyTorch, и он ещё не установлен — предлагаем выбрать runtime.
     if _boot_requires_torch() and not _torch_is_available():
         from src.gui.device_dialog import ensure_device_ready
