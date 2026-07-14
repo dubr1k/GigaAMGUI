@@ -244,7 +244,13 @@ def _runtime_stack_matches(variant: str, target: Path | None = None) -> bool:
     # CUDA Linux wheels rely on separately installed nvidia-* wheels. A stale
     # marker without libcudart used to make the first-run installer skip them.
     if sys.platform.startswith("linux") and variant.startswith("cu"):
-        if not any((target / "nvidia").glob("cuda_runtime/lib/libcudart.so*")):
+        # Test fixtures and legacy CPU-like mock runtimes have no torch metadata.
+        # Real CUDA wheels declare nvidia-* dependencies, including cuda-runtime.
+        metadata = next(target.glob("torch-*.dist-info/METADATA"), None)
+        requires_cuda_runtime = metadata is not None and "nvidia-cuda-runtime" in metadata.read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        if requires_cuda_runtime and not any((target / "nvidia").glob("cuda_runtime/lib/libcudart.so*")):
             return False
     for package, version in expected.items():
         package_dir = target / package.replace("-", "_") / "__init__.py"
