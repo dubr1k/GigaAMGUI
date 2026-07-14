@@ -10,6 +10,16 @@ import torch
 from src.core.asr.pytorch_backend import PyTorchBackend
 
 
+def test_select_device_uses_mps_without_saved_runtime(monkeypatch):
+    from src.utils import runtime_manager
+
+    monkeypatch.setattr(runtime_manager, "get_selected_variant", lambda: None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+    assert PyTorchBackend()._select_device() == "mps"
+
+
 def test_load_uses_project_runtime_manager(monkeypatch):
     calls = {}
     fake_gigaam = SimpleNamespace(
@@ -62,6 +72,29 @@ def test_transcribe_longform_filters_empty_text_and_limits_chunks(tmp_path, monk
     # 160000 samples at 16000 Hz = 10s, so one chunk should be bounded by the real audio duration.
     assert result == [{"transcription": "hello", "boundaries": (0.0, 10.0)}]
     assert called["chunks"] == 0
+
+
+def test_transcribe_longform_extracts_text_from_gigaam_structured_decode(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+
+    backend = PyTorchBackend()
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(
+            decode=lambda head, encoded, length: [
+                ("hello", [1, 2, 3], [0, 1, 2])
+            ]
+        ),
+    )
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path)) == [
+        {"transcription": "hello", "boundaries": (0.0, 1.0)}
+    ]
 
 
 def test_transcribe_longform_raises_on_unloaded_model():

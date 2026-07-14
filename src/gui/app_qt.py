@@ -322,7 +322,9 @@ class GigaTranscriberQtApp(
             QMessageBox.information(self, self._t("Смена модели", "Model change"), self._t("Дождитесь завершения обработки.", "Wait for processing to finish."))
             return
         from PyQt6.QtWidgets import QInputDialog
+
         from ..core.asr.models import ASR_MODELS
+
         ids = list(ASR_MODELS)
         labels = [f"{ASR_MODELS[key]} [{key}]" for key in ids]
         current = ids.index(self.model_loader.requested_model) if self.model_loader.requested_model in ids else 0

@@ -46,7 +46,8 @@ class PyTorchBackend:
         try:
             from ...utils.runtime_manager import get_selected_variant, torch_device_for
 
-            preferred = torch_device_for(get_selected_variant())
+            selected_variant = get_selected_variant()
+            preferred = torch_device_for(selected_variant) if selected_variant else None
         except Exception:
             preferred = None
 
@@ -64,6 +65,36 @@ class PyTorchBackend:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         return "cpu"
+
+    @classmethod
+    def _decode_text(cls, decode_result: object) -> str:
+        """Extract text from legacy decoders and GigaAM 0.2 structured results."""
+        if decode_result is None:
+            return ""
+        if isinstance(decode_result, str):
+            return decode_result.strip()
+
+        text_value = getattr(decode_result, "text", None)
+        if isinstance(text_value, str):
+            return text_value.strip()
+
+        # GigaAM 0.2 returns one tuple per sample:
+        # (text, token_ids, token_frames).
+        if (
+            isinstance(decode_result, tuple)
+            and decode_result
+            and isinstance(decode_result[0], str)
+        ):
+            return decode_result[0].strip()
+
+        if isinstance(decode_result, (tuple, list)):
+            for candidate in decode_result:
+                candidate_text = cls._decode_text(candidate)
+                if candidate_text:
+                    return candidate_text
+            return ""
+
+        return str(decode_result).strip()
 
     def load(self, logger: Callable[[str], None] | None = None) -> bool:
         if self.model is not None:
@@ -156,18 +187,7 @@ class PyTorchBackend:
                     length = torch.full([1], wav.shape[-1], device=model._device)
                     encoded, encoded_len = model.forward(wav, length)
                     decode_result = model.decoding.decode(model.head, encoded, encoded_len)
-
-                    text = ""
-                    if isinstance(decode_result, (tuple, list)):
-                        for candidate in decode_result:
-                            if candidate is None:
-                                continue
-                            candidate_text = str(candidate).strip()
-                            if candidate_text:
-                                text = candidate_text
-                                break
-                    elif decode_result is not None:
-                        text = str(decode_result).strip()
+                    text = self._decode_text(decode_result)
 
                     if text:
                         start_time = float(start) / sample_rate

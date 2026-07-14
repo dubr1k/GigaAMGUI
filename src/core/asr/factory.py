@@ -23,6 +23,14 @@ def _default_import_probe(modules: tuple[str, ...]) -> bool:
         return False
 
 
+def _mlx_supports_model(model_revision: str) -> bool:
+    return model_revision.strip().lower() in {
+        "rnnt",
+        "e2e_rnnt",
+        "v3_e2e_rnnt",
+    }
+
+
 def create_backend(
     requested_backend: str,
     *,
@@ -44,6 +52,10 @@ def create_backend(
             raise RuntimeError(
                 "Явное API mlx доступно только на macOS Apple Silicon (darwin/arm64)"
             )
+        if not _mlx_supports_model(model_revision):
+            raise RuntimeError(
+                f"Модель {model_revision} доступна только через PyTorch backend"
+            )
         if not import_probe(("mlx", "gigaam_mlx")):
             raise RuntimeError(
                 "Модуль mlx/gigaam_mlx недоступен. Установите зависимость gigaam-mlx для MLX backend."
@@ -53,6 +65,12 @@ def create_backend(
     # requested == "auto"
     if not _is_macos_arm64(platform_name, machine_name):
         return PyTorchBackend(model=model_name, revision=model_revision), None
+
+    if not _mlx_supports_model(model_revision):
+        return (
+            PyTorchBackend(model=model_name, revision=model_revision),
+            f"Модель {model_revision} поддерживается только PyTorch backend",
+        )
 
     if import_probe(("mlx", "gigaam_mlx")):
         return MLXBackend(model=model_name, repo=mlx_repo), None
