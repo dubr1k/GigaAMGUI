@@ -8,7 +8,7 @@ BIN_DIR="${HOME}/.local/bin"
 
 usage() {
   cat <<'EOF'
-Usage: install_tui.sh [--prefix PATH] [--ref GIT_REF]
+Usage: install_tui.sh [--prefix PATH] [--ref GIT_REF] [--model MODEL]
 
 Installs the Rust TUI, an isolated Python worker environment, and ~/.local/bin/gigaam.
 Required tools: git, cargo, Python 3.10–3.12, ffmpeg, and a C/C++ build toolchain.
@@ -16,15 +16,34 @@ EOF
 }
 
 REF="main"
+MODEL="${GIGAAM_MODEL:-v3_e2e_rnnt}"
+MODEL_EXPLICIT=false
 while (($#)); do
   case "$1" in
     --prefix) PREFIX="$2"; shift ;;
     --ref) REF="$2"; shift ;;
+    --model) MODEL="$2"; MODEL_EXPLICIT=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+
+if [[ -t 0 && "$MODEL_EXPLICIT" == false && -z "${GIGAAM_MODEL:-}" ]]; then
+  echo "Choose the model to download on first transcription:"
+  select choice in "GigaAM v3 e2e RNNT (current)" "Multilingual CTC (220M)" "Multilingual Large CTC (600M)"; do
+    case "$REPLY" in
+      1) MODEL="v3_e2e_rnnt"; break ;;
+      2) MODEL="multilingual_ctc"; break ;;
+      3) MODEL="multilingual_large_ctc"; break ;;
+      *) echo "Enter 1, 2, or 3." ;;
+    esac
+  done
+fi
+case "$MODEL" in
+  v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc) ;;
+  *) echo "Unknown model: $MODEL" >&2; exit 2 ;;
+esac
 
 for command in git cargo ffmpeg; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -65,6 +84,24 @@ rm -rf "$VENV"
 "$VENV/bin/python" -m pip install --no-build-isolation \
   -e 'git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam'
 "$VENV/bin/python" -c 'import dotenv, gigaam'
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+if [[ "$(uname -s)" == "Darwin" ]]; then CONFIG_HOME="$HOME/Library/Application Support"; fi
+SETTINGS_DIR="$CONFIG_HOME/GigaAMTranscriber"
+mkdir -p "$SETTINGS_DIR"
+"$VENV/bin/python" - "$SETTINGS_DIR/tui_settings.json" "$MODEL" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    settings = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    settings = {}
+settings["model"] = sys.argv[2]
+path.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+
+echo "Selected model: $MODEL (weights download on first transcription)."
 
 cat > "$BIN_DIR/gigaam" <<EOF
 #!/usr/bin/env bash

@@ -218,6 +218,19 @@ impl App {
     }
 }
 
+fn terminal_supports_images() -> bool {
+    let term = std::env::var("TERM").unwrap_or_default();
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    std::env::var_os("KITTY_WINDOW_ID").is_some()
+        || std::env::var_os("WEZTERM_EXECUTABLE").is_some()
+        || term.contains("kitty")
+        || term.contains("ghostty")
+        || term.contains("sixel")
+        || term_program.contains("iTerm")
+        || term_program.contains("WezTerm")
+        || term_program.contains("Ghostty")
+}
+
 fn settings_path() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("GIGAAM_CONFIG_DIR") {
         return Some(PathBuf::from(directory).join("tui_settings.json"));
@@ -1206,8 +1219,9 @@ fn main() -> io::Result<()> {
     if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
         app.model = settings.model;
     }
-    app.pet_picker = Picker::from_query_stdio()
-        .ok()
+    app.pet_picker = terminal_supports_images()
+        .then(Picker::from_query_stdio)
+        .and_then(Result::ok)
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
     if app.pet_enabled {
         if let Err(error) = app.refresh_pet_image() {
@@ -1222,7 +1236,7 @@ fn main() -> io::Result<()> {
         while let Ok(message) = events.try_recv() {
             app.handle_message(message);
         }
-        let pet_frame_interval = 470;
+        let pet_frame_interval = 1_300;
         if app.pet_enabled
             && (app.pet_running != app.running
                 || last_pet_frame.elapsed() >= Duration::from_millis(pet_frame_interval))

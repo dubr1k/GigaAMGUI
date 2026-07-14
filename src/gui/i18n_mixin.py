@@ -215,6 +215,9 @@ class I18nMixin:
             self._act_theme.setText("Переключить тему" if is_ru else "Toggle theme")
             self._act_accent.setText("Акцентный цвет…" if is_ru else "Accent color…")
             self._act_accent_reset.setText("Сбросить акцентный цвет" if is_ru else "Reset accent color")
+            if hasattr(self, "_act_asr_model"):
+                self._act_asr_model.setText("Модель распознавания…" if is_ru else "Recognition model...")
+                self._act_asr_model.setStatusTip("Выбрать модель GigaAM" if is_ru else "Select the GigaAM model")
             self._act_asr_backend.setText("Движок распознавания…" if is_ru else "Recognition engine...")
             self._act_device.setText("Устройство (CPU / GPU)…" if is_ru else "Device (CPU / GPU)…")
             self._act_llm.setText("LLM API…")
