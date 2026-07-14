@@ -241,6 +241,11 @@ def _runtime_stack_matches(variant: str, target: Path | None = None) -> bool:
         return False
     target = target or variant_dir(variant)
     expected = VARIANTS[variant]["packages"]
+    # CUDA Linux wheels rely on separately installed nvidia-* wheels. A stale
+    # marker without libcudart used to make the first-run installer skip them.
+    if sys.platform.startswith("linux") and variant.startswith("cu"):
+        if not any((target / "nvidia").glob("cuda_runtime/lib/libcudart.so*")):
+            return False
     for package, version in expected.items():
         package_dir = target / package.replace("-", "_") / "__init__.py"
         if not package_dir.exists():
@@ -312,6 +317,19 @@ def activate(variant: str) -> None:
     if target_str in sys.path:
         sys.path.remove(target_str)
     sys.path.insert(0, target_str)
+
+    # Frozen Linux executables do not inherit the wheel's normal loader paths.
+    # Preload libtorch's global dependencies before importing torch.
+    if sys.platform.startswith("linux") and target.exists():
+        torch_lib = target / "torch" / "lib"
+        global_deps = torch_lib / "libtorch_global_deps.so"
+        if global_deps.is_file():
+            try:
+                import ctypes
+
+                ctypes.CDLL(str(global_deps), mode=ctypes.RTLD_GLOBAL)
+            except OSError as exc:
+                raise RuntimeError(f"Cannot load PyTorch runtime dependencies: {exc}") from exc
 
     # Регистрируем каталоги с нативными DLL (torch и nvidia-*),
     # чтобы Windows нашла cudnn/cublas/cuda-runtime.
