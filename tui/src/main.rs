@@ -1231,30 +1231,13 @@ fn main() -> io::Result<()> {
     }
     let mut quit = false;
     let mut last_exit_request: Option<(&'static str, Instant)> = None;
-    let mut last_pet_frame = Instant::now();
     while !quit {
         while let Ok(message) = events.try_recv() {
             app.handle_message(message);
         }
-        let pet_frame_interval = 1_300;
-        if app.pet_enabled
-            && (app.pet_running != app.running
-                || last_pet_frame.elapsed() >= Duration::from_millis(pet_frame_interval))
-        {
-            if app.pet_running != app.running {
-                app.pet_frame = 0;
-                app.pet_running = app.running;
-            } else {
-                app.pet_frame = app.pet_frame.wrapping_add(1);
-            }
-            if let Err(error) = app.refresh_pet_image() {
-                app.pet_enabled = false;
-                app.pet_image = None;
-                app.status = error;
-                app.log(app.status.clone());
-            }
-            last_pet_frame = Instant::now();
-        }
+        // Terminal graphics protocols keep transparent pixels from prior frames in
+        // some terminals. Keep one stable image until a renderer with explicit
+        // per-protocol image deletion is available.
         if app.exit_requested {
             quit = true;
             continue;
