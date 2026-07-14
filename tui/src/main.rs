@@ -1469,10 +1469,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_preserve_the_selected_backend() {
+    fn settings_preserve_the_selected_backend_and_model() {
         let settings = TuiSettings {
             pet_enabled: true,
             backend: "mlx".into(),
+            model: "multilingual_ctc".into(),
         };
         let restored: TuiSettings =
             serde_json::from_str(&serde_json::to_string(&settings).expect("settings serialize"))
@@ -1480,6 +1481,7 @@ mod tests {
 
         assert!(restored.pet_enabled);
         assert_eq!(restored.backend, "mlx");
+        assert_eq!(restored.model, "multilingual_ctc");
     }
 
     #[test]
