@@ -1,4 +1,4 @@
-"""VAD-driven segmentation helpers for PyTorch ASR."""
+"""VAD-driven segmentation helpers shared by PyTorch and MLX ASR."""
 
 from __future__ import annotations
 

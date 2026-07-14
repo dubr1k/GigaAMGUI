@@ -143,12 +143,13 @@ A smaller alternative is an optional `ASR_USE_VAD` mode, but it must fail explic
 
 The investigation branch now contains a production implementation rather than the unsafe one-line `transcribe_longform()` switch:
 
-- PyTorch ASR uses a dedicated `pyannote/segmentation-3.0` adapter compatible with the pinned `pyannote.audio 3.1.1` runtime.
+- PyTorch and MLX ASR use a shared `pyannote/segmentation-3.0` adapter compatible with the pinned `pyannote.audio 3.1.1` runtime.
 - `ASR_SEGMENTATION_MODE=vad` is the explicit default; `fixed_chunks` preserves the legacy path when deliberately selected.
 - VAD runs on CPU by default so that GigaAM and the segmentation model do not compete for accelerator memory.
 - Cached VAD weights work without a token; unavailable VAD falls back to fixed chunks with sanitized health diagnostics.
 - Shared VAD and GigaAM inference is serialized because API frontends reuse one model loader across concurrent jobs.
 - Exact VAD metadata boundaries are retained while sample indices are quantized only for waveform slicing.
+- MLX re-splits long VAD regions with its native silence-aware splitter so every decoder input remains at most 20 seconds.
 
 Pinned-stack end-to-end verification on the issue attachment produced one VAD interval at
 `3.1154499151103567–19.668930390492363`, active mode `vad`, no fallback, and the expected opening
