@@ -134,6 +134,11 @@ MODEL_REVISION = os.getenv("MODEL_REVISION", "e2e_rnnt")
 ASR_BACKEND = _validate_backend_name(os.getenv("ASR_BACKEND", "auto"))
 ASR_MODEL = os.getenv("ASR_MODEL", MODEL_REVISION)
 ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
+ASR_SEGMENTATION_MODE = os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
+if ASR_SEGMENTATION_MODE not in {"vad", "fixed_chunks"}:
+    ASR_SEGMENTATION_MODE = "vad"
+# Keep the additional segmentation model off the ASR accelerator by default.
+ASR_VAD_DEVICE = os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu"
 MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
 
 

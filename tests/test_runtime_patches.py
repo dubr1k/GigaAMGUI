@@ -2,7 +2,42 @@ import importlib
 import sys
 import types
 
+import numpy as np
+
 from src.utils import pyannote_patch, torch_patch
+
+
+def test_pyannote_soundfile_adapter_transposes_stereo_channels():
+    class FakeTensor:
+        def __init__(self, array):
+            self.array = array
+
+        @property
+        def ndim(self):
+            return self.array.ndim
+
+        @property
+        def shape(self):
+            return self.array.shape
+
+        def float(self):
+            return self
+
+        def unsqueeze(self, axis):
+            return FakeTensor(np.expand_dims(self.array, axis))
+
+        def transpose(self, first, second):
+            return FakeTensor(self.array.swapaxes(first, second))
+
+    fake_torch = types.SimpleNamespace(
+        from_numpy=lambda array: FakeTensor(array),
+        tensor=lambda array: FakeTensor(np.asarray(array)),
+    )
+
+    stereo = np.zeros((16000, 2), dtype=np.float32)
+    waveform = pyannote_patch._audio_array_to_waveform(stereo, fake_torch)
+
+    assert tuple(waveform.shape) == (2, 16000)
 
 
 def _new_torchaudio_module():
@@ -79,6 +114,8 @@ def test_torch_load_patch_is_reapplied_after_runtime_switch(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", first)
     assert torch_patch.apply_torch_load_patch() is True
     assert first.load("model.pt")[2]["weights_only"] is False
+    assert first.load("model.pt", weights_only=None)[2]["weights_only"] is False
+    assert first.load("model.pt", weights_only=True)[2]["weights_only"] is True
 
     second = make_torch("second")
     monkeypatch.setitem(sys.modules, "torch", second)

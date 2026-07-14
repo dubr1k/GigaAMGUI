@@ -1,13 +1,18 @@
 """PyTorch backend unit tests with model/IO mocks."""
 
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import numpy as np
 import soundfile as sf
 import torch
 
+from src.core.asr import pytorch_backend
 from src.core.asr.pytorch_backend import PyTorchBackend
+from src.core.asr.vad import PyannoteVadSegmenter
 
 
 def test_select_device_uses_mps_without_saved_runtime(monkeypatch):
@@ -57,13 +62,18 @@ def test_transcribe_longform_filters_empty_text_and_limits_chunks(tmp_path, monk
 
     monkeypatch.setattr(torchaudio, "load", fail_if_called)
 
-    backend = PyTorchBackend()
+    backend = PyTorchBackend(segmentation_mode="fixed_chunks")
     called = {"chunks": 0}
+
+    def forward(wav, length):
+        called["chunks"] += 1
+        return wav, length
+
     backend.model = SimpleNamespace(
         _device="cpu",
         _dtype=torch.float32,
         head=object(),
-        forward=lambda wav, length: (wav, length),
+        forward=forward,
         decoding=SimpleNamespace(decode=lambda head, encoded, length: ["", "hello"]),
     )
     backend.device = "cpu"
@@ -71,14 +81,14 @@ def test_transcribe_longform_filters_empty_text_and_limits_chunks(tmp_path, monk
     result = backend.transcribe_longform(str(wav_path))
     # 160000 samples at 16000 Hz = 10s, so one chunk should be bounded by the real audio duration.
     assert result == [{"transcription": "hello", "boundaries": (0.0, 10.0)}]
-    assert called["chunks"] == 0
+    assert called["chunks"] == 1
 
 
 def test_transcribe_longform_extracts_text_from_gigaam_structured_decode(tmp_path):
     wav_path = tmp_path / "sample.wav"
     sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
 
-    backend = PyTorchBackend()
+    backend = PyTorchBackend(segmentation_mode="fixed_chunks")
     backend.model = SimpleNamespace(
         _device="cpu",
         _dtype=torch.float32,
@@ -112,7 +122,7 @@ def test_transcribe_longform_reports_chunk_progress(tmp_path, monkeypatch):
     # 45 seconds => 3 chunks (20s,20s,5s)
     sf.write(wav_path, np.zeros(45 * 16000, dtype=np.float32), 16000)
 
-    backend = PyTorchBackend()
+    backend = PyTorchBackend(segmentation_mode="fixed_chunks")
     backend.model = SimpleNamespace(
         _device="cpu",
         _dtype=torch.float32,
@@ -143,12 +153,329 @@ def test_transcribe_longform_reports_chunk_progress(tmp_path, monkeypatch):
     ]
 
 
+def test_transcribe_longform_uses_vad_speech_boundaries(tmp_path, monkeypatch):
+    wav_path = tmp_path / "vad_sample.wav"
+    sf.write(wav_path, np.zeros(10 * 16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+
+    forwarded_samples = []
+
+    class FakeSegmenter:
+        def segment_file(self, audio_path, *, audio_duration):
+            assert audio_path == str(wav_path)
+            assert audio_duration == 10.0
+            return [(3.0, 7.0)]
+
+    backend = PyTorchBackend(
+        vad_segmenter_factory=lambda **_kwargs: FakeSegmenter(),
+    )
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: forwarded_samples.append(wav.shape[-1]) or (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["correct"]),
+    )
+    backend.device = "cpu"
+
+    result = backend.transcribe_longform(str(wav_path))
+
+    assert result == [{"transcription": "correct", "boundaries": (3.0, 7.0)}]
+    assert forwarded_samples == [4 * 16000]
+
+
+def test_transcribe_longform_enables_pyannote_vad_by_default(tmp_path, monkeypatch):
+    wav_path = tmp_path / "default_vad.wav"
+    sf.write(wav_path, np.zeros(10 * 16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_default")
+    calls = []
+
+    class FakeSegmenter:
+        def __init__(self, *, token, device):
+            calls.append((token, device))
+
+        def segment_file(self, _audio_path, *, audio_duration):
+            assert audio_duration == 10.0
+            return [(2.0, 4.0)]
+
+    monkeypatch.setattr(pytorch_backend, "PyannoteVadSegmenter", FakeSegmenter, raising=False)
+    backend = PyTorchBackend()
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["vad"]),
+    )
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path)) == [
+        {"transcription": "vad", "boundaries": (2.0, 4.0)}
+    ]
+    assert calls == [("hf_default", "cpu")]
+
+
+def test_transcribe_longform_uses_fixed_chunks_when_explicitly_disabled(tmp_path, monkeypatch):
+    wav_path = tmp_path / "fallback.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+    backend = PyTorchBackend(segmentation_mode="fixed_chunks")
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["fallback"]),
+    )
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path)) == [
+        {"transcription": "fallback", "boundaries": (0.0, 1.0)}
+    ]
+    capabilities = backend.capabilities()
+    assert capabilities.segmentation_mode == "fixed_chunks"
+    assert "ASR_SEGMENTATION_MODE" in capabilities.segmentation_fallback_reason
+
+
+def test_transcribe_longform_falls_back_when_vad_is_unavailable(tmp_path, monkeypatch):
+    wav_path = tmp_path / "vad_error.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_denied")
+
+    class FailingSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            raise RuntimeError("segmentation access denied for hf_denied")
+
+    backend = PyTorchBackend(
+        vad_segmenter_factory=lambda **_kwargs: FailingSegmenter(),
+    )
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["fallback"]),
+    )
+    backend.device = "cpu"
+    messages = []
+    backend._logger = messages.append
+
+    assert backend.transcribe_longform(str(wav_path)) == [
+        {"transcription": "fallback", "boundaries": (0.0, 1.0)}
+    ]
+    capabilities = backend.capabilities()
+    assert capabilities.segmentation_mode == "fixed_chunks"
+    assert "RuntimeError" in capabilities.segmentation_fallback_reason
+    assert "segmentation access denied" not in capabilities.segmentation_fallback_reason
+    assert "hf_denied" not in capabilities.segmentation_fallback_reason
+    assert messages
+    assert all("hf_denied" not in message for message in messages)
+
+
+def test_transcribe_longform_attempts_cached_vad_without_token(tmp_path, monkeypatch):
+    wav_path = tmp_path / "cached_vad.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    factory_calls = []
+
+    class FakeSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            return [(0.0, audio_duration)]
+
+    backend = PyTorchBackend(
+        vad_segmenter_factory=lambda **kwargs: factory_calls.append(kwargs) or FakeSegmenter(),
+    )
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["cached"]),
+    )
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path))[0]["transcription"] == "cached"
+    assert factory_calls == [{"token": None, "device": "cpu"}]
+
+
+def test_transcribe_longform_caches_initialization_failure_until_token_changes(tmp_path, monkeypatch):
+    wav_path = tmp_path / "vad_init_failure.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    factory_calls = []
+
+    def factory(**kwargs):
+        factory_calls.append(kwargs)
+        return PyannoteVadSegmenter(
+            **kwargs,
+            pipeline_loader=lambda **_loader_kwargs: (_ for _ in ()).throw(OSError("offline")),
+        )
+
+    backend = PyTorchBackend(vad_segmenter_factory=factory)
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda *_args: ["fallback"]),
+    )
+    backend.device = "cpu"
+
+    monkeypatch.setenv("HF_TOKEN", "hf_first")
+    backend.transcribe_longform(str(wav_path))
+    backend.transcribe_longform(str(wav_path))
+    monkeypatch.setenv("HF_TOKEN", "hf_second")
+    backend.transcribe_longform(str(wav_path))
+
+    assert [call["token"] for call in factory_calls] == ["hf_first", "hf_second"]
+
+
+def test_transcribe_longform_preserves_exact_vad_metadata_boundary(tmp_path, monkeypatch):
+    wav_path = tmp_path / "exact_boundary.wav"
+    sf.write(wav_path, np.zeros(21 * 16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    expected = (3.11909375, 19.65659375)
+
+    class FakeSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            return [expected]
+
+    backend = PyTorchBackend(vad_segmenter_factory=lambda **_kwargs: FakeSegmenter())
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["exact"]),
+    )
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path)) == [
+        {"transcription": "exact", "boundaries": expected}
+    ]
+
+
+def test_transcribe_longform_reuses_loaded_vad_segmenter(tmp_path, monkeypatch):
+    wav_path = tmp_path / "reuse_vad.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_reuse")
+    factory_calls = []
+
+    class FakeSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            return [(0.0, audio_duration)]
+
+    backend = PyTorchBackend(
+        vad_segmenter_factory=lambda **kwargs: factory_calls.append(kwargs) or FakeSegmenter(),
+    )
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+        decoding=SimpleNamespace(decode=lambda head, encoded, length: ["ok"]),
+    )
+    backend.device = "cpu"
+
+    backend.transcribe_longform(str(wav_path))
+    backend.transcribe_longform(str(wav_path))
+
+    assert factory_calls == [{"token": "hf_reuse", "device": "cpu"}]
+
+
+def test_transcribe_longform_treats_empty_vad_timeline_as_no_speech(tmp_path, monkeypatch):
+    wav_path = tmp_path / "silence.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_silence")
+
+    class EmptySegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            return []
+
+    backend = PyTorchBackend(vad_segmenter_factory=lambda **_kwargs: EmptySegmenter())
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda *_args: (_ for _ in ()).throw(AssertionError("ASR must not run")),
+        decoding=SimpleNamespace(decode=lambda *_args: ["unexpected"]),
+    )
+    backend.device = "cpu"
+    events = []
+
+    assert backend.transcribe_longform(
+        str(wav_path),
+        progress_callback=lambda *event: events.append(event),
+    ) == []
+    assert backend.capabilities().segmentation_mode == "vad"
+    assert backend.capabilities().segmentation_fallback_reason is None
+    assert events == [(1.0, 1.0, 1.0)]
+
+
+def test_unload_resets_vad_state_and_releases_device_cache(monkeypatch):
+    class FakeSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            return []
+
+    backend = PyTorchBackend()
+    backend.model = object()
+    backend.device = "cuda"
+    backend._vad_segmenter = FakeSegmenter()
+    backend._vad_segmenter_key = (b"fingerprint", "cpu")
+    backend.segmentation_mode = "vad"
+    backend.segmentation_fallback_reason = "stale"
+    cache_calls = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: cache_calls.append(True))
+
+    backend.unload()
+
+    assert backend.model is None
+    assert backend._vad_segmenter is None
+    assert backend._vad_segmenter_key is None
+    assert backend.segmentation_mode == "not_run"
+    assert backend.segmentation_fallback_reason is None
+    assert cache_calls == [True]
+
+
+def test_transcribe_longform_serializes_shared_model_inference(tmp_path):
+    wav_path = tmp_path / "concurrent.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    state = {"active": 0, "maximum": 0}
+    state_lock = threading.Lock()
+
+    def forward(wav, length):
+        with state_lock:
+            state["active"] += 1
+            state["maximum"] = max(state["maximum"], state["active"])
+        time.sleep(0.03)
+        with state_lock:
+            state["active"] -= 1
+        return wav, length
+
+    backend = PyTorchBackend(segmentation_mode="fixed_chunks")
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=forward,
+        decoding=SimpleNamespace(decode=lambda *_args: ["ok"]),
+    )
+    backend.device = "cpu"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: backend.transcribe_longform(str(wav_path)), range(2)))
+
+    assert len(results) == 2
+    assert state["maximum"] == 1
+
+
 def test_transcribe_longform_progress_with_short_tail_does_still_complete(tmp_path, monkeypatch):
     # final chunk is smaller than 20ms threshold; callback should still end at 1.0
     wav_path = tmp_path / "sample_tail.wav"
     sf.write(wav_path, np.zeros(321000, dtype=np.float32), 16000)
 
-    backend = PyTorchBackend()
+    backend = PyTorchBackend(segmentation_mode="fixed_chunks")
     backend.model = SimpleNamespace(
         _device="cpu",
         _dtype=torch.float32,

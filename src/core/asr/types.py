@@ -22,6 +22,8 @@ class BackendCapabilities:
     model: str
     device: str
     supports_local_asr: bool = True
+    segmentation_mode: str | None = None
+    segmentation_fallback_reason: str | None = None
 
 
 def validate_backend_name(value: str) -> str:

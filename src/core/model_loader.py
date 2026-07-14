@@ -217,12 +217,20 @@ class ModelLoader:
         model = self._model_name
         device = "N/A"
         active = self.backend_name
+        segmentation_mode = None
+        segmentation_fallback_reason = None
 
         if self._backend is not None:
             try:
                 capabilities = self._backend.capabilities()
                 model = capabilities.model
                 device = capabilities.device
+                segmentation_mode = getattr(capabilities, "segmentation_mode", None)
+                segmentation_fallback_reason = getattr(
+                    capabilities,
+                    "segmentation_fallback_reason",
+                    None,
+                )
             except Exception:
                 pass
 
@@ -232,6 +240,8 @@ class ModelLoader:
             "fallback_reason": self._fallback_reason,
             "model": model,
             "device": device or "N/A",
+            "segmentation_mode": segmentation_mode,
+            "segmentation_fallback_reason": segmentation_fallback_reason,
             "cache_root": self._bundle_download_root,
             "repo": self._mlx_model_repo,
             "loader_loaded": self.is_loaded(),

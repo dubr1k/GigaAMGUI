@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import threading
 from collections.abc import Callable
 
+from ...config import ASR_SEGMENTATION_MODE, ASR_VAD_DEVICE
 from .types import BackendCapabilities, TranscriptionSegment
+from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError
 
 
 class MLXBackend:
@@ -13,7 +17,14 @@ class MLXBackend:
 
     name = "mlx"
 
-    def __init__(self, model: str | None = None, *, repo: str | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        repo: str | None = None,
+        segmentation_mode: str | None = None,
+        vad_segmenter_factory: Callable[..., VadSegmenter] | None = None,
+    ):
         requested_model = (model or "rnnt").strip().lower()
         model_aliases = {
             "e2e_rnnt": "rnnt",
@@ -26,8 +37,21 @@ class MLXBackend:
         self.device = "mps"
         self._lock = threading.Lock()
         self._gigaam_mlx = None
+        self._vad_segmenter_factory = vad_segmenter_factory or PyannoteVadSegmenter
+        self._vad_segmenter: VadSegmenter | None = None
+        self._vad_segmenter_key: tuple[bytes, str] | None = None
+        self._vad_failure_key: tuple[bytes, str] | None = None
+        self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
+        if self.segmentation_strategy not in {"vad", "fixed_chunks"}:
+            raise ValueError(f"Неизвестный режим сегментации: {self.segmentation_strategy}")
+        self.segmentation_mode = "not_run"
+        self.segmentation_fallback_reason: str | None = None
+        self._logger: Callable[[str], None] | None = None
 
     def load(self, logger: Callable[[str], None] | None = None) -> bool:
+        self._logger = logger
+        if self.is_loaded():
+            return True
         try:
             import gigaam_mlx
 
@@ -94,6 +118,146 @@ class MLXBackend:
 
         return segments
 
+    def _fixed_chunks(self, audio) -> list[dict]:
+        gm = self._gigaam_mlx
+        if gm is None:
+            raise RuntimeError("MLX backend is not initialized")
+        return gm.audio.split_audio(audio)
+
+    def _chunks_from_vad_boundaries(
+        self,
+        audio,
+        boundaries: list[tuple[float, float]],
+    ) -> list[dict]:
+        gm = self._gigaam_mlx
+        if gm is None:
+            raise RuntimeError("MLX backend is not initialized")
+
+        sample_rate = gm.audio.SAMPLE_RATE
+        total_samples = len(audio)
+        total_seconds = float(total_samples) / sample_rate if total_samples else 0.0
+        chunks: list[dict] = []
+
+        for raw_start, raw_end in boundaries:
+            boundary_start = max(0.0, float(raw_start))
+            boundary_end = min(total_seconds, float(raw_end))
+            start_sample = max(0, int(boundary_start * sample_rate))
+            end_sample = min(total_samples, int(boundary_end * sample_rate))
+            if end_sample - start_sample < 1600:
+                continue
+
+            region = audio[start_sample:end_sample]
+            region_chunks = gm.audio.split_audio(region)
+            for index, chunk in enumerate(region_chunks):
+                local_start = max(0, int(chunk["start_sample"]))
+                local_end = min(len(region), int(chunk["end_sample"]))
+                if local_end - local_start < 1600:
+                    continue
+
+                absolute_start = start_sample + local_start
+                absolute_end = start_sample + local_end
+                start_sec = (
+                    boundary_start
+                    if index == 0 and local_start == 0
+                    else float(absolute_start) / sample_rate
+                )
+                end_sec = (
+                    boundary_end
+                    if index == len(region_chunks) - 1 and local_end == len(region)
+                    else float(absolute_end) / sample_rate
+                )
+                chunks.append(
+                    {
+                        "start_sample": absolute_start,
+                        "end_sample": absolute_end,
+                        "start_sec": start_sec,
+                        "end_sec": end_sec,
+                    }
+                )
+
+        return chunks
+
+    def _use_fixed_chunks(self, audio, reason: str) -> list[dict]:
+        self.segmentation_mode = "fixed_chunks"
+        self.segmentation_fallback_reason = reason
+        if self._logger is not None:
+            self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {reason}")
+        return self._fixed_chunks(audio)
+
+    def _vad_context(self) -> tuple[str | None, tuple[bytes, str]]:
+        hf_token = os.getenv("HF_TOKEN", "").strip() or None
+        token_fingerprint = hashlib.sha256((hf_token or "").encode()).digest()
+        return hf_token, (token_fingerprint, ASR_VAD_DEVICE)
+
+    def _get_vad_segmenter(
+        self,
+        *,
+        token: str | None,
+        segmenter_key: tuple[bytes, str],
+    ) -> VadSegmenter:
+        if self._vad_failure_key == segmenter_key:
+            raise VadUnavailableError("previous VAD initialization failed")
+        if self._vad_segmenter is None or self._vad_segmenter_key != segmenter_key:
+            self._vad_segmenter = self._vad_segmenter_factory(
+                token=token,
+                device=ASR_VAD_DEVICE,
+            )
+            self._vad_segmenter_key = segmenter_key
+            self._vad_failure_key = None
+        return self._vad_segmenter
+
+    @staticmethod
+    def _vad_fallback_reason(exc: Exception) -> str:
+        recovery_hint = ""
+        if isinstance(exc, VadUnavailableError):
+            recovery_hint = (
+                "проверьте локальный кэш или HF_TOKEN и доступ к "
+                "pyannote/segmentation-3.0; "
+            )
+        return (
+            f"VAD недоступен ({type(exc).__name__}): "
+            f"{recovery_hint}использовано резервное разбиение MLX до 20 секунд"
+        )
+
+    def _resolve_chunks(
+        self,
+        audio_path: str,
+        audio,
+        *,
+        total_seconds: float,
+    ) -> list[dict]:
+        if self.segmentation_strategy != "vad":
+            return self._use_fixed_chunks(
+                audio,
+                "VAD отключён настройкой ASR_SEGMENTATION_MODE: "
+                "использовано резервное разбиение MLX до 20 секунд",
+            )
+
+        hf_token, segmenter_key = self._vad_context()
+        try:
+            segmenter = self._get_vad_segmenter(
+                token=hf_token,
+                segmenter_key=segmenter_key,
+            )
+            boundaries = segmenter.segment_file(
+                audio_path,
+                audio_duration=total_seconds,
+            )
+        except Exception as exc:
+            self._vad_segmenter = None
+            self._vad_segmenter_key = None
+            self._vad_failure_key = (
+                segmenter_key if isinstance(exc, VadUnavailableError) else None
+            )
+            return self._use_fixed_chunks(
+                audio,
+                self._vad_fallback_reason(exc),
+            )
+
+        self.segmentation_mode = "vad"
+        self.segmentation_fallback_reason = None
+        return self._chunks_from_vad_boundaries(audio, boundaries)
+
     def _transcribe_in_chunks(
         self,
         audio_path: str,
@@ -104,13 +268,21 @@ class MLXBackend:
             raise RuntimeError("MLX backend is not initialized")
 
         audio = gm.load_audio(audio_path)
-        chunks = gm.audio.split_audio(audio)
         total_samples = len(audio)
-        total_seconds = float(total_samples) / gm.audio.SAMPLE_RATE if total_samples else None
+        sample_rate = gm.audio.SAMPLE_RATE
+        total_seconds = float(total_samples) / sample_rate if total_samples else 0.0
+        chunks = self._resolve_chunks(
+            audio_path,
+            audio,
+            total_seconds=total_seconds,
+        )
 
         result_segments: list[dict] = []
+        reported = 0.0
         for chunk in chunks:
-            chunk_audio = audio[chunk["start_sample"]:chunk["end_sample"]]
+            start_sample = int(chunk["start_sample"])
+            end_sample = int(chunk["end_sample"])
+            chunk_audio = audio[start_sample:end_sample]
             mel = gm.audio.compute_mel(chunk_audio)
 
             mx = __import__("mlx.core", fromlist=["array"])  # lazy import
@@ -127,23 +299,38 @@ class MLXBackend:
                 "text": text,
             })
 
-            if progress_callback is not None and total_samples > 0 and total_seconds is not None:
-                processed = float(chunk["end_sample"]) / total_samples
-                progress_callback(min(processed, 1.0), chunk["end_sec"], total_seconds)
+            if progress_callback is not None and total_samples > 0:
+                processed = float(end_sample) / total_samples
+                if processed >= reported:
+                    progress_callback(
+                        min(processed, 1.0),
+                        min(float(chunk["end_sec"]), total_seconds),
+                        total_seconds,
+                    )
+                    reported = processed
+
+        if progress_callback is not None and total_samples > 0 and reported < 1.0:
+            progress_callback(1.0, total_seconds, total_seconds)
 
         return result_segments
 
     def unload(self) -> None:
-        self.model = None
-        self.tokenizer = None
-        try:
-            import mlx
+        with self._lock:
+            self.model = None
+            self.tokenizer = None
+            self._vad_segmenter = None
+            self._vad_segmenter_key = None
+            self._vad_failure_key = None
+            self.segmentation_mode = "not_run"
+            self.segmentation_fallback_reason = None
+            try:
+                import mlx
 
-            clear_cache = getattr(mlx, "clear_cache", None)
-            if callable(clear_cache):
-                clear_cache()
-        except Exception:
-            pass
+                clear_cache = getattr(mlx, "clear_cache", None)
+                if callable(clear_cache):
+                    clear_cache()
+            except Exception:
+                pass
 
     def is_loaded(self) -> bool:
         return self.model is not None and self.tokenizer is not None
@@ -153,6 +340,8 @@ class MLXBackend:
             backend=self.name,
             model=self.repo_id,
             device=self.device,
+            segmentation_mode=self.segmentation_mode,
+            segmentation_fallback_reason=self.segmentation_fallback_reason,
         )
 
     def __repr__(self) -> str:

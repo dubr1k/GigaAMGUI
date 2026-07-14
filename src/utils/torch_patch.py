@@ -74,7 +74,7 @@ def apply_torch_load_patch():
                 Если пользователь явно передал weights_only, используем его значение.
                 Иначе устанавливаем weights_only=False для совместимости.
                 """
-                if "weights_only" not in kwargs:
+                if kwargs.get("weights_only") is None:
                     kwargs["weights_only"] = False
                 return _original_torch_load(*args, **kwargs)
 
