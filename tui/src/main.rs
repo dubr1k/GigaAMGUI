@@ -1093,12 +1093,12 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     if app.pet_enabled {
         if let Some(image) = app.pet_image.as_mut() {
             let pet_area = Rect::new(
-                chunks[1].right().saturating_sub(26),
+                chunks[1].right().saturating_sub(18),
                 chunks[1].y.saturating_add(1),
-                24.min(chunks[1].width.saturating_sub(2)),
-                16.min(chunks[1].height.saturating_sub(2)),
+                16.min(chunks[1].width.saturating_sub(2)),
+                8.min(chunks[1].height.saturating_sub(2)),
             );
-            if pet_area.width >= 16 && pet_area.height >= 10 {
+            if pet_area.width >= 10 && pet_area.height >= 6 {
                 frame.render_stateful_widget(StatefulImage::default(), pet_area, image);
             }
         }
