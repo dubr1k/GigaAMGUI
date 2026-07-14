@@ -288,12 +288,16 @@ def deactivate() -> None:
 
 
 def _module_belongs_to_runtime(module) -> bool:
-    module_file = getattr(module, "__file__", None)
+    try:
+        # vars() avoids triggering lazy module proxies through __getattr__.
+        module_file = vars(module).get("__file__")
+    except TypeError:
+        return False
     if not module_file:
         return False
     try:
         return Path(module_file).resolve().is_relative_to(_runtimes_root().resolve())
-    except OSError:
+    except (OSError, TypeError):
         return False
 
 

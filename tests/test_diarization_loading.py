@@ -37,6 +37,7 @@ def test_processor_recreates_manager_when_hf_token_changes(monkeypatch):
 
 def test_pipeline_uses_runtime_token_for_all_huggingface_downloads(monkeypatch):
     calls = []
+    monkeypatch.setenv("HF_TOKEN", "")
 
     class FakePipeline:
         @classmethod
@@ -56,6 +57,7 @@ def test_pipeline_uses_runtime_token_for_all_huggingface_downloads(monkeypatch):
 
 def test_pipeline_preserves_internal_type_error_without_legacy_retry(monkeypatch):
     calls = []
+    monkeypatch.setenv("HF_TOKEN", "")
 
     class FakePipeline:
         @classmethod

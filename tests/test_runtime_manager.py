@@ -91,6 +91,16 @@ def test_purge_runtime_modules_removes_prefixed_modules(monkeypatch, tmp_path):
     assert "torchaudio" not in sys.modules
 
 
+def test_module_runtime_check_does_not_trigger_lazy_module_getattr(monkeypatch, tmp_path):
+    monkeypatch.setenv("GIGAAM_RUNTIME_DIR", str(tmp_path))
+
+    class LazyModule:
+        def __getattr__(self, name):
+            raise AssertionError(f"lazy import triggered for {name}")
+
+    assert rm._module_belongs_to_runtime(LazyModule()) is False
+
+
 def test_is_installed_rejects_mixed_runtime_versions(monkeypatch, tmp_path):
     monkeypatch.setenv("GIGAAM_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setattr(rm, "VARIANTS", dict(_TEST_VARIANTS))

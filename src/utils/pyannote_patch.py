@@ -49,6 +49,19 @@ from .torch_patch import apply_torch_load_patch
 # Применяем патч сразу при импорте модуля
 apply_torch_load_patch()
 
+
+def _audio_array_to_waveform(audio_data, torch_module):
+    """Convert soundfile's (time, channels) arrays to pyannote layout."""
+    if isinstance(audio_data, np.ndarray):
+        waveform = torch_module.from_numpy(audio_data).float()
+    else:
+        waveform = torch_module.tensor(audio_data).float()
+    if waveform.ndim == 1:
+        return waveform.unsqueeze(0)
+    if waveform.ndim == 2:
+        return waveform.transpose(0, 1)
+    return waveform
+
 # Флаг идемпотентности: pyannote-патч применяется только один раз за процесс,
 # чтобы повторные вызовы не оборачивали Pipeline.__call__ многократно.
 _PYANNOTE_PATCH_APPLIED = False
@@ -208,15 +221,7 @@ def apply_pyannote_patch():
             def _load_audio_with_soundfile(file_path):
                 """Загружает аудио через soundfile и возвращает в формате pyannote"""
                 audio_data, sample_rate = sf.read(file_path)
-                # Конвертируем в torch tensor
-                if isinstance(audio_data, np.ndarray):
-                    audio_tensor = torch.from_numpy(audio_data).float()
-                    if len(audio_tensor.shape) == 1:
-                        audio_tensor = audio_tensor.unsqueeze(0)
-                else:
-                    audio_tensor = torch.tensor(audio_data).float()
-                    if len(audio_tensor.shape) == 1:
-                        audio_tensor = audio_tensor.unsqueeze(0)
+                audio_tensor = _audio_array_to_waveform(audio_data, torch)
                 return {"waveform": audio_tensor, "sample_rate": sample_rate}
 
             # Защита от повторной обёртки текущего Pipeline.
