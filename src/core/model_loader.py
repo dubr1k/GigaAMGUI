@@ -9,6 +9,7 @@ from ..config import (
     MODEL_REVISION,
 )
 from .asr.factory import create_backend_from_config
+from .asr.models import validate_asr_model
 from .asr.pytorch_backend import PyTorchBackend
 from .asr.types import ProgressCallback
 
@@ -31,7 +32,7 @@ class ModelLoader:
         self._requested_backend = (requested_backend or ASR_BACKEND).strip().lower() or ASR_BACKEND
         self._allow_fallback = ASR_ALLOW_FALLBACK if allow_fallback is None else bool(allow_fallback)
         self._model_name = model_name or ASR_MODEL
-        self._model_revision = model_revision or MODEL_REVISION
+        self._model_revision = validate_asr_model(model_revision or MODEL_REVISION)
         self._mlx_model_repo = mlx_model_repo or MLX_MODEL_REPO
         self._fallback_reason = None
         self._factory_error: str | None = None
@@ -236,6 +237,17 @@ class ModelLoader:
             "loader_loaded": self.is_loaded(),
             "error": self._factory_error,
         }
+
+    @property
+    def requested_model(self) -> str:
+        return self._model_revision
+
+    def configure_model(self, model_revision: str) -> None:
+        """Select an ASR model for the next load."""
+        selected = validate_asr_model(model_revision)
+        if selected != self._model_revision:
+            self._model_revision = selected
+            self.unload()
 
     def configure_backend(self, requested_backend: str | None = None) -> None:
         """Переконфигурировать backend перед следующей загрузкой."""

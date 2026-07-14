@@ -64,7 +64,7 @@ class TuiWorker:
         self._cancel_requested.clear()
         self._task = threading.Thread(
             target=self._run_batch,
-            args=(files, str(command.get("output_dir") or ""), formats, bool(command.get("diarization", False)), command.get("num_speakers"), command.get("backend") or "auto"),
+            args=(files, str(command.get("output_dir") or ""), formats, bool(command.get("diarization", False)), command.get("num_speakers"), command.get("backend") or "auto", command.get("model") or "v3_e2e_rnnt"),
             daemon=True,
         )
         self._task.start()
@@ -78,7 +78,7 @@ class TuiWorker:
         # matches the GUI: finish the current file, then stop the remaining queue.
         self.emit("cancelling", message="Cancellation requested; stopping after the current file")
 
-    def _run_batch(self, files, output_dir, formats, diarization, num_speakers, backend) -> None:
+    def _run_batch(self, files, output_dir, formats, diarization, num_speakers, backend, model) -> None:
         started_at = time.monotonic()
         results: list[dict[str, Any]] = []
         try:
@@ -91,7 +91,7 @@ class TuiWorker:
             from src.utils.processing_stats import ProcessingStats
 
             self.emit("started", files=files, total_files=len(files), backend=backend)
-            loader = ModelLoader(requested_backend=backend)
+            loader = ModelLoader(requested_backend=backend, model_revision=model)
             self._log("Loading GigaAM model…")
             if not loader.load_model(logger=self._log):
                 self.emit("completed", success=False, cancelled=False, results=[], message="Failed to load model")

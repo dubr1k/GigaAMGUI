@@ -20,7 +20,7 @@ class GigaamTui < Formula
     system venv/"bin/pip", "install", "--upgrade", "pip", "setuptools<81", "wheel"
     system venv/"bin/pip", "install", "-r", libexec/"requirements-tui.txt"
     system venv/"bin/pip", "install", "--no-build-isolation",
-      "-e", "git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam"
+      "-e", "git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam"
 
     (bin/"gigaam").write_env_script libexec/"gigaam-tui",
       GIGAAM_PROJECT_ROOT: libexec,

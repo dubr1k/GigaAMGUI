@@ -29,7 +29,7 @@ function bootstrap() {
   run(systemPython, ["-m", "venv", join(repo, ".venv")]);
   run(python, ["-m", "pip", "install", "--upgrade", "pip", "setuptools<81", "wheel"]);
   run(python, ["-m", "pip", "install", "-r", join(repo, "requirements-tui.txt")]);
-  run(python, ["-m", "pip", "install", "--no-build-isolation", "-e", "git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam"]);
+  run(python, ["-m", "pip", "install", "--no-build-isolation", "-e", "git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam"]);
 }
 
 if (!existsSync(binary) || !existsSync(python)) bootstrap();

@@ -63,7 +63,7 @@ rm -rf "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip 'setuptools<81' wheel
 "$VENV/bin/python" -m pip install -r "$REPO_DIR/requirements-tui.txt"
 "$VENV/bin/python" -m pip install --no-build-isolation \
-  -e 'git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam'
+  -e 'git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam'
 "$VENV/bin/python" -c 'import dotenv, gigaam'
 
 cat > "$BIN_DIR/gigaam" <<EOF

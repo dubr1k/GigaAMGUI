@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 struct TuiSettings {
     pet_enabled: bool,
     backend: String,
+    model: String,
 }
 
 impl Default for TuiSettings {
@@ -41,6 +42,7 @@ impl Default for TuiSettings {
         Self {
             pet_enabled: false,
             backend: "auto".into(),
+            model: "v3_e2e_rnnt".into(),
         }
     }
 }
@@ -64,6 +66,7 @@ struct App {
     formats: Vec<String>,
     output_dir: Option<String>,
     backend: String,
+    model: String,
     show_logs: bool,
     result_files: Vec<String>,
     selected_file: Option<usize>,
@@ -99,6 +102,7 @@ impl Default for App {
             formats: vec!["txt".into()],
             output_dir: None,
             backend: "auto".into(),
+            model: "v3_e2e_rnnt".into(),
             show_logs: true,
             result_files: Vec::new(),
             selected_file: None,
@@ -243,7 +247,11 @@ fn settings_path() -> Option<PathBuf> {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|directory| directory.join("GigaAMTranscriber").join("tui_settings.json"))
+            .map(|directory| {
+                directory
+                    .join("GigaAMTranscriber")
+                    .join("tui_settings.json")
+            })
     }
 }
 
@@ -256,8 +264,11 @@ fn load_settings() -> TuiSettings {
 
 fn save_settings(settings: &TuiSettings) -> Result<(), String> {
     let path = settings_path().ok_or("Cannot determine the settings directory")?;
-    let parent = path.parent().ok_or("Cannot determine the settings directory")?;
-    fs::create_dir_all(parent).map_err(|error| format!("Cannot create settings directory: {error}"))?;
+    let parent = path
+        .parent()
+        .ok_or("Cannot determine the settings directory")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Cannot create settings directory: {error}"))?;
     let contents = serde_json::to_string_pretty(settings)
         .map_err(|error| format!("Cannot encode settings: {error}"))?;
     fs::write(path, contents).map_err(|error| format!("Cannot save settings: {error}"))
@@ -267,6 +278,7 @@ fn save_app_settings(app: &mut App) {
     if let Err(error) = save_settings(&TuiSettings {
         pet_enabled: app.pet_enabled,
         backend: app.backend.clone(),
+        model: app.model.clone(),
     }) {
         app.status = error;
         app.log(app.status.clone());
@@ -441,9 +453,16 @@ const PET_RUN_FRAMES: [&[u8]; 3] = [
 
 const BACK_MENU_OPTION: &str = "← Back";
 
-const COMMANDS: [(&str, &str); 10] = [
+const MODEL_OPTIONS: [(&str, &str); 3] = [
+    ("v3_e2e_rnnt", "GigaAM v3 e2e RNNT (current)"),
+    ("multilingual_ctc", "Multilingual CTC (220M)"),
+    ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
+];
+
+const COMMANDS: [(&str, &str); 11] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
+    ("/model", "select the GigaAM recognition model"),
     ("/formats", "output formats, e.g. txt,srt"),
     ("/diarize", "turn speaker diarization on or off"),
     ("/speakers", "auto or a fixed speaker count"),
@@ -527,6 +546,11 @@ fn command_menu_options(app: &App) -> Vec<String> {
             .map(|backend| (*backend).to_owned())
             .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
             .collect(),
+        Some("/model") => MODEL_OPTIONS
+            .iter()
+            .map(|(id, label)| format!("{id} · {label}"))
+            .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+            .collect(),
         Some("/diarize") => ["on", "off", BACK_MENU_OPTION]
             .into_iter()
             .map(str::to_owned)
@@ -573,7 +597,10 @@ fn command_menu_options(app: &App) -> Vec<String> {
 }
 
 fn open_command_menu(app: &mut App, command: &str) -> bool {
-    if matches!(command, "/backend" | "/diarize" | "/formats" | "/speakers") {
+    if matches!(
+        command,
+        "/backend" | "/model" | "/diarize" | "/formats" | "/speakers"
+    ) {
         app.command_menu = Some(command.to_owned());
         app.command_menu_index = if command == "/backend" {
             command_menu_options(app)
@@ -608,6 +635,17 @@ fn apply_command_menu(app: &mut App) {
         "/backend" => {
             app.backend = option.clone();
             app.status = format!("Backend: {}", app.backend);
+            app.command_menu = None;
+            app.input.clear();
+            save_app_settings(app);
+        }
+        "/model" => {
+            app.model = option
+                .split_whitespace()
+                .next()
+                .unwrap_or("v3_e2e_rnnt")
+                .into();
+            app.status = format!("Model: {}", app.model);
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
@@ -653,7 +691,8 @@ fn run_command(app: &mut App) {
         }
         "/settings" => {
             app.status = format!(
-                "backend={} · output={} · formats={} · diarization={}",
+                "model={} · backend={} · output={} · formats={} · diarization={}",
+                app.model,
                 app.backend,
                 app.output_dir.as_deref().unwrap_or("next to source"),
                 app.formats.join(","),
@@ -691,6 +730,14 @@ fn run_command(app: &mut App) {
             save_app_settings(app);
         }
         "/backend" => app.status = backend_usage().into(),
+        "/model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == argument) => {
+            app.model = argument.into();
+            app.status = format!("Model: {}", app.model);
+            save_app_settings(app);
+        }
+        "/model" => {
+            app.status = "Usage: /model v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc".into()
+        }
         "/formats" => {
             let formats: Vec<String> = argument
                 .split(',')
@@ -787,9 +834,9 @@ fn request_exit(
     trigger: &'static str,
     label: &str,
 ) {
-    if last_exit_request
-        .is_some_and(|(last_trigger, at)| last_trigger == trigger && at.elapsed() <= Duration::from_millis(700))
-    {
+    if last_exit_request.is_some_and(|(last_trigger, at)| {
+        last_trigger == trigger && at.elapsed() <= Duration::from_millis(700)
+    }) {
         *quit = true;
     } else {
         *last_exit_request = Some((trigger, Instant::now()));
@@ -916,10 +963,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "  terminal transcriber",
-            Style::default().fg(secondary),
-        ),
+        Span::styled("  terminal transcriber", Style::default().fg(secondary)),
         Span::raw(" "),
         Span::styled(
             if app.running {
@@ -927,11 +971,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             } else {
                 "● idle"
             },
-            Style::default().fg(if app.running {
-                Color::Green
-            } else {
-                secondary
-            }),
+            Style::default().fg(if app.running { Color::Green } else { secondary }),
         ),
         Span::styled(
             format!("   {} · {}", app.backend, app.formats.join(",")),
@@ -1163,6 +1203,9 @@ fn main() -> io::Result<()> {
     if backend_is_supported(&settings.backend) {
         app.backend = settings.backend;
     }
+    if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
+        app.model = settings.model;
+    }
     app.pet_picker = Picker::from_query_stdio()
         .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
@@ -1250,7 +1293,7 @@ fn main() -> io::Result<()> {
                             app.result_files.clear();
                             if let Err(error) = send(
                                 &mut worker,
-                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "num_speakers":app.num_speakers, "backend":app.backend}),
+                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model}),
                             ) {
                                 app.log(format!("Worker unavailable: {error}"));
                             }
@@ -1264,13 +1307,7 @@ fn main() -> io::Result<()> {
                             app.status = "Settings menu closed".into();
                         }
                         KeyCode::Esc if app.input.is_empty() => {
-                            request_exit(
-                                &mut app,
-                                &mut quit,
-                                &mut last_exit_request,
-                                "esc",
-                                "Esc",
-                            );
+                            request_exit(&mut app, &mut quit, &mut last_exit_request, "esc", "Esc");
                         }
                         KeyCode::Esc => {
                             app.input.clear();
@@ -1417,10 +1454,9 @@ mod tests {
             pet_enabled: true,
             backend: "mlx".into(),
         };
-        let restored: TuiSettings = serde_json::from_str(
-            &serde_json::to_string(&settings).expect("settings serialize"),
-        )
-        .expect("settings deserialize");
+        let restored: TuiSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).expect("settings serialize"))
+                .expect("settings deserialize");
 
         assert!(restored.pet_enabled);
         assert_eq!(restored.backend, "mlx");
@@ -1435,7 +1471,9 @@ mod tests {
 
         assert_eq!(app.command_menu.as_deref(), Some("/backend"));
         assert_eq!(app.command_menu_index, 0);
-        assert!(command_menu_options(&app).iter().any(|option| option == &app.backend));
+        assert!(command_menu_options(&app)
+            .iter()
+            .any(|option| option == &app.backend));
     }
 
     #[test]
@@ -1487,7 +1525,10 @@ mod tests {
 
         assert_eq!(app.files.len(), 2);
         assert!(app.files.iter().any(|path| path.ends_with("first.wav")));
-        assert!(app.files.iter().any(|path| path.ends_with("second file.mp3")));
+        assert!(app
+            .files
+            .iter()
+            .any(|path| path.ends_with("second file.mp3")));
         fs::remove_dir_all(directory).unwrap();
     }
 }

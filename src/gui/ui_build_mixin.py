@@ -236,6 +236,11 @@ class UiBuildMixin:
 
         self._menu_settings = menubar.addMenu("Настройки")
         settings_menu = self._menu_settings
+        self._act_asr_model = QAction("Модель распознавания…", self)
+        self._act_asr_model.setStatusTip("Выбрать модель GigaAM для следующей обработки")
+        self._act_asr_model.triggered.connect(self._select_asr_model)
+        settings_menu.addAction(self._act_asr_model)
+
         self._act_asr_backend = QAction("Движок распознавания…", self)
         act_asr_backend = self._act_asr_backend
         act_asr_backend.setStatusTip("Выбрать backend для распознавания речи")

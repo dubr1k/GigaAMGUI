@@ -317,6 +317,22 @@ class GigaTranscriberQtApp(
 
 
 
+    def _select_asr_model(self):
+        if self.is_processing:
+            QMessageBox.information(self, self._t("Смена модели", "Model change"), self._t("Дождитесь завершения обработки.", "Wait for processing to finish."))
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        from ..core.asr.models import ASR_MODELS
+        ids = list(ASR_MODELS)
+        labels = [f"{ASR_MODELS[key]} [{key}]" for key in ids]
+        current = ids.index(self.model_loader.requested_model) if self.model_loader.requested_model in ids else 0
+        selected, accepted = QInputDialog.getItem(self, self._t("Модель распознавания", "Recognition model"), self._t("Модель:", "Model:"), labels, current, False)
+        if accepted:
+            model = ids[labels.index(selected)]
+            self.model_loader.configure_model(model)
+            self.user_settings.set_value("asr_model", model)
+            self.log(f"ASR model selected: {model}")
+
     def _select_asr_backend(self):
         if self.is_processing:
             QMessageBox.information(

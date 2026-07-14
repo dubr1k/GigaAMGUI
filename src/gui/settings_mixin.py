@@ -161,6 +161,13 @@ class SettingsMixin:
         for key, cb in self.llm_export_checkboxes.items():
             cb.setChecked(bool(saved_llm_exports.get(key, cb.isChecked())))
 
+        saved_asr_model = self.user_settings.get_value("asr_model", "")
+        if isinstance(saved_asr_model, str) and saved_asr_model:
+            try:
+                self.model_loader.configure_model(saved_asr_model)
+            except ValueError:
+                pass
+
         saved_asr_backend = self.user_settings.get_value("asr_backend", "")
         if isinstance(saved_asr_backend, str) and saved_asr_backend:
             try:
@@ -177,6 +184,7 @@ class SettingsMixin:
         self.user_settings.set_value("enable_diarization", self.cb_diarization.isChecked())
         self.user_settings.set_value("num_speakers", self.entry_num_speakers.value())
         self.user_settings.set_value("asr_backend", self.model_loader.requested_backend)
+        self.user_settings.set_value("asr_model", self.model_loader.requested_model)
         self.user_settings.set_value("llm_provider", self._normalize_llm_provider(self.combo_llm_provider.currentText()))
         self.user_settings.set_value("llm_api_url", self.entry_llm_api_url.text().strip())
         llm_api_key = self.entry_llm_api_key.text().strip()
