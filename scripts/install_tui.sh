@@ -75,6 +75,9 @@ mkdir -p "$PREFIX" "$BIN_DIR" "$TMPDIR"
 if [[ -d "$REPO_DIR/.git" ]]; then
   git -C "$REPO_DIR" fetch --depth 1 origin "$REF"
   git -C "$REPO_DIR" checkout --force FETCH_HEAD
+  # Remove stale source, binaries and venv files from prior installations.
+  # User preferences live in ~/.config/GigaAMTranscriber and are untouched.
+  git -C "$REPO_DIR" clean -ffdx
 else
   git clone --depth 1 --branch "$REF" "$REPOSITORY" "$REPO_DIR"
 fi

@@ -78,6 +78,7 @@ struct App {
     pet_frame: usize,
     pet_running: bool,
     pet_picker: Option<Picker>,
+    pet_protocol: Option<ProtocolType>,
     pet_image: Option<StatefulProtocol>,
 }
 
@@ -114,6 +115,7 @@ impl Default for App {
             pet_frame: 0,
             pet_running: false,
             pet_picker: None,
+            pet_protocol: None,
             pet_image: None,
         }
     }
@@ -121,6 +123,13 @@ impl Default for App {
 
 impl App {
     fn refresh_pet_image(&mut self) -> Result<(), String> {
+        // Kitty images are persistent layers. Delete the old layer before a new
+        // transparent PNG frame so pixels from the previous frame cannot remain.
+        if self.pet_image.is_some() && self.pet_protocol == Some(ProtocolType::Kitty) {
+            let mut stdout = io::stdout();
+            let _ = stdout.write_all(b"\x1b_Ga=d,d=A\x1b\\");
+            let _ = stdout.flush();
+        }
         let Some(picker) = self.pet_picker.as_ref() else {
             return Err("Pets require Kitty, iTerm2, or Sixel image support.".into());
         };
@@ -1223,6 +1232,7 @@ fn main() -> io::Result<()> {
         .then(Picker::from_query_stdio)
         .and_then(Result::ok)
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
+    app.pet_protocol = app.pet_picker.as_ref().map(Picker::protocol_type);
     if app.pet_enabled {
         if let Err(error) = app.refresh_pet_image() {
             app.status = error;
@@ -1231,13 +1241,26 @@ fn main() -> io::Result<()> {
     }
     let mut quit = false;
     let mut last_exit_request: Option<(&'static str, Instant)> = None;
+    let mut last_pet_frame = Instant::now();
     while !quit {
         while let Ok(message) = events.try_recv() {
             app.handle_message(message);
         }
-        // Terminal graphics protocols keep transparent pixels from prior frames in
-        // some terminals. Keep one stable image until a renderer with explicit
-        // per-protocol image deletion is available.
+        // Animated image frames are safe for Kitty after explicitly deleting the
+        // prior layer. Other protocols remain stable rather than leaving pixels.
+        if app.pet_enabled
+            && app.pet_protocol == Some(ProtocolType::Kitty)
+            && last_pet_frame.elapsed() >= Duration::from_millis(1_300)
+        {
+            app.pet_frame = app.pet_frame.wrapping_add(1);
+            if let Err(error) = app.refresh_pet_image() {
+                app.pet_enabled = false;
+                app.pet_image = None;
+                app.status = error;
+                app.log(app.status.clone());
+            }
+            last_pet_frame = Instant::now();
+        }
         if app.exit_requested {
             quit = true;
             continue;
