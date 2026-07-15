@@ -1235,6 +1235,7 @@ fn main() -> io::Result<()> {
         // Animated image frames are safe for Kitty after explicitly deleting the
         // prior layer. Other protocols remain stable rather than leaving pixels.
         if app.pet_enabled
+            && std::env::var_os("KITTY_WINDOW_ID").is_some()
             && app.pet_protocol == Some(ProtocolType::Kitty)
             && last_pet_frame.elapsed() >= Duration::from_millis(1_300)
         {
