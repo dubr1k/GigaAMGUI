@@ -42,6 +42,8 @@ class TuiWorker:
             self._start(command)
         elif command_type == "cancel":
             self._cancel()
+        elif command_type == "llm_start":
+            self._start_llm(command)
         else:
             self.emit("error", message=f"Unknown command: {command_type!r}")
 
@@ -68,6 +70,59 @@ class TuiWorker:
             daemon=True,
         )
         self._task.start()
+
+    def _start_llm(self, command: dict[str, Any]) -> None:
+        if self._task and self._task.is_alive():
+            self.emit("error", message="Processing is already running")
+            return
+        paths = [Path(str(value)) for value in command.get("files", [command.get("file")]) if str(value or "")]
+        if not paths or any(not path.is_file() for path in paths):
+            self.emit("error", message="LLM transcript file does not exist")
+            return
+        modes = command.get("modes", [command.get("mode") or "summary"])
+        if not isinstance(modes, list) or not modes or not all(isinstance(mode, str) for mode in modes):
+            self.emit("error", message="Select at least one LLM mode")
+            return
+        prompts = {
+            "summary": "Сделай плотную выжимку: ключевые факты, решения, риски и открытые вопросы.",
+            "tasks": "Выдели конкретные задачи, ответственных, сроки и открытые вопросы.",
+            "terms": "Выдели основные термины, имена, организации, сокращения и их контекст.",
+        }
+        custom_prompt = str(command.get("prompt") or "").strip()
+        if "custom" in modes and not custom_prompt:
+            self.emit("error", message="Custom LLM prompt is required")
+            return
+        settings = command.get("settings")
+        if not isinstance(settings, dict):
+            self.emit("error", message="LLM settings are required")
+            return
+        self._task = threading.Thread(target=self._run_llm, args=(paths, modes, custom_prompt, prompts, settings, str(command.get("output_dir") or "")), daemon=True)
+        self._task.start()
+
+    def _run_llm(self, paths: list[Path], modes: list[str], custom_prompt: str, prompts: dict[str, str], settings: dict[str, Any], output_dir: str) -> None:
+        try:
+            from src.services import llm_service
+
+            # One request per selected mode, with every text result accumulated since
+            # the last /clear as its context.
+            transcript = "\n\n".join(
+                f"--- {path.name} ---\n{path.read_text(encoding='utf-8')}" for path in paths
+            )
+            target = Path(output_dir) if output_dir else paths[-1].parent
+            target.mkdir(parents=True, exist_ok=True)
+            saved_files = []
+            for index, mode in enumerate(dict.fromkeys(modes), 1):
+                prompt = custom_prompt if mode == "custom" else prompts.get(mode, custom_prompt)
+                if not prompt:
+                    raise ValueError(f"Unknown LLM mode: {mode}")
+                self.emit("llm_started", mode=mode, index=index, total=len(modes))
+                answer = llm_service.run_provider(settings, transcript, prompt, provider=str(settings.get("provider") or "API"), strict_empty_cli=True)
+                saved = target / f"session_llm_{mode}.txt"
+                saved.write_text(answer, encoding="utf-8")
+                saved_files.append(str(saved))
+            self.emit("llm_completed", success=True, saved_files=saved_files)
+        except Exception as exc:
+            self.emit("llm_completed", success=False, message=str(exc))
 
     def _cancel(self) -> None:
         if not self._task or not self._task.is_alive():

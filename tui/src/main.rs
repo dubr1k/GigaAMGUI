@@ -35,6 +35,11 @@ struct TuiSettings {
     pet_enabled: bool,
     backend: String,
     model: String,
+    llm_provider: String,
+    llm_api_url: String,
+    llm_api_key: String,
+    llm_model: String,
+    llm_temperature: f64,
 }
 
 impl Default for TuiSettings {
@@ -43,6 +48,14 @@ impl Default for TuiSettings {
             pet_enabled: false,
             backend: "auto".into(),
             model: "v3_e2e_rnnt".into(),
+            llm_provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "API".into()),
+            llm_api_url: std::env::var("LLM_API_URL").unwrap_or_default(),
+            llm_api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
+            llm_model: std::env::var("LLM_MODEL").unwrap_or_default(),
+            llm_temperature: std::env::var("LLM_TEMPERATURE")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0.2),
         }
     }
 }
@@ -80,6 +93,14 @@ struct App {
     pet_picker: Option<Picker>,
     pet_protocol: Option<ProtocolType>,
     pet_image: Option<StatefulProtocol>,
+    llm_modes: Vec<String>,
+    llm_prompt: String,
+    llm_requested: bool,
+    llm_provider: String,
+    llm_api_url: String,
+    llm_api_key: String,
+    llm_model: String,
+    llm_temperature: f64,
 }
 
 impl Default for App {
@@ -117,19 +138,31 @@ impl Default for App {
             pet_picker: None,
             pet_protocol: None,
             pet_image: None,
+            llm_modes: vec!["summary".into()],
+            llm_prompt: String::new(),
+            llm_requested: false,
+            llm_provider: "API".into(),
+            llm_api_url: String::new(),
+            llm_api_key: String::new(),
+            llm_model: String::new(),
+            llm_temperature: 0.2,
         }
     }
 }
 
 impl App {
-    fn refresh_pet_image(&mut self) -> Result<(), String> {
-        // Kitty images are persistent layers. Delete the old layer before a new
-        // transparent PNG frame so pixels from the previous frame cannot remain.
-        if self.pet_image.is_some() && self.pet_protocol == Some(ProtocolType::Kitty) {
+    fn clear_pet_layer(&self) {
+        // Kitty images are persistent terminal layers and survive normal redraws.
+        // Explicitly remove them on animation, resize, and when pets are disabled.
+        if self.pet_protocol == Some(ProtocolType::Kitty) {
             let mut stdout = io::stdout();
             let _ = stdout.write_all(b"\x1b_Ga=d,d=A\x1b\\");
             let _ = stdout.flush();
         }
+    }
+
+    fn refresh_pet_image(&mut self) -> Result<(), String> {
+        self.clear_pet_layer();
         let Some(picker) = self.pet_picker.as_ref() else {
             return Err("Pets require Kitty, iTerm2, or Sixel image support.".into());
         };
@@ -218,12 +251,62 @@ impl App {
                 };
                 self.log(self.status.clone());
             }
+            "llm_started" => {
+                self.running = true;
+                self.status = "LLM processing…".into();
+            }
+            "llm_completed" if value["success"].as_bool().unwrap_or(false) => {
+                self.running = false;
+                let saved = value["saved_files"].as_array().map_or(0, Vec::len);
+                self.status = format!("LLM saved {saved} result(s)");
+                self.log(self.status.clone());
+            }
+            "llm_completed" => {
+                self.running = false;
+                self.status = format!(
+                    "LLM error: {}",
+                    value["message"].as_str().unwrap_or("unknown error")
+                );
+                self.log(self.status.clone());
+            }
             "error" => {
                 self.status = value["message"].as_str().unwrap_or("Worker error").into();
                 self.log(format!("Error: {}", self.status));
             }
             _ => {}
         }
+    }
+}
+
+fn llm_input_files(app: &App) -> Vec<String> {
+    app.result_files
+        .iter()
+        .filter(|path| {
+            matches!(
+                Path::new(path).extension().and_then(|value| value.to_str()),
+                Some("txt" | "md" | "srt" | "vtt")
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn llm_can_run(app: &App) -> bool {
+    !llm_input_files(app).is_empty()
+        && !app.llm_modes.is_empty()
+        && (!app.llm_modes.iter().any(|mode| mode == "custom") || !app.llm_prompt.is_empty())
+}
+
+fn request_llm(app: &mut App) {
+    if llm_input_files(app).is_empty() {
+        app.status = "No saved text results in this session".into();
+    } else if app.llm_modes.is_empty() {
+        app.status = "Select at least one LLM mode first".into();
+    } else if app.llm_modes.iter().any(|mode| mode == "custom") && app.llm_prompt.is_empty() {
+        app.status = "Set /llm-prompt for custom mode first".into();
+    } else {
+        app.llm_requested = true;
+        app.status = format!("Starting LLM for {} session result(s)…", llm_input_files(app).len());
     }
 }
 
@@ -288,6 +371,11 @@ fn save_app_settings(app: &mut App) {
         pet_enabled: app.pet_enabled,
         backend: app.backend.clone(),
         model: app.model.clone(),
+        llm_provider: app.llm_provider.clone(),
+        llm_api_url: app.llm_api_url.clone(),
+        llm_api_key: app.llm_api_key.clone(),
+        llm_model: app.llm_model.clone(),
+        llm_temperature: app.llm_temperature,
     }) {
         app.status = error;
         app.log(app.status.clone());
@@ -468,7 +556,7 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 11] = [
+const COMMANDS: [(&str, &str); 18] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/model", "select the GigaAM recognition model"),
@@ -479,6 +567,13 @@ const COMMANDS: [(&str, &str); 11] = [
     ("/clear", "clear the queue and result list"),
     ("/settings", "show current processing settings"),
     ("/pets", "toggle the animated unicorn companion"),
+    ("/llm-mode", "summary, tasks, terms, or custom"),
+    ("/llm-prompt", "set a custom LLM prompt"),
+    ("/llm-run", "run LLM processing"),
+    ("/llm-api-url", "set LLM API URL"),
+    ("/llm-api-key", "set LLM API key"),
+    ("/llm-model", "set LLM model"),
+    ("/llm-temperature", "set LLM temperature"),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -579,6 +674,33 @@ fn command_menu_options(app: &App) -> Vec<String> {
         .into_iter()
         .map(str::to_owned)
         .collect(),
+        Some("/settings") => vec![
+            format!("LLM provider · {}", app.llm_provider),
+            format!("API URL · {}", if app.llm_api_url.is_empty() { "not set" } else { "configured" }),
+            format!("API key · {}", if app.llm_api_key.is_empty() { "not set" } else { "configured" }),
+            format!("LLM model · {}", if app.llm_model.is_empty() { "not set" } else { &app.llm_model }),
+            format!("Temperature · {}", app.llm_temperature),
+            BACK_MENU_OPTION.into(),
+        ],
+        Some("/settings-provider") => ["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other", BACK_MENU_OPTION]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        Some("/settings-model") => llm_model_options(&app.llm_provider),
+        Some("/llm-mode") => ["summary", "tasks", "terms", "custom"]
+            .into_iter()
+            .map(|mode| {
+                format!(
+                    "[{}] {mode}",
+                    if app.llm_modes.iter().any(|item| item == mode) {
+                        "x"
+                    } else {
+                        " "
+                    }
+                )
+            })
+            .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+            .collect(),
         Some("/formats") => [
             "txt",
             "txt_timecodes",
@@ -605,10 +727,28 @@ fn command_menu_options(app: &App) -> Vec<String> {
     }
 }
 
+fn llm_model_options(provider: &str) -> Vec<String> {
+    let models: &[&str] = match provider {
+        "Claude Code" => &["default", "sonnet", "opus", "haiku"],
+        // Codex with a ChatGPT account rejects explicit `-m` values such as
+        // gpt-5-codex. Let the installed Codex client choose its supported model.
+        "Codex" => &["default"],
+        "OpenCode" => &["default"],
+        "Pi" => &["default"],
+        "Other" => &["default"],
+        _ => &["gpt-4.1-mini", "gpt-4.1", "gpt-5-mini", "gpt-5"],
+    };
+    models
+        .iter()
+        .map(|model| (*model).to_owned())
+        .chain(["Enter manually".to_owned(), BACK_MENU_OPTION.to_owned()])
+        .collect()
+}
+
 fn open_command_menu(app: &mut App, command: &str) -> bool {
     if matches!(
         command,
-        "/backend" | "/model" | "/diarize" | "/formats" | "/speakers"
+        "/backend" | "/model" | "/diarize" | "/formats" | "/speakers" | "/llm-mode" | "/settings" | "/settings-provider" | "/settings-model"
     ) {
         app.command_menu = Some(command.to_owned());
         app.command_menu_index = if command == "/backend" {
@@ -659,6 +799,60 @@ fn apply_command_menu(app: &mut App) {
             app.input.clear();
             save_app_settings(app);
         }
+        "/settings" => {
+            app.command_menu = None;
+            app.input = match app.command_menu_index {
+                0 => {
+                    app.command_menu = Some("/settings-provider".into());
+                    app.status = "Choose LLM provider".into();
+                    return;
+                }
+                1 => "/llm-api-url ".into(),
+                2 => "/llm-api-key ".into(),
+                3 => {
+                    app.command_menu = Some("/settings-model".into());
+                    app.status = "Choose LLM model".into();
+                    return;
+                }
+                4 => "/llm-temperature ".into(),
+                _ => String::new(),
+            };
+            app.status = "Enter value and press Enter".into();
+        }
+        "/settings-provider" => {
+            app.llm_provider = option.clone();
+            app.command_menu = Some("/settings".into());
+            app.command_menu_index = 0;
+            app.status = format!("LLM provider: {}", app.llm_provider);
+            save_app_settings(app);
+        }
+        "/settings-model" if option == "Enter manually" => {
+            app.command_menu = None;
+            app.input = "/llm-model ".into();
+            app.status = "Enter model name and press Enter".into();
+        }
+        "/settings-model" => {
+            app.llm_model = if option == "default" { String::new() } else { option.clone() };
+            app.command_menu = Some("/settings".into());
+            app.command_menu_index = 0;
+            app.status = if app.llm_model.is_empty() {
+                "LLM default model selected".into()
+            } else {
+                format!("LLM model: {}", app.llm_model)
+            };
+            save_app_settings(app);
+        }
+        "/llm-mode" => {
+            let mode = option
+                .trim_start_matches(|c: char| c == '[' || c == 'x' || c == ' ' || c == ']')
+                .trim();
+            if let Some(index) = app.llm_modes.iter().position(|item| item == mode) {
+                app.llm_modes.remove(index);
+            } else {
+                app.llm_modes.push(mode.into());
+            }
+            app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
+        }
         "/diarize" => {
             app.diarization = option == "on";
             app.status = format!("Diarization {option}");
@@ -691,25 +885,61 @@ fn apply_command_menu(app: &mut App) {
 fn run_command(app: &mut App) {
     let command = app.input.trim().to_owned();
     let mut parts = command.splitn(2, char::is_whitespace);
-    let name = parts.next().unwrap_or_default();
+    // Pasted commands often contain a typographic dash (–/—/−) instead of
+    // ASCII `-`; accept them so settings commands remain usable.
+    let name = parts
+        .next()
+        .unwrap_or_default()
+        .replace(['–', '—', '−'], "-");
     let argument = parts.next().unwrap_or_default().trim();
-    match name {
+    match name.as_str() {
         "/exit" => {
             app.exit_requested = true;
             app.status = "Exiting…".into();
         }
         "/settings" => {
-            app.status = format!(
-                "model={} · backend={} · output={} · formats={} · diarization={}",
-                app.model,
-                app.backend,
-                app.output_dir.as_deref().unwrap_or("next to source"),
-                app.formats.join(","),
-                if app.diarization { "on" } else { "off" }
-            );
+            let _ = open_command_menu(app, "/settings");
         }
+        "/llm-mode" if matches!(argument, "summary" | "tasks" | "terms" | "custom") => {
+            app.llm_modes = vec![argument.into()];
+            app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
+        }
+        "/llm-mode" => app.status = "Usage: /llm-mode summary|tasks|terms|custom".into(),
+        "/llm-prompt" if !argument.is_empty() => {
+            app.llm_prompt = argument.into();
+            app.status = "Custom LLM prompt saved".into();
+        }
+        "/llm-prompt" => app.status = "Usage: /llm-prompt <instruction>".into(),
+        "/llm-run" => request_llm(app),
+        "/llm-api-url" if !argument.is_empty() => {
+            app.llm_api_url = argument.into();
+            app.status = "LLM API URL saved".into();
+            save_app_settings(app);
+        }
+        "/llm-api-key" if !argument.is_empty() => {
+            app.llm_api_key = argument.into();
+            app.status = "LLM API key saved".into();
+            save_app_settings(app);
+        }
+        "/llm-model" if !argument.is_empty() => {
+            app.llm_model = argument.into();
+            app.status = "LLM model saved".into();
+            save_app_settings(app);
+        }
+        "/llm-model" => {
+            let _ = open_command_menu(app, "/settings-model");
+        }
+        "/llm-temperature" => match argument.parse::<f64>() {
+            Ok(value) if (0.0..=2.0).contains(&value) => {
+                app.llm_temperature = value;
+                app.status = "LLM temperature saved".into();
+                save_app_settings(app);
+            }
+            _ => app.status = "Temperature must be between 0 and 2".into(),
+        },
         "/pets" => {
             if app.pet_enabled {
+                app.clear_pet_layer();
                 app.pet_enabled = false;
                 app.pet_image = None;
                 app.status = "Pets off".into();
@@ -1083,13 +1313,15 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             ));
         }
     }
-    frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: true }),
-        chunks[1].inner(Margin {
-            horizontal: 1,
-            vertical: 0,
-        }),
-    );
+    let mut body_area = chunks[1].inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+    // Keep text clear of the pet image instead of rendering under it.
+    if app.pet_enabled && body_area.width > 20 {
+        body_area.width = body_area.width.saturating_sub(18);
+    }
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), body_area);
     if app.pet_enabled {
         if let Some(image) = app.pet_image.as_mut() {
             let pet_area = Rect::new(
@@ -1192,15 +1424,21 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             chunks[2],
         );
     }
-    let footer = "Enter add path · Tab complete · type / for commands · s start · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs";
-    frame.render_widget(
-        Paragraph::new(footer).style(Style::default().fg(Color::Gray)),
-        chunks[3],
-    );
+    let llm_active = llm_can_run(app);
+    let footer = Line::from(vec![
+        Span::styled("Enter add path · Tab complete · type / for commands · s start · ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            "[L] Run LLM",
+            Style::default().fg(if llm_active { accent } else { Color::DarkGray })
+                .add_modifier(if llm_active { Modifier::BOLD } else { Modifier::empty() }),
+        ),
+        Span::styled(" · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs", Style::default().fg(Color::Gray)),
+    ]);
+    frame.render_widget(Paragraph::new(footer), chunks[3]);
 }
 
 fn main() -> io::Result<()> {
-    let (mut child, mut worker, events) = spawn_worker()?;
+    let (mut child, mut worker, mut events) = spawn_worker()?;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -1215,6 +1453,11 @@ fn main() -> io::Result<()> {
     if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
         app.model = settings.model;
     }
+    app.llm_provider = settings.llm_provider;
+    app.llm_api_url = settings.llm_api_url;
+    app.llm_api_key = settings.llm_api_key;
+    app.llm_model = settings.llm_model;
+    app.llm_temperature = settings.llm_temperature;
     app.pet_picker = Picker::from_query_stdio()
         .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
@@ -1232,11 +1475,33 @@ fn main() -> io::Result<()> {
         while let Ok(message) = events.try_recv() {
             app.handle_message(message);
         }
+        if app.llm_requested {
+            app.llm_requested = false;
+            let settings = json!({
+                "provider": app.llm_provider,
+                "api_url": app.llm_api_url,
+                "api_key": app.llm_api_key,
+                "model": if app.llm_provider == "Codex" { String::new() } else { app.llm_model.clone() },
+                "temperature": app.llm_temperature,
+                "claude_path": "claude",
+                "codex_path": "codex",
+                "opencode_path": "opencode",
+                "pi_path": "pi",
+                "other_path": "",
+            });
+            if let Err(error) = send(
+                &mut worker,
+                json!({"type":"llm_start", "files":llm_input_files(&app), "modes":app.llm_modes, "prompt":app.llm_prompt, "settings":settings, "output_dir":app.output_dir}),
+            ) {
+                app.status = format!("Worker unavailable: {error}");
+            }
+        }
         // Animated image frames are safe for Kitty after explicitly deleting the
         // prior layer. Other protocols remain stable rather than leaving pixels.
         if app.pet_enabled
-            && std::env::var_os("KITTY_WINDOW_ID").is_some()
-            && app.pet_protocol == Some(ProtocolType::Kitty)
+            && app
+                .pet_protocol
+                .is_some_and(|protocol| protocol != ProtocolType::Halfblocks)
             && last_pet_frame.elapsed() >= Duration::from_millis(1_300)
         {
             app.pet_frame = app.pet_frame.wrapping_add(1);
@@ -1259,6 +1524,19 @@ fn main() -> io::Result<()> {
                     app.input.push_str(text.trim());
                     app.selected_command = 0;
                 }
+                Event::Resize(_, _) => {
+                    // A resize is also a recovery point for terminal image protocols:
+                    // clear stale Kitty layers and force ratatui to recalculate its grid.
+                    terminal.autoresize()?;
+                    terminal.clear()?;
+                    if app.pet_enabled {
+                        if let Err(error) = app.refresh_pet_image() {
+                            app.pet_enabled = false;
+                            app.pet_image = None;
+                            app.status = error;
+                        }
+                    }
+                }
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
                         continue;
@@ -1276,6 +1554,12 @@ fn main() -> io::Result<()> {
                             );
                         }
                         KeyCode::Char('q') if !app.running && app.input.is_empty() => quit = true,
+                        KeyCode::Char('L') if !app.running && app.input.is_empty() => {
+                            request_llm(&mut app)
+                        }
+                        KeyCode::Char('l') if !app.running && app.input.is_empty() && llm_can_run(&app) => {
+                            request_llm(&mut app)
+                        }
                         KeyCode::Char('l') if app.input.is_empty() => {
                             app.show_logs = !app.show_logs
                         }
@@ -1297,7 +1581,6 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('s')
                             if !app.running && app.input.is_empty() && !app.files.is_empty() =>
                         {
-                            app.result_files.clear();
                             if let Err(error) = send(
                                 &mut worker,
                                 json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model}),
@@ -1306,7 +1589,30 @@ fn main() -> io::Result<()> {
                             }
                         }
                         KeyCode::Esc if app.running => {
-                            let _ = send(&mut worker, json!({"type":"cancel"}));
+                            if last_exit_request.is_some_and(|(trigger, at)| {
+                                trigger == "cancel" && at.elapsed() <= Duration::from_millis(700)
+                            }) {
+                                let _ = child.kill();
+                                match spawn_worker() {
+                                    Ok((new_child, new_worker, new_events)) => {
+                                        child = new_child;
+                                        worker = new_worker;
+                                        events = new_events;
+                                        app.running = false;
+                                        app.cancelled = true;
+                                        app.status = "Transcription cancelled immediately".into();
+                                        app.log(app.status.clone());
+                                    }
+                                    Err(error) => {
+                                        app.status =
+                                            format!("Cancelled, but worker restart failed: {error}")
+                                    }
+                                }
+                                last_exit_request = None;
+                            } else {
+                                last_exit_request = Some(("cancel", Instant::now()));
+                                app.status = "Press Esc again to cancel transcription".into();
+                            }
                         }
                         KeyCode::Esc if app.command_menu.is_some() => {
                             app.command_menu = None;
@@ -1461,6 +1767,7 @@ mod tests {
             pet_enabled: true,
             backend: "mlx".into(),
             model: "multilingual_ctc".into(),
+            ..TuiSettings::default()
         };
         let restored: TuiSettings =
             serde_json::from_str(&serde_json::to_string(&settings).expect("settings serialize"))
@@ -1483,6 +1790,29 @@ mod tests {
         assert!(command_menu_options(&app)
             .iter()
             .any(|option| option == &app.backend));
+    }
+
+    #[test]
+    fn llm_model_command_is_accepted() {
+        let mut app = App::default();
+        app.input = "/llm-model gpt-4.1-mini".into();
+
+        run_command(&mut app);
+
+        assert_eq!(app.llm_model, "gpt-4.1-mini");
+        assert_eq!(app.status, "LLM model saved");
+    }
+
+    #[test]
+    fn settings_menu_offers_all_llm_providers() {
+        let mut app = App::default();
+        assert!(open_command_menu(&mut app, "/settings"));
+        app.command_menu = Some("/settings-provider".into());
+
+        assert_eq!(
+            command_menu_options(&app),
+            vec!["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other", BACK_MENU_OPTION]
+        );
     }
 
     #[test]
