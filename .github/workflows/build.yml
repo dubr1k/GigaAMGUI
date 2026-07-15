@@ -172,3 +172,88 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: out/${{ matrix.asset }}
+
+  build-macos-full:
+    name: macOS arm64 full app bundle
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify bundled ffmpeg
+        shell: bash
+        run: |
+          test -f bin/ffmpeg || { echo "bin/ffmpeg отсутствует в репозитории"; exit 1; }
+          chmod +x bin/ffmpeg
+          ./bin/ffmpeg -version
+
+      - name: Upgrade pip toolchain
+        run: python -m pip install --upgrade pip wheel "setuptools==81.0.0"
+
+      - name: Install bundled runtime dependencies
+        shell: bash
+        run: |
+          python -m pip install "torch==2.8.0" "torchaudio==2.8.0" "torchvision==0.23.0"
+          grep -viE '^\s*(-e\s+)?git\+.*gigaam|^\s*torchcodec' requirements.txt > requirements.ci.txt
+          python -m pip install -r requirements.ci.txt
+          python -m pip install --upgrade "setuptools==81.0.0" wheel
+          python -m pip install "git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam" --no-build-isolation
+          python -m pip install -r requirements-macos-mlx.txt
+          python -m pip install --upgrade pyinstaller
+
+      - name: Test macOS packaging configuration
+        run: python -m pytest tests/test_macos_packaging_config.py tests/test_packaging_runtime_deps.py -q
+
+      - name: Build and verify full app bundle
+        run: bash packaging/build_exe_mac.sh
+
+      - name: Verify release version and archive full app
+        id: archive
+        shell: bash
+        run: |
+          BUNDLE="dist/GigaAMTranscriber.app"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+            ACTUAL_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE/Contents/Info.plist")
+            test "$ACTUAL_VERSION" = "$EXPECTED_VERSION" || {
+              echo "Версия .app ($ACTUAL_VERSION) не совпадает с тегом ($EXPECTED_VERSION)"
+              exit 1
+            }
+          fi
+
+          SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
+          ARCHIVE="out/GigaAMTranscriber-macos-app-${SAFE_REF_NAME}.zip"
+          mkdir -p out
+          ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" "$ARCHIVE"
+          unzip -tq "$ARCHIVE"
+          ARCHIVE_BYTES=$(stat -f%z "$ARCHIVE")
+          MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+          test "$ARCHIVE_BYTES" -lt "$MAX_RELEASE_ASSET_BYTES" || {
+            echo "Архив слишком велик для GitHub Release: $ARCHIVE_BYTES байт"
+            exit 1
+          }
+          echo "path=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$ARCHIVE_BYTES" >> "$GITHUB_OUTPUT"
+
+      - name: Upload full app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Attach full app to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.archive.outputs.path }}

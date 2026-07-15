@@ -1,8 +1,8 @@
 # Issue #27: GigaAM recognition quality investigation
 
-Date: 2026-07-14
+Date: 2026-07-15
 
-Branch: `investigate/issue-27-asr-quality`
+Branch: `main`
 
 Issue: <https://github.com/dubr1k/GigaAMGUI/issues/27>
 
@@ -10,7 +10,7 @@ Issue: <https://github.com/dubr1k/GigaAMGUI/issues/27>
 
 The reported difference is reproducible and is caused by **speech-boundary selection from the official GigaAM long-form VAD path**, not by a different ASR checkpoint, ONNX, FFmpeg resampling, GUI post-processing, or the 20-second boundary alone.
 
-On the attached `Phone_ARU_ON.wav`, the current GUI/PyTorch backend decodes the whole opening context and returns:
+At the start of the investigation, the GUI/PyTorch backend decoded the whole opening context and returned:
 
 > Ирина, алло, Ольга, здравствуйте.
 
@@ -35,7 +35,7 @@ The official result and boundaries match the reporter's example.
 
 | Path | Input presented to ASR | Opening recognition |
 |---|---:|---|
-| Current GUI `PyTorchBackend.transcribe_longform()` | `0.000–20.000` plus a silent `20.000–20.582` tail | `Ирина, алло, Ольга...` |
+| Pre-fix GUI `PyTorchBackend.transcribe_longform()` | `0.000–20.000` plus a silent `20.000–20.582` tail | `Ирина, алло, Ольга...` |
 | Official `model.transcribe()` | complete `0.000–20.582` file | `Ирина, алло, Ольга...` |
 | Direct `forward + decode`, complete file | complete `0.000–20.582` file | `Ирина, алло, Ольга...` |
 | Official `model.transcribe_longform()` | VAD interval `3.11909375–19.65659375` | `Три ноля, Ольга...` |
@@ -141,23 +141,30 @@ A smaller alternative is an optional `ASR_USE_VAD` mode, but it must fail explic
 
 ## Implemented remediation
 
-The investigation branch now contains a production implementation rather than the unsafe one-line `transcribe_longform()` switch:
+`main` now contains a production implementation rather than the unsafe one-line `transcribe_longform()` switch:
 
 - PyTorch and MLX ASR use a shared `pyannote/segmentation-3.0` adapter compatible with the pinned `pyannote.audio 3.1.1` runtime.
 - `ASR_SEGMENTATION_MODE=vad` is the explicit default; `fixed_chunks` preserves the legacy path when deliberately selected.
 - VAD runs on CPU by default so that GigaAM and the segmentation model do not compete for accelerator memory.
-- Cached VAD weights work without a token; unavailable VAD falls back to fixed chunks with sanitized health diagnostics.
+- Cached VAD weights work without a token; unavailable VAD falls back to energy-aware overlap chunks with sanitized health diagnostics.
 - Shared VAD and GigaAM inference is serialized because API frontends reuse one model loader across concurrent jobs.
 - Exact VAD metadata boundaries are retained while sample indices are quantized only for waveform slicing.
-- MLX re-splits long VAD regions with its native silence-aware splitter so every decoder input remains at most 20 seconds.
+- PyTorch and MLX use one shared decoder-window planner. Short VAD regions keep
+  their exact boundaries; long regions are cut near local energy minima, decoder
+  windows overlap by two seconds, and repeated overlap text is removed before export.
+- If VAD is unavailable, the automatic fallback uses the same energy-aware overlap
+  planner over the complete waveform. Exact fixed 20-second chunks remain available
+  only as the explicitly selected legacy `fixed_chunks` mode.
 
 Pinned-stack end-to-end verification on the issue attachment produced one VAD interval at
 `3.1154499151103567–19.668930390492363`, active mode `vad`, no fallback, and the expected opening
 `Три ноля, Ольга, здравствуйте`. Mono and generated stereo copies produced identical VAD boundaries.
 
-Applying the same VAD segmentation to MLX did not reproduce the expected opening on the issue
-attachment. The MLX implementation preserves VAD boundaries, progress, chunk limits, and fallback
-diagnostics, but it is not considered a confirmed recognition-quality fix for issue #27. The
-remaining difference requires a separate MLX decoder/backend investigation.
+The original VAD implementation was released in `v1.1.8`. A follow-up verification on 2026-07-15
+with the pinned PyTorch and MLX runtimes produced the same expected complete transcription on the
+issue attachment for both backends, with the VAD boundary
+`3.1154499151103567–19.668930390492363`, active mode `vad`, and no fallback.
 
-The implementation was released in `v1.1.8` with the MLX limitation above documented explicitly.
+The follow-up overlap planner released in `v1.1.9` also removes the remaining hard-boundary failure
+mode noted after `v1.1.8`: uninterrupted speech longer than a decoder limit keeps contextual audio
+on both sides of the cut, while exported time ranges remain monotonic and non-overlapping.

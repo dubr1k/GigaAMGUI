@@ -185,7 +185,7 @@ class ModelLoader:
         audio_path: str,
         progress_callback: ProgressCallback | None = None,
     ):
-        """Транскрибирует длинное аудио чанками по 20 сек (без ffmpeg subprocess)."""
+        """Транскрибирует длинное аудио через выбранную стратегию сегментации."""
         if self._backend is None:
             raise RuntimeError("Модель не загружена")
 

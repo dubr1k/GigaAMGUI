@@ -24,9 +24,15 @@ echo "============================================================"
 echo ""
 
 # ── Найти Python ──────────────────────────────────────────────────────────────
-PYTHON=""
+PYTHON="${GIGAAM_BUILD_PYTHON:-}"
+if [ -n "$PYTHON" ] && [ ! -x "$PYTHON" ]; then
+    echo "[ERROR] GIGAAM_BUILD_PYTHON не указывает на исполняемый Python: $PYTHON"
+    exit 1
+fi
 if [ -n "${CONDA_PREFIX:-}" ] && [ -x "$CONDA_PREFIX/bin/python" ]; then
-    PYTHON="$CONDA_PREFIX/bin/python"
+    if [ -z "$PYTHON" ]; then
+        PYTHON="$CONDA_PREFIX/bin/python"
+    fi
 fi
 for py in .venv/bin/python python3 python; do
     if [ -z "$PYTHON" ] && command -v "$py" &>/dev/null; then
@@ -49,7 +55,7 @@ if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6; i
     echo "[ERROR] Пакет gigaam не найден. Установи зависимости:"
     echo "  python3 -m venv .venv"
     echo "  .venv/bin/python -m pip install -r requirements.txt"
-    echo "  .venv/bin/python -m pip install git+https://github.com/salute-developers/GigaAM.git@0a3f1036d93287d5ef226911ec795bde8ef05d57#egg=gigaam --no-build-isolation"
+    echo "  .venv/bin/python -m pip install git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam --no-build-isolation"
     echo "  .venv/bin/python -m pip install git+https://github.com/aystream/gigaam-mlx.git@20276ddd6173d636b37c6c6e13b4ee8f7b94d1ac#egg=gigaam-mlx"
     exit 1
 fi
@@ -57,18 +63,18 @@ echo "[OK] зависимости GUI найдены"
 
 # ── PyInstaller ───────────────────────────────────────────────────────────────
 echo ""
-echo "[1/3] Проверка PyInstaller..."
+echo "[1/4] Проверка PyInstaller..."
 $PYTHON -m PyInstaller --version >/dev/null
 echo "[OK] PyInstaller найден"
 
 # ── Очистка ───────────────────────────────────────────────────────────────────
 echo ""
-echo "[2/3] Очистка предыдущей сборки..."
+echo "[2/4] Очистка предыдущей сборки..."
 rm -rf "dist/GigaAMTranscriber.app" "build/gigaam_app_mac" "build/GigaAMTranscriber" "dist/GigaAMTranscriber"
 
 # ── Сборка ────────────────────────────────────────────────────────────────────
 echo ""
-echo "[3/3] Сборка .app (может занять 5-20 минут)..."
+echo "[3/4] Сборка .app (может занять 5-20 минут)..."
 echo ""
 export PYTHONPATH="$(pwd)/pyinstaller_hooks${PYTHONPATH:+:$PYTHONPATH}"
 $PYTHON -m PyInstaller packaging/gigaam_app_mac.spec --noconfirm

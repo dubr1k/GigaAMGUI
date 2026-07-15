@@ -21,7 +21,7 @@ class ASRBackend(Protocol):
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
     ) -> list[TranscriptionSegment]:
-        """Transcribe audio by 20-second segments."""
+        """Transcribe long audio with backend-aware speech segmentation."""
 
     def unload(self) -> None:
         """Release backend resources."""

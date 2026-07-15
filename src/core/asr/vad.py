@@ -110,7 +110,12 @@ def merge_speech_regions(
     strict_limit_duration: float = 30.0,
     new_chunk_threshold: float = 0.2,
 ) -> list[tuple[float, float]]:
-    """Merge detected speech regions into ASR input boundaries."""
+    """Merge detected speech regions without inventing cuts inside speech.
+
+    ``strict_limit_duration`` остаётся в сигнатуре для совместимости. Ограничение
+    конкретного декодера применяется позже общим overlap-планировщиком, которому
+    доступен сам waveform и поэтому можно выбрать тихую точку разреза.
+    """
 
     valid = sorted(
         (
@@ -126,18 +131,10 @@ def merge_speech_regions(
 
     boundaries: list[tuple[float, float]] = []
 
-    def append_boundary(start: float, end: float) -> None:
-        duration = end - start
-        if duration <= strict_limit_duration:
-            boundaries.append((start, end))
-            return
+    _ = strict_limit_duration
 
-        part_count = int(duration / strict_limit_duration) + 1
-        part_duration = duration / part_count
-        for index in range(part_count):
-            part_start = start + index * part_duration
-            part_end = end if index == part_count - 1 else part_start + part_duration
-            boundaries.append((part_start, part_end))
+    def append_boundary(start: float, end: float) -> None:
+        boundaries.append((start, end))
 
     current_start = valid[0][0]
     current_end = valid[0][1]

@@ -5,6 +5,8 @@ import threading
 import types
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
@@ -13,6 +15,13 @@ sys.modules.setdefault("gigaam", types.SimpleNamespace(load_model=lambda *args, 
 sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
 from src.gui.app_qt import GigaTranscriberQtApp  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_gui_config(monkeypatch, tmp_path):
+    """Не читать и не перезаписывать пользовательские GUI-настройки в тестах."""
+
+    monkeypatch.setenv("GIGAAM_CONFIG_DIR", str(tmp_path / "config"))
 
 
 def _autoclose(window, monkeypatch):
@@ -70,14 +79,17 @@ def test_default_size_needs_no_scroll():
     window.close()
 
 
-def test_log_is_on_second_tab():
+def test_log_is_on_dedicated_tab():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
-    assert window.tabs.count() == 2
+    window._lang = "ru"
+    window._apply_language()
+    assert window.tabs.count() == 3
     assert window.tabs.tabText(0) == "Обработка"
-    assert "Журнал" in window.tabs.tabText(1)
-    # Журнал лежит на второй вкладке, и логирование в него работает
+    assert window.tabs.tabText(1) == "LLM"
+    assert "Журнал" in window.tabs.tabText(2)
+    # Журнал лежит на отдельной вкладке, и логирование в него работает
     window.log("тестовое сообщение")
     assert "тестовое сообщение" in window.log_text.toPlainText()
     window.close()
@@ -261,7 +273,10 @@ def _new_window():
     global _APP
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     _APP = QApplication.instance() or QApplication([])
-    return GigaTranscriberQtApp()
+    window = GigaTranscriberQtApp()
+    window._lang = "ru"
+    window._apply_language()
+    return window
 
 
 def test_file_queue_list_reflects_and_removes():

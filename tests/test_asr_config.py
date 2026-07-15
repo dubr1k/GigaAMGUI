@@ -40,3 +40,11 @@ def test_config_parse_bool_false_and_overrides(monkeypatch):
     importlib.reload(config)
     assert config.ASR_SEGMENTATION_MODE == os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
     assert config.ASR_VAD_DEVICE == (os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu")
+
+
+def test_config_accepts_safe_overlap_mode(monkeypatch):
+    with monkeypatch.context() as env:
+        env.setenv("ASR_SEGMENTATION_MODE", "overlap_chunks")
+        importlib.reload(config)
+        assert config.ASR_SEGMENTATION_MODE == "overlap_chunks"
+    importlib.reload(config)

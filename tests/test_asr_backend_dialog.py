@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from src.gui.asr_backend_dialog import ASRBackendDialog
 
@@ -19,11 +19,10 @@ def test_dialog_disables_mlx_on_unsupported_platform(monkeypatch):
 
 def test_dialog_is_localized_for_russian_parent(monkeypatch):
     app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    parent._lang = "ru"
 
-    class Parent:
-        _lang = "ru"
-
-    dialog = ASRBackendDialog(parent=Parent(), mlx_supported=True)
+    dialog = ASRBackendDialog(parent=parent, mlx_supported=True)
     assert dialog.windowTitle() == "Выбор движка распознавания"
     assert dialog.note_label.text().startswith("Авто:")
 

@@ -184,6 +184,42 @@ def test_transcribe_longform_uses_vad_speech_boundaries(tmp_path, monkeypatch):
     assert forwarded_samples == [4 * 16000]
 
 
+def test_vad_long_region_uses_overlap_and_stitches_decoder_text(tmp_path, monkeypatch):
+    wav_path = tmp_path / "continuous_speech.wav"
+    sf.write(wav_path, np.ones(41 * 16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    forwarded_samples = []
+    decoded = iter([
+        "Начало фразы общие слова...",
+        "общие слова продолжается без разрыва",
+    ])
+
+    class FakeSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            assert audio_duration == 41.0
+            return [(0.0, 41.0)]
+
+    backend = PyTorchBackend(
+        vad_segmenter_factory=lambda **_kwargs: FakeSegmenter(),
+    )
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: forwarded_samples.append(wav.shape[-1]) or (wav, length),
+        decoding=SimpleNamespace(decode=lambda *_args: [next(decoded)]),
+    )
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path)) == [
+        {"transcription": "Начало фразы общие слова", "boundaries": (0.0, 20.5)},
+        {"transcription": "продолжается без разрыва", "boundaries": (20.5, 41.0)},
+    ]
+    assert len(forwarded_samples) == 2
+    assert max(forwarded_samples) <= 30 * 16000
+    assert sum(forwarded_samples) > 41 * 16000
+
+
 def test_transcribe_longform_enables_pyannote_vad_by_default(tmp_path, monkeypatch):
     wav_path = tmp_path / "default_vad.wav"
     sf.write(wav_path, np.zeros(10 * 16000, dtype=np.float32), 16000)
@@ -265,12 +301,41 @@ def test_transcribe_longform_falls_back_when_vad_is_unavailable(tmp_path, monkey
         {"transcription": "fallback", "boundaries": (0.0, 1.0)}
     ]
     capabilities = backend.capabilities()
-    assert capabilities.segmentation_mode == "fixed_chunks"
+    assert capabilities.segmentation_mode == "overlap_chunks"
     assert "RuntimeError" in capabilities.segmentation_fallback_reason
     assert "segmentation access denied" not in capabilities.segmentation_fallback_reason
     assert "hf_denied" not in capabilities.segmentation_fallback_reason
     assert messages
     assert all("hf_denied" not in message for message in messages)
+
+
+def test_vad_failure_uses_overlap_instead_of_hard_20_second_cuts(tmp_path):
+    wav_path = tmp_path / "fallback_long.wav"
+    sf.write(wav_path, np.ones(41 * 16000, dtype=np.float32), 16000)
+    forwarded_samples = []
+
+    class FailingSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            raise RuntimeError("offline")
+
+    backend = PyTorchBackend(
+        vad_segmenter_factory=lambda **_kwargs: FailingSegmenter(),
+    )
+    backend.model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: forwarded_samples.append(wav.shape[-1]) or (wav, length),
+        decoding=SimpleNamespace(decode=lambda *_args: ["уникальный фрагмент"]),
+    )
+    backend.device = "cpu"
+
+    backend.transcribe_longform(str(wav_path))
+
+    assert backend.capabilities().segmentation_mode == "overlap_chunks"
+    assert len(forwarded_samples) == 3
+    assert max(forwarded_samples) <= 20 * 16000
+    assert sum(forwarded_samples) > 41 * 16000
 
 
 def test_transcribe_longform_attempts_cached_vad_without_token(tmp_path, monkeypatch):

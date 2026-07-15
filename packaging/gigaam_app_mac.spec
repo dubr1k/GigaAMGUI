@@ -81,7 +81,14 @@ datas += [
 ]
 
 bundled_gigaam_dir = os.path.join(project_root, "models", "gigaam")
-if os.path.isdir(bundled_gigaam_dir):
+bundle_models = os.environ.get("GIGAAM_BUNDLE_MODELS", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+if bundle_models and not os.path.isdir(bundled_gigaam_dir):
+    raise RuntimeError(
+        "GIGAAM_BUNDLE_MODELS включён, но локальная папка models/gigaam отсутствует"
+    )
+if bundle_models:
     datas.append((bundled_gigaam_dir, "models/gigaam"))
 
 bin_dir = os.path.join(project_root, "bin")
@@ -195,8 +202,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "GigaAM Transcriber",
         "CFBundleDisplayName": "GigaAM Transcriber",
-        "CFBundleShortVersionString": "1.1.8",
-        "CFBundleVersion": "1.1.8",
+        "CFBundleShortVersionString": "1.1.9",
+        "CFBundleVersion": "1.1.9",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
         "CFBundleDocumentTypes": [

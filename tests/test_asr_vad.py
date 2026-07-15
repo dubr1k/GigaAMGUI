@@ -29,17 +29,13 @@ def test_merge_speech_regions_starts_new_chunk_after_completed_long_region():
     assert boundaries == [(0.0, 16.0), (16.5, 25.0)]
 
 
-def test_merge_speech_regions_splits_region_above_strict_limit():
+def test_merge_speech_regions_preserves_continuous_region_for_overlap_planner():
     boundaries = merge_speech_regions(
         [(0.0, 65.0)],
         audio_duration=65.0,
     )
 
-    assert boundaries == pytest.approx([
-        (0.0, 65.0 / 3.0),
-        (65.0 / 3.0, 130.0 / 3.0),
-        (130.0 / 3.0, 65.0),
-    ])
+    assert boundaries == [(0.0, 65.0)]
 
 
 def test_merge_speech_regions_does_not_shrink_for_nested_region():

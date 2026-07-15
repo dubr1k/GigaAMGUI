@@ -193,8 +193,8 @@ def main():
 
     # On first launch choose the recognition model before the (larger) PyTorch
     # runtime download. This does not load torch and is persisted for the GUI.
-    from src.utils.user_settings import UserSettings
     from src.core.asr.models import ASR_MODELS
+    from src.utils.user_settings import UserSettings
     settings = UserSettings()
     if not _torch_is_available():
         from PyQt6.QtWidgets import QInputDialog

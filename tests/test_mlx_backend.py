@@ -287,14 +287,37 @@ def test_vad_region_is_resplit_to_mlx_chunk_limit_with_absolute_progress(monkeyp
     )
 
     assert segments == [
-        {"transcription": "decoded", "boundaries": (5.0, 25.0)},
-        {"transcription": "decoded", "boundaries": (25.0, 31.0)},
+        {"transcription": "decoded", "boundaries": (5.0, 31.0)},
     ]
-    assert mel_lengths == [20 * 16000, 6 * 16000]
+    assert mel_lengths == [14 * 16000, 14 * 16000]
     assert events == [
-        (25 / 45, 25.0, 45.0),
+        (18 / 45, 18.0, 45.0),
         (31 / 45, 31.0, 45.0),
         (1.0, 45.0, 45.0),
+    ]
+
+
+def test_mlx_overlap_stitches_phrase_instead_of_repeating_boundary(monkeypatch):
+    boundary = (5.0, 31.0)
+
+    class FakeSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            return [boundary]
+
+    backend, _mel_lengths = _ready_backend(
+        monkeypatch,
+        duration_seconds=45.0,
+        vad_segmenter_factory=lambda **_kwargs: FakeSegmenter(),
+    )
+    decoded = iter([
+        "Начало фразы общие слова...",
+        "общие слова продолжается без разрыва",
+    ])
+    backend.model.decode = lambda _encoded, _seq_len: next(decoded)
+
+    assert backend.transcribe_longform("/tmp/long.wav") == [
+        {"transcription": "Начало фразы общие слова", "boundaries": (5.0, 18.0)},
+        {"transcription": "продолжается без разрыва", "boundaries": (18.0, 31.0)},
     ]
 
 
@@ -315,12 +338,31 @@ def test_vad_failure_uses_sanitized_visible_mlx_fallback(monkeypatch):
         {"transcription": "decoded", "boundaries": (0.0, 1.0)},
     ]
     capabilities = backend.capabilities()
-    assert capabilities.segmentation_mode == "fixed_chunks"
+    assert capabilities.segmentation_mode == "overlap_chunks"
     assert "RuntimeError" in capabilities.segmentation_fallback_reason
     assert "segmentation access denied" not in capabilities.segmentation_fallback_reason
     assert "hf_secret" not in capabilities.segmentation_fallback_reason
     assert messages
     assert all("hf_secret" not in message for message in messages)
+
+
+def test_mlx_vad_failure_uses_overlapping_safe_windows(monkeypatch):
+    class FailingSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            raise RuntimeError("offline")
+
+    backend, mel_lengths = _ready_backend(
+        monkeypatch,
+        duration_seconds=41.0,
+        vad_segmenter_factory=lambda **_kwargs: FailingSegmenter(),
+    )
+
+    backend.transcribe_longform("/tmp/fallback-long.wav")
+
+    assert backend.capabilities().segmentation_mode == "overlap_chunks"
+    assert len(mel_lengths) == 3
+    assert max(mel_lengths) <= 20 * 16000
+    assert sum(mel_lengths) > 41 * 16000
 
 
 def test_empty_vad_timeline_skips_mlx_asr_and_completes_progress(monkeypatch):

@@ -15,6 +15,7 @@ from ...config import (
     MODEL_NAME,
     MODEL_REVISION,
 )
+from .chunking import AudioChunk, plan_audio_chunks, stitch_overlapping_text
 from .types import BackendCapabilities, TranscriptionSegment
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError
 
@@ -42,7 +43,7 @@ class PyTorchBackend:
         self._vad_segmenter_key: tuple[bytes, str] | None = None
         self._vad_failure_key: tuple[bytes, str] | None = None
         self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
-        if self.segmentation_strategy not in {"vad", "fixed_chunks"}:
+        if self.segmentation_strategy not in {"vad", "overlap_chunks", "fixed_chunks"}:
             raise ValueError(f"Неизвестный режим сегментации: {self.segmentation_strategy}")
         self._inference_lock = threading.Lock()
         self.segmentation_mode = "not_run"
@@ -219,6 +220,27 @@ class PyTorchBackend:
                 for start in range(0, total, chunk_size)
             ]
 
+        def legacy_fixed_chunks() -> list[AudioChunk]:
+            return plan_audio_chunks(
+                audio,
+                fixed_chunk_boundaries(),
+                sample_rate=sample_rate,
+                max_chunk_seconds=20.0,
+                overlap_seconds=0.0,
+            )
+
+        def safe_overlap_chunks(
+            regions: list[tuple[float, float]],
+            *,
+            max_chunk_seconds: float,
+        ) -> list[AudioChunk]:
+            return plan_audio_chunks(
+                audio,
+                regions,
+                sample_rate=sample_rate,
+                max_chunk_seconds=max_chunk_seconds,
+            )
+
         hf_token = os.getenv("HF_TOKEN", "").strip() or None
         if self.segmentation_strategy == "vad":
             vad_device = ASR_VAD_DEVICE
@@ -241,13 +263,22 @@ class PyTorchBackend:
                 )
                 self.segmentation_mode = "vad"
                 self.segmentation_fallback_reason = None
+                chunks = safe_overlap_chunks(
+                    boundaries,
+                    max_chunk_seconds=30.0,
+                )
+                if self._logger is not None:
+                    self._logger(
+                        "ASR сегментация: VAD, "
+                        f"речевых областей: {len(boundaries)}, окон декодера: {len(chunks)}"
+                    )
             except Exception as exc:
                 self._vad_segmenter = None
                 self._vad_segmenter_key = None
                 self._vad_failure_key = (
                     segmenter_key if isinstance(exc, VadUnavailableError) else None
                 )
-                self.segmentation_mode = "fixed_chunks"
+                self.segmentation_mode = "overlap_chunks"
                 if isinstance(exc, VadUnavailableError):
                     recovery_hint = (
                         "проверьте локальный кэш или HF_TOKEN и доступ к "
@@ -257,26 +288,44 @@ class PyTorchBackend:
                     recovery_hint = ""
                 self.segmentation_fallback_reason = (
                     f"VAD недоступен ({type(exc).__name__}): "
-                    f"{recovery_hint}использовано резервное разбиение по 20 секунд"
+                    f"{recovery_hint}использовано резервное разбиение "
+                    "по тихим точкам с перекрытием"
                 )
                 if self._logger is not None:
                     self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
-                boundaries = fixed_chunk_boundaries()
+                chunks = safe_overlap_chunks(
+                    [(0.0, total_seconds)],
+                    max_chunk_seconds=20.0,
+                )
+        elif self.segmentation_strategy == "overlap_chunks":
+            self.segmentation_mode = "overlap_chunks"
+            self.segmentation_fallback_reason = (
+                "VAD отключён настройкой ASR_SEGMENTATION_MODE: "
+                "использовано разбиение по тихим точкам с перекрытием"
+            )
+            if self._logger is not None:
+                self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+            chunks = safe_overlap_chunks(
+                [(0.0, total_seconds)],
+                max_chunk_seconds=20.0,
+            )
         else:
             self.segmentation_mode = "fixed_chunks"
             self.segmentation_fallback_reason = (
                 "VAD отключён настройкой ASR_SEGMENTATION_MODE: "
-                "использовано разбиение по 20 секунд"
+                "использовано legacy-разбиение по 20 секунд без перекрытия"
             )
             if self._logger is not None:
                 self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
-            boundaries = fixed_chunk_boundaries()
+            chunks = legacy_fixed_chunks()
 
         try:
+            previous_result_index: int | None = None
+            previous_group: int | None = None
             with torch.inference_mode():
-                for raw_start, raw_end in boundaries:
-                    start = max(0, int(raw_start * sample_rate))
-                    end = min(total, int(raw_end * sample_rate))
+                for chunk in chunks:
+                    start = chunk.decode_start_sample
+                    end = chunk.decode_end_sample
                     if end - start < 1600:
                         continue
 
@@ -287,16 +336,42 @@ class PyTorchBackend:
                     text = self._decode_text(decode_result)
 
                     if text:
-                        start_time = max(0.0, float(raw_start))
-                        end_time = min(total_seconds, float(raw_end))
+                        if (
+                            chunk.overlaps_previous
+                            and previous_result_index is not None
+                            and previous_group == chunk.group
+                        ):
+                            previous_text = results[previous_result_index]["transcription"]
+                            previous_text, text, _overlap = stitch_overlapping_text(
+                                previous_text,
+                                text,
+                            )
+                            results[previous_result_index]["transcription"] = previous_text
+                            if not text and _overlap:
+                                previous_start, _previous_end = results[
+                                    previous_result_index
+                                ]["boundaries"]
+                                results[previous_result_index]["boundaries"] = (
+                                    previous_start,
+                                    min(total_seconds, float(chunk.end_sec)),
+                                )
+
+                        start_time = max(0.0, float(chunk.start_sec))
+                        end_time = min(total_seconds, float(chunk.end_sec))
                         if end_time < start_time:
                             continue
-                        results.append({
-                            "transcription": text,
-                            "boundaries": (start_time, end_time),
-                        })
+                        if text:
+                            results.append({
+                                "transcription": text,
+                                "boundaries": (start_time, end_time),
+                            })
+                            previous_result_index = len(results) - 1
+                            previous_group = chunk.group
+                    else:
+                        previous_result_index = None
+                        previous_group = None
 
-                    processed_seconds = float(end) / sample_rate
+                    processed_seconds = float(chunk.end_sec)
                     ratio = 1.0 if total <= 0 else min(processed_seconds / total_seconds, 1.0)
                     if progress_callback is not None and ratio >= reported:
                         progress_callback(ratio, processed_seconds, total_seconds)
