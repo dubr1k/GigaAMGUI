@@ -879,6 +879,12 @@ fn apply_command_menu(app: &mut App) {
             app.input.clear();
             save_app_settings(app);
         }
+        "/speakers" if app.diarization_backend == "sortformer" => {
+            app.num_speakers = None;
+            app.status = "Sortformer detects the speaker count automatically".into();
+            app.command_menu = None;
+            app.input.clear();
+        }
         "/speakers" => {
             app.num_speakers = option.parse().ok();
             app.status = format!("Speaker count: {option}");
@@ -1037,6 +1043,10 @@ fn run_command(app: &mut App) {
         }
         "/diarization-backend" => {
             app.status = "Usage: /diarization-backend pyannote|sortformer".into()
+        }
+        "/speakers" if app.diarization_backend == "sortformer" => {
+            app.num_speakers = None;
+            app.status = "Sortformer detects the speaker count automatically".into();
         }
         "/speakers" if argument == "auto" => {
             app.num_speakers = None;
@@ -1822,6 +1832,21 @@ mod tests {
         assert_eq!(
             command_menu_options(&app),
             vec!["pyannote", "sortformer", BACK_MENU_OPTION]
+        );
+    }
+
+    #[test]
+    fn sortformer_rejects_fixed_speaker_count() {
+        let mut app = App::default();
+        app.diarization_backend = "sortformer".into();
+        app.input = "/speakers 2".into();
+
+        run_command(&mut app);
+
+        assert_eq!(app.num_speakers, None);
+        assert_eq!(
+            app.status,
+            "Sortformer detects the speaker count automatically"
         );
     }
 

@@ -131,6 +131,8 @@ class FilesMixin:
 
     def _change_diarization_backend(self, _index=None):
         self.diarization_backend = self.combo_diarization_backend.currentData() or "pyannote"
+        if self.diarization_backend == "sortformer":
+            self.entry_num_speakers.setValue(0)
         if (
             self.enable_diarization
             and self.diarization_backend == "pyannote"

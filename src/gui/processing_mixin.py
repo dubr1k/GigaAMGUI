@@ -129,7 +129,7 @@ class ProcessingMixin:
         self.lbl_status.setText(self._t(f"Обработка {self.total_files} файлов…", f"Processing {self.total_files} files…"))
         self._set_status(self._t(f"Обработка {self.total_files} файлов…", f"Processing {self.total_files} files…"))
         num_speakers = None
-        if self.enable_diarization:
+        if self.enable_diarization and self.diarization_backend != "sortformer":
             value = self.entry_num_speakers.value()
             if value > 0:
                 num_speakers = value

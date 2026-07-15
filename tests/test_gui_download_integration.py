@@ -321,6 +321,7 @@ def test_sortformer_backend_does_not_require_token_and_disables_speaker_count(mo
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setattr(window, "_show_hf_token_dialog", lambda: prompted.append(True) or False)
 
+    window.entry_num_speakers.setValue(7)
     index = window.combo_diarization_backend.findData("sortformer")
     assert index >= 0
     window.combo_diarization_backend.setCurrentIndex(index)
@@ -328,6 +329,7 @@ def test_sortformer_backend_does_not_require_token_and_disables_speaker_count(mo
 
     assert window.enable_diarization is True
     assert window.diarization_backend == "sortformer"
+    assert window.entry_num_speakers.value() == 0
     assert prompted == []
     assert window.btn_hf_token.isEnabled() is False
     assert window.entry_num_speakers.isEnabled() is False
