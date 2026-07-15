@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 struct TuiSettings {
     pet_enabled: bool,
     backend: String,
+    diarization_backend: String,
     model: String,
     llm_provider: String,
     llm_api_url: String,
@@ -47,6 +48,7 @@ impl Default for TuiSettings {
         Self {
             pet_enabled: false,
             backend: "auto".into(),
+            diarization_backend: "pyannote".into(),
             model: "v3_e2e_rnnt".into(),
             llm_provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "API".into()),
             llm_api_url: std::env::var("LLM_API_URL").unwrap_or_default(),
@@ -75,6 +77,7 @@ struct App {
     running: bool,
     cancelled: bool,
     diarization: bool,
+    diarization_backend: String,
     num_speakers: Option<u32>,
     formats: Vec<String>,
     output_dir: Option<String>,
@@ -120,6 +123,7 @@ impl Default for App {
             running: false,
             cancelled: false,
             diarization: false,
+            diarization_backend: "pyannote".into(),
             num_speakers: None,
             formats: vec!["txt".into()],
             output_dir: None,
@@ -370,6 +374,7 @@ fn save_app_settings(app: &mut App) {
     if let Err(error) = save_settings(&TuiSettings {
         pet_enabled: app.pet_enabled,
         backend: app.backend.clone(),
+        diarization_backend: app.diarization_backend.clone(),
         model: app.model.clone(),
         llm_provider: app.llm_provider.clone(),
         llm_api_url: app.llm_api_url.clone(),
@@ -556,12 +561,13 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 18] = [
+const COMMANDS: [(&str, &str); 19] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/model", "select the GigaAM recognition model"),
     ("/formats", "output formats, e.g. txt,srt"),
     ("/diarize", "turn speaker diarization on or off"),
+    ("/diarization-backend", "select pyannote or NVIDIA Sortformer"),
     ("/speakers", "auto or a fixed speaker count"),
     ("/remove", "remove a file from the queue by number"),
     ("/clear", "clear the queue and result list"),
@@ -659,6 +665,10 @@ fn command_menu_options(app: &App) -> Vec<String> {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+        Some("/diarization-backend") => ["pyannote", "sortformer", BACK_MENU_OPTION]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         Some("/speakers") => [
             "auto",
             "1",
@@ -748,7 +758,7 @@ fn llm_model_options(provider: &str) -> Vec<String> {
 fn open_command_menu(app: &mut App, command: &str) -> bool {
     if matches!(
         command,
-        "/backend" | "/model" | "/diarize" | "/formats" | "/speakers" | "/llm-mode" | "/settings" | "/settings-provider" | "/settings-model"
+        "/backend" | "/model" | "/diarize" | "/diarization-backend" | "/formats" | "/speakers" | "/llm-mode" | "/settings" | "/settings-provider" | "/settings-model"
     ) {
         app.command_menu = Some(command.to_owned());
         app.command_menu_index = if command == "/backend" {
@@ -858,6 +868,16 @@ fn apply_command_menu(app: &mut App) {
             app.status = format!("Diarization {option}");
             app.command_menu = None;
             app.input.clear();
+        }
+        "/diarization-backend" => {
+            app.diarization_backend = option.clone();
+            if app.diarization_backend == "sortformer" {
+                app.num_speakers = None;
+            }
+            app.status = format!("Diarization backend: {}", app.diarization_backend);
+            app.command_menu = None;
+            app.input.clear();
+            save_app_settings(app);
         }
         "/speakers" => {
             app.num_speakers = option.parse().ok();
@@ -1007,6 +1027,17 @@ fn run_command(app: &mut App) {
             app.status = format!("Diarization {}", argument);
         }
         "/diarize" => app.status = "Usage: /diarize on|off".into(),
+        "/diarization-backend" if matches!(argument, "pyannote" | "sortformer") => {
+            app.diarization_backend = argument.into();
+            if app.diarization_backend == "sortformer" {
+                app.num_speakers = None;
+            }
+            app.status = format!("Diarization backend: {}", app.diarization_backend);
+            save_app_settings(app);
+        }
+        "/diarization-backend" => {
+            app.status = "Usage: /diarization-backend pyannote|sortformer".into()
+        }
         "/speakers" if argument == "auto" => {
             app.num_speakers = None;
             app.status = "Speaker count: auto".into();
@@ -1450,6 +1481,9 @@ fn main() -> io::Result<()> {
     if backend_is_supported(&settings.backend) {
         app.backend = settings.backend;
     }
+    if matches!(settings.diarization_backend.as_str(), "pyannote" | "sortformer") {
+        app.diarization_backend = settings.diarization_backend;
+    }
     if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
         app.model = settings.model;
     }
@@ -1583,7 +1617,7 @@ fn main() -> io::Result<()> {
                         {
                             if let Err(error) = send(
                                 &mut worker,
-                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model}),
+                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model}),
                             ) {
                                 app.log(format!("Worker unavailable: {error}"));
                             }
@@ -1766,6 +1800,7 @@ mod tests {
         let settings = TuiSettings {
             pet_enabled: true,
             backend: "mlx".into(),
+            diarization_backend: "sortformer".into(),
             model: "multilingual_ctc".into(),
             ..TuiSettings::default()
         };
@@ -1775,7 +1810,19 @@ mod tests {
 
         assert!(restored.pet_enabled);
         assert_eq!(restored.backend, "mlx");
+        assert_eq!(restored.diarization_backend, "sortformer");
         assert_eq!(restored.model, "multilingual_ctc");
+    }
+
+    #[test]
+    fn diarization_backend_command_offers_both_backends() {
+        let mut app = App::default();
+
+        assert!(open_command_menu(&mut app, "/diarization-backend"));
+        assert_eq!(
+            command_menu_options(&app),
+            vec!["pyannote", "sortformer", BACK_MENU_OPTION]
+        );
     }
 
     #[test]

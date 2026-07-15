@@ -2,13 +2,16 @@
 Модуль диаризации спикеров для GigaAM v3 Transcriber.
 
 Поддерживает:
-- pyannote: Полная диаризация через pyannote/speaker-diarization-3.1
+- pyannote: полная диаризация через pyannote/speaker-diarization-3.1;
+- sortformer: NVIDIA Streaming Sortformer 4spk v2.1 через NeMo.
 """
 
 import inspect
 import logging
 import os
+import threading
 import warnings
+from contextlib import nullcontext
 from pathlib import Path
 
 # Патч pyannote применяется лениво в _load_pipeline (а не при импорте модуля),
@@ -26,6 +29,26 @@ _DIARIZATION_REQUIRED_REPOS = [
 ]
 
 _DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
+_SORTFORMER_MODEL_ID = "nvidia/diar_streaming_sortformer_4spk-v2.1"
+
+DIARIZATION_BACKENDS = ("pyannote", "sortformer")
+_DIARIZATION_BACKEND_ALIASES = {
+    "pyannote": "pyannote",
+    "sortformer": "sortformer",
+    "nvidia": "sortformer",
+}
+
+
+def normalize_diarization_backend(backend: str | None) -> str:
+    """Возвращает каноническое имя backend диаризации."""
+    normalized = str(backend or "pyannote").strip().lower()
+    try:
+        return _DIARIZATION_BACKEND_ALIASES[normalized]
+    except KeyError as exc:
+        supported = ", ".join(DIARIZATION_BACKENDS)
+        raise ValueError(
+            f"Неизвестный backend диаризации: {backend!r}. Доступно: {supported}"
+        ) from exc
 
 
 def diagnose_hf_access(token: str | None) -> str:
@@ -131,6 +154,7 @@ class DiarizationManager:
             min_speakers: Минимальное количество спикеров
             max_speakers: Максимальное количество спикеров
         """
+        self.backend = "pyannote"
         self.hf_token = hf_token or os.getenv("HF_TOKEN")
         self.device = self._resolve_device(device)
         self.min_speakers = min_speakers
@@ -467,9 +491,166 @@ class DiarizationManager:
         return best_speaker
 
 
+class SortformerDiarizationManager(DiarizationManager):
+    """Диаризация через NVIDIA Streaming Sortformer 4spk v2.1.
+
+    NeMo импортируется только при первом запуске backend: базовая установка и
+    PyInstaller-сборки с pyannote от него не зависят. Конфигурация повторяет
+    официальный high-latency preset model card v2.1: длинный chunk даёт более ровные
+    границы ценой задержки, которая для офлайн-транскрибации несущественна.
+    """
+
+    max_supported_speakers = 4
+    _shared_pipelines = {}
+    _shared_load_lock = threading.Lock()
+    _shared_inference_lock = threading.Lock()
+    _shared_inference_contexts = {}
+
+    def __init__(self, device: str = "auto"):
+        self.backend = "sortformer"
+        self.hf_token = None
+        self.device = self._resolve_sortformer_device(device)
+        self.min_speakers = None
+        self.max_speakers = self.max_supported_speakers
+        self._pipeline = None
+        self._inference_lock = self._shared_inference_lock
+        self._inference_context = nullcontext
+
+    @property
+    def pipeline(self):
+        """Переиспользует одну тяжёлую модель NeMo между processor-задачами."""
+        if self._pipeline is not None:
+            return self._pipeline
+        with self._shared_load_lock:
+            cls = type(self)
+            if self.device not in cls._shared_pipelines:
+                cls._shared_pipelines[self.device] = self._load_pipeline()
+            self._pipeline = cls._shared_pipelines[self.device]
+            self._inference_context = cls._shared_inference_contexts[self.device]
+        return self._pipeline
+
+    @staticmethod
+    def _resolve_sortformer_device(device: str) -> str:
+        """NeMo поддерживает CUDA/CPU; MPS пока оставляем на безопасном CPU."""
+        if device not in {"auto", "cuda", "cpu", "mps"}:
+            raise ValueError(f"Неподдерживаемое устройство Sortformer: {device}")
+        if device in {"cpu", "mps"}:
+            return "cpu"
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return "cuda"
+        except ImportError:
+            pass
+        return "cpu"
+
+    def _load_pipeline(self):
+        try:
+            import torch
+            from nemo.collections.asr.models import SortformerEncLabelModel
+        except ImportError as exc:
+            raise ImportError(
+                "NVIDIA Sortformer не установлен. Установите опциональные "
+                "зависимости: pip install -r requirements-sortformer.txt"
+            ) from exc
+
+        logger.info("Загрузка модели диаризации: %s", _SORTFORMER_MODEL_ID)
+        model = SortformerEncLabelModel.from_pretrained(_SORTFORMER_MODEL_ID)
+        model.eval()
+        model.to(torch.device(self.device))
+        self._inference_context = getattr(torch, "inference_mode", nullcontext)
+        type(self)._shared_inference_contexts[self.device] = self._inference_context
+
+        modules = model.sortformer_modules
+        modules.chunk_len = 340
+        modules.chunk_right_context = 40
+        modules.fifo_len = 40
+        modules.spkcache_update_period = 300
+        modules.spkcache_len = 188
+        modules._check_streaming_parameters()
+        logger.info("Модель %s загружена на %s", _SORTFORMER_MODEL_ID, self.device)
+        return model
+
+    def diarize(
+        self,
+        audio_path: Path | str,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+        progress_callback=None,
+    ) -> list[SpeakerSegment]:
+        """Запускает Sortformer и приводит вывод NeMo к SpeakerSegment."""
+        del min_speakers, max_speakers
+        if num_speakers is not None and not 1 <= num_speakers <= self.max_supported_speakers:
+            raise ValueError("Sortformer поддерживает не более 4 спикеров")
+        if num_speakers is not None:
+            logger.warning(
+                "Sortformer сам определяет активных спикеров; num_speakers=%s игнорируется",
+                num_speakers,
+            )
+
+        audio_path = Path(audio_path)
+        try:
+            with self._inference_lock:
+                pipeline = self.pipeline
+                with self._inference_context():
+                    predicted = pipeline.diarize(
+                        audio=[str(audio_path)],
+                        batch_size=1,
+                        num_workers=0,
+                        verbose=False,
+                    )
+            if not predicted or not isinstance(predicted, (list, tuple)):
+                raise ValueError("Sortformer не вернул результаты")
+            raw_segments = predicted[0]
+            if isinstance(raw_segments, str):
+                raw_segments = [raw_segments]
+
+            segments = [self._parse_sortformer_segment(item) for item in raw_segments]
+            segments.sort(key=lambda segment: segment.start)
+            segments = self._rename_speakers(segments)
+            if progress_callback is not None:
+                progress_callback(1.0, None, None)
+            logger.info(
+                "Диаризация Sortformer завершена. Найдено спикеров: %s",
+                len({segment.speaker for segment in segments}),
+            )
+            return segments
+        except Exception as exc:
+            logger.error("Ошибка Sortformer: %s", exc)
+            raise ValueError(f"Ошибка при диаризации Sortformer: {exc}") from exc
+
+    @staticmethod
+    def _parse_sortformer_segment(item) -> SpeakerSegment:
+        if isinstance(item, str):
+            parts = item.strip().split()
+            if len(parts) != 3:
+                raise ValueError(f"Неожиданный сегмент Sortformer: {item!r}")
+            start, end, speaker = parts
+        elif isinstance(item, dict):
+            start = item.get("start")
+            end = item.get("end")
+            speaker = item.get("speaker", item.get("speaker_id"))
+        elif isinstance(item, (list, tuple)) and len(item) == 3:
+            start, end, speaker = item
+        else:
+            raise ValueError(f"Неожиданный сегмент Sortformer: {item!r}")
+
+        try:
+            start_value = float(start)
+            end_value = float(end)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Неожиданный сегмент Sortformer: {item!r}") from exc
+        if not speaker or start_value < 0 or end_value <= start_value:
+            raise ValueError(f"Неожиданный сегмент Sortformer: {item!r}")
+        return SpeakerSegment(start_value, end_value, str(speaker))
+
+
 def get_diarization_manager(
     hf_token: str | None = None,
     device: str = "auto",
+    backend: str = "pyannote",
     **kwargs
 ) -> DiarizationManager:
     """
@@ -483,6 +664,9 @@ def get_diarization_manager(
     Returns:
         Экземпляр DiarizationManager
     """
+    backend = normalize_diarization_backend(backend)
+    if backend == "sortformer":
+        return SortformerDiarizationManager(device=device)
     return DiarizationManager(
         hf_token=hf_token,
         device=device,

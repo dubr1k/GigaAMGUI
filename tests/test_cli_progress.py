@@ -35,9 +35,11 @@ class FakeProcessor:
         estimated_conversion_ratio=0.05,
         estimated_transcription_ratio=0.95,
         enable_diarization=False,
+        diarization_backend="pyannote",
         num_speakers=None,
         output_formats=None,
     ):
+        assert diarization_backend == "pyannote"
         if self.progress_callback:
             self.progress_callback(ProgressEvent(
                 stage="transcription",

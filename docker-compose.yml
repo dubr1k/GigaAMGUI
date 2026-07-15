@@ -6,6 +6,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        INSTALL_SORTFORMER: ${INSTALL_SORTFORMER:-0}
     container_name: gigaam-web
     restart: unless-stopped
     ports:

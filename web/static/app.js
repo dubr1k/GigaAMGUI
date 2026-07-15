@@ -35,6 +35,7 @@ const I18N = {
         cardFiles: '1. Выбор файлов',
         cardDiarization: '2. Диаризация спикеров',
         enableDiarization: 'Включить диаризацию спикеров',
+        diarizationBackend: 'Движок:',
         speakersCount: 'Кол-во спикеров:',
         speakersAutoPlaceholder: 'Пусто = авто',
         diarizationHint: 'Автоматическое определение спикеров (требуется HF_TOKEN)',
@@ -107,6 +108,7 @@ const I18N = {
         cardFiles: '1. File selection',
         cardDiarization: '2. Speaker diarization',
         enableDiarization: 'Enable speaker diarization',
+        diarizationBackend: 'Backend:',
         speakersCount: 'Speakers count:',
         speakersAutoPlaceholder: 'Empty = auto',
         diarizationHint: 'Automatic speaker detection (HF_TOKEN required)',
@@ -454,15 +456,28 @@ function setupDragDrop() {
 
 function setupDiarization() {
     const cb = document.getElementById('cb-diarization');
+    const backend = document.getElementById('diarization-backend');
     const numSpeakers = document.getElementById('num-speakers');
+    const hint = document.querySelector('[data-i18n="diarizationHint"]');
+
+    const updateControls = () => {
+        const sortformer = backend.value === 'sortformer';
+        numSpeakers.disabled = !cb.checked || sortformer;
+        if (sortformer) numSpeakers.value = '';
+        hint.textContent = sortformer
+            ? (currentLang === 'ru' ? 'NVIDIA Sortformer: автоопределение, максимум 4 спикера; нужен NeMo' : 'NVIDIA Sortformer: auto-detect, up to 4 speakers; NeMo required')
+            : t('diarizationHint');
+    };
 
     cb.addEventListener('change', () => {
-        numSpeakers.disabled = !cb.checked;
+        updateControls();
         document.querySelectorAll('.fmt-cb[data-fmt="txt_diarize"], .fmt-cb[data-fmt="txt_diarize_timecodes"]').forEach(el => {
             el.disabled = !cb.checked;
         });
         addLog(cb.checked ? (currentLang === 'ru' ? 'Диаризация: ВКЛЮЧЕНА' : 'Diarization: ON') : (currentLang === 'ru' ? 'Диаризация: ВЫКЛЮЧЕНА' : 'Diarization: OFF'));
     });
+    backend.addEventListener('change', updateControls);
+    updateControls();
 }
 
 // ===== FORMATS =====
@@ -496,12 +511,14 @@ function setupUrlDownload() {
 
         const formats = getSelectedFormats();
         const diar = document.getElementById('cb-diarization').checked;
+        const diarBackend = document.getElementById('diarization-backend').value;
         const ns = document.getElementById('num-speakers').value;
 
         const formData = new FormData();
         formData.append('url', url);
         formData.append('output_formats', formats.join(','));
         formData.append('enable_diarization', diar);
+        formData.append('diarization_backend', diarBackend);
         formData.append('num_speakers', ns);
 
         document.getElementById('btn-download-url').disabled = true;
@@ -540,12 +557,14 @@ function setupStartButton() {
 
         const formats = getSelectedFormats();
         const diar = document.getElementById('cb-diarization').checked;
+        const diarBackend = document.getElementById('diarization-backend').value;
         const ns = document.getElementById('num-speakers').value;
 
         const formData = new FormData();
         selectedFiles.forEach(f => formData.append('files', f));
         formData.append('output_formats', formats.join(','));
         formData.append('enable_diarization', diar);
+        formData.append('diarization_backend', diarBackend);
         formData.append('num_speakers', ns);
 
         document.getElementById('btn-start').disabled = true;
@@ -588,6 +607,7 @@ function setupClearButton() {
         updateFileList();
         document.getElementById('url-input').value = '';
         document.getElementById('cb-diarization').checked = false;
+        document.getElementById('diarization-backend').value = 'pyannote';
         document.getElementById('num-speakers').value = '';
         document.getElementById('num-speakers').disabled = true;
         document.querySelectorAll('.fmt-cb').forEach(cb => {

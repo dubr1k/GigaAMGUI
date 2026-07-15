@@ -27,7 +27,7 @@ Russian speech-to-text transcription for audio and video powered by **GigaAM-v3*
 
 - Batch processing, recursive folder scans, drag & drop, and media downloads through `yt-dlp`.
 - Export to `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, and `vtt`.
-- Speaker diarization through `pyannote`.
+- Selectable diarization through `pyannote` or NVIDIA Streaming Sortformer v2.1.
 - MLX RNN-T on Apple Silicon; CPU, CUDA, Intel XPU, and MPS support.
 - LLM summaries, action items, and custom prompts.
 - OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, and arbitrary CLI LLM providers.
@@ -53,6 +53,26 @@ HF_TOKEN=your_huggingface_token_here
 ```
 
 For diarization, accept the terms for `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`.
+
+### Optional: NVIDIA Sortformer
+
+Sortformer is installed separately so the heavy NeMo stack does not inflate the
+default installation:
+
+```bash
+python -m pip install -r requirements-sortformer.txt
+python cli.py --diarize --diarization-backend sortformer -f audio.wav
+```
+
+This uses `nvidia/diar_streaming_sortformer_4spk-v2.1` with the official
+high-latency model-card settings. The model auto-detects active
+speakers, supports at most four voices, and does not require `HF_TOKEN`. CUDA is
+recommended; CPU is much slower. NeMo does not support MPS, so it falls back to
+CPU. The model (~471 MB) is downloaded on first use. The Space's NeMo 2.5.3 pin
+is intentionally avoided because later releases fix known vulnerabilities; the
+optional requirements file pins the reviewed 2.7 branch.
+For the Web UI, build the extended image with
+`INSTALL_SORTFORMER=1 docker compose build gigaam-web`.
 
 ## Interfaces
 

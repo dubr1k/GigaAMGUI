@@ -97,7 +97,8 @@ class FilesMixin:
         if self._diarization_prompt_open:
             return
         enabling = (state == Qt.CheckState.Checked.value)
-        if enabling and not os.getenv("HF_TOKEN", "").startswith("hf_"):
+        backend = self.combo_diarization_backend.currentData() or "pyannote"
+        if enabling and backend == "pyannote" and not os.getenv("HF_TOKEN", "").startswith("hf_"):
             self._diarization_prompt_open = True
             self.cb_diarization.setEnabled(False)
             try:
@@ -116,7 +117,8 @@ class FilesMixin:
                 self.cb_diarization.setEnabled(True)
                 self._diarization_prompt_open = False
         self.enable_diarization = enabling
-        self.entry_num_speakers.setEnabled(self.enable_diarization)
+        self.diarization_backend = backend
+        self._update_diarization_backend_controls()
         for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
             cb = self.format_checkboxes.get(fmt)
             if cb:
@@ -126,6 +128,34 @@ class FilesMixin:
         else:
             self.entry_num_speakers.setValue(0)
             self.log("Диаризация спикеров: ВЫКЛЮЧЕНА")
+
+    def _change_diarization_backend(self, _index=None):
+        self.diarization_backend = self.combo_diarization_backend.currentData() or "pyannote"
+        if (
+            self.enable_diarization
+            and self.diarization_backend == "pyannote"
+            and not os.getenv("HF_TOKEN", "").startswith("hf_")
+        ):
+            self.cb_diarization.setChecked(False)
+        self._update_diarization_backend_controls()
+
+    def _update_diarization_backend_controls(self):
+        is_sortformer = self.diarization_backend == "sortformer"
+        self.btn_hf_token.setEnabled(not is_sortformer and not self.is_processing)
+        self.entry_num_speakers.setEnabled(
+            self.enable_diarization and not is_sortformer and not self.is_processing
+        )
+        self.lbl_diarization_info.setText(
+            self._t(
+                "NVIDIA Sortformer: автоопределение, максимум 4 спикера; нужен NeMo",
+                "NVIDIA Sortformer: auto-detect, up to 4 speakers; NeMo required",
+            )
+            if is_sortformer
+            else self._t(
+                "Pyannote: автоопределение спикеров (требуется HF_TOKEN)",
+                "Pyannote: automatic speaker detection (HF_TOKEN required)",
+            )
+        )
 
     def _toggle_format(self, fmt: str):
         self.output_formats[fmt] = self.format_checkboxes[fmt].isChecked()

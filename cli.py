@@ -127,6 +127,7 @@ def process_files_with_progress(
     output_formats: list[str] | None = None,
     enable_diarization: bool = False,
     num_speakers: int | None = None,
+    diarization_backend: str = "pyannote",
 ) -> list[dict]:
     """
     Обрабатывает файлы с отображением прогресса
@@ -242,6 +243,7 @@ def process_files_with_progress(
                 file_index=len(results),
                 total_files=len(files),
                 enable_diarization=enable_diarization,
+                diarization_backend=diarization_backend,
                 num_speakers=num_speakers,
                 output_formats=output_formats,
             )
@@ -374,12 +376,19 @@ def display_results(results: list[dict]):
     help='Включить диаризацию спикеров (по умолчанию: выключено)'
 )
 @click.option(
+    '--diarization-backend',
+    type=click.Choice(["pyannote", "sortformer"]),
+    default="pyannote",
+    show_default=True,
+    help='Движок диаризации: pyannote или NVIDIA Sortformer v2.1 (до 4 спикеров)',
+)
+@click.option(
     '--speakers', '-s',
     type=click.IntRange(min=1),
     default=None,
     help='Количество спикеров для диаризации (если известно)'
 )
-def main(files, directory, output, interactive, verbose, formats, backend, diarize, speakers):
+def main(files, directory, output, interactive, verbose, formats, backend, diarize, diarization_backend, speakers):
     """
     🎙️ GigaAM v3 Transcriber - CLI
 
@@ -410,14 +419,19 @@ def main(files, directory, output, interactive, verbose, formats, backend, diari
     # Инициализация логгера
     logger = CLILogger(verbose=verbose)
 
-    # Проверка токена для диаризации
-    if diarize and not os.getenv("HF_TOKEN", "").startswith("hf_"):
+    # Проверка токена нужна только для pyannote. Публичный Sortformer
+    # загружается без HF_TOKEN.
+    if diarize and diarization_backend == "pyannote" and not os.getenv("HF_TOKEN", "").startswith("hf_"):
         console.print(Panel(
-            "[bold yellow]⚠ Для диаризации требуется HF_TOKEN с доступом к pyannote/segmentation-3.0.[/bold yellow]",
+            "[bold yellow]⚠ Для диаризации pyannote требуется HF_TOKEN с доступом к pyannote/segmentation-3.0.[/bold yellow]",
             title="Внимание",
             border_style="yellow",
         ))
         sys.exit(1)
+    if diarize and diarization_backend == "sortformer" and speakers is not None:
+        raise click.UsageError(
+            "NVIDIA Sortformer определяет число спикеров автоматически; не используйте --speakers"
+        )
 
     # Предполётная проверка ffmpeg/ffprobe
     if not ffmpeg_available():
@@ -509,6 +523,7 @@ def main(files, directory, output, interactive, verbose, formats, backend, diari
         logger=logger,
         output_formats=list(formats) if formats else ['txt'],
         enable_diarization=diarize,
+        diarization_backend=diarization_backend,
         num_speakers=speakers,
     )
     total_time = time.time() - start_time

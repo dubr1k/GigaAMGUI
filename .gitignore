@@ -108,6 +108,7 @@ checkpoints/
 !requirements-tui.txt
 !requirements_macos.txt
 !requirements-dev.txt
+!requirements-sortformer.txt
 !requirements-macos-mlx.txt
 !web/static/robots.txt
 *.wav

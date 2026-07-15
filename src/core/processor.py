@@ -37,6 +37,7 @@ class TranscriptionProcessor:
         self.audio_converter = AudioConverter(self.logger)
         self.time_formatter = TimeFormatter()
         self._diarization_manager = None
+        self._active_diarization_backend = "pyannote"
         self._progress_plan = None
 
     def _emit_progress(self, event: ProgressEvent) -> None:
@@ -64,27 +65,35 @@ class TranscriptionProcessor:
 
     @property
     def diarization_manager(self) -> DiarizationManager | None:
-        """Ленивая загрузка менеджера с актуальным токеном из окружения."""
+        """Ленивая загрузка выбранного backend с актуальным HF-токеном."""
+        from ..utils.diarization import get_diarization_manager, normalize_diarization_backend
+
+        backend = normalize_diarization_backend(self._active_diarization_backend)
         hf_token = os.getenv("HF_TOKEN", "").strip()
 
         # Токен можно заменить в GUI уже после создания processor. Не держим
         # менеджер (и загруженный им pipeline) со старым токеном.
         if (
             self._diarization_manager is not None
-            and getattr(self._diarization_manager, "hf_token", hf_token) != hf_token
+            and (
+                getattr(self._diarization_manager, "backend", "pyannote") != backend
+                or (
+                    backend == "pyannote"
+                    and getattr(self._diarization_manager, "hf_token", hf_token) != hf_token
+                )
+            )
         ):
             self._diarization_manager = None
 
-        if not hf_token:
+        if backend == "pyannote" and not hf_token:
             self._diarization_manager = None
             return None
 
         if self._diarization_manager is None:
             try:
-                from ..utils.diarization import DiarizationManager
-
-                self._diarization_manager = DiarizationManager(
-                    hf_token=hf_token,
+                self._diarization_manager = get_diarization_manager(
+                    backend=backend,
+                    hf_token=hf_token or None,
                     device="auto"
                 )
             except Exception as e:
@@ -119,7 +128,8 @@ class TranscriptionProcessor:
                      estimated_transcription_ratio: float = 0.95,
                      enable_diarization: bool = False,
                      num_speakers: int | None = None,
-                     output_formats: list | None = None) -> dict:
+                     output_formats: list | None = None,
+                     diarization_backend: str = "pyannote") -> dict:
         """
         Обрабатывает один файл
 
@@ -134,6 +144,7 @@ class TranscriptionProcessor:
             estimated_transcription_ratio: доля времени на транскрибацию (0-1)
             enable_diarization: включить диаризацию спикеров
             num_speakers: количество спикеров (если известно)
+            diarization_backend: backend диаризации (`pyannote` или `sortformer`)
 
         Returns:
             dict: результаты обработки с ключами:
@@ -169,6 +180,9 @@ class TranscriptionProcessor:
         self.logger(f"--- Обработка файла {file_index+1}/{total_files}: {filename} ---")
         self.logger(f"Длительность: {duration_str}")
 
+        from ..utils.diarization import normalize_diarization_backend
+
+        self._active_diarization_backend = normalize_diarization_backend(diarization_backend)
         self._progress_plan = ProgressPlan(has_diarization=enable_diarization)
         self._update_progress("preparing", 0.0, total_seconds=media_duration, processed_seconds=0.0)
 
@@ -245,13 +259,17 @@ class TranscriptionProcessor:
                            f"has_boundaries={'boundaries' in first_utt}")
 
             # Применение диаризации, если включена
-            if enable_diarization and not os.getenv("HF_TOKEN", "").startswith("hf_"):
+            if (
+                enable_diarization
+                and self._active_diarization_backend == "pyannote"
+                and not os.getenv("HF_TOKEN", "").startswith("hf_")
+            ):
                 self.logger("ОШИБКА: Диаризация требует токен HuggingFace.")
                 self.logger("Установите токен через чекбокс 'Диаризация' в интерфейсе.")
                 enable_diarization = False
 
             if enable_diarization and utterances and len(utterances) > 0:
-                self.logger("Применение диаризации спикеров...")
+                self.logger(f"Применение диаризации спикеров ({self._active_diarization_backend})...")
                 try:
                     self._update_progress("diarization", None)
                     utterances = self._apply_diarization(

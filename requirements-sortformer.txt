@@ -1,0 +1,5 @@
+# Optional NVIDIA Streaming Sortformer diarization backend.
+# Install the regular project requirements first, then this file.
+# 2.5.3 (used by the reference HF Space) is intentionally not used because
+# fixed security advisories affect older NeMo releases.
+nemo_toolkit[asr]==2.7.3

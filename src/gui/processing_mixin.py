@@ -136,6 +136,7 @@ class ProcessingMixin:
         snapshot = {
             "num_speakers": num_speakers,
             "enable_diarization": self.enable_diarization,
+            "diarization_backend": self.diarization_backend,
             "selected_formats": self._get_selected_formats(),
             "output_dir": self.output_dir,
             "files": list(self.files_to_process),
@@ -146,7 +147,8 @@ class ProcessingMixin:
 
     def _set_processing_controls_enabled(self, enabled: bool):
         self.cb_diarization.setEnabled(enabled)
-        self.entry_num_speakers.setEnabled(enabled and self.enable_diarization)
+        self.combo_diarization_backend.setEnabled(enabled)
+        self._update_diarization_backend_controls()
         self.btn_upload.setEnabled(enabled)
         self.input_path.setEnabled(enabled)
         self._update_files_controls()
@@ -161,6 +163,7 @@ class ProcessingMixin:
     def _process_files(self, snapshot: dict):
         num_speakers = snapshot["num_speakers"]
         enable_diarization = snapshot["enable_diarization"]
+        diarization_backend = snapshot["diarization_backend"]
         selected_formats = snapshot["selected_formats"]
         output_dir = snapshot["output_dir"]
         files = snapshot["files"]
@@ -192,6 +195,7 @@ class ProcessingMixin:
                     result = processor.process_file(
                         filepath, file_output_dir, i, total_files,
                         enable_diarization=enable_diarization,
+                        diarization_backend=diarization_backend,
                         num_speakers=num_speakers,
                         output_formats=selected_formats
                     )

@@ -54,6 +54,7 @@ def _task(task_id: str, user: str, status: str = "completed") -> dict:
         "stage": "Готово" if status == "completed" else "Подготовка...",
         "output_formats": ["txt"],
         "enable_diarization": False,
+        "diarization_backend": "pyannote",
         "num_speakers": None,
         "user": user,
     }
@@ -68,6 +69,15 @@ def test_register_task_persists_authenticated_user(web_state):
     index = web_app.load_json(str(web_app.TASKS_INDEX_PATH), {})
     assert index["task-alice"]["user"] == "alice"
     assert index["task-alice"]["filename"] == "voice.mp3"
+    assert index["task-alice"]["diarization_backend"] == "pyannote"
+
+
+def test_web_frontend_posts_selected_diarization_backend():
+    html = (web_app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    javascript = (web_app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'option value="sortformer"' in html
+    assert "formData.append('diarization_backend', diarBackend)" in javascript
 
 
 def test_restore_marks_active_task_failed_and_preserves_user(web_state):
