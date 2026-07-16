@@ -145,6 +145,9 @@ MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
 # Настройки аудио конвертации
 AUDIO_SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", "16000"))
 AUDIO_CHANNELS = int(os.getenv("AUDIO_CHANNELS", "1"))
+AUDIO_PREPROCESSING_MODE = os.getenv("AUDIO_PREPROCESSING_MODE", "auto").strip().lower()
+if AUDIO_PREPROCESSING_MODE not in {"off", "auto", "light", "denoise"}:
+    AUDIO_PREPROCESSING_MODE = "auto"
 
 # Настройки GUI
 APP_TITLE = os.getenv("APP_TITLE", "GigaAM v3 Transcriber")

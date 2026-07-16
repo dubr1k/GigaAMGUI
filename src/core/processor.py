@@ -10,6 +10,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ..utils.audio_converter import AudioConverter
+from ..utils.audio_preprocessing import AudioPreprocessor, FFmpegAudioPreprocessingBackend
+from ..utils.deepfilter_backend import DeepFilterNetBinaryBackend
 from ..utils.output_naming import output_path
 from ..utils.time_formatter import TimeFormatter
 from . import formatters
@@ -35,6 +37,10 @@ class TranscriptionProcessor:
         self.logger = logger or print
         self.progress_callback = progress_callback
         self.audio_converter = AudioConverter(self.logger)
+        self.audio_preprocessor = AudioPreprocessor(
+            dsp_backend=FFmpegAudioPreprocessingBackend(self.logger),
+            neural_backend=DeepFilterNetBinaryBackend(self.logger),
+        )
         self.time_formatter = TimeFormatter()
         self._diarization_manager = None
         self._active_diarization_backend = "pyannote"
@@ -129,7 +135,8 @@ class TranscriptionProcessor:
                      enable_diarization: bool = False,
                      num_speakers: int | None = None,
                      output_formats: list | None = None,
-                     diarization_backend: str = "pyannote") -> dict:
+                     diarization_backend: str = "pyannote",
+                     audio_preprocessing_mode: str = "off") -> dict:
         """
         Обрабатывает один файл
 
@@ -145,6 +152,7 @@ class TranscriptionProcessor:
             enable_diarization: включить диаризацию спикеров
             num_speakers: количество спикеров (если известно)
             diarization_backend: backend диаризации (`pyannote` или `sortformer`)
+            audio_preprocessing_mode: подготовка аудио (`off`, `auto`, `light` или `denoise`)
 
         Returns:
             dict: результаты обработки с ключами:
@@ -171,7 +179,9 @@ class TranscriptionProcessor:
             'media_duration': media_duration,
             'total_time': 0,
             'conversion_time': 0,
+            'preprocessing_time': 0,
             'transcription_time': 0,
+            'audio_preprocessing': None,
             'saved_files': []
         }
 
@@ -210,6 +220,46 @@ class TranscriptionProcessor:
             result['total_time'] = time.time() - file_start_time
             return result
 
+        # Подготовка создаёт отдельную дорожку только для ASR. Диаризация
+        # получает canonical WAV, чтобы не терять тембр и границы реплик.
+        asr_audio = temp_audio
+        diarization_audio = temp_audio
+        preprocessing_temp_paths: tuple[str, ...] = ()
+        preprocessing_start = time.time()
+        self._update_progress("preprocessing", 0.0, total_seconds=media_duration, processed_seconds=0.0)
+        try:
+            prepared_audio = self.audio_preprocessor.prepare(
+                temp_audio,
+                output_dir,
+                mode=audio_preprocessing_mode,
+            )
+            asr_audio = prepared_audio.asr_path
+            diarization_audio = prepared_audio.diarization_path
+            preprocessing_temp_paths = prepared_audio.temporary_paths
+            result['audio_preprocessing'] = prepared_audio.report.to_dict()
+            decision = prepared_audio.report.decision
+            self.logger(
+                "Предобработка аудио: "
+                f"режим={prepared_audio.report.mode}, действие={decision.action}, "
+                f"применено={'да' if prepared_audio.report.applied else 'нет'}"
+            )
+            for reason in decision.reasons:
+                self.logger(f"  Причина: {reason}")
+            if prepared_audio.report.runtime_fallback:
+                detail = prepared_audio.report.fallback_reason or "безопасный fallback к исходной дорожке"
+                self.logger(f"  Очистка не применена: {detail}")
+        except Exception as exc:
+            # Quality enhancement никогда не должен ломать базовую транскрибацию.
+            self.logger(f"Предобработка аудио недоступна, используется исходная дорожка: {exc}")
+        finally:
+            result['preprocessing_time'] = time.time() - preprocessing_start
+            self._update_progress(
+                "preprocessing",
+                1.0,
+                total_seconds=media_duration,
+                processed_seconds=media_duration if media_duration > 0 else None,
+            )
+
         # Транскрибация
         transcription_start = time.time()
         try:
@@ -217,7 +267,7 @@ class TranscriptionProcessor:
             # Транскрибация (обновляем прогресс постепенно)
             try:
                 utterances = self.model_loader.transcribe_longform(
-                    temp_audio,
+                    asr_audio,
                     progress_callback=lambda stage_progress, processed, total: self._update_progress(
                         "transcription",
                         stage_progress,
@@ -273,7 +323,7 @@ class TranscriptionProcessor:
                 try:
                     self._update_progress("diarization", None)
                     utterances = self._apply_diarization(
-                        temp_audio,
+                        diarization_audio,
                         utterances,
                         num_speakers=num_speakers,
                         progress_callback=lambda stage_progress, processed, total: self._update_progress(
@@ -466,10 +516,16 @@ class TranscriptionProcessor:
             traceback.print_exc()
 
         finally:
-            # Чистка временного файла
-            if temp_audio and os.path.exists(temp_audio):
+            # Удаляем только временные файлы текущего запуска; исходный файл
+            # не трогаем даже если внешний converter вернул тот же путь.
+            owned_temp_paths = {temp_audio, *preprocessing_temp_paths}
+            for temp_path in owned_temp_paths:
+                if not temp_path or os.path.abspath(temp_path) == os.path.abspath(filepath):
+                    continue
+                if not os.path.exists(temp_path):
+                    continue
                 try:
-                    os.remove(temp_audio)
+                    os.remove(temp_path)
                 except OSError:
                     pass
 

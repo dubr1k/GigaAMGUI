@@ -120,7 +120,8 @@ def test_processor_progress_without_diarization(monkeypatch, tmp_path):
     assert "export" in [ev.stage for ev in events]
     assert "finalizing" == events[-1].stage
     assert events[-1].file_progress == 1.0
-    assert _collect_stage_progress(events, "conversion")[-1] == 0.15
+    assert _collect_stage_progress(events, "conversion")[-1] == 0.12
+    assert _collect_stage_progress(events, "preprocessing")[-1] == 0.15
     assert _collect_stage_progress(events, "transcription")[-1] >= 0.95
     assert _collect_stage_progress(events, "finalizing")[-1] == 1.0
 

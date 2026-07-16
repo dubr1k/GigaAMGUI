@@ -6,7 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
-ProgressStage = Literal["preparing", "conversion", "transcription", "diarization", "export", "finalizing"]
+ProgressStage = Literal[
+    "preparing", "conversion", "preprocessing", "transcription", "diarization", "export", "finalizing"
+]
 
 
 ProgressCallback = Callable[[float, float | None, float | None], None]
@@ -45,6 +47,7 @@ class ProgressEvent:
 _ALL_STAGES: dict[str, None] = {
     "preparing": None,
     "conversion": None,
+    "preprocessing": None,
     "transcription": None,
     "diarization": None,
     "export": None,
@@ -57,7 +60,8 @@ class ProgressPlan:
 
     _PLAN_WITHOUT: dict[str, tuple[float, float]] = {
         "preparing": (0.0, 0.02),
-        "conversion": (0.02, 0.15),
+        "conversion": (0.02, 0.12),
+        "preprocessing": (0.12, 0.15),
         "transcription": (0.15, 0.95),
         "export": (0.95, 0.99),
         "finalizing": (0.99, 1.0),
@@ -65,7 +69,8 @@ class ProgressPlan:
 
     _PLAN_WITH: dict[str, tuple[float, float]] = {
         "preparing": (0.0, 0.02),
-        "conversion": (0.02, 0.12),
+        "conversion": (0.02, 0.10),
+        "preprocessing": (0.10, 0.12),
         "transcription": (0.12, 0.70),
         "diarization": (0.70, 0.95),
         "export": (0.95, 0.99),

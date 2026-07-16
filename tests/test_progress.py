@@ -56,14 +56,16 @@ def test_progress_plan_maps_stage_bands_without_diarization():
     plan = ProgressPlan(has_diarization=False)
     assert plan.map_stage_to_file_progress("preparing", 0.0) == 0.0
     assert plan.map_stage_to_file_progress("preparing", 1.0) == 0.02
-    assert plan.map_stage_to_file_progress("conversion", 1.0) == 0.15
+    assert plan.map_stage_to_file_progress("conversion", 1.0) == 0.12
+    assert plan.map_stage_to_file_progress("preprocessing", 1.0) == 0.15
     assert plan.map_stage_to_file_progress("transcription", 0.0) == 0.15
     assert plan.map_stage_to_file_progress("transcription", 1.0) == 0.95
 
 
 def test_progress_plan_maps_stage_bands_with_diarization():
     plan = ProgressPlan(has_diarization=True)
-    assert plan.map_stage_to_file_progress("conversion", 1.0) == 0.12
+    assert plan.map_stage_to_file_progress("conversion", 1.0) == 0.10
+    assert plan.map_stage_to_file_progress("preprocessing", 1.0) == 0.12
     assert plan.map_stage_to_file_progress("transcription", 1.0) == 0.7
     assert plan.map_stage_to_file_progress("diarization", 1.0) == 0.95
 
