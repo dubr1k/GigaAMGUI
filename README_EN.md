@@ -56,8 +56,9 @@ For diarization, accept the terms for `pyannote/speaker-diarization-3.1` and `py
 
 ### Optional: NVIDIA Sortformer
 
-Sortformer is installed separately so the heavy NeMo stack does not inflate the
-default installation:
+The full macOS `.app` already bundles Sortformer and NeMo. When running from
+source, install Sortformer separately so the heavy NeMo stack does not inflate
+the default installation:
 
 ```bash
 python -m pip install -r requirements-sortformer.txt
@@ -148,3 +149,4 @@ GigaAMGUI/
 - [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
 - [GigaAM-v3 on Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
+- [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)

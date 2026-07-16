@@ -56,8 +56,9 @@ HF_TOKEN=your_huggingface_token_here
 
 ### Опционально: NVIDIA Sortformer
 
-Sortformer устанавливается отдельно, чтобы не добавлять тяжёлый NeMo в базовую
-установку:
+В полной macOS `.app` Sortformer и NeMo уже включены. При запуске проекта из
+исходников Sortformer устанавливается отдельно, чтобы не добавлять тяжёлый NeMo
+в базовую установку:
 
 ```bash
 python -m pip install -r requirements-sortformer.txt
@@ -147,3 +148,4 @@ GigaAMGUI/
 - [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
 - [GigaAM-v3 on Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
+- [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
