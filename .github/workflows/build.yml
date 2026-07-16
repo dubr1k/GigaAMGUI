@@ -160,7 +160,7 @@ jobs:
         run: chmod +x "out/${{ matrix.asset }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: out/${{ matrix.asset }}
@@ -245,7 +245,7 @@ jobs:
           echo "size_bytes=$ARCHIVE_BYTES" >> "$GITHUB_OUTPUT"
 
       - name: Upload full app artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.path }}
