@@ -31,6 +31,10 @@ def safe_collect(package):
         return [], [], []
 
 
+bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
 packages = [
     "torch",
     "torchaudio",
@@ -59,6 +63,14 @@ packages = [
     "requests",
     "certifi",
 ]
+if bundle_sortformer:
+    packages += [
+        "nemo.collections.asr",
+        "nemo.collections.common",
+        "nemo.core",
+        "nemo.utils",
+        "lhotse",
+    ]
 
 datas = []
 binaries = []

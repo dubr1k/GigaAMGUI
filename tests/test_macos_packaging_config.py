@@ -21,6 +21,12 @@ def test_spec_includes_mlx_packages():
     assert "CFBundleShortVersionString" in text
 
 
+def test_spec_can_bundle_sortformer_runtime():
+    text = SPEC_PATH.read_text(encoding="utf-8")
+    assert "GIGAAM_BUNDLE_SORTFORMER" in text
+    assert '"nemo.collections.asr"' in text
+
+
 def test_spec_bundles_local_models_only_when_explicitly_requested():
     text = SPEC_PATH.read_text(encoding="utf-8")
     assert 'os.environ.get("GIGAAM_BUNDLE_MODELS", "")' in text
@@ -58,3 +64,13 @@ def test_ci_builds_and_publishes_full_app_zip():
     assert "MAX_RELEASE_ASSET_BYTES" in text
     assert "CFBundleShortVersionString" in text
     assert "Attach full app to release" in text
+    assert "requirements-sortformer.txt" in text
+    assert 'GIGAAM_BUNDLE_SORTFORMER: "1"' in text
+
+
+def test_bundle_verifier_smokes_sortformer_runtime_when_requested():
+    verifier = Path("scripts/verify_macos_bundle.py").read_text(encoding="utf-8")
+    entrypoint = Path("app.py").read_text(encoding="utf-8")
+    assert "GIGAAM_BUNDLE_SORTFORMER" in verifier
+    assert "--sortformer-runtime-smoke" in verifier
+    assert "--sortformer-runtime-smoke" in entrypoint
