@@ -28,27 +28,45 @@ def test_run_asr_runtime_smoke_evaluates_mlx_array(monkeypatch):
 
 def test_run_asr_model_smoke_loads_rnnt_and_transcribes(monkeypatch, tmp_path):
     calls = {}
-    fake_gigaam_mlx = types.ModuleType("gigaam_mlx")
 
-    def load_model(model_type):
-        calls["model_type"] = model_type
-        return "model", "tokenizer"
+    class FakeBackend:
+        def __init__(self, model):
+            calls["model"] = model
 
-    def transcribe_file(path, **kwargs):
-        calls["audio_path"] = path
-        return []
+        def load(self, logger):
+            calls["logger"] = logger
+            return True
 
-    fake_gigaam_mlx.load_model = load_model
-    fake_gigaam_mlx.transcribe_file = transcribe_file
-    monkeypatch.setitem(sys.modules, "gigaam_mlx", fake_gigaam_mlx)
+        def transcribe_longform(self, path):
+            calls["audio_path"] = path
+            return []
+
+        def capabilities(self):
+            return types.SimpleNamespace(
+                segmentation_mode="vad",
+                segmentation_fallback_reason=None,
+            )
+
+        def unload(self):
+            calls["unloaded"] = True
+
+    monkeypatch.setattr("src.core.asr.mlx_backend.MLXBackend", FakeBackend)
     audio_path = tmp_path / "silence.wav"
     audio_path.write_bytes(b"wav")
 
     result = app.run_asr_model_smoke(str(audio_path))
 
-    assert calls["model_type"] == "rnnt"
+    assert calls["model"] == "rnnt"
     assert calls["audio_path"] == str(audio_path)
-    assert result == {"backend": "mlx", "model": "rnnt", "segments": 0}
+    assert calls["unloaded"] is True
+    assert result == {
+        "backend": "mlx",
+        "model": "rnnt",
+        "segments": 0,
+        "segmentation_mode": "vad",
+        "segmentation_fallback_reason": None,
+        "logs": [],
+    }
 
 
 def test_run_media_download_smoke_uses_project_downloader(monkeypatch, tmp_path):

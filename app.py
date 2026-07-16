@@ -132,18 +132,26 @@ def run_sortformer_runtime_smoke() -> dict[str, str]:
 
 
 def run_asr_model_smoke(audio_path: str) -> dict[str, object]:
-    """Load cached MLX RNN-T weights and run end-to-end file inference."""
-    from gigaam_mlx import load_model, transcribe_file
+    """Run the same end-to-end MLX path used by the desktop processor."""
+    from src.core.asr.mlx_backend import MLXBackend
 
-    model, tokenizer = load_model("rnnt")
-    segments = transcribe_file(
-        audio_path,
-        model=model,
-        tokenizer=tokenizer,
-        model_type="rnnt",
-        verbose=False,
-    )
-    return {"backend": "mlx", "model": "rnnt", "segments": len(segments)}
+    logs: list[str] = []
+    backend = MLXBackend(model="rnnt")
+    if not backend.load(logger=logs.append):
+        raise RuntimeError("MLX backend model smoke load failed")
+    try:
+        segments = backend.transcribe_longform(audio_path)
+        capabilities = backend.capabilities()
+        return {
+            "backend": "mlx",
+            "model": "rnnt",
+            "segments": len(segments),
+            "segmentation_mode": capabilities.segmentation_mode,
+            "segmentation_fallback_reason": capabilities.segmentation_fallback_reason,
+            "logs": logs,
+        }
+    finally:
+        backend.unload()
 
 
 def run_media_download_smoke(url: str, target_dir: str) -> dict[str, list[str]]:
