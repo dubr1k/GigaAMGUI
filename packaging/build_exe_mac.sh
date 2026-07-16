@@ -61,6 +61,15 @@ if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6; i
 fi
 echo "[OK] зависимости GUI найдены"
 
+if [[ "${GIGAAM_BUNDLE_SORTFORMER:-}" =~ ^(1|true|yes|on)$ ]]; then
+    if ! $PYTHON -c "from nemo.collections.asr.models import SortformerEncLabelModel" 2>/dev/null; then
+        echo "[ERROR] GIGAAM_BUNDLE_SORTFORMER включён, но NeMo ASR не установлен."
+        echo "  $PYTHON -m pip install -r requirements-sortformer.txt"
+        exit 1
+    fi
+    echo "[OK] зависимости NVIDIA Sortformer найдены"
+fi
+
 # ── PyInstaller ───────────────────────────────────────────────────────────────
 echo ""
 echo "[1/4] Проверка PyInstaller..."

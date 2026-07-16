@@ -31,6 +31,10 @@ def safe_collect(package):
         return [], [], []
 
 
+bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
 packages = [
     "torch",
     "torchaudio",
@@ -59,6 +63,27 @@ packages = [
     "requests",
     "certifi",
 ]
+if bundle_sortformer:
+    packages += [
+        "nemo.collections.asr",
+        "nemo.collections.common",
+        "nemo.core",
+        "nemo.utils",
+        "lhotse",
+    ]
+
+excluded_modules = [
+    "tkinter",
+    "wx",
+    "jupyter",
+    "notebook",
+    "pytest",
+    "coverage",
+    "tensorboard",
+    "tensorboardX",
+]
+if not bundle_sortformer:
+    excluded_modules.append("IPython")
 
 datas = []
 binaries = []
@@ -146,17 +171,7 @@ a = Analysis(
     hookspath=[os.path.join(project_root, "pyinstaller_hooks")],
     hooksconfig={},
     runtime_hooks=[os.path.join(project_root, "pyinstaller_hooks", "rthook_utf8.py")],
-    excludes=[
-        "tkinter",
-        "wx",
-        "IPython",
-        "jupyter",
-        "notebook",
-        "pytest",
-        "coverage",
-        "tensorboard",
-        "tensorboardX",
-    ],
+    excludes=excluded_modules,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

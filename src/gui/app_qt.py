@@ -140,6 +140,7 @@ class GigaTranscriberQtApp(
         self.llm_last_result_name = "llm_result"
 
         self.enable_diarization = False
+        self.diarization_backend = "pyannote"
         self.num_speakers = None
         self._diarization_prompt_open = False
 

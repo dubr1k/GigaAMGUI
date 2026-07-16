@@ -90,6 +90,13 @@
                 <span data-i18n="enableDiarization">Включить диаризацию спикеров</span>
             </label>
             <div class="row mt-8">
+                <label for="diarization-backend" class="label" data-i18n="diarizationBackend">Движок:</label>
+                <select id="diarization-backend" class="input input-small">
+                    <option value="pyannote">Pyannote 3.1</option>
+                    <option value="sortformer">NVIDIA Sortformer v2.1</option>
+                </select>
+            </div>
+            <div class="row mt-8">
                 <label for="num-speakers" class="label" data-i18n="speakersCount">Кол-во спикеров:</label>
                 <input type="number" id="num-speakers" class="input input-small" placeholder="Пусто = авто" data-i18n-placeholder="speakersAutoPlaceholder" min="1" disabled>
             </div>

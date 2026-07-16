@@ -122,6 +122,15 @@ def run_asr_runtime_smoke() -> dict[str, str]:
     }
 
 
+def run_sortformer_runtime_smoke() -> dict[str, str]:
+    """Verify that the frozen full app contains the optional NeMo backend."""
+    import importlib
+
+    models = importlib.import_module("nemo.collections.asr.models")
+    model_class = models.SortformerEncLabelModel
+    return {"sortformer": model_class.__name__}
+
+
 def run_asr_model_smoke(audio_path: str) -> dict[str, object]:
     """Load cached MLX RNN-T weights and run end-to-end file inference."""
     from gigaam_mlx import load_model, transcribe_file
@@ -149,6 +158,9 @@ def main():
     """Главная функция запуска приложения."""
     if "--asr-runtime-smoke" in sys.argv:
         print(json.dumps(run_asr_runtime_smoke(), ensure_ascii=False, sort_keys=True))
+        return
+    if "--sortformer-runtime-smoke" in sys.argv:
+        print(json.dumps(run_sortformer_runtime_smoke(), ensure_ascii=False, sort_keys=True))
         return
     if "--asr-model-smoke" in sys.argv:
         index = sys.argv.index("--asr-model-smoke")

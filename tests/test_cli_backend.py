@@ -1,5 +1,6 @@
 """CLI test coverage for ASR backend selection."""
 
+from typing import Any
 
 from click.testing import CliRunner
 
@@ -10,7 +11,7 @@ def _run_cli_with_fake_loader(tmp_path, monkeypatch, args):
     sample = tmp_path / "sample.mp3"
     sample.write_bytes(b"audio")
 
-    capture: dict[str, str] = {}
+    capture: dict[str, Any] = {}
 
     class FakeLoader:
         def __init__(self, requested_backend=None, *_, **__):
@@ -25,7 +26,8 @@ def _run_cli_with_fake_loader(tmp_path, monkeypatch, args):
         def transcribe_longform(self, _):
             return []
 
-    def _fake_process_files_with_progress(*_, **__):
+    def _fake_process_files_with_progress(*_, **kwargs):
+        capture["process_kwargs"] = kwargs
         return []
 
     monkeypatch.setattr(cli, "ModelLoader", FakeLoader)
@@ -35,7 +37,10 @@ def _run_cli_with_fake_loader(tmp_path, monkeypatch, args):
     monkeypatch.setattr(cli, "setup_logger", lambda: None)
 
     runner = CliRunner()
-    result = runner.invoke(cli.main, ["--files", str(sample), *args, "--no-interactive", "--no-diarize"])
+    invocation = ["--files", str(sample), *args, "--no-interactive"]
+    if not any(flag in args for flag in ("--diarize", "--no-diarize")):
+        invocation.append("--no-diarize")
+    result = runner.invoke(cli.main, invocation)
     return result, capture, sample
 
 
@@ -60,3 +65,33 @@ def test_cli_uses_default_backend_from_config_when_not_passed(tmp_path, monkeypa
 
     assert result.exit_code == 0
     assert capture["requested_backend"] == "pytorch"
+
+
+def test_cli_sortformer_does_not_require_hf_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    result, capture, _ = _run_cli_with_fake_loader(
+        tmp_path,
+        monkeypatch,
+        ["--diarize", "--diarization-backend", "sortformer"],
+    )
+
+    assert result.exit_code == 0
+    assert capture["process_kwargs"]["diarization_backend"] == "sortformer"
+
+
+def test_cli_sortformer_rejects_fixed_speaker_count(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    result, _capture, _ = _run_cli_with_fake_loader(
+        tmp_path,
+        monkeypatch,
+        [
+            "--diarize",
+            "--diarization-backend",
+            "sortformer",
+            "--speakers",
+            "2",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "определяет число спикеров автоматически" in result.output

@@ -107,13 +107,19 @@ class SettingsMixin:
             self.output_formats[fmt] = cb.isChecked()
 
         diarization_enabled = bool(self.user_settings.get_value("enable_diarization", False))
+        diarization_backend = self.user_settings.get_value("diarization_backend", "pyannote")
         num_speakers = int(self.user_settings.get_value("num_speakers", 0) or 0)
+        backend_index = self.combo_diarization_backend.findData(diarization_backend)
+        self.combo_diarization_backend.blockSignals(True)
+        self.combo_diarization_backend.setCurrentIndex(backend_index if backend_index >= 0 else 0)
+        self.combo_diarization_backend.blockSignals(False)
+        self.diarization_backend = self.combo_diarization_backend.currentData() or "pyannote"
         self.cb_diarization.blockSignals(True)
         self.cb_diarization.setChecked(diarization_enabled)
         self.cb_diarization.blockSignals(False)
         self.enable_diarization = diarization_enabled
-        self.entry_num_speakers.setEnabled(diarization_enabled)
         self.entry_num_speakers.setValue(num_speakers)
+        self._update_diarization_backend_controls()
         for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
             cb = self.format_checkboxes.get(fmt)
             if cb:
@@ -182,6 +188,7 @@ class SettingsMixin:
     def _save_ui_settings(self):
         self.user_settings.set_value("output_formats", self.output_formats)
         self.user_settings.set_value("enable_diarization", self.cb_diarization.isChecked())
+        self.user_settings.set_value("diarization_backend", self.combo_diarization_backend.currentData())
         self.user_settings.set_value("num_speakers", self.entry_num_speakers.value())
         self.user_settings.set_value("asr_backend", self.model_loader.requested_backend)
         self.user_settings.set_value("asr_model", self.model_loader.requested_model)

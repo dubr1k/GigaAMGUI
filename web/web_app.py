@@ -45,6 +45,7 @@ from src.services import file_policy, llm_service, task_store, transcription_ser
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
+from src.utils.diarization import normalize_diarization_backend
 from src.utils.media_downloader import MediaDownloader
 from src.utils.output_naming import find_result_file, output_filename
 from src.utils.processing_stats import ProcessingStats
@@ -280,6 +281,7 @@ def _register_task(task_id: str, filename: str, file_size: int, user: str):
             "stage": "",
             "output_formats": [],
             "enable_diarization": False,
+            "diarization_backend": "pyannote",
             "num_speakers": None,
             "user": user,
         },
@@ -347,6 +349,7 @@ def _restore_completed_task_from_meta(task_dir: Path) -> dict | None:
         'stage': 'Готово',
         'output_formats': meta.get('output_formats') if isinstance(meta.get('output_formats'), list) else ['txt', 'txt_timecodes'],
         'enable_diarization': meta.get('enable_diarization', False),
+        'diarization_backend': meta.get('diarization_backend', 'pyannote'),
         'num_speakers': meta.get('num_speakers'),
         'user': user,
     }
@@ -489,6 +492,7 @@ async def process_transcription(
     filename: str,
     output_formats: list[str],
     enable_diarization: bool,
+    diarization_backend: str,
     num_speakers: int | None,
 ):
     """Фоновая обработка транскрибации."""
@@ -584,6 +588,7 @@ async def process_transcription(
                     filename,
                     output_formats=output_formats if output_formats else ['txt', 'txt_timecodes'],
                     enable_diarization=enable_diarization,
+                    diarization_backend=diarization_backend,
                     num_speakers=num_speakers,
                 ),
             )
@@ -647,6 +652,7 @@ async def process_transcription(
                     'completed_at': tasks_storage[task_id].get('completed_at'),
                     'output_formats': output_formats,
                     'enable_diarization': enable_diarization,
+                    'diarization_backend': diarization_backend,
                     'num_speakers': num_speakers,
                     'user': tasks_storage[task_id].get('user'),
                     'processing_time': result['total_time'],
@@ -826,6 +832,7 @@ async def upload_files(
     files: list[UploadFile] = File(...),
     output_formats: str = Form("txt,txt_timecodes"),
     enable_diarization: bool = Form(False),
+    diarization_backend: str = Form("pyannote"),
     num_speakers: str = Form(""),
     user: str = Depends(require_auth),
 ):
@@ -836,6 +843,10 @@ async def upload_files(
     fmt_list = [f.strip() for f in output_formats.split(",") if f.strip()]
     if not fmt_list:
         fmt_list = ['txt', 'txt_timecodes']
+    try:
+        diarization_backend = normalize_diarization_backend(diarization_backend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     ns = None
     if num_speakers.strip():
@@ -845,6 +856,11 @@ async def upload_files(
                 ns = None
         except ValueError:
             ns = None
+    if diarization_backend == "sortformer" and ns is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="NVIDIA Sortformer определяет число спикеров автоматически",
+        )
 
     uploaded = []
     for file in files:
@@ -852,11 +868,15 @@ async def upload_files(
         _register_task(task_id, filename, file_size, user)
         tasks_storage[task_id]['output_formats'] = fmt_list
         tasks_storage[task_id]['enable_diarization'] = enable_diarization
+        tasks_storage[task_id]['diarization_backend'] = diarization_backend
         tasks_storage[task_id]['num_speakers'] = ns
         _persist_tasks_index()
 
         asyncio.create_task(
-            process_transcription(task_id, file_path, filename, fmt_list, enable_diarization, ns)
+            process_transcription(
+                task_id, file_path, filename, fmt_list,
+                enable_diarization, diarization_backend, ns,
+            )
         )
         uploaded.append({
             'task_id': task_id,
@@ -874,6 +894,7 @@ async def download_from_url(
     url: str = Form(...),
     output_formats: str = Form("txt,txt_timecodes"),
     enable_diarization: bool = Form(False),
+    diarization_backend: str = Form("pyannote"),
     num_speakers: str = Form(""),
 ):
     """Загрузка медиа по URL через yt-dlp и постановка в очередь."""
@@ -884,6 +905,10 @@ async def download_from_url(
     fmt_list = [f.strip() for f in output_formats.split(",") if f.strip()]
     if not fmt_list:
         fmt_list = ['txt', 'txt_timecodes']
+    try:
+        diarization_backend = normalize_diarization_backend(diarization_backend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     ns = None
     if num_speakers.strip():
@@ -893,11 +918,17 @@ async def download_from_url(
                 ns = None
         except ValueError:
             ns = None
+    if diarization_backend == "sortformer" and ns is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="NVIDIA Sortformer определяет число спикеров автоматически",
+        )
 
     task_id = uuid.uuid4().hex
     _register_task(task_id, url.split("/")[-1][:80], 0, user)
     tasks_storage[task_id]['output_formats'] = fmt_list
     tasks_storage[task_id]['enable_diarization'] = enable_diarization
+    tasks_storage[task_id]['diarization_backend'] = diarization_backend
     tasks_storage[task_id]['num_speakers'] = ns
     tasks_storage[task_id]['status'] = 'downloading'
     tasks_storage[task_id]['stage'] = 'Загрузка медиа...'
@@ -905,7 +936,9 @@ async def download_from_url(
     _persist_tasks_index()
 
     asyncio.create_task(
-        _download_and_process(task_id, url, fmt_list, enable_diarization, ns)
+        _download_and_process(
+            task_id, url, fmt_list, enable_diarization, diarization_backend, ns,
+        )
     )
 
     return {"task_id": task_id, "url": url}
@@ -916,6 +949,7 @@ async def _download_and_process(
     url: str,
     output_formats: list[str],
     enable_diarization: bool,
+    diarization_backend: str,
     num_speakers: int | None,
 ):
     """Скачивает медиа по URL и запускает обработку."""
@@ -986,7 +1020,10 @@ async def _download_and_process(
         _persist_tasks_index()
         _task_log(task_id, f"Загружено: {filename} ({file_size / 1024 / 1024:.1f} MB)")
 
-        await process_transcription(task_id, file_path, filename, output_formats, enable_diarization, num_speakers)
+        await process_transcription(
+            task_id, file_path, filename, output_formats,
+            enable_diarization, diarization_backend, num_speakers,
+        )
 
     except Exception as e:
         _task_log(task_id, f"Ошибка загрузки: {e}")

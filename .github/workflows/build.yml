@@ -177,6 +177,8 @@ jobs:
     name: macOS arm64 full app bundle
     runs-on: macos-14
     timeout-minutes: 60
+    env:
+      GIGAAM_BUNDLE_SORTFORMER: "1"
 
     steps:
       - name: Checkout
@@ -207,6 +209,7 @@ jobs:
           python -m pip install --upgrade "setuptools==81.0.0" wheel
           python -m pip install "git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam" --no-build-isolation
           python -m pip install -r requirements-macos-mlx.txt
+          python -m pip install -r requirements-sortformer.txt
           python -m pip install --upgrade pyinstaller
 
       - name: Test macOS packaging configuration

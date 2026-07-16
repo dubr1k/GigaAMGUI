@@ -27,7 +27,7 @@
 
 - Пакетная обработка файлов и папок, рекурсивный поиск, drag & drop, загрузка через `yt-dlp`.
 - Экспорт: `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`.
-- Диаризация спикеров через `pyannote`.
+- Выбираемая диаризация: `pyannote` или NVIDIA Streaming Sortformer v2.1.
 - Ускорение MLX RNN-T на Apple Silicon; CPU, CUDA, Intel XPU и MPS.
 - LLM-постобработка: выжимки, задачи и свои промпты.
 - Провайдеры LLM: OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi и произвольный CLI.
@@ -53,6 +53,25 @@ HF_TOKEN=your_huggingface_token_here
 ```
 
 Для диаризации нужно принять условия моделей `pyannote/speaker-diarization-3.1` и `pyannote/segmentation-3.0`.
+
+### Опционально: NVIDIA Sortformer
+
+Sortformer устанавливается отдельно, чтобы не добавлять тяжёлый NeMo в базовую
+установку:
+
+```bash
+python -m pip install -r requirements-sortformer.txt
+python cli.py --diarize --diarization-backend sortformer -f audio.wav
+```
+
+Используется `nvidia/diar_streaming_sortformer_4spk-v2.1` с официальными
+high-latency параметрами model card. Модель сама определяет активных
+спикеров, поддерживает максимум четыре голоса и не требует `HF_TOKEN`.
+Рекомендуется CUDA; CPU работает значительно медленнее. MPS не поддерживается
+NeMo и переключается на CPU. Модель (~471 МБ) загружается при первом запуске.
+NeMo из Space (`2.5.3`) намеренно не используется из-за исправленных в новых
+релизах уязвимостей; optional-файл фиксирует проверенную безопасную ветку 2.7.
+Для Web GUI соберите расширенный образ: `INSTALL_SORTFORMER=1 docker compose build gigaam-web`.
 
 ## Интерфейсы
 

@@ -83,6 +83,31 @@ def verify_bundle(bundle_path: str) -> int:
         print(f"Frozen MLX runtime smoke failed ({smoke.returncode}): {smoke_output[-2000:]}")
         return 1
 
+    bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if bundle_sortformer:
+        try:
+            sortformer_smoke = subprocess.run(
+                [str(candidates[0]), "--sortformer-runtime-smoke"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            print("Frozen Sortformer runtime smoke timed out")
+            return 1
+        sortformer_output = (sortformer_smoke.stdout or "") + (sortformer_smoke.stderr or "")
+        if (
+            sortformer_smoke.returncode != 0
+            or '"sortformer": "SortformerEncLabelModel"' not in sortformer_output
+        ):
+            print(
+                f"Frozen Sortformer runtime smoke failed ({sortformer_smoke.returncode}): "
+                f"{sortformer_output[-4000:]}"
+            )
+            return 1
+
     print(f"Bundle verification passed: {root}")
     return 0
 

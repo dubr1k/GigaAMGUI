@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10-dev \
     python3-pip \
     ffmpeg \
+    libsndfile1 \
     git \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -31,7 +32,7 @@ RUN python -m pip install --upgrade pip "setuptools<81" wheel
 WORKDIR /app
 
 # Копирование requirements и установка зависимостей
-COPY requirements.txt /app/requirements.txt
+COPY requirements.txt requirements-sortformer.txt /app/
 # Установка gigaam из git (без build isolation, чтобы работал pkg_resources)
 RUN git clone https://github.com/salute-developers/GigaAM.git /tmp/gigaam && \
     cd /tmp/gigaam && git checkout 0a3f1036d93287d5ef226911ec795bde8ef05d57 && \
@@ -49,6 +50,13 @@ RUN pip install --no-cache-dir itsdangerous python-multipart
 RUN pip install --no-cache-dir --force-reinstall \
     torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 \
     --index-url https://download.pytorch.org/whl/cu124
+
+# NeMo значительно увеличивает образ, поэтому Sortformer включается явно:
+# docker compose build --build-arg INSTALL_SORTFORMER=1 gigaam-web
+ARG INSTALL_SORTFORMER=0
+RUN if [ "$INSTALL_SORTFORMER" = "1" ]; then \
+        pip install --no-cache-dir -r requirements-sortformer.txt; \
+    fi
 
 # Копирование исходного кода
 COPY . /app/

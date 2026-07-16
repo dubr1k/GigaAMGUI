@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -557,6 +558,19 @@ class UiBuildMixin:
         self.btn_hf_token.clicked.connect(self._edit_hf_token)
         token_row.addWidget(self.btn_hf_token)
         layout.addLayout(token_row)
+        backend_layout = QHBoxLayout()
+        backend_layout.setSpacing(self._px(12))
+        self.lbl_diarization_backend = QLabel("Движок:")
+        backend_layout.addWidget(self.lbl_diarization_backend)
+        self.combo_diarization_backend = QComboBox()
+        self.combo_diarization_backend.addItem("Pyannote 3.1", "pyannote")
+        self.combo_diarization_backend.addItem("NVIDIA Sortformer v2.1", "sortformer")
+        self.combo_diarization_backend.setFixedHeight(self._px(32))
+        self.combo_diarization_backend.setMinimumWidth(self._px(220))
+        self.combo_diarization_backend.currentIndexChanged.connect(self._change_diarization_backend)
+        backend_layout.addWidget(self.combo_diarization_backend)
+        backend_layout.addStretch()
+        layout.addLayout(backend_layout)
         speakers_layout = QHBoxLayout()
         speakers_layout.setSpacing(self._px(12))
         self.lbl_num_speakers = QLabel("Кол-во спикеров:")
