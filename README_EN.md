@@ -67,9 +67,12 @@ python cli.py --diarize --diarization-backend sortformer -f audio.wav
 
 This uses `nvidia/diar_streaming_sortformer_4spk-v2.1` with the official
 high-latency model-card settings. The model auto-detects active
-speakers, supports at most four voices, and does not require `HF_TOKEN`. CUDA is
-recommended; CPU is much slower. NeMo does not support MPS, so it falls back to
-CPU. The model (~471 MB) is downloaded on first use. The Space's NeMo 2.5.3 pin
+speakers, supports at most four voices, and does not require `HF_TOKEN`.
+ASR-model-independent diarization was verified with `v3_e2e_rnnt`,
+`multilingual_ctc` (220M), and `multilingual_large_ctc` (600M). Both CTC models
+use the PyTorch backend.
+CUDA is recommended; CPU is much slower. NeMo does not support MPS, so it falls
+back to CPU. The model (~471 MB) is downloaded on first use. The Space's NeMo 2.5.3 pin
 is intentionally avoided because later releases fix known vulnerabilities; the
 optional requirements file pins the reviewed 2.7 branch.
 For the Web UI, build the extended image with

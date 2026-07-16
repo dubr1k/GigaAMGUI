@@ -6,7 +6,6 @@ from ..config import (
     ASR_BACKEND,
     ASR_MODEL,
     MLX_MODEL_REPO,
-    MODEL_REVISION,
 )
 from .asr.factory import create_backend_from_config
 from .asr.models import validate_asr_model
@@ -32,7 +31,7 @@ class ModelLoader:
         self._requested_backend = (requested_backend or ASR_BACKEND).strip().lower() or ASR_BACKEND
         self._allow_fallback = ASR_ALLOW_FALLBACK if allow_fallback is None else bool(allow_fallback)
         self._model_name = model_name or ASR_MODEL
-        self._model_revision = validate_asr_model(model_revision or MODEL_REVISION)
+        self._model_revision = validate_asr_model(model_revision or ASR_MODEL)
         self._mlx_model_repo = mlx_model_repo or MLX_MODEL_REPO
         self._fallback_reason = None
         self._factory_error: str | None = None

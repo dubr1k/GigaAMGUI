@@ -10,6 +10,16 @@ from src.core.asr.pytorch_backend import PyTorchBackend
 from src.core.model_loader import ModelLoader
 
 
+def test_default_revision_follows_selected_asr_model(monkeypatch):
+    import src.core.model_loader as model_loader_module
+
+    monkeypatch.setattr(model_loader_module, "ASR_MODEL", "multilingual_ctc")
+
+    loader = model_loader_module.ModelLoader()
+
+    assert loader.requested_model == "multilingual_ctc"
+
+
 def test_empty_cache_safe_when_cpu():
     loader = ModelLoader()
     loader.device = "cpu"

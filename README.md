@@ -68,6 +68,9 @@ python cli.py --diarize --diarization-backend sortformer -f audio.wav
 Используется `nvidia/diar_streaming_sortformer_4spk-v2.1` с официальными
 high-latency параметрами model card. Модель сама определяет активных
 спикеров, поддерживает максимум четыре голоса и не требует `HF_TOKEN`.
+Диаризация не зависит от ASR-модели: она проверена с `v3_e2e_rnnt`,
+`multilingual_ctc` (220M) и `multilingual_large_ctc` (600M). Обе CTC-модели
+работают через PyTorch backend.
 Рекомендуется CUDA; CPU работает значительно медленнее. MPS не поддерживается
 NeMo и переключается на CPU. Модель (~471 МБ) загружается при первом запуске.
 NeMo из Space (`2.5.3`) намеренно не используется из-за исправленных в новых
