@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты из проекта
 from src.cli_support import interactive as cli_interactive
-from src.config import ASR_BACKEND, OUTPUT_FORMATS
+from src.config import ASR_BACKEND, AUDIO_PREPROCESSING_MODE, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.progress import ProgressEvent
 from src.services import transcription_service
@@ -128,6 +128,7 @@ def process_files_with_progress(
     enable_diarization: bool = False,
     num_speakers: int | None = None,
     diarization_backend: str = "pyannote",
+    audio_preprocessing_mode: str = AUDIO_PREPROCESSING_MODE,
 ) -> list[dict]:
     """
     Обрабатывает файлы с отображением прогресса
@@ -173,6 +174,7 @@ def process_files_with_progress(
         stage_names = {
             "preparing": "Подготовка...",
             "conversion": "Конвертация...",
+            "preprocessing": "Анализ и подготовка аудио...",
             "transcription": "Распознавание речи...",
             "diarization": "Диаризация...",
             "export": "Экспорт...",
@@ -244,6 +246,7 @@ def process_files_with_progress(
                 total_files=len(files),
                 enable_diarization=enable_diarization,
                 diarization_backend=diarization_backend,
+                audio_preprocessing_mode=audio_preprocessing_mode,
                 num_speakers=num_speakers,
                 output_formats=output_formats,
             )
@@ -388,7 +391,17 @@ def display_results(results: list[dict]):
     default=None,
     help='Количество спикеров для диаризации (если известно)'
 )
-def main(files, directory, output, interactive, verbose, formats, backend, diarize, diarization_backend, speakers):
+@click.option(
+    '--audio-preprocessing',
+    type=click.Choice(["off", "auto", "light", "denoise"]),
+    default=AUDIO_PREPROCESSING_MODE,
+    show_default=True,
+    help='Интеллектуальная подготовка аудио перед распознаванием',
+)
+def main(
+    files, directory, output, interactive, verbose, formats, backend,
+    diarize, diarization_backend, speakers, audio_preprocessing,
+):
     """
     🎙️ GigaAM v3 Transcriber - CLI
 
@@ -524,6 +537,7 @@ def main(files, directory, output, interactive, verbose, formats, backend, diari
         output_formats=list(formats) if formats else ['txt'],
         enable_diarization=diarize,
         diarization_backend=diarization_backend,
+        audio_preprocessing_mode=audio_preprocessing,
         num_speakers=speakers,
     )
     total_time = time.time() - start_time

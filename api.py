@@ -38,7 +38,7 @@ from starlette.background import BackgroundTask
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты проекта
-from src.config import HF_TOKEN, SUPPORTED_FORMATS
+from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.services import file_policy, task_store, transcription_service
 from src.services import health as health_service
@@ -538,6 +538,7 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 stage_names = {
                     'preparing': 'Подготовка...',
                     'conversion': 'Конвертация...',
+                    'preprocessing': 'Анализ и подготовка аудио...',
                     'transcription': 'Распознавание речи...',
                     'diarization': 'Диаризация...',
                     'export': 'Экспорт...',
@@ -572,6 +573,7 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     1,
                     filename,  # Передаем оригинальное имя файла
                     output_formats=['txt', 'txt_timecodes'],
+                    audio_preprocessing_mode=AUDIO_PREPROCESSING_MODE,
                 )
             )
 
@@ -607,6 +609,7 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     'transcription_timecoded': transcription_timecoded,
                     'processing_time': result['total_time'],
                     'media_duration': result.get('media_duration', 0),
+                    'audio_preprocessing': result.get('audio_preprocessing'),
                     'message': 'Транскрибация успешно завершена'
                 })
 

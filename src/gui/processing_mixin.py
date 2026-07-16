@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..config import AUDIO_PREPROCESSING_MODE
 from ..core.progress import ProgressEvent
 from ..services import transcription_service
 
@@ -137,6 +138,7 @@ class ProcessingMixin:
             "num_speakers": num_speakers,
             "enable_diarization": self.enable_diarization,
             "diarization_backend": self.diarization_backend,
+            "audio_preprocessing_mode": AUDIO_PREPROCESSING_MODE,
             "selected_formats": self._get_selected_formats(),
             "output_dir": self.output_dir,
             "files": list(self.files_to_process),
@@ -164,6 +166,7 @@ class ProcessingMixin:
         num_speakers = snapshot["num_speakers"]
         enable_diarization = snapshot["enable_diarization"]
         diarization_backend = snapshot["diarization_backend"]
+        audio_preprocessing_mode = snapshot["audio_preprocessing_mode"]
         selected_formats = snapshot["selected_formats"]
         output_dir = snapshot["output_dir"]
         files = snapshot["files"]
@@ -196,6 +199,7 @@ class ProcessingMixin:
                         filepath, file_output_dir, i, total_files,
                         enable_diarization=enable_diarization,
                         diarization_backend=diarization_backend,
+                        audio_preprocessing_mode=audio_preprocessing_mode,
                         num_speakers=num_speakers,
                         output_formats=selected_formats
                     )
@@ -255,6 +259,7 @@ class ProcessingMixin:
     _STAGE_NAMES = {
         'preparing': ('Подготовка…', 'Preparing…'),
         'conversion': ('Конвертация…', 'Converting…'),
+        'preprocessing': ('Анализ и подготовка аудио…', 'Analyzing and preparing audio…'),
         'transcription': ('Распознавание речи…', 'Speech recognition…'),
         'diarization': ('Диаризация…', 'Speaker diarization…'),
         'export': ('Экспорт…', 'Exporting…'),

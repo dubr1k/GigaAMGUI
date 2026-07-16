@@ -39,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from src.config import HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
+from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
 from src.services import file_policy, llm_service, task_store, transcription_service
 from src.services import health as health_service
@@ -554,6 +554,7 @@ async def process_transcription(
                 stage_names = {
                     'preparing': 'Подготовка...',
                     'conversion': 'Конвертация...',
+                    'preprocessing': 'Анализ и подготовка аудио...',
                     'transcription': 'Распознавание речи...',
                     'diarization': 'Диаризация...',
                     'export': 'Экспорт...',
@@ -589,6 +590,7 @@ async def process_transcription(
                     output_formats=output_formats if output_formats else ['txt', 'txt_timecodes'],
                     enable_diarization=enable_diarization,
                     diarization_backend=diarization_backend,
+                    audio_preprocessing_mode=AUDIO_PREPROCESSING_MODE,
                     num_speakers=num_speakers,
                 ),
             )
@@ -632,6 +634,7 @@ async def process_transcription(
                 'result_files': result_files,
                 'processing_time': result['total_time'],
                 'media_duration': result.get('media_duration', 0),
+                'audio_preprocessing': result.get('audio_preprocessing'),
             })
             _persist_tasks_index()
             _task_log(task_id, f"Обработка завершена за {time_formatter.format_duration(result['total_time'])}")
@@ -657,6 +660,8 @@ async def process_transcription(
                     'user': tasks_storage[task_id].get('user'),
                     'processing_time': result['total_time'],
                     'media_duration': result.get('media_duration', 0),
+                    'audio_preprocessing_mode': AUDIO_PREPROCESSING_MODE,
+                    'audio_preprocessing': result.get('audio_preprocessing'),
                 })
             except Exception:
                 pass

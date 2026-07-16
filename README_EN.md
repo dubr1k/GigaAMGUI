@@ -18,6 +18,7 @@ Russian speech-to-text transcription for audio and video powered by **GigaAM-v3*
 - [Quick start](#quick-start)
 - [Interfaces](#interfaces)
 - [Configuration](#configuration)
+- [Intelligent audio preprocessing](#intelligent-audio-preprocessing)
 - [ASR backend](#asr-backend)
 - [Project layout](#project-layout)
 - [Screenshots](#screenshots)
@@ -28,6 +29,7 @@ Russian speech-to-text transcription for audio and video powered by **GigaAM-v3*
 - Batch processing, recursive folder scans, drag & drop, and media downloads through `yt-dlp`.
 - Export to `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, and `vtt`.
 - Selectable diarization through `pyannote` or NVIDIA Streaming Sortformer v2.1.
+- Automatic quality diagnostics, conservative cleanup, and timeline-safe fallback.
 - MLX RNN-T on Apple Silicon; CPU, CUDA, Intel XPU, and MPS support.
 - LLM summaries, action items, and custom prompts.
 - OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, and arbitrary CLI LLM providers.
@@ -112,6 +114,30 @@ python -m pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index
 python -m pip install -r requirements.txt
 ```
 
+## Intelligent audio preprocessing
+
+`AUDIO_PREPROCESSING_MODE=auto` is the default. The application measures
+loudness, noise floor, estimated SNR, clipping, silence, DC offset, spectral
+flatness, and low-frequency noise. It then selects pass-through, normalization,
+light FFmpeg cleanup, or neural denoising. A second analysis rejects candidates
+that increase clipping, erase speech, fail to improve measurable noise, or alter
+duration. The enhanced track is used only for ASR; diarization keeps the aligned
+canonical track and pauses are never removed.
+
+For severe broadband noise, the official self-contained DeepFilterNet 0.5.6
+binary is downloaded on demand, verified against a pinned SHA-256, and stored in
+the runtime cache. No DeepFilterNet Python dependency is installed. Any download,
+platform, or inference failure falls back to the canonical audio.
+
+```env
+AUDIO_PREPROCESSING_MODE=auto  # off | auto | light | denoise
+# GIGAAM_DEEPFILTER_DIR=/writable/executable/cache
+```
+
+```bash
+python cli.py --audio-preprocessing auto -f noisy.wav
+```
+
 ## ASR backend
 
 On macOS Apple Silicon, `auto` uses [gigaam-mlx](https://github.com/aystream/gigaam-mlx) and falls back to PyTorch when necessary. Other platforms use PyTorch.
@@ -153,3 +179,4 @@ GigaAMGUI/
 - [GigaAM-v3 on Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
 - [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
+- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT, optional neural noise suppression

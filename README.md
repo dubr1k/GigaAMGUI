@@ -18,6 +18,7 @@
 - [Быстрый старт](#быстрый-старт)
 - [Интерфейсы](#интерфейсы)
 - [Конфигурация](#конфигурация)
+- [Интеллектуальная подготовка аудио](#интеллектуальная-подготовка-аудио)
 - [ASR backend](#asr-backend)
 - [Структура](#структура)
 - [Скриншоты](#скриншоты)
@@ -28,6 +29,7 @@
 - Пакетная обработка файлов и папок, рекурсивный поиск, drag & drop, загрузка через `yt-dlp`.
 - Экспорт: `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`.
 - Выбираемая диаризация: `pyannote` или NVIDIA Streaming Sortformer v2.1.
+- Автоматическая диагностика качества, консервативная очистка и safe fallback без сдвига таймкодов.
 - Ускорение MLX RNN-T на Apple Silicon; CPU, CUDA, Intel XPU и MPS.
 - LLM-постобработка: выжимки, задачи и свои промпты.
 - Провайдеры LLM: OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi и произвольный CLI.
@@ -111,6 +113,43 @@ python -m pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index
 python -m pip install -r requirements.txt
 ```
 
+## Интеллектуальная подготовка аудио
+
+По умолчанию `AUDIO_PREPROCESSING_MODE=auto`. Перед ASR приложение измеряет
+громкость, noise floor, приблизительный SNR, clipping, тишину, DC offset,
+spectral flatness и низкочастотный шум. Детерминированная policy выбирает одно
+из действий:
+
+- pass-through для уже качественной записи;
+- только нормализацию для тихой записи;
+- мягкий FFmpeg high-pass/denoise для умеренного шума;
+- DeepFilterNet для сильного широкополосного шума;
+- отказ от enhancement при клиппинге, почти пустой записи или неуверенном результате.
+
+После обработки кандидат измеряется повторно. Он используется только если
+quality gate подтверждает улучшение без роста клиппинга, потери речи и изменения
+длительности. ASR получает выбранную дорожку, а диаризация — исходный canonical
+WAV: это сохраняет тембр спикеров, границы реплик и таймкоды. Паузы физически не
+удаляются.
+
+DeepFilterNet запускается официальным self-contained Rust binary версии `0.5.6`.
+Он скачивается с GitHub Releases только при первом обнаружении тяжёлого шума,
+проверяется по закреплённому SHA-256 и хранится в runtime cache. Python-пакет
+DeepFilterNet не устанавливается и не конфликтует с NumPy 2. Поддерживаются
+Windows x64, macOS Intel/Apple Silicon и Linux x64/arm64. При недоступной сети,
+неподдерживаемой платформе или любой ошибке транскрибация продолжится с исходной
+дорожкой.
+
+```env
+AUDIO_PREPROCESSING_MODE=auto  # off | auto | light | denoise
+# GIGAAM_DEEPFILTER_DIR=/writable/executable/cache
+```
+
+```bash
+python cli.py --audio-preprocessing auto -f noisy.wav
+python cli.py --audio-preprocessing off -f studio.wav
+```
+
 ## ASR backend
 
 `auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. Остальные платформы используют PyTorch.
@@ -152,3 +191,4 @@ GigaAMGUI/
 - [GigaAM-v3 on Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
 - [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
+- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT, optional neural noise suppression

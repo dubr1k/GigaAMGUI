@@ -79,6 +79,17 @@ def test_cli_sortformer_does_not_require_hf_token(tmp_path, monkeypatch):
     assert capture["process_kwargs"]["diarization_backend"] == "sortformer"
 
 
+def test_cli_forwards_audio_preprocessing_mode(tmp_path, monkeypatch):
+    result, capture, _ = _run_cli_with_fake_loader(
+        tmp_path,
+        monkeypatch,
+        ["--audio-preprocessing", "off"],
+    )
+
+    assert result.exit_code == 0
+    assert capture["process_kwargs"]["audio_preprocessing_mode"] == "off"
+
+
 def test_cli_sortformer_rejects_fixed_speaker_count(tmp_path, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     result, _capture, _ = _run_cli_with_fake_loader(

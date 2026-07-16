@@ -139,7 +139,7 @@ class TuiWorker:
         try:
             # Keep the protocol health check lightweight: ML dependencies load only
             # when a batch actually starts.
-            from src.config import STATS_FILE
+            from src.config import AUDIO_PREPROCESSING_MODE, STATS_FILE
             from src.core.model_loader import ModelLoader
             from src.core.progress import ProgressEvent
             from src.services.transcription_service import build_processor
@@ -187,6 +187,7 @@ class TuiWorker:
                         total_files=len(files),
                         enable_diarization=diarization,
                         diarization_backend=diarization_backend,
+                        audio_preprocessing_mode=AUDIO_PREPROCESSING_MODE,
                         num_speakers=num_speakers if isinstance(num_speakers, int) and num_speakers > 0 else None,
                         output_formats=formats,
                     )

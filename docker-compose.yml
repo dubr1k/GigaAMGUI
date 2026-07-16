@@ -20,6 +20,7 @@ services:
       - WEB_PORT=8000
       - MAX_FILE_SIZE=2147483648
       - MAX_CONCURRENT_TASKS=2
+      - AUDIO_PREPROCESSING_MODE=${AUDIO_PREPROCESSING_MODE:-auto}
       - UPLOAD_DIR=uploads
       - RESULTS_DIR=results
       - STATS_FILE=results/processing_stats.json
@@ -28,6 +29,8 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - MPLCONFIGDIR=/tmp/matplotlib
       - XDG_CACHE_HOME=/tmp/cache
+      # DeepFilterNet is an executable; /tmp is mounted noexec for hardening.
+      - GIGAAM_DEEPFILTER_DIR=/home/gigaam/.cache/deepfilter
       - PYTHONWARNINGS=ignore::UserWarning:pyannote.audio.core.io,ignore::UserWarning:pyannote.audio.pipelines.speaker_verification,ignore::UserWarning:pyannote.audio.tasks.segmentation.mixins,ignore::UserWarning:pyannote.audio.utils.reproducibility
     security_opt:
       - no-new-privileges:true

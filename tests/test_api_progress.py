@@ -54,7 +54,9 @@ def test_process_transcription_persists_progress_metadata_from_events(monkeypatc
             enable_diarization=False,
             num_speakers=None,
             output_formats=None,
+            audio_preprocessing_mode="auto",
         ):
+            assert audio_preprocessing_mode == "auto"
             if self.progress_callback:
                 self.progress_callback({
                     "stage": "conversion",
