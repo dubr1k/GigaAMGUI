@@ -45,12 +45,78 @@ case "$MODEL" in
   *) echo "Unknown model: $MODEL" >&2; exit 2 ;;
 esac
 
-for command in git cargo ffmpeg; do
-  command -v "$command" >/dev/null 2>&1 || {
-    echo "Missing required command: $command" >&2
-    exit 1
-  }
-done
+   install_prerequisites() {
+     local os
+     os="$(uname -s)"
+
+     if [[ "$os" == "Darwin" ]]; then
+       # Apple Command Line Tools нужны для сборки Rust-зависимостей.
+       if ! xcode-select -p >/dev/null 2>&1; then
+         xcode-select --install || true
+         echo "Install Apple Command Line Tools in the dialog, then run this script again." >&2
+         exit 1
+       fi
+
+       if ! command -v brew >/dev/null 2>&1; then
+         NONINTERACTIVE=1 /bin/bash -c \
+           "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+         if [[ -x /opt/homebrew/bin/brew ]]; then
+           eval "$(/opt/homebrew/bin/brew shellenv)"
+         elif [[ -x /usr/local/bin/brew ]]; then
+           eval "$(/usr/local/bin/brew shellenv)"
+         fi
+       fi
+
+       brew install git ffmpeg python@3.12
+       export GIGAAM_PYTHON="${GIGAAM_PYTHON:-$(brew --prefix python@3.12)/bin/python3.12}"
+
+     elif [[ "$os" == "Linux" ]]; then
+       local sudo_cmd=()
+       if [[ $EUID -ne 0 ]]; then
+         command -v sudo >/dev/null 2>&1 || {
+           echo "sudo is required to install dependencies." >&2
+           exit 1
+         }
+         sudo_cmd=(sudo)
+       fi
+
+       if command -v apt-get >/dev/null 2>&1; then
+         "${sudo_cmd[@]}" apt-get update
+         "${sudo_cmd[@]}" apt-get install -y \
+           curl git ffmpeg build-essential python3 python3-venv
+       elif command -v dnf >/dev/null 2>&1; then
+         "${sudo_cmd[@]}" dnf install -y \
+           curl git ffmpeg gcc gcc-c++ make python3
+       elif command -v pacman >/dev/null 2>&1; then
+         "${sudo_cmd[@]}" pacman -Sy --noconfirm \
+           curl git ffmpeg base-devel python
+       else
+         echo "Unsupported Linux package manager. Install git, ffmpeg, Python and a C/C++
+ toolchain." >&2
+         exit 1
+       fi
+     else
+       echo "Unsupported operating system: $os" >&2
+       exit 1
+     fi
+
+     # rustup устанавливает cargo в ~/.cargo/bin
+     if ! command -v cargo >/dev/null 2>&1 && [[ ! -x "$HOME/.cargo/bin/cargo" ]]; then
+       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+         | sh -s -- -y --profile minimal
+     fi
+     export PATH="$HOME/.cargo/bin:$PATH"
+   }
+
+   install_prerequisites
+
+   for command in git cargo ffmpeg; do
+     command -v "$command" >/dev/null 2>&1 || {
+       echo "Missing required command after installation: $command" >&2
+       exit 1
+     }
+   done
 
 PYTHON="${GIGAAM_PYTHON:-}"
 if [[ -z "$PYTHON" ]]; then
