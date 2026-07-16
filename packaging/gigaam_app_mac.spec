@@ -72,6 +72,19 @@ if bundle_sortformer:
         "lhotse",
     ]
 
+excluded_modules = [
+    "tkinter",
+    "wx",
+    "jupyter",
+    "notebook",
+    "pytest",
+    "coverage",
+    "tensorboard",
+    "tensorboardX",
+]
+if not bundle_sortformer:
+    excluded_modules.append("IPython")
+
 datas = []
 binaries = []
 hiddenimports = []
@@ -158,17 +171,7 @@ a = Analysis(
     hookspath=[os.path.join(project_root, "pyinstaller_hooks")],
     hooksconfig={},
     runtime_hooks=[os.path.join(project_root, "pyinstaller_hooks", "rthook_utf8.py")],
-    excludes=[
-        "tkinter",
-        "wx",
-        "IPython",
-        "jupyter",
-        "notebook",
-        "pytest",
-        "coverage",
-        "tensorboard",
-        "tensorboardX",
-    ],
+    excludes=excluded_modules,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

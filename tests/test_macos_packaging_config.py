@@ -25,6 +25,8 @@ def test_spec_can_bundle_sortformer_runtime():
     text = SPEC_PATH.read_text(encoding="utf-8")
     assert "GIGAAM_BUNDLE_SORTFORMER" in text
     assert '"nemo.collections.asr"' in text
+    assert 'if not bundle_sortformer:' in text
+    assert 'excluded_modules.append("IPython")' in text
 
 
 def test_spec_bundles_local_models_only_when_explicitly_requested():
