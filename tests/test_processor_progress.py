@@ -52,12 +52,20 @@ class DummyDiarizationManager:
             progress_callback(None, None, None)
             progress_callback(0.2, 1.0, 5.0)
             progress_callback(1.0, 5.0, 5.0)
-        return []
+        return [object()]
 
     def map_speakers_to_transcription(self, utterances, speaker_segments):
         for item in utterances:
             item["speaker"] = "Спикер №1"
         return utterances
+
+
+class EmptyDiarizationManager:
+    def diarize(self, audio_path, num_speakers=None, progress_callback=None):
+        return []
+
+    def map_speakers_to_transcription(self, utterances, speaker_segments):
+        raise AssertionError("empty speaker timeline must not be mapped")
 
 
 class DummyLoaderWithValue:
@@ -295,3 +303,47 @@ def test_failed_diarization_does_not_create_plain_file_with_diarized_name(monkey
 
     assert result["success"]
     assert not (tmp_path / "in_diarize.txt").exists()
+
+
+def test_empty_diarization_timeline_is_reported_as_failure(monkeypatch, tmp_path):
+    path = _prepare_inputs(tmp_path)
+    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
+    processor._diarization_manager = EmptyDiarizationManager()
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
+    monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
+
+    result, _events = _run_process(
+        processor,
+        path,
+        output_formats=["txt", "txt_diarize"],
+        enable_diarization=True,
+    )
+
+    assert result["success"]
+    assert result["diarization"]["applied"] is False
+    assert "не вернул ни одного" in result["diarization"]["error"]
+    assert not (tmp_path / "in_diarize.txt").exists()
+
+
+def test_missing_hf_token_is_exposed_in_result_metadata(monkeypatch, tmp_path):
+    path = _prepare_inputs(tmp_path)
+    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
+    monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
+
+    result, _events = _run_process(
+        processor,
+        path,
+        output_formats=["txt"],
+        enable_diarization=True,
+    )
+
+    assert result["success"]
+    assert result["diarization"] == {
+        "requested": True,
+        "applied": False,
+        "backend": "pyannote",
+        "error": "Диаризация pyannote требует HuggingFace read-токен с префиксом hf_.",
+    }

@@ -151,7 +151,7 @@ class PyTorchBackend:
                     for word in (words or [])
                     if str(word.text).strip()
                 ]
-                return str(text).strip(), normalized_words
+                return str(text).strip(), normalized_words or None
 
         decode_result = model.decoding.decode(model.head, encoded, encoded_len)
         return cls._decode_text(decode_result), None
@@ -371,10 +371,10 @@ class PyTorchBackend:
                         encoded_len,
                         length,
                     )
-                    words = None
+                    words: list[TranscriptionWord] | None = None
                     if relative_words is not None:
                         decode_start_sec = float(start) / sample_rate
-                        absolute_words: list[TranscriptionWord] = [
+                        words = [
                             {
                                 "text": word["text"],
                                 "start": decode_start_sec + word["start"],
@@ -382,50 +382,29 @@ class PyTorchBackend:
                             }
                             for word in relative_words
                         ]
-                        # Перекрывающиеся окна дают контекст декодеру, но каждое
-                        # слово принадлежит только неперекрывающейся nominal-области.
-                        # Левая граница первого окна включена; в следующих
-                        # перекрывающихся окнах она исключена, чтобы слово ровно
-                        # на границе не появилось дважды.
-                        nominal_start = chunk.start_sec
-                        nominal_end = chunk.end_sec
-                        exclude_left_boundary = chunk.overlaps_previous
-
-                        def owns_nominal_interval(
-                            word: TranscriptionWord,
-                            start_sec: float = nominal_start,
-                            end_sec: float = nominal_end,
-                            exclude_left: bool = exclude_left_boundary,
-                        ) -> bool:
-                            midpoint = (word["start"] + word["end"]) / 2
-                            starts_here = (
-                                midpoint > start_sec
-                                if exclude_left
-                                else midpoint >= start_sec
-                            )
-                            return starts_here and midpoint <= end_sec
-
-                        words = [
-                            word
-                            for word in absolute_words
-                            if owns_nominal_interval(word)
-                        ]
                         text = " ".join(word["text"] for word in words).strip()
 
                     if text:
                         if (
-                            words is None
-                            and chunk.overlaps_previous
+                            chunk.overlaps_previous
                             and previous_result_index is not None
                             and previous_group == chunk.group
                         ):
                             previous_text = results[previous_result_index]["transcription"]
-                            previous_text, text, _overlap = stitch_overlapping_text(
+                            previous_text, text, overlap_words = stitch_overlapping_text(
                                 previous_text,
                                 text,
                             )
                             results[previous_result_index]["transcription"] = previous_text
-                            if not text and _overlap:
+                            if words is not None and overlap_words:
+                                # Word timestamps from two decoder passes can jitter
+                                # around the nominal cut. Keep the first pass and
+                                # remove the matching prefix from the next one.
+                                words = words[overlap_words:]
+                                text = " ".join(
+                                    word["text"] for word in words
+                                ).strip()
+                            if not text and overlap_words:
                                 previous_start, _previous_end = results[
                                     previous_result_index
                                 ]["boundaries"]

@@ -320,7 +320,12 @@ class TranscriptionProcessor:
                 and self._active_diarization_backend == "pyannote"
                 and not os.getenv("HF_TOKEN", "").startswith("hf_")
             ):
-                self.logger("ОШИБКА: Диаризация требует токен HuggingFace.")
+                token_error = (
+                    "Диаризация pyannote требует HuggingFace read-токен "
+                    "с префиксом hf_."
+                )
+                result['diarization']['error'] = token_error
+                self.logger(f"ОШИБКА: {token_error}")
                 self.logger("Установите токен через чекбокс 'Диаризация' в интерфейсе.")
                 enable_diarization = False
 
@@ -592,6 +597,10 @@ class TranscriptionProcessor:
                 **kwargs,
                 progress_callback=progress_callback,
             )
+            if not speaker_segments:
+                raise RuntimeError(
+                    "Диаризатор не вернул ни одного speaker-сегмента."
+                )
 
             # Сопоставляем спикеров с сегментами транскрипции
             utterances = self.diarization_manager.map_speakers_to_transcription(

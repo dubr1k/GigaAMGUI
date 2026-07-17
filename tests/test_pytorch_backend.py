@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import soundfile as sf
 import torch
 
@@ -146,7 +147,34 @@ def test_transcribe_longform_exposes_absolute_word_timestamps(tmp_path, monkeypa
     }]
 
 
-def test_word_on_exact_nominal_boundary_is_emitted_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "decoded_words",
+    [None, [], [SimpleNamespace(text=" ", start=0.0, end=0.1)]],
+)
+def test_transcribe_longform_preserves_text_without_word_records(
+    tmp_path,
+    decoded_words,
+):
+    wav_path = tmp_path / "no-word-records.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+    )
+    model._decode = lambda *args, **kwargs: [("распознанный текст", decoded_words)]
+    backend = PyTorchBackend(segmentation_mode="fixed_chunks")
+    backend.model = model
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path)) == [{
+        "transcription": "распознанный текст",
+        "boundaries": (0.0, 1.0),
+    }]
+
+
+def test_jittered_boundary_word_is_emitted_once(tmp_path, monkeypatch):
     wav_path = tmp_path / "overlap.wav"
     sf.write(wav_path, np.zeros(20 * 16000, dtype=np.float32), 16000)
     chunks = [
@@ -158,10 +186,12 @@ def test_word_on_exact_nominal_boundary_is_emitted_once(tmp_path, monkeypatch):
     calls = iter([
         [
             SimpleNamespace(text="слева", start=8.5, end=9.5),
-            SimpleNamespace(text="граница", start=9.5, end=10.5),
+            # Первый decoder сдвинул слово чуть вправо от nominal cut.
+            SimpleNamespace(text="граница", start=9.7, end=10.5),
         ],
         [
-            SimpleNamespace(text="граница", start=1.5, end=2.5),
+            # Второй decoder сдвинул то же слово чуть влево от cut.
+            SimpleNamespace(text="граница", start=1.5, end=2.3),
             SimpleNamespace(text="справа", start=2.5, end=3.5),
         ],
     ])
