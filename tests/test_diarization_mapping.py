@@ -48,3 +48,30 @@ def test_map_speakers_unknown_when_no_overlap():
     trans = [{"transcription": "x", "boundaries": (50.0, 60.0)}]
     mapped = mgr.map_speakers_to_transcription(trans, speaker_segs)
     assert mapped[0]["speaker"] == "Неизвестный спикер"
+
+
+def test_map_speakers_splits_word_timed_segment_at_speaker_changes():
+    mgr = _mgr()
+    speaker_segs = [
+        SpeakerSegment(0.0, 1.8, "A"),
+        SpeakerSegment(1.8, 4.0, "B"),
+        SpeakerSegment(4.0, 6.0, "A"),
+    ]
+    trans = [{
+        "transcription": "Алло. Здравствуйте! Да, слушаю.",
+        "boundaries": (0.0, 6.0),
+        "words": [
+            {"text": "Алло.", "start": 0.2, "end": 1.0},
+            {"text": "Здравствуйте!", "start": 2.0, "end": 3.4},
+            {"text": "Да,", "start": 4.2, "end": 4.6},
+            {"text": "слушаю.", "start": 4.7, "end": 5.5},
+        ],
+    }]
+
+    mapped = mgr.map_speakers_to_transcription(trans, speaker_segs)
+
+    assert mapped == [
+        {"transcription": "Алло.", "boundaries": (0.2, 1.0), "speaker": "A"},
+        {"transcription": "Здравствуйте!", "boundaries": (2.0, 3.4), "speaker": "B"},
+        {"transcription": "Да, слушаю.", "boundaries": (4.2, 5.5), "speaker": "A"},
+    ]

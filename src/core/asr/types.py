@@ -6,12 +6,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
+from typing_extensions import NotRequired
+
+
+class TranscriptionWord(TypedDict):
+    """One recognized word with absolute audio timestamps."""
+
+    text: str
+    start: float
+    end: float
+
 
 class TranscriptionSegment(TypedDict):
     """Single transcription result used across all ASR backends."""
 
     transcription: str
     boundaries: tuple[float, float]
+    words: NotRequired[list[TranscriptionWord]]
 
 
 @dataclass(frozen=True)

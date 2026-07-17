@@ -423,37 +423,59 @@ class DiarizationManager:
         transcription_segments: list,
         speaker_segments: list[SpeakerSegment],
     ) -> list:
+        """Сопоставить ASR с диаризацией, сохраняя смены спикеров.
+
+        PyTorch GigaAM передаёт word-level timestamps. В этом случае один
+        длинный ASR-сегмент разбивается на последовательные реплики по словам,
+        а не схлопывается до спикера в midpoint. Backend-ы без word timestamps
+        сохраняют прежний безопасный fallback с одним спикером на ASR-сегмент.
         """
-        Сопоставление транскрипции с диаризацией по временным меткам.
-
-        Для каждого сегмента транскрипции определяется спикер
-        на основе временного пересечения с сегментами диаризации.
-
-        Args:
-            transcription_segments: Сегменты транскрипции (словари с 'transcription', 'boundaries')
-            speaker_segments: Сегменты диаризации
-
-        Returns:
-            Сегменты транскрипции с добавленным полем 'speaker'
-        """
+        mapped: list = []
         for trans_seg in transcription_segments:
-            # Получаем границы сегмента
-            start, end = trans_seg.get('boundaries', (0.0, 0.0))
+            words = trans_seg.get("words") or []
+            if not words:
+                start, end = trans_seg.get('boundaries', (0.0, 0.0))
+                midpoint = (start + end) / 2
+                speaker = self._find_speaker_at_time(midpoint, speaker_segments)
+                if speaker is None:
+                    speaker = self._find_speaker_by_overlap(start, end, speaker_segments)
+                trans_seg['speaker'] = speaker if speaker else "Неизвестный спикер"
+                mapped.append(trans_seg)
+                continue
 
-            # Находим midpoint сегмента транскрипции
-            midpoint = (start + end) / 2
-
-            # Ищем спикера, говорившего в этот момент
-            speaker = self._find_speaker_at_time(midpoint, speaker_segments)
-
-            # Если не нашли по midpoint, ищем по максимальному пересечению
-            if speaker is None:
+            current = None
+            for word in words:
+                text = str(word.get("text", "")).strip()
+                start = float(word.get("start", 0.0))
+                end = max(start, float(word.get("end", start)))
+                if not text:
+                    continue
                 speaker = self._find_speaker_by_overlap(start, end, speaker_segments)
+                if speaker is None:
+                    speaker = self._find_speaker_at_time((start + end) / 2, speaker_segments)
+                speaker = speaker or "Неизвестный спикер"
 
-            # Добавляем информацию о спикере в сегмент
-            trans_seg['speaker'] = speaker if speaker else "Неизвестный спикер"
+                if current is not None and current["speaker"] == speaker:
+                    current["transcription"] = f'{current["transcription"]} {text}'
+                    current["boundaries"] = (current["boundaries"][0], end)
+                    continue
 
-        return transcription_segments
+                current = {
+                    "transcription": text,
+                    "boundaries": (start, end),
+                    "speaker": speaker,
+                }
+                mapped.append(current)
+
+            if current is None:
+                fallback = dict(trans_seg)
+                fallback.pop("words", None)
+                start, end = fallback.get('boundaries', (0.0, 0.0))
+                speaker = self._find_speaker_by_overlap(start, end, speaker_segments)
+                fallback["speaker"] = speaker or "Неизвестный спикер"
+                mapped.append(fallback)
+
+        return mapped
 
     def _find_speaker_at_time(
         self,

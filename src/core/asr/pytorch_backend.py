@@ -7,7 +7,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable
-from typing import cast
+from typing import Any, cast
 
 from ...config import (
     ASR_SEGMENTATION_MODE,
@@ -16,7 +16,7 @@ from ...config import (
     MODEL_REVISION,
 )
 from .chunking import AudioChunk, plan_audio_chunks, stitch_overlapping_text
-from .types import BackendCapabilities, TranscriptionSegment
+from .types import BackendCapabilities, TranscriptionSegment, TranscriptionWord
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError
 
 
@@ -122,6 +122,39 @@ class PyTorchBackend:
             return ""
 
         return str(decode_result).strip()
+
+    @classmethod
+    def _decode_chunk(
+        cls,
+        model: Any,
+        encoded: Any,
+        encoded_len: Any,
+        wav_len: Any,
+    ) -> tuple[str, list[TranscriptionWord] | None]:
+        """Decode one chunk and request official GigaAM word timestamps when available."""
+        timed_decode = getattr(model, "_decode", None)
+        if callable(timed_decode):
+            decoded = timed_decode(
+                encoded,
+                encoded_len,
+                wav_len,
+                word_timestamps=True,
+            )
+            if decoded:
+                text, words = decoded[0]
+                normalized_words: list[TranscriptionWord] = [
+                    {
+                        "text": str(word.text).strip(),
+                        "start": float(word.start),
+                        "end": float(word.end),
+                    }
+                    for word in (words or [])
+                    if str(word.text).strip()
+                ]
+                return str(text).strip(), normalized_words
+
+        decode_result = model.decoding.decode(model.head, encoded, encoded_len)
+        return cls._decode_text(decode_result), None
 
     def load(self, logger: Callable[[str], None] | None = None) -> bool:
         self._logger = logger
@@ -332,12 +365,57 @@ class PyTorchBackend:
                     wav = audio[start:end].to(model._device).to(model._dtype).unsqueeze(0)
                     length = torch.full([1], wav.shape[-1], device=model._device)
                     encoded, encoded_len = model.forward(wav, length)
-                    decode_result = model.decoding.decode(model.head, encoded, encoded_len)
-                    text = self._decode_text(decode_result)
+                    text, relative_words = self._decode_chunk(
+                        model,
+                        encoded,
+                        encoded_len,
+                        length,
+                    )
+                    words = None
+                    if relative_words is not None:
+                        decode_start_sec = float(start) / sample_rate
+                        absolute_words: list[TranscriptionWord] = [
+                            {
+                                "text": word["text"],
+                                "start": decode_start_sec + word["start"],
+                                "end": decode_start_sec + word["end"],
+                            }
+                            for word in relative_words
+                        ]
+                        # Перекрывающиеся окна дают контекст декодеру, но каждое
+                        # слово принадлежит только неперекрывающейся nominal-области.
+                        # Левая граница первого окна включена; в следующих
+                        # перекрывающихся окнах она исключена, чтобы слово ровно
+                        # на границе не появилось дважды.
+                        nominal_start = chunk.start_sec
+                        nominal_end = chunk.end_sec
+                        exclude_left_boundary = chunk.overlaps_previous
+
+                        def owns_nominal_interval(
+                            word: TranscriptionWord,
+                            start_sec: float = nominal_start,
+                            end_sec: float = nominal_end,
+                            exclude_left: bool = exclude_left_boundary,
+                        ) -> bool:
+                            midpoint = (word["start"] + word["end"]) / 2
+                            starts_here = (
+                                midpoint > start_sec
+                                if exclude_left
+                                else midpoint >= start_sec
+                            )
+                            return starts_here and midpoint <= end_sec
+
+                        words = [
+                            word
+                            for word in absolute_words
+                            if owns_nominal_interval(word)
+                        ]
+                        text = " ".join(word["text"] for word in words).strip()
 
                     if text:
                         if (
-                            chunk.overlaps_previous
+                            words is None
+                            and chunk.overlaps_previous
                             and previous_result_index is not None
                             and previous_group == chunk.group
                         ):
@@ -361,10 +439,13 @@ class PyTorchBackend:
                         if end_time < start_time:
                             continue
                         if text:
-                            results.append({
+                            segment: TranscriptionSegment = {
                                 "transcription": text,
                                 "boundaries": (start_time, end_time),
-                            })
+                            }
+                            if words is not None:
+                                segment["words"] = words
+                            results.append(segment)
                             previous_result_index = len(results) - 1
                             previous_group = chunk.group
                     else:

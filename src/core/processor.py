@@ -182,6 +182,12 @@ class TranscriptionProcessor:
             'preprocessing_time': 0,
             'transcription_time': 0,
             'audio_preprocessing': None,
+            'diarization': {
+                'requested': bool(enable_diarization),
+                'applied': False,
+                'backend': diarization_backend,
+                'error': None,
+            },
             'saved_files': []
         }
 
@@ -318,6 +324,7 @@ class TranscriptionProcessor:
                 self.logger("Установите токен через чекбокс 'Диаризация' в интерфейсе.")
                 enable_diarization = False
 
+            diarization_applied = False
             if enable_diarization and utterances and len(utterances) > 0:
                 self.logger(f"Применение диаризации спикеров ({self._active_diarization_backend})...")
                 try:
@@ -333,9 +340,12 @@ class TranscriptionProcessor:
                             total_seconds=total,
                         ),
                     )
+                    diarization_applied = True
+                    result['diarization']['applied'] = True
                     self._update_progress("diarization", 1.0)
                     self.logger(f"Диаризация завершена. Найдено спикеров: {len(set(u.get('speaker', 'Неизвестный спикер') for u in utterances))}")
                 except Exception as e:
+                    result['diarization']['error'] = str(e)
                     # Диаризация не удалась — сохраняем транскрипт БЕЗ фиктивной
                     # разметки «Спикер №1» и даём пользователю реальную причину.
                     self.logger(f"ОШИБКА: диаризация не выполнена — спикеры НЕ размечены: {e}")
@@ -391,8 +401,9 @@ class TranscriptionProcessor:
                                     f"{self.time_formatter.format_timestamp(end)}] {text}")
                     timecoded_lines_plain.append(ts_str_plain)
 
-                    # Диаризованный текст — с метками спикеров (если диаризация включена)
-                    if enable_diarization and speaker:
+                    # Диаризованный текст — с метками спикеров только после
+                    # реально успешного запуска модели и маппинга.
+                    if diarization_applied and speaker:
                         if speaker != current_speaker:
                             if current_speaker is not None:
                                 full_text_lines_diarized.append("")
@@ -408,8 +419,10 @@ class TranscriptionProcessor:
                                            f"{self.time_formatter.format_timestamp(end)}] {text}")
                         timecoded_lines_diarized.append(ts_str_diarized)
 
-                # Обычный текст — всегда основной для .txt и _timecodes.txt
-                full_text = "\n".join(full_text_lines_plain)
+                # Декодерные/VAD-границы не являются абзацами. В обычном TXT
+                # склеиваем их пробелом, чтобы не создавать ложные «обрывы» каждые
+                # 10–20 секунд. Таймкодированные форматы сохраняют сегментацию.
+                full_text = " ".join(full_text_lines_plain)
                 timecoded_lines = timecoded_lines_plain
 
                 # Диаризованный текст — для _diarize.txt и _diarize_timecodes.txt (при enable_diarization)
@@ -418,9 +431,22 @@ class TranscriptionProcessor:
                 if not full_text.strip():
                     self.logger("ПРЕДУПРЕЖДЕНИЕ: Все сегменты имеют пустой текст транскрипции")
 
-            # Определяем форматы вывода (по умолчанию txt)
+            # Определяем форматы вывода (по умолчанию txt). Если пользователь
+            # запросил диаризацию и она действительно сработала, всегда создаём
+            # хотя бы один явно диаризованный файл — обычный TXT намеренно остаётся
+            # без меток спикеров и раньше создавал впечатление, что функция не работает.
             if output_formats is None:
                 output_formats = ['txt']
+            else:
+                output_formats = list(output_formats)
+            if diarization_applied and 'txt_diarize' not in output_formats:
+                output_formats.append('txt_diarize')
+            if (
+                diarization_applied
+                and 'txt_timecodes' in output_formats
+                and 'txt_diarize_timecodes' not in output_formats
+            ):
+                output_formats.append('txt_diarize_timecodes')
             self._update_progress("export", 0.0)
 
             # Сохранение в выбранных форматах
@@ -444,23 +470,23 @@ class TranscriptionProcessor:
 
                 elif fmt == 'txt_diarize':
                     # Текст с метками спикеров (только при включённой диаризации)
-                    if enable_diarization and full_text_diarized.strip():
+                    if diarization_applied and full_text_diarized.strip():
                         path_diarize = output_path(output_dir, name_without_ext, 'txt_diarize')
                         with open(path_diarize, "w", encoding="utf-8") as f:
                             f.write(full_text_diarized)
                         saved_files.append(path_diarize)
                     elif enable_diarization:
-                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Текст диаризации пустой, _diarize.txt не создан")
+                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Диаризация не применена, _diarize.txt не создан")
 
                 elif fmt == 'txt_diarize_timecodes':
-                    # Текст с метками спикеров и таймкодами (только при включённой диаризации)
-                    if enable_diarization and timecoded_lines_diarized:
+                    # Текст с метками спикеров (только после успешной диаризации)
+                    if diarization_applied and timecoded_lines_diarized:
                         path_diarize_ts = output_path(output_dir, name_without_ext, 'txt_diarize_timecodes')
                         with open(path_diarize_ts, "w", encoding="utf-8") as f:
                             f.write("\n".join(timecoded_lines_diarized))
                         saved_files.append(path_diarize_ts)
                     elif enable_diarization:
-                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Данные диаризации пусты, _diarize_timecodes.txt не создан")
+                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Диаризация не применена, _diarize_timecodes.txt не создан")
 
                 elif fmt == 'md':
                     # Markdown формат

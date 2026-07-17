@@ -69,6 +69,21 @@ class DummyLoaderWithValue:
         return [{"transcription": "x", "boundaries": (0.0, 3.0)}]
 
 
+class DummyLoaderChunks:
+    def transcribe_longform(self, audio_path, progress_callback=None):
+        if progress_callback:
+            progress_callback(1.0, 20.0, 20.0)
+        return [
+            {"transcription": "Первая часть фразы", "boundaries": (0.0, 10.0)},
+            {"transcription": "продолжается без разрыва.", "boundaries": (10.0, 20.0)},
+        ]
+
+
+class FailingDiarizationManager:
+    def diarize(self, audio_path, num_speakers=None, progress_callback=None):
+        raise RuntimeError("diarization failed")
+
+
 def _prepare_inputs(tmp_path: Path) -> Path:
     path = tmp_path / "in.wav"
     path.write_bytes(b"stub")
@@ -151,6 +166,7 @@ def test_processor_progress_with_diarization(monkeypatch, tmp_path):
     path = _prepare_inputs(tmp_path)
     processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
     processor._diarization_manager = DummyDiarizationManager()
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
 
     monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
     monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 10.0)
@@ -225,3 +241,57 @@ def test_processor_multiple_output_formats_progresses_export_deterministically(m
     assert export_values[1:] == [0.9633333333333333, 0.9766666666666667, 0.99]
     assert all(value < 1.0 for value in export_values)
     assert result["success"]
+
+
+def test_plain_txt_joins_decoder_chunks_without_artificial_newlines(monkeypatch, tmp_path):
+    path = _prepare_inputs(tmp_path)
+    processor = TranscriptionProcessor(DummyLoaderChunks(), DummyStats())
+    monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
+    monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 20.0)
+
+    result, _events = _run_process(processor, path, output_formats=["txt"])
+
+    assert result["success"]
+    assert (tmp_path / "in.txt").read_text(encoding="utf-8") == (
+        "Первая часть фразы продолжается без разрыва."
+    )
+
+
+def test_enabled_diarization_always_exports_visible_diarized_txt(monkeypatch, tmp_path):
+    path = _prepare_inputs(tmp_path)
+    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
+    processor._diarization_manager = DummyDiarizationManager()
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
+    monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
+
+    result, _events = _run_process(
+        processor,
+        path,
+        output_formats=["txt"],
+        enable_diarization=True,
+    )
+
+    assert result["success"]
+    diarized = tmp_path / "in_diarize.txt"
+    assert diarized in [Path(item) for item in result["saved_files"]]
+    assert diarized.read_text(encoding="utf-8") == "[Спикер №1]\nx"
+
+
+def test_failed_diarization_does_not_create_plain_file_with_diarized_name(monkeypatch, tmp_path):
+    path = _prepare_inputs(tmp_path)
+    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
+    processor._diarization_manager = FailingDiarizationManager()
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
+    monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
+
+    result, _events = _run_process(
+        processor,
+        path,
+        output_formats=["txt", "txt_diarize"],
+        enable_diarization=True,
+    )
+
+    assert result["success"]
+    assert not (tmp_path / "in_diarize.txt").exists()

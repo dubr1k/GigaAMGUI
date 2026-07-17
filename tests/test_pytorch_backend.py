@@ -107,6 +107,90 @@ def test_transcribe_longform_extracts_text_from_gigaam_structured_decode(tmp_pat
     ]
 
 
+def test_transcribe_longform_exposes_absolute_word_timestamps(tmp_path, monkeypatch):
+    wav_path = tmp_path / "timed.wav"
+    sf.write(wav_path, np.zeros(10 * 16000, dtype=np.float32), 16000)
+    monkeypatch.setenv("HF_TOKEN", "hf_test")
+
+    class FakeSegmenter:
+        def segment_file(self, _audio_path, *, audio_duration):
+            assert audio_duration == 10.0
+            return [(3.0, 7.0)]
+
+    backend = PyTorchBackend(vad_segmenter_factory=lambda **_kwargs: FakeSegmenter())
+    model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+    )
+    model._decode = lambda encoded, encoded_len, wav_len, word_timestamps: [
+        (
+            "Алло, здравствуйте.",
+            [
+                SimpleNamespace(text="Алло,", start=0.25, end=0.8),
+                SimpleNamespace(text="здравствуйте.", start=1.0, end=2.2),
+            ],
+        )
+    ]
+    backend.model = model
+    backend.device = "cpu"
+
+    assert backend.transcribe_longform(str(wav_path)) == [{
+        "transcription": "Алло, здравствуйте.",
+        "boundaries": (3.0, 7.0),
+        "words": [
+            {"text": "Алло,", "start": 3.25, "end": 3.8},
+            {"text": "здравствуйте.", "start": 4.0, "end": 5.2},
+        ],
+    }]
+
+
+def test_word_on_exact_nominal_boundary_is_emitted_once(tmp_path, monkeypatch):
+    wav_path = tmp_path / "overlap.wav"
+    sf.write(wav_path, np.zeros(20 * 16000, dtype=np.float32), 16000)
+    chunks = [
+        pytorch_backend.AudioChunk(0, 0, 12 * 16000, 0.0, 10.0, False),
+        pytorch_backend.AudioChunk(0, 8 * 16000, 20 * 16000, 10.0, 20.0, True),
+    ]
+    monkeypatch.setattr(pytorch_backend, "plan_audio_chunks", lambda *args, **kwargs: chunks)
+
+    calls = iter([
+        [
+            SimpleNamespace(text="слева", start=8.5, end=9.5),
+            SimpleNamespace(text="граница", start=9.5, end=10.5),
+        ],
+        [
+            SimpleNamespace(text="граница", start=1.5, end=2.5),
+            SimpleNamespace(text="справа", start=2.5, end=3.5),
+        ],
+    ])
+    model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+    )
+    model._decode = lambda *args, **kwargs: [
+        ("unused", next(calls))
+    ]
+    backend = PyTorchBackend(segmentation_mode="overlap_chunks")
+    backend.model = model
+    backend.device = "cpu"
+
+    segments = backend.transcribe_longform(str(wav_path))
+
+    assert [segment["transcription"] for segment in segments] == [
+        "слева граница",
+        "справа",
+    ]
+    assert sum(
+        word["text"] == "граница"
+        for segment in segments
+        for word in segment.get("words", [])
+    ) == 1
+
+
 def test_transcribe_longform_raises_on_unloaded_model():
     backend = PyTorchBackend()
     try:
