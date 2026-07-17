@@ -210,6 +210,10 @@ class ThemeMixin:
                 background-color: {c["input_dis"]};
                 border: 1.5px solid {c["border"]};
             }}
+            QCheckBox::indicator:checked:disabled {{
+                background-color: {c["accent"]};
+                border: 1.5px solid {c["accent"]};
+            }}
             QLabel {{
                 background: transparent;
                 color: {c["text_sub"]};

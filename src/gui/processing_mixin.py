@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..config import AUDIO_PREPROCESSING_MODE
 from ..core.progress import ProgressEvent
 from ..services import transcription_service
 
@@ -138,7 +137,7 @@ class ProcessingMixin:
             "num_speakers": num_speakers,
             "enable_diarization": self.enable_diarization,
             "diarization_backend": self.diarization_backend,
-            "audio_preprocessing_mode": AUDIO_PREPROCESSING_MODE,
+            "audio_preprocessing_mode": self._selected_audio_preprocessing_mode(),
             "selected_formats": self._get_selected_formats(),
             "output_dir": self.output_dir,
             "files": list(self.files_to_process),
@@ -150,6 +149,7 @@ class ProcessingMixin:
     def _set_processing_controls_enabled(self, enabled: bool):
         self.cb_diarization.setEnabled(enabled)
         self.combo_diarization_backend.setEnabled(enabled)
+        self.combo_audio_preprocessing.setEnabled(enabled)
         self._update_diarization_backend_controls()
         self.btn_upload.setEnabled(enabled)
         self.input_path.setEnabled(enabled)

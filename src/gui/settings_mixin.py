@@ -12,6 +12,7 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from ..config import (
+    AUDIO_PREPROCESSING_MODE,
     LLM_API_KEY,
     LLM_API_URL,
     LLM_MODEL,
@@ -125,6 +126,14 @@ class SettingsMixin:
             if cb:
                 cb.setEnabled(diarization_enabled)
 
+        preprocessing_mode = self.user_settings.get_value(
+            "audio_preprocessing_mode", AUDIO_PREPROCESSING_MODE
+        )
+        preprocessing_index = self.combo_audio_preprocessing.findData(preprocessing_mode)
+        self.combo_audio_preprocessing.setCurrentIndex(
+            preprocessing_index if preprocessing_index >= 0 else 0
+        )
+
         provider = self._normalize_llm_provider(self.user_settings.get_value("llm_provider", "API"))
         display_provider = ("Другое" if self._lang == "ru" else "Other") if provider == "Other" else provider
         index = self.combo_llm_provider.findText(display_provider)
@@ -190,6 +199,9 @@ class SettingsMixin:
         self.user_settings.set_value("enable_diarization", self.cb_diarization.isChecked())
         self.user_settings.set_value("diarization_backend", self.combo_diarization_backend.currentData())
         self.user_settings.set_value("num_speakers", self.entry_num_speakers.value())
+        self.user_settings.set_value(
+            "audio_preprocessing_mode", self._selected_audio_preprocessing_mode()
+        )
         self.user_settings.set_value("asr_backend", self.model_loader.requested_backend)
         self.user_settings.set_value("asr_model", self.model_loader.requested_model)
         self.user_settings.set_value("llm_provider", self._normalize_llm_provider(self.combo_llm_provider.currentText()))

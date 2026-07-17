@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 sys.modules.setdefault("gigaam", types.SimpleNamespace(load_model=lambda *args, **kwargs: object()))
 sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
+from src.config import AUDIO_PREPROCESSING_MODE  # noqa: E402
 from src.gui.app_qt import GigaTranscriberQtApp  # noqa: E402
 
 
@@ -312,6 +313,66 @@ def test_speakers_spinbox_auto_value():
     assert window.entry_num_speakers.specialValueText() == "Авто"
     window.entry_num_speakers.setValue(3)
     assert window.entry_num_speakers.value() == 3
+    window.close()
+
+
+def test_audio_preprocessing_mode_defaults_translates_and_persists():
+    window = _new_window()
+    assert window.combo_audio_preprocessing.currentData() == AUDIO_PREPROCESSING_MODE
+
+    denoise_index = window.combo_audio_preprocessing.findData("denoise")
+    window.combo_audio_preprocessing.setCurrentIndex(denoise_index)
+    window._lang = "en"
+    window._apply_language()
+    assert window.combo_audio_preprocessing.currentData() == "denoise"
+    assert window.combo_audio_preprocessing.currentText() == "Noise suppression"
+    assert window.lbl_audio_preprocessing_mode.text() == "Mode:"
+    window._save_ui_settings()
+    window.close()
+
+    restored = GigaTranscriberQtApp()
+    assert restored.combo_audio_preprocessing.currentData() == "denoise"
+    restored.close()
+
+
+def test_audio_preprocessing_mode_is_snapshotted_and_locked(monkeypatch):
+    window = _new_window()
+    window.files_to_process = ["/tmp/input.wav"]
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, *, target, kwargs, daemon):
+            captured.update(target=target, kwargs=kwargs, daemon=daemon)
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr(threading, "Thread", FakeThread)
+    window.combo_audio_preprocessing.setCurrentIndex(
+        window.combo_audio_preprocessing.findData("light")
+    )
+
+    window._start_processing_thread()
+
+    assert captured["kwargs"]["snapshot"]["audio_preprocessing_mode"] == "light"
+    assert captured["started"] is True
+    assert window.combo_audio_preprocessing.isEnabled() is False
+    window.is_processing = False
+    window.close()
+
+
+def test_checked_diarization_stays_visible_while_controls_are_locked():
+    window = _new_window()
+    window.combo_diarization_backend.setCurrentIndex(
+        window.combo_diarization_backend.findData("sortformer")
+    )
+    window.cb_diarization.setChecked(True)
+
+    window._set_processing_controls_enabled(False)
+
+    assert window.cb_diarization.isChecked() is True
+    assert window.cb_diarization.isEnabled() is False
+    assert "QCheckBox::indicator:checked:disabled" in window.styleSheet()
     window.close()
 
 

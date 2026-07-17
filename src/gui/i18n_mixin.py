@@ -65,8 +65,9 @@ class I18nMixin:
         if hasattr(self, "grp_files"):
             self.grp_files.setTitle("1. Выбор файлов" if is_ru else "1. File selection")
             self.grp_output.setTitle("2. Папка сохранения результатов" if is_ru else "2. Output folder")
-            self.grp_diarization.setTitle("3. Диаризация спикеров" if is_ru else "3. Speaker diarization")
-            self.grp_formats.setTitle("4. Форматы вывода" if is_ru else "4. Output formats")
+            self.grp_audio_preprocessing.setTitle("3. Подготовка аудио" if is_ru else "3. Audio preprocessing")
+            self.grp_diarization.setTitle("4. Диаризация спикеров" if is_ru else "4. Speaker diarization")
+            self.grp_formats.setTitle("5. Форматы вывода" if is_ru else "5. Output formats")
             self.lbl_overall.setText("Общий прогресс" if is_ru else "Overall progress")
             self.btn_select_files.setText("Выбрать файлы" if is_ru else "Choose files")
             self.btn_select_files.setToolTip("Выбрать аудио/видео файлы для обработки  (Ctrl+O)" if is_ru else "Choose audio/video files for processing  (Ctrl+O)")
@@ -83,6 +84,20 @@ class I18nMixin:
             self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)" if is_ru else "Detect which speaker is talking (HF_TOKEN required)")
             self.btn_hf_token.setText("Указать / изменить HF-токен" if is_ru else "Set / change HF token")
             self.btn_hf_token.setToolTip("Открыть настройку токена HuggingFace для диаризации" if is_ru else "Open the HuggingFace token setting for diarization")
+            self.lbl_audio_preprocessing_mode.setText("Режим:" if is_ru else "Mode:")
+            preprocessing_labels = (
+                ("Авто (рекомендуется)", "Auto (recommended)"),
+                ("Выключено", "Off"),
+                ("Лёгкая очистка", "Light cleanup"),
+                ("Шумоподавление", "Noise suppression"),
+            )
+            for index, labels in enumerate(preprocessing_labels):
+                self.combo_audio_preprocessing.setItemText(index, labels[0] if is_ru else labels[1])
+            self.combo_audio_preprocessing.setToolTip(
+                "Авто анализирует качество записи и применяет минимально необходимую обработку"
+                if is_ru else
+                "Auto analyzes recording quality and applies the minimum necessary processing"
+            )
             self.lbl_diarization_backend.setText("Движок:" if is_ru else "Backend:")
             self.lbl_num_speakers.setText("Кол-во спикеров:" if is_ru else "Speakers count:")
             self._update_diarization_backend_controls()

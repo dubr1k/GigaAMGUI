@@ -44,6 +44,7 @@ from .i18n_mixin import I18nMixin
 from .llm_mixin import LlmMixin
 from .llm_ui_mixin import LlmUiMixin
 from .processing_mixin import ProcessingMixin
+from .processing_options_ui_mixin import ProcessingOptionsUiMixin
 from .settings_mixin import SettingsMixin
 from .style_mixin import StyleMixin
 from .theme_mixin import ThemeMixin
@@ -104,7 +105,8 @@ class GigaApplication(QApplication):
 
 class GigaTranscriberQtApp(
     LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, FilesMixin,
-    I18nMixin, SettingsMixin, StyleMixin, ThemeMixin, UiBuildMixin, QMainWindow,
+    I18nMixin, SettingsMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
+    UiBuildMixin, QMainWindow,
 ):
     """Главное окно приложения для транскрибации на PyQt6"""
 
