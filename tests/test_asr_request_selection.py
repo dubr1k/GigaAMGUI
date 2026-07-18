@@ -54,6 +54,7 @@ def test_request_override_gets_isolated_loader():
     assert loader is not None
     assert created == [{
         "requested_backend": "onnx",
+        "model_name": "multilingual_ctc",
         "model_revision": "multilingual_ctc",
         "onnx_provider": "coreml",
     }]

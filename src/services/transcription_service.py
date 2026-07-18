@@ -67,6 +67,7 @@ def acquire_request_model_loader(
     return (
         loader_factory(
             requested_backend=selection.backend,
+            model_name=selection.model,
             model_revision=selection.model,
             onnx_provider=selection.onnx_provider,
         ),

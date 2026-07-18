@@ -1,3 +1,5 @@
+import json
+
 import app
 
 
@@ -31,3 +33,14 @@ def test_boot_still_requires_torch_for_non_macos_auto_before_quality_gate(monkey
     monkeypatch.setattr(app.sys, "platform", "linux", raising=False)
 
     assert app._boot_requires_torch() is True
+
+
+def test_boot_uses_saved_onnx_backend_before_torch_activation(monkeypatch, tmp_path):
+    monkeypatch.setenv("GIGAAM_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(app, "ASR_BACKEND", "pytorch")
+    (tmp_path / "user_settings.json").write_text(
+        json.dumps({"asr_backend": "onnx"}),
+        encoding="utf-8",
+    )
+
+    assert app._boot_requires_torch() is False

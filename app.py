@@ -110,8 +110,20 @@ def _is_onnx_available() -> bool:
         return False
 
 
+def _saved_asr_backend() -> str:
+    """Прочитать backend без импорта Qt и torch-тяжёлой цепочки настроек."""
+    try:
+        payload = json.loads((_user_config_dir() / "user_settings.json").read_text(encoding="utf-8"))
+        backend = str(payload.get("asr_backend") or "").strip().lower() if isinstance(payload, dict) else ""
+        if backend in {"auto", "mlx", "onnx", "pytorch"}:
+            return backend
+    except (OSError, ValueError, TypeError):
+        pass
+    return (ASR_BACKEND or "auto").strip().lower()
+
+
 def _boot_requires_torch() -> bool:
-    backend = (ASR_BACKEND or "auto").strip().lower()
+    backend = _saved_asr_backend()
     if backend == "pytorch":
         return True
     if backend == "onnx":
@@ -230,7 +242,7 @@ def main():
     from src.core.asr.models import ASR_MODELS
     from src.utils.user_settings import UserSettings
     settings = UserSettings()
-    if not _torch_is_available():
+    if not settings.get_value("asr_model"):
         from PyQt6.QtWidgets import QInputDialog
 
         model_ids = list(ASR_MODELS)

@@ -68,6 +68,17 @@ def test_cli_accepts_onnx_backend_and_provider(tmp_path, monkeypatch):
     assert capture["onnx_provider"] == "cuda"
 
 
+def test_cli_accepts_asr_model_option(tmp_path, monkeypatch):
+    result, capture, _ = _run_cli_with_fake_loader(
+        tmp_path,
+        monkeypatch,
+        ["--backend", "onnx", "--model", "multilingual_large_ctc"],
+    )
+
+    assert result.exit_code == 0
+    assert capture["model_revision"] == "multilingual_large_ctc"
+
+
 def test_cli_uses_default_backend_from_config_when_not_passed(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ASR_BACKEND", "pytorch")
     result, capture, _ = _run_cli_with_fake_loader(

@@ -25,6 +25,7 @@ def test_dialog_is_localized_for_russian_parent(monkeypatch):
     dialog = ASRBackendDialog(parent=parent, mlx_supported=True)
     assert dialog.windowTitle() == "Выбор движка распознавания"
     assert dialog.note_label.text().startswith("Авто:")
+    assert "ONNX" not in dialog.note_label.text()
 
 
 def test_dialog_returns_selected_backend(monkeypatch):

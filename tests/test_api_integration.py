@@ -4,6 +4,8 @@
 """
 
 import importlib
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -134,3 +136,57 @@ def test_invalid_asr_backend_is_rejected_before_upload(client):
 
     assert r.status_code == 400
     assert "backend" in r.json()["detail"]
+
+
+def test_transcribe_api_exposes_diarization_query_parameters(client):
+    schema = client.get("/openapi.json").json()
+    parameters = {
+        item["name"]
+        for item in schema["paths"]["/api/v1/transcribe"]["post"]["parameters"]
+    }
+
+    assert {"enable_diarization", "diarization_backend", "num_speakers"} <= parameters
+
+
+def test_api_rejects_fixed_speaker_count_for_sortformer(client):
+    response = client.post(
+        "/api/v1/transcribe?enable_diarization=true&diarization_backend=sortformer&num_speakers=2",
+        headers={"X-API-Key": VALID_KEY},
+        files={"file": ("a.mp3", b"x", "audio/mpeg")},
+    )
+
+    assert response.status_code == 400
+    assert "автоматически" in response.json()["detail"]
+
+
+def test_restore_preserves_asr_and_diarization_metadata(tmp_path, monkeypatch):
+    task_id = "b" * 32
+    task_dir = tmp_path / task_id
+    task_dir.mkdir()
+    (task_dir / "meta.json").write_text(
+        json.dumps({
+            "filename": "meeting.wav",
+            "asr_backend": "onnx",
+            "asr_model": "multilingual_ctc",
+            "onnx_provider": "coreml",
+            "asr_diagnostics": {"active_backend": "onnx"},
+            "enable_diarization": True,
+            "diarization_backend": "onnx",
+            "num_speakers": 2,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(api, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(api, "logger", SimpleNamespace(info=lambda _message: None))
+    api.tasks_storage.clear()
+
+    api.restore_tasks_from_results()
+
+    restored = api.tasks_storage[task_id]
+    assert restored["asr_backend"] == "onnx"
+    assert restored["asr_model"] == "multilingual_ctc"
+    assert restored["onnx_provider"] == "coreml"
+    assert restored["asr_diagnostics"] == {"active_backend": "onnx"}
+    assert restored["enable_diarization"] is True
+    assert restored["diarization_backend"] == "onnx"
+    assert restored["num_speakers"] == 2

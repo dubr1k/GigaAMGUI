@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 struct TuiSettings {
     pet_enabled: bool,
     backend: String,
+    onnx_provider: String,
     diarization_backend: String,
     model: String,
     llm_provider: String,
@@ -48,6 +49,7 @@ impl Default for TuiSettings {
         Self {
             pet_enabled: false,
             backend: "auto".into(),
+            onnx_provider: "auto".into(),
             diarization_backend: "pyannote".into(),
             model: "v3_e2e_rnnt".into(),
             llm_provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "API".into()),
@@ -82,6 +84,7 @@ struct App {
     formats: Vec<String>,
     output_dir: Option<String>,
     backend: String,
+    onnx_provider: String,
     model: String,
     show_logs: bool,
     result_files: Vec<String>,
@@ -128,6 +131,7 @@ impl Default for App {
             formats: vec!["txt".into()],
             output_dir: None,
             backend: "auto".into(),
+            onnx_provider: "auto".into(),
             model: "v3_e2e_rnnt".into(),
             show_logs: true,
             result_files: Vec::new(),
@@ -310,7 +314,10 @@ fn request_llm(app: &mut App) {
         app.status = "Set /llm-prompt for custom mode first".into();
     } else {
         app.llm_requested = true;
-        app.status = format!("Starting LLM for {} session result(s)…", llm_input_files(app).len());
+        app.status = format!(
+            "Starting LLM for {} session result(s)…",
+            llm_input_files(app).len()
+        );
     }
 }
 
@@ -374,6 +381,7 @@ fn save_app_settings(app: &mut App) {
     if let Err(error) = save_settings(&TuiSettings {
         pet_enabled: app.pet_enabled,
         backend: app.backend.clone(),
+        onnx_provider: app.onnx_provider.clone(),
         diarization_backend: app.diarization_backend.clone(),
         model: app.model.clone(),
         llm_provider: app.llm_provider.clone(),
@@ -561,13 +569,17 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 19] = [
+const COMMANDS: [(&str, &str); 20] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
+    ("/onnx-provider", "select the ONNX execution provider"),
     ("/model", "select the GigaAM recognition model"),
     ("/formats", "output formats, e.g. txt,srt"),
     ("/diarize", "turn speaker diarization on or off"),
-    ("/diarization-backend", "select pyannote or NVIDIA Sortformer"),
+    (
+        "/diarization-backend",
+        "select ONNX, pyannote, or NVIDIA Sortformer",
+    ),
     ("/speakers", "auto or a fixed speaker count"),
     ("/remove", "remove a file from the queue by number"),
     ("/clear", "clear the queue and result list"),
@@ -586,33 +598,33 @@ const COMMANDS: [(&str, &str); 19] = [
 fn selectable_backends() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     {
-        &["pytorch", "mlx"]
+        &["auto", "pytorch", "mlx", "onnx"]
     }
     #[cfg(not(target_os = "macos"))]
     {
-        &["auto", "pytorch"]
+        &["auto", "pytorch", "onnx"]
     }
 }
 
 fn backend_is_supported(backend: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        matches!(backend, "auto" | "pytorch" | "mlx")
+        matches!(backend, "auto" | "pytorch" | "mlx" | "onnx")
     }
     #[cfg(not(target_os = "macos"))]
     {
-        matches!(backend, "auto" | "pytorch")
+        matches!(backend, "auto" | "pytorch" | "onnx")
     }
 }
 
 fn backend_usage() -> &'static str {
     #[cfg(target_os = "macos")]
     {
-        "Usage: /backend pytorch|mlx (or auto)"
+        "Usage: /backend auto|pytorch|mlx|onnx"
     }
     #[cfg(not(target_os = "macos"))]
     {
-        "Usage: /backend auto|pytorch"
+        "Usage: /backend auto|pytorch|onnx"
     }
 }
 
@@ -656,6 +668,18 @@ fn command_menu_options(app: &App) -> Vec<String> {
             .map(|backend| (*backend).to_owned())
             .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
             .collect(),
+        Some("/onnx-provider") => [
+            "auto",
+            "cpu",
+            "cuda",
+            "tensorrt",
+            "coreml",
+            "directml",
+            BACK_MENU_OPTION,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
         Some("/model") => MODEL_OPTIONS
             .iter()
             .map(|(id, label)| format!("{id} · {label}"))
@@ -665,7 +689,7 @@ fn command_menu_options(app: &App) -> Vec<String> {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-        Some("/diarization-backend") => ["pyannote", "sortformer", BACK_MENU_OPTION]
+        Some("/diarization-backend") => ["pyannote", "onnx", "sortformer", BACK_MENU_OPTION]
             .into_iter()
             .map(str::to_owned)
             .collect(),
@@ -686,16 +710,45 @@ fn command_menu_options(app: &App) -> Vec<String> {
         .collect(),
         Some("/settings") => vec![
             format!("LLM provider · {}", app.llm_provider),
-            format!("API URL · {}", if app.llm_api_url.is_empty() { "not set" } else { "configured" }),
-            format!("API key · {}", if app.llm_api_key.is_empty() { "not set" } else { "configured" }),
-            format!("LLM model · {}", if app.llm_model.is_empty() { "not set" } else { &app.llm_model }),
+            format!(
+                "API URL · {}",
+                if app.llm_api_url.is_empty() {
+                    "not set"
+                } else {
+                    "configured"
+                }
+            ),
+            format!(
+                "API key · {}",
+                if app.llm_api_key.is_empty() {
+                    "not set"
+                } else {
+                    "configured"
+                }
+            ),
+            format!(
+                "LLM model · {}",
+                if app.llm_model.is_empty() {
+                    "not set"
+                } else {
+                    &app.llm_model
+                }
+            ),
             format!("Temperature · {}", app.llm_temperature),
             BACK_MENU_OPTION.into(),
         ],
-        Some("/settings-provider") => ["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other", BACK_MENU_OPTION]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
+        Some("/settings-provider") => [
+            "API",
+            "Claude Code",
+            "Codex",
+            "OpenCode",
+            "Pi",
+            "Other",
+            BACK_MENU_OPTION,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
         Some("/settings-model") => llm_model_options(&app.llm_provider),
         Some("/llm-mode") => ["summary", "tasks", "terms", "custom"]
             .into_iter()
@@ -758,13 +811,28 @@ fn llm_model_options(provider: &str) -> Vec<String> {
 fn open_command_menu(app: &mut App, command: &str) -> bool {
     if matches!(
         command,
-        "/backend" | "/model" | "/diarize" | "/diarization-backend" | "/formats" | "/speakers" | "/llm-mode" | "/settings" | "/settings-provider" | "/settings-model"
+        "/backend"
+            | "/onnx-provider"
+            | "/model"
+            | "/diarize"
+            | "/diarization-backend"
+            | "/formats"
+            | "/speakers"
+            | "/llm-mode"
+            | "/settings"
+            | "/settings-provider"
+            | "/settings-model"
     ) {
         app.command_menu = Some(command.to_owned());
         app.command_menu_index = if command == "/backend" {
             command_menu_options(app)
                 .iter()
                 .position(|option| option == &app.backend)
+                .unwrap_or(0)
+        } else if command == "/onnx-provider" {
+            command_menu_options(app)
+                .iter()
+                .position(|option| option == &app.onnx_provider)
                 .unwrap_or(0)
         } else {
             0
@@ -794,6 +862,13 @@ fn apply_command_menu(app: &mut App) {
         "/backend" => {
             app.backend = option.clone();
             app.status = format!("Backend: {}", app.backend);
+            app.command_menu = None;
+            app.input.clear();
+            save_app_settings(app);
+        }
+        "/onnx-provider" => {
+            app.onnx_provider = option.clone();
+            app.status = format!("ONNX provider: {}", app.onnx_provider);
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
@@ -842,7 +917,11 @@ fn apply_command_menu(app: &mut App) {
             app.status = "Enter model name and press Enter".into();
         }
         "/settings-model" => {
-            app.llm_model = if option == "default" { String::new() } else { option.clone() };
+            app.llm_model = if option == "default" {
+                String::new()
+            } else {
+                option.clone()
+            };
             app.command_menu = Some("/settings".into());
             app.command_menu_index = 0;
             app.status = if app.llm_model.is_empty() {
@@ -995,6 +1074,19 @@ fn run_command(app: &mut App) {
             save_app_settings(app);
         }
         "/backend" => app.status = backend_usage().into(),
+        "/onnx-provider"
+            if matches!(
+                argument.to_ascii_lowercase().as_str(),
+                "auto" | "cpu" | "cuda" | "tensorrt" | "coreml" | "directml"
+            ) =>
+        {
+            app.onnx_provider = argument.to_ascii_lowercase();
+            app.status = format!("ONNX provider: {}", app.onnx_provider);
+            save_app_settings(app);
+        }
+        "/onnx-provider" => {
+            app.status = "Usage: /onnx-provider auto|cpu|cuda|tensorrt|coreml|directml".into()
+        }
         "/model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == argument) => {
             app.model = argument.into();
             app.status = format!("Model: {}", app.model);
@@ -1033,7 +1125,7 @@ fn run_command(app: &mut App) {
             app.status = format!("Diarization {}", argument);
         }
         "/diarize" => app.status = "Usage: /diarize on|off".into(),
-        "/diarization-backend" if matches!(argument, "pyannote" | "sortformer") => {
+        "/diarization-backend" if matches!(argument, "pyannote" | "onnx" | "sortformer") => {
             app.diarization_backend = argument.into();
             if app.diarization_backend == "sortformer" {
                 app.num_speakers = None;
@@ -1042,7 +1134,7 @@ fn run_command(app: &mut App) {
             save_app_settings(app);
         }
         "/diarization-backend" => {
-            app.status = "Usage: /diarization-backend pyannote|sortformer".into()
+            app.status = "Usage: /diarization-backend pyannote|onnx|sortformer".into()
         }
         "/speakers" if app.diarization_backend == "sortformer" => {
             app.num_speakers = None;
@@ -1467,13 +1559,24 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     }
     let llm_active = llm_can_run(app);
     let footer = Line::from(vec![
-        Span::styled("Enter add path · Tab complete · type / for commands · s start · ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            "Enter add path · Tab complete · type / for commands · s start · ",
+            Style::default().fg(Color::Gray),
+        ),
         Span::styled(
             "[L] Run LLM",
-            Style::default().fg(if llm_active { accent } else { Color::DarkGray })
-                .add_modifier(if llm_active { Modifier::BOLD } else { Modifier::empty() }),
+            Style::default()
+                .fg(if llm_active { accent } else { Color::DarkGray })
+                .add_modifier(if llm_active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
         ),
-        Span::styled(" · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs", Style::default().fg(Color::Gray)),
+        Span::styled(
+            " · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs",
+            Style::default().fg(Color::Gray),
+        ),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[3]);
 }
@@ -1491,7 +1594,16 @@ fn main() -> io::Result<()> {
     if backend_is_supported(&settings.backend) {
         app.backend = settings.backend;
     }
-    if matches!(settings.diarization_backend.as_str(), "pyannote" | "sortformer") {
+    if matches!(
+        settings.onnx_provider.as_str(),
+        "auto" | "cpu" | "cuda" | "tensorrt" | "coreml" | "directml"
+    ) {
+        app.onnx_provider = settings.onnx_provider;
+    }
+    if matches!(
+        settings.diarization_backend.as_str(),
+        "pyannote" | "onnx" | "sortformer"
+    ) {
         app.diarization_backend = settings.diarization_backend;
     }
     if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
@@ -1601,7 +1713,9 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('L') if !app.running && app.input.is_empty() => {
                             request_llm(&mut app)
                         }
-                        KeyCode::Char('l') if !app.running && app.input.is_empty() && llm_can_run(&app) => {
+                        KeyCode::Char('l')
+                            if !app.running && app.input.is_empty() && llm_can_run(&app) =>
+                        {
                             request_llm(&mut app)
                         }
                         KeyCode::Char('l') if app.input.is_empty() => {
@@ -1627,7 +1741,7 @@ fn main() -> io::Result<()> {
                         {
                             if let Err(error) = send(
                                 &mut worker,
-                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model}),
+                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model, "onnx_provider":app.onnx_provider}),
                             ) {
                                 app.log(format!("Worker unavailable: {error}"));
                             }
@@ -1831,8 +1945,23 @@ mod tests {
         assert!(open_command_menu(&mut app, "/diarization-backend"));
         assert_eq!(
             command_menu_options(&app),
-            vec!["pyannote", "sortformer", BACK_MENU_OPTION]
+            vec!["pyannote", "onnx", "sortformer", BACK_MENU_OPTION]
         );
+    }
+
+    #[test]
+    fn backend_command_offers_onnx_and_provider_is_persisted() {
+        let mut app = App::default();
+        app.onnx_provider = "coreml".into();
+
+        assert!(open_command_menu(&mut app, "/backend"));
+        assert!(command_menu_options(&app).contains(&"onnx".to_string()));
+        let serialized = serde_json::to_value(TuiSettings {
+            onnx_provider: app.onnx_provider.clone(),
+            ..TuiSettings::default()
+        })
+        .expect("settings serialize");
+        assert_eq!(serialized["onnx_provider"], "coreml");
     }
 
     #[test]
@@ -1883,7 +2012,15 @@ mod tests {
 
         assert_eq!(
             command_menu_options(&app),
-            vec!["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other", BACK_MENU_OPTION]
+            vec![
+                "API",
+                "Claude Code",
+                "Codex",
+                "OpenCode",
+                "Pi",
+                "Other",
+                BACK_MENU_OPTION
+            ]
         );
     }
 

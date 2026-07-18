@@ -32,6 +32,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Импорты из проекта
 from src.cli_support import interactive as cli_interactive
 from src.config import ASR_BACKEND, AUDIO_PREPROCESSING_MODE, ONNX_PROVIDER, OUTPUT_FORMATS
+from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.core.progress import ProgressEvent
 from src.services import transcription_service
@@ -374,6 +375,12 @@ def display_results(results: list[dict]):
     help='Режим ASR backend: auto/mlx/onnx/pytorch (по умолчанию берется из ASR_BACKEND)',
 )
 @click.option(
+    '--model',
+    type=click.Choice(list(ASR_MODELS)),
+    default=None,
+    help='Модель ASR (по умолчанию берется из ASR_MODEL)',
+)
+@click.option(
     '--onnx-provider',
     type=click.Choice(["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"]),
     default=None,
@@ -405,7 +412,7 @@ def display_results(results: list[dict]):
     help='Интеллектуальная подготовка аудио перед распознаванием',
 )
 def main(
-    files, directory, output, interactive, verbose, formats, backend, onnx_provider,
+    files, directory, output, interactive, verbose, formats, backend, model, onnx_provider,
     diarize, diarization_backend, speakers, audio_preprocessing,
 ):
     """
@@ -508,6 +515,8 @@ def main(
     with console.status("[bold cyan]Загрузка модели...", spinner="dots"):
         model_loader = ModelLoader(
             requested_backend=backend or ASR_BACKEND,
+            model_name=model,
+            model_revision=model,
             onnx_provider=onnx_provider or ONNX_PROVIDER,
         )
         success = model_loader.load_model(logger=lambda msg: logger.debug(msg))

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 from src.core.asr.onnx_backend import OnnxBackend
@@ -304,8 +305,6 @@ def test_explicit_coreml_does_not_silently_retry_on_cpu(tmp_path):
     )
     assert backend.load()
 
-    import pytest
-
     with pytest.raises(RuntimeError, match="CoreML execution failed"):
         backend.transcribe_longform(str(wav_path))
     assert calls == [[(
@@ -316,3 +315,38 @@ def test_explicit_coreml_does_not_silently_retry_on_cpu(tmp_path):
             "RequireStaticInputShapes": "1",
         },
     )]]
+
+
+def test_auto_provider_does_not_retry_user_callback_failure_on_cpu(tmp_path):
+    wav_path = tmp_path / "callback-failure.wav"
+    sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
+    calls = []
+    model = _FakeTimestampModel(
+        [SimpleNamespace(text="текст", tokens=[" текст"], timestamps=[0.1])]
+    )
+
+    def factory(*args, **kwargs):
+        calls.append(kwargs["providers"])
+        return model
+
+    backend = OnnxBackend(
+        provider="auto",
+        segmentation_mode="fixed_chunks",
+        model_factory=factory,
+        available_provider_probe=lambda: (
+            "CoreMLExecutionProvider",
+            "CPUExecutionProvider",
+        ),
+    )
+    assert backend.load()
+
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        backend.transcribe_longform(
+            str(wav_path),
+            progress_callback=lambda *args: (_ for _ in ()).throw(
+                RuntimeError("consumer failed")
+            ),
+        )
+
+    assert len(calls) == 1
+    assert backend.capabilities().provider == "CoreMLExecutionProvider"

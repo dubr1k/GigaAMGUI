@@ -42,8 +42,8 @@ class ASRBackendDialog(QDialog):
 
     NOTES = {
         "auto": (
-            "Авто: MLX (Apple Silicon) / ONNX Runtime → fallback на PyTorch",
-            "Auto: MLX (Apple Silicon) / ONNX Runtime → PyTorch fallback",
+            "Авто: MLX на Apple Silicon, иначе PyTorch",
+            "Auto: MLX on Apple Silicon, otherwise PyTorch",
         ),
         "mlx": (
             "MLX: доступен только на macOS Apple Silicon",

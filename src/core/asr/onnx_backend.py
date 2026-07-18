@@ -137,6 +137,8 @@ class OnnxBackend:
             return False
 
         failed_provider = selection.providers[0]
+        if not self._is_provider_runtime_failure(exc, failed_provider):
+            return False
         reason = (
             f"{failed_provider} завершил inference с ошибкой "
             f"{type(exc).__name__}: {exc}; использован CPUExecutionProvider"
@@ -153,6 +155,23 @@ class OnnxBackend:
         self.provider_selection = cpu_selection
         self.device = "cpu"
         return True
+
+    @staticmethod
+    def _is_provider_runtime_failure(exc: Exception, provider: str) -> bool:
+        """Не маскировать CPU fallback-ом ошибки ввода, VAD и callback-ов."""
+        module = type(exc).__module__.lower()
+        if module.startswith("onnxruntime"):
+            return True
+
+        message = f"{type(exc).__name__}: {exc}".lower()
+        provider_markers = {
+            "CoreMLExecutionProvider": ("coreml",),
+            "CUDAExecutionProvider": ("cuda", "cudnn"),
+            "TensorrtExecutionProvider": ("tensorrt",),
+            "DmlExecutionProvider": ("directml", "dml"),
+        }
+        markers = provider_markers.get(provider, ())
+        return "executionprovider" in message or any(marker in message for marker in markers)
 
     def _transcribe_longform_unlocked(
         self,
