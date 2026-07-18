@@ -5,6 +5,7 @@ from pathlib import Path
 SPEC_PATH = Path("packaging/gigaam_app_mac.spec")
 REQUIREMENTS_PATH = Path("requirements-macos-mlx.txt")
 HOOK_PATH = Path("pyinstaller_hooks/hook-gigaam_mlx.py")
+NEMO_HOOK_PATH = Path("pyinstaller_hooks/hook-nemo.py")
 WORKFLOW_PATH = Path(".github/workflows/build.yml")
 
 
@@ -42,11 +43,21 @@ def test_hook_exists_and_collects_gigaam_mlx():
     assert "sentencepiece" in text
 
 
+def test_nemo_hook_collects_source_for_torchscript():
+    text = NEMO_HOOK_PATH.read_text(encoding="utf-8")
+    assert 'module_collection_mode = {"nemo": "pyz+py"}' in text
+
+
 def test_build_script_prefers_active_conda_environment():
     text = Path("packaging/build_exe_mac.sh").read_text(encoding="utf-8")
     assert "GIGAAM_BUILD_PYTHON" in text
     assert "CONDA_PREFIX" in text
     assert 'PYTHON="$CONDA_PREFIX/bin/python"' in text
+
+
+def test_build_script_bundles_sortformer_by_default():
+    text = Path("packaging/build_exe_mac.sh").read_text(encoding="utf-8")
+    assert 'GIGAAM_BUNDLE_SORTFORMER="${GIGAAM_BUNDLE_SORTFORMER:-1}"' in text
 
 
 def test_build_script_calls_verifier_if_bundle_present():

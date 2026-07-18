@@ -5,6 +5,10 @@
 
 set -e
 
+# Полная macOS-сборка включает доступный в GUI backend Sortformer. Значение
+# можно явно отключить через GIGAAM_BUNDLE_SORTFORMER=0 для отладочной сборки.
+export GIGAAM_BUNDLE_SORTFORMER="${GIGAAM_BUNDLE_SORTFORMER:-1}"
+
 # Скрипт лежит в scripts/ — работаем из корня проекта.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -61,7 +65,7 @@ if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6; i
 fi
 echo "[OK] зависимости GUI найдены"
 
-if [[ "${GIGAAM_BUNDLE_SORTFORMER:-}" =~ ^(1|true|yes|on)$ ]]; then
+if [[ "$GIGAAM_BUNDLE_SORTFORMER" =~ ^(1|true|yes|on)$ ]]; then
     if ! $PYTHON -c "from nemo.collections.asr.models import SortformerEncLabelModel" 2>/dev/null; then
         echo "[ERROR] GIGAAM_BUNDLE_SORTFORMER включён, но NeMo ASR не установлен."
         echo "  $PYTHON -m pip install -r requirements-sortformer.txt"
