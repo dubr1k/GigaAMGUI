@@ -39,6 +39,10 @@ def test_selfcheck_covers_lazy_pyannote_sincnet_dependency():
     )
 
 
+def test_selfcheck_covers_onnx_asr_runtime():
+    assert {"onnx_asr", "onnxruntime"} <= set(selfcheck._CHAIN)
+
+
 def test_selfcheck_applies_app_patches_before_chain(monkeypatch):
     # check_torch=True: сперва настройка torch, затем те же патчи, что и в
     # приложении (заглушка torchaudio.set_audio_backend), и только потом импорт

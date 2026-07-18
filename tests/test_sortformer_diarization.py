@@ -17,6 +17,7 @@ def test_normalize_diarization_backend_accepts_public_aliases():
     assert diarization.normalize_diarization_backend("pyannote") == "pyannote"
     assert diarization.normalize_diarization_backend("nvidia") == "sortformer"
     assert diarization.normalize_diarization_backend("sortformer") == "sortformer"
+    assert diarization.normalize_diarization_backend("onnx") == "onnx"
 
 
 def test_normalize_diarization_backend_rejects_unknown_value():
@@ -129,11 +130,15 @@ def test_sortformer_loads_v21_with_official_high_latency_configuration(monkeypat
 
 def test_sortformer_converts_nemo_segments_and_renames_by_arrival():
     class FakeModel:
-        def diarize(self, *, audio, batch_size, num_workers, verbose):
+        def diarize(self, *, audio, override_config):
             assert audio == ["/tmp/audio.wav"]
-            assert batch_size == 1
-            assert num_workers == 0
-            assert verbose is False
+            assert override_config.batch_size == 1
+            assert override_config.num_workers == 0
+            assert override_config.verbose is False
+            assert override_config.postprocessing_params.onset == 0.64
+            assert override_config.postprocessing_params.offset == 0.74
+            assert override_config.postprocessing_params.min_duration_on == 0.1
+            assert override_config.postprocessing_params.min_duration_off == 0.15
             return [[
                 "1.20 2.50 speaker_1",
                 "0.00 1.00 speaker_0",
@@ -142,6 +147,17 @@ def test_sortformer_converts_nemo_segments_and_renames_by_arrival():
 
     manager = diarization.SortformerDiarizationManager(device="cpu")
     manager._pipeline = FakeModel()
+    manager._diarize_config = lambda: types.SimpleNamespace(
+        batch_size=1,
+        num_workers=0,
+        verbose=False,
+        postprocessing_params=types.SimpleNamespace(
+            onset=0.64,
+            offset=0.74,
+            min_duration_on=0.1,
+            min_duration_off=0.15,
+        ),
+    )
 
     segments = manager.diarize("/tmp/audio.wav")
 
@@ -154,11 +170,12 @@ def test_sortformer_converts_nemo_segments_and_renames_by_arrival():
 
 def test_sortformer_rejects_malformed_nemo_segment():
     class FakeModel:
-        def diarize(self, *, audio, batch_size, num_workers, verbose):
+        def diarize(self, *, audio, override_config):
             return [["not a valid segment"]]
 
     manager = diarization.SortformerDiarizationManager(device="cpu")
     manager._pipeline = FakeModel()
+    manager._diarize_config = lambda: object()
 
     with pytest.raises(ValueError, match="Неожиданный сегмент Sortformer"):
         manager.diarize("/tmp/audio.wav")

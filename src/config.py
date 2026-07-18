@@ -15,8 +15,24 @@ APP_CONFIG_DIR_NAME = "GigaAMTranscriber"
 
 def _validate_backend_name(value: str) -> str:
     normalized = (value or "").strip().lower()
-    if normalized not in {"auto", "mlx", "pytorch"}:
+    if normalized not in {"auto", "mlx", "onnx", "pytorch"}:
         raise ValueError(f"Unsupported ASR backend: {normalized}")
+    return normalized
+
+
+def _validate_onnx_provider(value: str | None) -> str:
+    normalized = (value or "auto").strip().lower() or "auto"
+    if normalized not in {"auto", "cpu", "cuda", "tensorrt", "coreml", "directml"}:
+        raise ValueError(f"Unsupported ONNX provider: {normalized}")
+    return normalized
+
+
+def _validate_onnx_quantization(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    if normalized in {"", "none"}:
+        return None
+    if normalized != "int8":
+        raise ValueError(f"Unsupported ONNX quantization: {normalized}")
     return normalized
 
 
@@ -137,9 +153,14 @@ ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
 ASR_SEGMENTATION_MODE = os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
 if ASR_SEGMENTATION_MODE not in {"vad", "overlap_chunks", "fixed_chunks"}:
     ASR_SEGMENTATION_MODE = "vad"
-# Keep the additional segmentation model off the ASR accelerator by default.
-ASR_VAD_DEVICE = os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu"
+# Use the best available torch accelerator; explicit cpu remains available for
+# low-memory and concurrent workloads.
+ASR_VAD_DEVICE = os.getenv("ASR_VAD_DEVICE", "auto").strip().lower() or "auto"
 MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
+ONNX_PROVIDER = _validate_onnx_provider(os.getenv("ONNX_PROVIDER"))
+ONNX_QUANTIZATION = _validate_onnx_quantization(os.getenv("ONNX_QUANTIZATION"))
+ONNX_MODEL_DIR = os.getenv("ONNX_MODEL_DIR", "").strip() or None
+ONNX_VAD_MODEL = os.getenv("ONNX_VAD_MODEL", "silero").strip() or "silero"
 
 
 # Настройки аудио конвертации

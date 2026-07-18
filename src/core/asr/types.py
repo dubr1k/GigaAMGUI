@@ -35,11 +35,14 @@ class BackendCapabilities:
     supports_local_asr: bool = True
     segmentation_mode: str | None = None
     segmentation_fallback_reason: str | None = None
+    provider: str | None = None
+    quantization: str | None = None
+    provider_fallback_reason: str | None = None
 
 
 def validate_backend_name(value: str) -> str:
     value = (value or "").strip().lower()
-    if value not in {"auto", "mlx", "pytorch"}:
+    if value not in {"auto", "mlx", "onnx", "pytorch"}:
         raise ValueError(f"Unsupported ASR backend: {value}")
     return value
 

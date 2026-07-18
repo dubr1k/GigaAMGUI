@@ -1,7 +1,7 @@
 # ===== GigaAM v3 Transcriber - Web GUI =====
 # CUDA-образ с поддержкой GPU ускорения
 
-FROM ubuntu:22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -41,8 +41,10 @@ RUN git clone https://github.com/salute-developers/GigaAM.git /tmp/gigaam && \
 # Установка остальных зависимостей (без gigaam, torchcodec и PyQt6 —
 # PyQt6 это ~100МБ GUI-тулкита, который в headless-контейнере не импортируется
 # ни одним модулем web-слоя, только раздувает образ).
-RUN grep -viE 'gigaam|torchcodec|pyqt6' requirements.txt > /tmp/req.txt && \
+RUN grep -viE 'gigaam|torchcodec|pyqt6|^onnxruntime==' requirements.txt > /tmp/req.txt && \
     pip install --no-cache-dir -r /tmp/req.txt
+# В одном окружении должен быть ровно один ORT-дистрибутив.
+RUN pip install --no-cache-dir onnxruntime-gpu==1.23.2
 # Дополнительные зависимости для Web GUI
 RUN pip install --no-cache-dir itsdangerous python-multipart
 # Фиксируем официальную согласованную тройку: бинарные расширения torchaudio и

@@ -36,17 +36,22 @@ class ASRBackendDialog(QDialog):
     LABELS = {
         "auto": ("Авто", "Auto"),
         "mlx": ("MLX", "MLX"),
+        "onnx": ("ONNX Runtime", "ONNX Runtime"),
         "pytorch": ("PyTorch", "PyTorch"),
     }
 
     NOTES = {
         "auto": (
-            "Авто: MLX (Apple Silicon) → fallback на PyTorch",
-            "Auto: MLX (Apple Silicon) → PyTorch fallback",
+            "Авто: MLX (Apple Silicon) / ONNX Runtime → fallback на PyTorch",
+            "Auto: MLX (Apple Silicon) / ONNX Runtime → PyTorch fallback",
         ),
         "mlx": (
             "MLX: доступен только на macOS Apple Silicon",
             "MLX: available only on macOS Apple Silicon",
+        ),
+        "onnx": (
+            "ONNX Runtime: лёгкий кросс-платформенный backend",
+            "ONNX Runtime: lightweight cross-platform backend",
         ),
         "pytorch": (
             "PyTorch: кросс-платформенный backend",
@@ -54,7 +59,16 @@ class ASRBackendDialog(QDialog):
         ),
     }
 
-    def __init__(self, parent=None, *, current_backend: str = "auto", mlx_supported: bool | None = None):
+    PROVIDERS = ("auto", "cpu", "cuda", "tensorrt", "coreml", "directml")
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        current_backend: str = "auto",
+        current_provider: str = "auto",
+        mlx_supported: bool | None = None,
+    ):
         super().__init__(parent)
         self._is_ru = getattr(parent, "_lang", "ru") == "ru"
         self.setWindowTitle("Выбор движка распознавания" if self._is_ru else "Recognition engine")
@@ -64,7 +78,7 @@ class ASRBackendDialog(QDialog):
 
         self.backend_combo = QComboBox(self)
         self.backend_combo.setObjectName("asr_backend_combo")
-        for backend in ("auto", "mlx", "pytorch"):
+        for backend in ("auto", "mlx", "onnx", "pytorch"):
             self.backend_combo.addItem(self._label(backend), backend)
 
         mlx_index = self.backend_combo.findData("mlx")
@@ -79,6 +93,13 @@ class ASRBackendDialog(QDialog):
         self.note_label = QLabel(self._note(self.backend_combo.currentData()))
         self.backend_combo.currentTextChanged.connect(self._on_selection_changed)
 
+        self.provider_combo = QComboBox(self)
+        self.provider_combo.setObjectName("onnx_provider_combo")
+        for provider in self.PROVIDERS:
+            self.provider_combo.addItem(provider.upper() if provider != "auto" else self._label("auto"), provider)
+        provider_index = self.provider_combo.findData(current_provider)
+        self.provider_combo.setCurrentIndex(provider_index if provider_index >= 0 else 0)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("ОК" if self._is_ru else "OK")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена" if self._is_ru else "Cancel")
@@ -90,6 +111,10 @@ class ASRBackendDialog(QDialog):
         row.addWidget(QLabel("Движок распознавания:" if self._is_ru else "Recognition engine:"))
         row.addWidget(self.backend_combo)
         layout.addLayout(row)
+        provider_row = QHBoxLayout()
+        provider_row.addWidget(QLabel("ONNX provider:"))
+        provider_row.addWidget(self.provider_combo)
+        layout.addLayout(provider_row)
         layout.addWidget(self.note_label)
         layout.addWidget(buttons)
 
@@ -110,9 +135,32 @@ class ASRBackendDialog(QDialog):
     def selected_backend(self) -> str:
         return self.backend_combo.currentData()
 
+    @property
+    def selected_provider(self) -> str:
+        return self.provider_combo.currentData()
+
     @classmethod
     def pick(cls, parent=None, *, current_backend: str = "auto", mlx_supported: bool | None = None) -> str | None:
         dialog = cls(parent, current_backend=current_backend, mlx_supported=mlx_supported)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         return dialog.selected_backend
+
+    @classmethod
+    def pick_configuration(
+        cls,
+        parent=None,
+        *,
+        current_backend: str = "auto",
+        current_provider: str = "auto",
+        mlx_supported: bool | None = None,
+    ) -> tuple[str, str] | None:
+        dialog = cls(
+            parent,
+            current_backend=current_backend,
+            current_provider=current_provider,
+            mlx_supported=mlx_supported,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.selected_backend, dialog.selected_provider

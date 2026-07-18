@@ -350,18 +350,31 @@ class GigaTranscriberQtApp(
             )
             return
 
-        selected = ASRBackendDialog.pick(
+        selected = ASRBackendDialog.pick_configuration(
             self,
             current_backend=self.model_loader.requested_backend,
+            current_provider=self.model_loader.requested_provider,
             mlx_supported=is_mlx_supported(),
         )
 
-        if not selected or selected == self.model_loader.requested_backend:
+        if not selected:
             return
 
-        self.model_loader.configure_backend(selected)
-        self.user_settings.set_value("asr_backend", selected)
-        self.log(f"Выбран ASR backend: {selected}" if self._lang == "ru" else f"ASR backend selected: {selected}")
+        backend, provider = selected
+        if (
+            backend == self.model_loader.requested_backend
+            and provider == self.model_loader.requested_provider
+        ):
+            return
+        self.model_loader.configure_backend(backend)
+        self.model_loader.configure_onnx_runtime(provider=provider)
+        self.user_settings.set_value("asr_backend", backend)
+        self.user_settings.set_value("onnx_provider", provider)
+        self.log(
+            f"Выбран ASR backend: {backend}, ONNX provider: {provider}"
+            if self._lang == "ru"
+            else f"ASR backend selected: {backend}, ONNX provider: {provider}"
+        )
 
     def _change_device(self):
         """Смена вычислительного устройства (CPU / GPU / GPU 50xx) из меню."""

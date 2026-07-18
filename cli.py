@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты из проекта
 from src.cli_support import interactive as cli_interactive
-from src.config import ASR_BACKEND, AUDIO_PREPROCESSING_MODE, OUTPUT_FORMATS
+from src.config import ASR_BACKEND, AUDIO_PREPROCESSING_MODE, ONNX_PROVIDER, OUTPUT_FORMATS
 from src.core.model_loader import ModelLoader
 from src.core.progress import ProgressEvent
 from src.services import transcription_service
@@ -369,9 +369,15 @@ def display_results(results: list[dict]):
 )
 @click.option(
     '--backend',
-    type=click.Choice(["auto", "mlx", "pytorch"]),
+    type=click.Choice(["auto", "mlx", "onnx", "pytorch"]),
     default=None,
-    help='Режим ASR backend: auto/mlx/pytorch (по умолчанию берется из ASR_BACKEND)',
+    help='Режим ASR backend: auto/mlx/onnx/pytorch (по умолчанию берется из ASR_BACKEND)',
+)
+@click.option(
+    '--onnx-provider',
+    type=click.Choice(["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"]),
+    default=None,
+    help='ONNX Runtime execution provider (по умолчанию берется из ONNX_PROVIDER)',
 )
 @click.option(
     '--diarize/--no-diarize',
@@ -380,10 +386,10 @@ def display_results(results: list[dict]):
 )
 @click.option(
     '--diarization-backend',
-    type=click.Choice(["pyannote", "sortformer"]),
+    type=click.Choice(["pyannote", "sortformer", "onnx"]),
     default="pyannote",
     show_default=True,
-    help='Движок диаризации: pyannote или NVIDIA Sortformer v2.1 (до 4 спикеров)',
+    help='Движок диаризации: ONNX, pyannote или NVIDIA Sortformer v2.1',
 )
 @click.option(
     '--speakers', '-s',
@@ -399,7 +405,7 @@ def display_results(results: list[dict]):
     help='Интеллектуальная подготовка аудио перед распознаванием',
 )
 def main(
-    files, directory, output, interactive, verbose, formats, backend,
+    files, directory, output, interactive, verbose, formats, backend, onnx_provider,
     diarize, diarization_backend, speakers, audio_preprocessing,
 ):
     """
@@ -500,7 +506,10 @@ def main(
     logger.info("Загрузка модели GigaAM-v3...")
 
     with console.status("[bold cyan]Загрузка модели...", spinner="dots"):
-        model_loader = ModelLoader(requested_backend=backend or ASR_BACKEND)
+        model_loader = ModelLoader(
+            requested_backend=backend or ASR_BACKEND,
+            onnx_provider=onnx_provider or ONNX_PROVIDER,
+        )
         success = model_loader.load_model(logger=lambda msg: logger.debug(msg))
 
     if not success:

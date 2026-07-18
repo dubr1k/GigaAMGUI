@@ -14,6 +14,9 @@ import warnings
 from contextlib import nullcontext
 from pathlib import Path
 
+from ..core.diarization.base import SpeakerSegment
+from ..core.diarization.mapping import SpeakerMappingMixin
+
 # Патч pyannote применяется лениво в _load_pipeline (а не при импорте модуля),
 # чтобы простой импорт src.utils не переписывал pyannote глобально, когда
 # диаризация не используется. apply_pyannote_patch идемпотентен.
@@ -43,11 +46,12 @@ _DIARIZATION_REQUIRED_REPOS = [
 _DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
 _SORTFORMER_MODEL_ID = "nvidia/diar_streaming_sortformer_4spk-v2.1"
 
-DIARIZATION_BACKENDS = ("pyannote", "sortformer")
+DIARIZATION_BACKENDS = ("pyannote", "sortformer", "onnx")
 _DIARIZATION_BACKEND_ALIASES = {
     "pyannote": "pyannote",
     "sortformer": "sortformer",
     "nvidia": "sortformer",
+    "onnx": "onnx",
 }
 
 
@@ -134,20 +138,7 @@ def diagnose_hf_access(token: str | None) -> str:
     return "\n".join(lines)
 
 
-class SpeakerSegment:
-    """Сегмент с информацией о спикере"""
-
-    def __init__(self, start: float, end: float, speaker: str):
-        self.start = start
-        self.end = end
-        self.speaker = speaker
-
-    @property
-    def duration(self) -> float:
-        return self.end - self.start
-
-
-class DiarizationManager:
+class DiarizationManager(SpeakerMappingMixin):
     """Менеджер диаризации спикеров."""
 
     def __init__(
@@ -399,6 +390,10 @@ class DiarizationManager:
             if "hook" in signature.parameters:
                 return True
         return False
+
+    def unload(self) -> None:
+        """Освободить ссылку экземпляра на legacy pipeline."""
+        self._pipeline = None
 
     def _rename_speakers(
         self,
@@ -682,6 +677,28 @@ class SortformerDiarizationManager(DiarizationManager):
         logger.info("Модель %s загружена на %s", _SORTFORMER_MODEL_ID, self.device)
         return model
 
+    @staticmethod
+    def _diarize_config():
+        """NeMo-recommended post-processing for streaming Sortformer v2.1."""
+
+        from nemo.collections.asr.parts.mixins.diarization import DiarizeConfig
+        from nemo.collections.asr.parts.utils.vad_utils import PostProcessingParams
+        from omegaconf import OmegaConf
+
+        params = OmegaConf.structured(PostProcessingParams())
+        params.onset = 0.64
+        params.offset = 0.74
+        params.pad_onset = 0.06
+        params.pad_offset = 0.0
+        params.min_duration_on = 0.1
+        params.min_duration_off = 0.15
+        return DiarizeConfig(
+            batch_size=1,
+            num_workers=0,
+            verbose=False,
+            postprocessing_params=params,
+        )
+
     def diarize(
         self,
         audio_path: Path | str,
@@ -707,9 +724,7 @@ class SortformerDiarizationManager(DiarizationManager):
                 with self._inference_context():
                     predicted = pipeline.diarize(
                         audio=[str(audio_path)],
-                        batch_size=1,
-                        num_workers=0,
-                        verbose=False,
+                        override_config=self._diarize_config(),
                     )
             if not predicted or not isinstance(predicted, (list, tuple)):
                 raise ValueError("Sortformer не вернул результаты")
@@ -775,6 +790,13 @@ def get_diarization_manager(
         Экземпляр DiarizationManager
     """
     backend = normalize_diarization_backend(backend)
+    if backend == "onnx":
+        from ..core.diarization.onnx_backend import OnnxDiarizationBackend
+
+        return OnnxDiarizationBackend(
+            provider=kwargs.pop("provider", "auto"),
+            model_dir=kwargs.pop("model_dir", None),
+        )
     if backend == "sortformer":
         return SortformerDiarizationManager(device=device)
     return DiarizationManager(

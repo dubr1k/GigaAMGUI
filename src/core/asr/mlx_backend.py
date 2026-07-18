@@ -10,7 +10,7 @@ from collections.abc import Callable
 from ...config import ASR_SEGMENTATION_MODE, ASR_VAD_DEVICE
 from .chunking import AudioChunk, plan_audio_chunks, stitch_overlapping_text
 from .types import BackendCapabilities, TranscriptionSegment
-from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError
+from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
 
 
 class MLXBackend:
@@ -179,7 +179,7 @@ class MLXBackend:
     def _vad_context(self) -> tuple[str | None, tuple[bytes, str]]:
         hf_token = os.getenv("HF_TOKEN", "").strip() or None
         token_fingerprint = hashlib.sha256((hf_token or "").encode()).digest()
-        return hf_token, (token_fingerprint, ASR_VAD_DEVICE)
+        return hf_token, (token_fingerprint, resolve_vad_device(ASR_VAD_DEVICE))
 
     def _get_vad_segmenter(
         self,
@@ -192,7 +192,7 @@ class MLXBackend:
         if self._vad_segmenter is None or self._vad_segmenter_key != segmenter_key:
             self._vad_segmenter = self._vad_segmenter_factory(
                 token=token,
-                device=ASR_VAD_DEVICE,
+                device=segmenter_key[1],
             )
             self._vad_segmenter_key = segmenter_key
             self._vad_failure_key = None

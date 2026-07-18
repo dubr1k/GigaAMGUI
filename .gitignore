@@ -8,6 +8,9 @@ scripts/
 scripts/*
 !scripts/verify_macos_bundle.py
 !scripts/install_tui.sh
+!scripts/__init__.py
+!scripts/benchmark_asr_backends.py
+!scripts/benchmark_diarization_backends.py
 *.py[cod]
 *$py.class
 *.so
@@ -110,6 +113,8 @@ checkpoints/
 !requirements-dev.txt
 !requirements-sortformer.txt
 !requirements-macos-mlx.txt
+!requirements-onnx-gpu.txt
+!requirements-legacy-pytorch.txt
 !web/static/robots.txt
 *.wav
 *.mp3

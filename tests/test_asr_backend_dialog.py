@@ -34,3 +34,16 @@ def test_dialog_returns_selected_backend(monkeypatch):
     assert idx >= 0
     dialog.backend_combo.setCurrentIndex(idx)
     assert dialog.selected_backend == "auto"
+
+
+def test_dialog_exposes_onnx_backend_and_independent_provider():
+    app = QApplication.instance() or QApplication([])
+    dialog = ASRBackendDialog(
+        current_backend="onnx",
+        current_provider="cuda",
+        mlx_supported=False,
+    )
+
+    assert dialog.backend_combo.findData("onnx") >= 0
+    assert dialog.selected_backend == "onnx"
+    assert dialog.selected_provider == "cuda"

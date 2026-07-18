@@ -40,6 +40,7 @@ from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
+from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.services import file_policy, llm_service, task_store, transcription_service
 from src.services import health as health_service
@@ -274,7 +275,14 @@ def _cleanup_deleted_task_tombstones() -> None:
     _persist_deleted_task_ids()
 
 
-def _register_task(task_id: str, filename: str, file_size: int, user: str):
+def _register_task(
+    task_id: str,
+    filename: str,
+    file_size: int,
+    user: str,
+    asr_selection: transcription_service.AsrSelection | None = None,
+):
+    asr_fields = asr_selection.as_dict() if asr_selection is not None else {}
     tasks_storage[task_id] = task_store.new_task_record(
         task_id, filename, file_size, message="В очереди",
         extra={
@@ -284,6 +292,7 @@ def _register_task(task_id: str, filename: str, file_size: int, user: str):
             "diarization_backend": "pyannote",
             "num_speakers": None,
             "user": user,
+            **asr_fields,
         },
     )
     log_queues[task_id] = []
@@ -351,6 +360,10 @@ def _restore_completed_task_from_meta(task_dir: Path) -> dict | None:
         'enable_diarization': meta.get('enable_diarization', False),
         'diarization_backend': meta.get('diarization_backend', 'pyannote'),
         'num_speakers': meta.get('num_speakers'),
+        'asr_backend': meta.get('asr_backend'),
+        'asr_model': meta.get('asr_model'),
+        'onnx_provider': meta.get('onnx_provider'),
+        'asr_diagnostics': meta.get('asr_diagnostics'),
         'user': user,
     }
     if isinstance(meta.get('processing_time'), (int, float)):
@@ -494,11 +507,17 @@ async def process_transcription(
     enable_diarization: bool,
     diarization_backend: str,
     num_speakers: int | None,
+    asr_selection: transcription_service.AsrSelection | None = None,
 ):
     """Фоновая обработка транскрибации."""
     if processing_semaphore is None:
         raise RuntimeError("Семафор обработки не инициализирован")
 
+    if model_loader is None:
+        raise RuntimeError("ASR model loader не инициализирован")
+    asr_selection = asr_selection or transcription_service.normalize_asr_selection(model_loader)
+    request_loader = model_loader
+    owns_loader = False
     async with processing_semaphore:
         try:
             if not file_path.exists() or task_id not in tasks_storage:
@@ -571,8 +590,21 @@ async def process_transcription(
             def logger(msg: str):
                 _task_log(task_id, msg)
 
-            processor = transcription_service.build_processor(
+            if model_loader is None:
+                raise RuntimeError("ASR model loader не инициализирован")
+            request_loader, owns_loader = transcription_service.acquire_request_model_loader(
                 model_loader,
+                asr_selection,
+                loader_factory=ModelLoader,
+            )
+            if owns_loader:
+                loop = asyncio.get_running_loop()
+                loaded = await loop.run_in_executor(None, lambda: request_loader.load_model(logger=logger))
+                if not loaded:
+                    raise RuntimeError("Не удалось загрузить выбранный ASR backend")
+
+            processor = transcription_service.build_processor(
+                request_loader,
                 stats_manager,
                 logger=logger,
                 progress_callback=progress_callback,
@@ -635,6 +667,7 @@ async def process_transcription(
                 'processing_time': result['total_time'],
                 'media_duration': result.get('media_duration', 0),
                 'audio_preprocessing': result.get('audio_preprocessing'),
+                'asr_diagnostics': request_loader.diagnostics(),
             })
             _persist_tasks_index()
             _task_log(task_id, f"Обработка завершена за {time_formatter.format_duration(result['total_time'])}")
@@ -657,6 +690,8 @@ async def process_transcription(
                     'enable_diarization': enable_diarization,
                     'diarization_backend': diarization_backend,
                     'num_speakers': num_speakers,
+                    **asr_selection.as_dict(),
+                    'asr_diagnostics': request_loader.diagnostics(),
                     'user': tasks_storage[task_id].get('user'),
                     'processing_time': result['total_time'],
                     'media_duration': result.get('media_duration', 0),
@@ -679,6 +714,8 @@ async def process_transcription(
             _persist_tasks_index()
 
         finally:
+            if owns_loader and request_loader is not None:
+                request_loader.unload()
             task_status = tasks_storage.get(task_id, {}).get('status', 'unknown')
             if task_status == 'completed' and file_path.exists():
                 try:
@@ -831,6 +868,19 @@ async def get_device(user: str = Depends(require_auth)):
     return {"device": "CPU"}
 
 
+@app.get("/api/asr-options")
+async def get_asr_options(user: str = Depends(require_auth)):
+    if model_loader is None:
+        raise HTTPException(status_code=503, detail="ASR model loader не инициализирован")
+    return {
+        "backends": ["auto", "onnx", "mlx", "pytorch"],
+        "models": ASR_MODELS,
+        "onnx_providers": list(transcription_service.ONNX_PROVIDERS),
+        "defaults": transcription_service.normalize_asr_selection(model_loader).as_dict(),
+        "active": model_loader.diagnostics(),
+    }
+
+
 @app.post("/api/upload")
 async def upload_files(
     request: Request,
@@ -839,6 +889,9 @@ async def upload_files(
     enable_diarization: bool = Form(False),
     diarization_backend: str = Form("pyannote"),
     num_speakers: str = Form(""),
+    asr_backend: str = Form(""),
+    asr_model: str = Form(""),
+    onnx_provider: str = Form(""),
     user: str = Depends(require_auth),
 ):
     """Загрузка одного или нескольких файлов для транскрибации."""
@@ -850,6 +903,12 @@ async def upload_files(
         fmt_list = ['txt', 'txt_timecodes']
     try:
         diarization_backend = normalize_diarization_backend(diarization_backend)
+        asr_selection = transcription_service.normalize_asr_selection(
+            model_loader,
+            backend=asr_backend,
+            model=asr_model,
+            onnx_provider=onnx_provider,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -870,7 +929,7 @@ async def upload_files(
     uploaded = []
     for file in files:
         task_id, file_path, filename, file_size = await _save_upload(file, request)
-        _register_task(task_id, filename, file_size, user)
+        _register_task(task_id, filename, file_size, user, asr_selection)
         tasks_storage[task_id]['output_formats'] = fmt_list
         tasks_storage[task_id]['enable_diarization'] = enable_diarization
         tasks_storage[task_id]['diarization_backend'] = diarization_backend
@@ -881,6 +940,7 @@ async def upload_files(
             process_transcription(
                 task_id, file_path, filename, fmt_list,
                 enable_diarization, diarization_backend, ns,
+                asr_selection,
             )
         )
         uploaded.append({
@@ -901,6 +961,9 @@ async def download_from_url(
     enable_diarization: bool = Form(False),
     diarization_backend: str = Form("pyannote"),
     num_speakers: str = Form(""),
+    asr_backend: str = Form(""),
+    asr_model: str = Form(""),
+    onnx_provider: str = Form(""),
 ):
     """Загрузка медиа по URL через yt-dlp и постановка в очередь."""
     url = url.strip()
@@ -912,6 +975,12 @@ async def download_from_url(
         fmt_list = ['txt', 'txt_timecodes']
     try:
         diarization_backend = normalize_diarization_backend(diarization_backend)
+        asr_selection = transcription_service.normalize_asr_selection(
+            model_loader,
+            backend=asr_backend,
+            model=asr_model,
+            onnx_provider=onnx_provider,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -930,7 +999,7 @@ async def download_from_url(
         )
 
     task_id = uuid.uuid4().hex
-    _register_task(task_id, url.split("/")[-1][:80], 0, user)
+    _register_task(task_id, url.split("/")[-1][:80], 0, user, asr_selection)
     tasks_storage[task_id]['output_formats'] = fmt_list
     tasks_storage[task_id]['enable_diarization'] = enable_diarization
     tasks_storage[task_id]['diarization_backend'] = diarization_backend
@@ -943,6 +1012,7 @@ async def download_from_url(
     asyncio.create_task(
         _download_and_process(
             task_id, url, fmt_list, enable_diarization, diarization_backend, ns,
+            asr_selection,
         )
     )
 
@@ -956,6 +1026,7 @@ async def _download_and_process(
     enable_diarization: bool,
     diarization_backend: str,
     num_speakers: int | None,
+    asr_selection: transcription_service.AsrSelection,
 ):
     """Скачивает медиа по URL и запускает обработку."""
     try:
@@ -1028,6 +1099,7 @@ async def _download_and_process(
         await process_transcription(
             task_id, file_path, filename, output_formats,
             enable_diarization, diarization_backend, num_speakers,
+            asr_selection,
         )
 
     except Exception as e:

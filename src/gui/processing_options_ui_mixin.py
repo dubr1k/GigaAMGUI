@@ -74,6 +74,7 @@ class ProcessingOptionsUiMixin:
         backend_layout.addWidget(self.lbl_diarization_backend)
         self.combo_diarization_backend = QComboBox()
         self.combo_diarization_backend.addItem("Pyannote 3.1", "pyannote")
+        self.combo_diarization_backend.addItem("ONNX (PyAnnote + WeSpeaker)", "onnx")
         self.combo_diarization_backend.addItem("NVIDIA Sortformer v2.1", "sortformer")
         self.combo_diarization_backend.setFixedHeight(self._px(32))
         self.combo_diarization_backend.setMinimumWidth(self._px(220))

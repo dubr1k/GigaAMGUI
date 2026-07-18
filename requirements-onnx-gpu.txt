@@ -1,0 +1,5 @@
+# Альтернатива CPU-пакету onnxruntime из requirements.txt для NVIDIA CUDA.
+# Перед установкой удалите CPU-дистрибутив:
+#   python -m pip uninstall -y onnxruntime
+#   python -m pip install -r requirements-onnx-gpu.txt
+onnxruntime-gpu==1.23.2

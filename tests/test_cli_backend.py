@@ -16,6 +16,7 @@ def _run_cli_with_fake_loader(tmp_path, monkeypatch, args):
     class FakeLoader:
         def __init__(self, requested_backend=None, *_, **__):
             capture["requested_backend"] = requested_backend or ""
+            capture.update(__)
 
         def load_model(self, logger=None):
             return True
@@ -55,6 +56,18 @@ def test_cli_accepts_backend_option(tmp_path, monkeypatch):
     assert capture["requested_backend"] == "mlx"
 
 
+def test_cli_accepts_onnx_backend_and_provider(tmp_path, monkeypatch):
+    result, capture, _ = _run_cli_with_fake_loader(
+        tmp_path,
+        monkeypatch,
+        ["--backend", "onnx", "--onnx-provider", "cuda"],
+    )
+
+    assert result.exit_code == 0
+    assert capture["requested_backend"] == "onnx"
+    assert capture["onnx_provider"] == "cuda"
+
+
 def test_cli_uses_default_backend_from_config_when_not_passed(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ASR_BACKEND", "pytorch")
     result, capture, _ = _run_cli_with_fake_loader(
@@ -77,6 +90,18 @@ def test_cli_sortformer_does_not_require_hf_token(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert capture["process_kwargs"]["diarization_backend"] == "sortformer"
+
+
+def test_cli_onnx_diarization_does_not_require_hf_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    result, capture, _ = _run_cli_with_fake_loader(
+        tmp_path,
+        monkeypatch,
+        ["--diarize", "--diarization-backend", "onnx"],
+    )
+
+    assert result.exit_code == 0
+    assert capture["process_kwargs"]["diarization_backend"] == "onnx"
 
 
 def test_cli_forwards_audio_preprocessing_mode(tmp_path, monkeypatch):

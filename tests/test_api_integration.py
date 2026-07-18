@@ -21,6 +21,10 @@ VALID_KEY = "gam_integration_test"
 
 
 class _FakeModelLoader:
+    requested_backend = "auto"
+    requested_model = "v3_e2e_rnnt"
+    requested_provider = "auto"
+
     def load_model(self, logger=None):
         return True
 
@@ -110,3 +114,23 @@ def test_invalid_limit_query_is_422(client):
     # Phase 2.7: limit ограничен диапазоном [1, 1000]
     r = client.get("/api/v1/tasks?limit=0", headers={"X-API-Key": VALID_KEY})
     assert r.status_code == 422
+
+
+def test_asr_options_expose_all_selectable_backends(client):
+    r = client.get("/api/v1/asr/options", headers={"X-API-Key": VALID_KEY})
+
+    assert r.status_code == 200
+    assert set(r.json()["backends"]) == {"auto", "onnx", "mlx", "pytorch"}
+    assert "multilingual_large_ctc" in r.json()["models"]
+    assert "coreml" in r.json()["onnx_providers"]
+
+
+def test_invalid_asr_backend_is_rejected_before_upload(client):
+    r = client.post(
+        "/api/v1/transcribe?asr_backend=whisper",
+        headers={"X-API-Key": VALID_KEY},
+        files={"file": ("a.mp3", b"x", "audio/mpeg")},
+    )
+
+    assert r.status_code == 400
+    assert "backend" in r.json()["detail"]

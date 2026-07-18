@@ -98,10 +98,24 @@ def _is_mlx_available() -> bool:
     )
 
 
+def _is_onnx_available() -> bool:
+    import importlib.util
+
+    try:
+        return (
+            importlib.util.find_spec("onnx_asr") is not None
+            and importlib.util.find_spec("onnxruntime") is not None
+        )
+    except (ImportError, ValueError):
+        return False
+
+
 def _boot_requires_torch() -> bool:
     backend = (ASR_BACKEND or "auto").strip().lower()
     if backend == "pytorch":
         return True
+    if backend == "onnx":
+        return False
     if backend == "mlx":
         return not _is_mlx_available()
     if not (sys.platform == "darwin" and platform.machine() == "arm64"):

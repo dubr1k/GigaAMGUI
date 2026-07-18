@@ -28,7 +28,7 @@
 
 - Пакетная обработка файлов и папок, рекурсивный поиск, drag & drop, загрузка через `yt-dlp`.
 - Экспорт: `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`.
-- Выбираемая диаризация: `pyannote` или NVIDIA Streaming Sortformer v2.1.
+- Выбираемая диаризация: `pyannote`, ONNX PyAnnote + WeSpeaker или NVIDIA Streaming Sortformer v2.1.
 - Автоматическая диагностика качества, консервативная очистка и safe fallback без сдвига таймкодов.
 - Ускорение MLX RNN-T на Apple Silicon; CPU, CUDA, Intel XPU и MPS.
 - LLM-постобработка: выжимки, задачи и свои промпты.
@@ -152,15 +152,42 @@ python cli.py --audio-preprocessing off -f studio.wav
 
 ## ASR backend
 
-`auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. Остальные платформы используют PyTorch.
+`auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. На остальных платформах `auto` пока сохраняет PyTorch как проверенный default. Новый backend `onnx` использует `onnx-asr==0.12.0`, не импортирует PyTorch и поддерживает CPU, CUDA, TensorRT, CoreML и DirectML.
 
 ```bash
 python cli.py --backend auto -f audio.wav
 python cli.py --backend mlx -f audio.wav
+python cli.py --backend onnx --onnx-provider auto -f audio.wav
 python cli.py --backend pytorch -f audio.wav
 ```
 
-MLX применяется только к ASR; диаризация всегда использует PyTorch.
+Те же настройки доступны в Desktop GUI и Web UI. REST API принимает их как
+необязательные query-параметры; без них используется серверная конфигурация:
+
+```bash
+curl -H "X-API-Key: $GIGAAM_API_KEY" \
+  -F "file=@audio.wav" \
+  "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=onnx&asr_model=v3_e2e_rnnt&onnx_provider=coreml"
+```
+
+Список допустимых значений и активная конфигурация: `GET /api/v1/asr/options`.
+Настройка, отличающаяся от серверного default, получает изолированный loader
+задачи и не перенастраивает backend параллельных запросов.
+
+ONNX-диаризация также доступна без PyTorch и HF_TOKEN:
+
+```bash
+python cli.py --backend onnx --diarize --diarization-backend onnx -f audio.wav
+```
+
+Она сохраняет powerset-классы перекрывающейся речи, извлекает WeSpeaker embeddings и выполняет constrained clustering. Pyannote и Sortformer оставлены как проверяемые fallback-backend-ы: ONNX станет default только после прохождения локальных WER/CER и DER/JER ворот качества.
+
+Сравнение на локальном лицензированном корпусе:
+
+```bash
+python scripts/benchmark_asr_backends.py corpus/asr.json --backend onnx --backend pytorch --output asr-metrics.json
+python scripts/benchmark_diarization_backends.py corpus/diarization.json --backend onnx --backend pyannote --output diarization-metrics.json
+```
 
 ## Структура
 

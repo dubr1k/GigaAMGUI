@@ -124,3 +124,43 @@ def test_diagnostics_exposes_active_segmentation_mode():
 
     assert diagnostics["segmentation_mode"] == "fixed_chunks"
     assert diagnostics["segmentation_fallback_reason"] == "VAD unavailable"
+
+
+def test_diagnostics_exposes_onnx_provider_independently_from_backend():
+    class DummyBackend:
+        name = "onnx"
+
+        def is_loaded(self):
+            return True
+
+        def capabilities(self):
+            from src.core.asr.types import BackendCapabilities
+
+            return BackendCapabilities(
+                backend="onnx",
+                model="v3_e2e_rnnt",
+                device="cuda",
+                provider="CUDAExecutionProvider",
+                quantization="int8",
+                provider_fallback_reason="fallback",
+            )
+
+    loader = ModelLoader(requested_backend="onnx")
+    loader._backend = DummyBackend()
+
+    diagnostics = loader.diagnostics()
+
+    assert diagnostics["requested_provider"] == "auto"
+    assert diagnostics["provider"] == "CUDAExecutionProvider"
+    assert diagnostics["quantization"] == "int8"
+    assert diagnostics["provider_fallback_reason"] == "fallback"
+
+
+def test_configure_onnx_provider_unloads_backend():
+    loader = ModelLoader(requested_backend="onnx", onnx_provider="cpu")
+    loader._backend = object()
+
+    loader.configure_onnx_runtime(provider="cuda")
+
+    assert loader.requested_provider == "cuda"
+    assert loader._backend is None

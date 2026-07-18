@@ -362,7 +362,10 @@ def test_transcribe_longform_enables_pyannote_vad_by_default(tmp_path, monkeypat
     assert backend.transcribe_longform(str(wav_path)) == [
         {"transcription": "vad", "boundaries": (2.0, 4.0)}
     ]
-    assert calls == [("hf_default", "cpu")]
+    assert calls == [(
+        "hf_default",
+        pytorch_backend.resolve_vad_device(pytorch_backend.ASR_VAD_DEVICE),
+    )]
 
 
 def test_transcribe_longform_uses_fixed_chunks_when_explicitly_disabled(tmp_path, monkeypatch):
@@ -475,7 +478,10 @@ def test_transcribe_longform_attempts_cached_vad_without_token(tmp_path, monkeyp
     backend.device = "cpu"
 
     assert backend.transcribe_longform(str(wav_path))[0]["transcription"] == "cached"
-    assert factory_calls == [{"token": None, "device": "cpu"}]
+    assert factory_calls == [{
+        "token": None,
+        "device": pytorch_backend.resolve_vad_device(pytorch_backend.ASR_VAD_DEVICE),
+    }]
 
 
 def test_transcribe_longform_caches_initialization_failure_until_token_changes(tmp_path, monkeypatch):
@@ -559,7 +565,10 @@ def test_transcribe_longform_reuses_loaded_vad_segmenter(tmp_path, monkeypatch):
     backend.transcribe_longform(str(wav_path))
     backend.transcribe_longform(str(wav_path))
 
-    assert factory_calls == [{"token": "hf_reuse", "device": "cpu"}]
+    assert factory_calls == [{
+        "token": "hf_reuse",
+        "device": pytorch_backend.resolve_vad_device(pytorch_backend.ASR_VAD_DEVICE),
+    }]
 
 
 def test_transcribe_longform_treats_empty_vad_timeline_as_no_speech(tmp_path, monkeypatch):

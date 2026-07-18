@@ -260,7 +260,12 @@ def test_vad_segmentation_preserves_exact_boundaries_for_mlx(monkeypatch):
     assert mel_lengths == [
         int(expected[1] * 16000) - int(expected[0] * 16000),
     ]
-    assert factory_calls == [{"token": "hf_mlx_vad", "device": "cpu"}]
+    from src.core.asr import mlx_backend
+
+    assert factory_calls == [{
+        "token": "hf_mlx_vad",
+        "device": mlx_backend.resolve_vad_device(mlx_backend.ASR_VAD_DEVICE),
+    }]
     assert backend.capabilities().segmentation_mode == "vad"
     assert backend.capabilities().segmentation_fallback_reason is None
     assert events[-1] == (1.0, 25.0, 25.0)

@@ -34,3 +34,31 @@ def test_tui_worker_rejects_unknown_command():
     worker.handle({"type": "unknown"})
 
     assert _messages(output)[0]["message"] == "Unknown command: 'unknown'"
+
+
+def test_tui_worker_forwards_onnx_provider(tmp_path, monkeypatch):
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"wav")
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            captured["target"] = target
+            captured["args"] = args
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr("src.tui_worker.threading.Thread", FakeThread)
+    worker = TuiWorker(output=io.StringIO())
+    worker.handle({
+        "type": "start",
+        "files": [str(sample)],
+        "backend": "onnx",
+        "onnx_provider": "cuda",
+    })
+
+    assert captured["args"][-3:] == ("onnx", "v3_e2e_rnnt", "cuda")

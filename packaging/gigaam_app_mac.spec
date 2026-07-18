@@ -12,9 +12,10 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import collect_pure_runtime_deps, collect_static_package
+from _spec_common import collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package
 
 runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
+onnx_d, onnx_b, onnx_h = collect_onnx_runtime_deps()
 
 block_cipher = None
 
@@ -99,6 +100,9 @@ for package in packages:
 datas += runtime_d
 binaries += runtime_b
 hiddenimports += runtime_h
+datas += onnx_d
+binaries += onnx_b
+hiddenimports += onnx_h
 
 datas += [
     (os.path.join(project_root, "src"), "src"),

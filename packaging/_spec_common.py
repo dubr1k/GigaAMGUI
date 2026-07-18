@@ -73,3 +73,19 @@ def collect_pure_runtime_deps():
         binaries += b
         hiddenimports += h
     return datas, binaries, hiddenimports
+
+
+def collect_onnx_runtime_deps():
+    """Собирает Python-код, model metadata/data и native-библиотеки ONNX runtime."""
+    datas, binaries, hiddenimports = [], [], []
+    for package in ("onnx_asr", "onnxruntime"):
+        try:
+            d, b, h = collect_all(package)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Не удалось собрать обязательную ONNX-зависимость {package}: {exc}"
+            ) from exc
+        datas += d
+        binaries += b
+        hiddenimports += h
+    return datas, binaries, hiddenimports

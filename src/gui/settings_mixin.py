@@ -190,6 +190,13 @@ class SettingsMixin:
             except Exception:
                 self.model_loader.configure_backend("auto")
 
+        saved_onnx_provider = self.user_settings.get_value("onnx_provider", "")
+        if isinstance(saved_onnx_provider, str) and saved_onnx_provider:
+            try:
+                self.model_loader.configure_onnx_runtime(provider=saved_onnx_provider)
+            except ValueError:
+                self.model_loader.configure_onnx_runtime(provider="auto")
+
         saved_llm_files = self.user_settings.get_value("last_selected_transcript_files", []) or []
         self.transcript_files_for_llm = [path for path in saved_llm_files if os.path.isfile(path)]
         self._refresh_llm_files_list()
@@ -203,6 +210,7 @@ class SettingsMixin:
             "audio_preprocessing_mode", self._selected_audio_preprocessing_mode()
         )
         self.user_settings.set_value("asr_backend", self.model_loader.requested_backend)
+        self.user_settings.set_value("onnx_provider", self.model_loader.requested_provider)
         self.user_settings.set_value("asr_model", self.model_loader.requested_model)
         self.user_settings.set_value("llm_provider", self._normalize_llm_provider(self.combo_llm_provider.currentText()))
         self.user_settings.set_value("llm_api_url", self.entry_llm_api_url.text().strip())
