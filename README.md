@@ -20,6 +20,7 @@
 - [Конфигурация](#конфигурация)
 - [Интеллектуальная подготовка аудио](#интеллектуальная-подготовка-аудио)
 - [ASR backend](#asr-backend)
+- [Офлайн-сборки](#офлайн-сборки)
 - [Структура](#структура)
 - [Скриншоты](#скриншоты)
 - [Благодарности](#благодарности)
@@ -187,6 +188,28 @@ python cli.py --backend onnx --diarize --diarization-backend onnx -f audio.wav
 ```bash
 python scripts/benchmark_asr_backends.py corpus/asr.json --backend onnx --backend pytorch --output asr-metrics.json
 python scripts/benchmark_diarization_backends.py corpus/diarization.json --backend onnx --backend pyannote --output diarization-metrics.json
+```
+
+## Офлайн-сборки
+
+Каждый релиз выходит в двух вариантах:
+
+- **обычный** — при первом запуске докачивает модели (и PyTorch, если выбран
+  соответствующий backend);
+- **офлайн** (`*-offline.zip`) — рядом с исполняемым файлом лежит папка
+  `models` с полной ONNX-цепочкой: распознавание, VAD и обе модели диаризации.
+  Такой сборке не нужны ни сеть, ни токен Hugging Face, ни PyTorch.
+
+Распакуйте архив целиком и запускайте бинарник из распакованной папки: модели
+ищутся рядом с ним. Приложение само выбирает `onnx` и для распознавания, и для
+диаризации — явная настройка в `.env` или переменной окружения по-прежнему
+имеет приоритет. Докачанные позже модели (multilingual, MLX, Sortformer)
+попадают в ту же папку `models`.
+
+Собрать такой набор самостоятельно:
+
+```bash
+python scripts/build_offline_models.py --output offline/models/hf
 ```
 
 ## Структура
