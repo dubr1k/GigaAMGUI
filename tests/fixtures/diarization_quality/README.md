@@ -40,26 +40,34 @@ PYTHONPATH=. python scripts/benchmark_diarization_backends.py manifest.json \
     --collar 0.25 --output sweep.json
 ```
 
-Measured on two segments of the same two-voice interview against a pyannote
-pseudo-reference, collar 0.25. On both, pyannote and Sortformer independently
-agree on 2 speakers, and they disagree with each other by DER 0.070 (5 min) and
-0.067 (15 min) — that is the noise floor below which nothing here means anything.
+Measured on three segments of the same two-voice interview against a pyannote
+pseudo-reference, collar 0.25. On every one of them pyannote and Sortformer
+independently agree on 2 speakers, and they disagree with each other by DER
+0.070 / 0.067 / 0.037 — that is the noise floor below which nothing here means
+anything.
 
-| Mode | 5 min: speakers / DER | 15 min: speakers / DER |
-|---|---|---|
-| auto, threshold 0.35 | 5 / 0.111 | 9 / 0.128 |
-| auto, threshold 0.5 | 4 / 0.103 | 3 / 0.117 |
-| auto, threshold 0.6 and above | 3 / 0.103 | 3 / 0.117 |
-| `num_speakers=2` | 2 / 0.152 | 2 / 0.059 |
+| Mode | 5 min (64:13) | 15 min (45:41) | 15 min (131:12) |
+|---|---|---|---|
+| auto, threshold 0.35 | 5 / 0.111 | 9 / 0.128 | — |
+| auto, threshold 0.5 | 4 / 0.103 | 3 / 0.117 | — |
+| auto, threshold 0.6 and above | 3 / 0.103 | 3 / 0.117 | 3 / 0.054 |
+| `num_speakers=2` | 2 / 0.152 | 2 / 0.059 | 2 / 0.141 |
 
-One conclusion replicates: raising the threshold past ~0.5–0.6 changes nothing
-at all, so the speaker over-count is bounded by the cannot-link constraint, not
-by the threshold. Tuning the threshold further is wasted effort.
+(speakers / DER)
 
-The other does not. On the 5-minute segment forcing the speaker count made the
-assignment much worse (0.152 against 0.103); on the 15-minute one it was by far
-the best result measured (0.059 — better than the two reference engines agree
-with each other). Whether the forced merge picks the right pair evidently
-depends on the material, and a single file will happily support either
-conclusion. That is the whole argument for building a corpus before touching
-`clustering.py`.
+Two things replicate. Raising the threshold past ~0.5–0.6 changes nothing at
+all, so the speaker over-count is bounded by the cannot-link constraint, not by
+the threshold — tuning the threshold further is wasted effort. And auto always
+lands on 3 speakers where the truth is 2, yet pays surprisingly little for it:
+0.054–0.117, against a 0.037–0.070 noise floor.
+
+Forcing the count does not replicate at all. It was much worse on the first
+segment (0.152 against 0.103), much better on the second (0.059 — better than
+the two reference engines agree with each other), and much worse again on the
+third (0.141 against 0.054). Whether the forced merge picks the right pair
+depends on the material, so `num_speakers` buys a correct speaker count at the
+price of an unpredictable assignment. Leave it unset unless the count itself
+matters more than the labels.
+
+Any change to `clustering.py` has to beat auto on a real corpus, not on one
+file — as the middle column shows, one file supports whatever you want it to.
