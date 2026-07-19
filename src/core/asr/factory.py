@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .mlx_backend import MLXBackend
+from .onnx_backend import OnnxBackend
 from .pytorch_backend import PyTorchBackend
 from .types import validate_backend_name
 
@@ -38,6 +39,10 @@ def create_backend(
     model_revision: str,
     mlx_repo: str,
     allow_fallback: bool,
+    onnx_provider: str = "auto",
+    onnx_quantization: str | None = None,
+    onnx_model_dir: str | None = None,
+    onnx_vad_model: str = "silero",
     platform_name: str = __import__("sys").platform,
     machine_name: str = __import__("platform").machine(),
     import_probe: Callable[[tuple[str, ...]], bool] = _default_import_probe,
@@ -46,6 +51,15 @@ def create_backend(
 
     if requested == "pytorch":
         return PyTorchBackend(model=model_name, revision=model_revision), None
+
+    if requested == "onnx":
+        return OnnxBackend(
+            model=model_revision,
+            provider=onnx_provider,
+            quantization=onnx_quantization,
+            model_dir=onnx_model_dir,
+            vad_model=onnx_vad_model,
+        ), None
 
     if requested == "mlx":
         if not _is_macos_arm64(platform_name, machine_name):
@@ -64,6 +78,7 @@ def create_backend(
 
     # requested == "auto"
     if not _is_macos_arm64(platform_name, machine_name):
+        # ONNX remains opt-in until the local WER/CER release corpus passes.
         return PyTorchBackend(model=model_name, revision=model_revision), None
 
     if not _mlx_supports_model(model_revision):
@@ -88,6 +103,10 @@ def create_backend_from_config(
     model_revision: str,
     mlx_model_repo: str,
     allow_fallback: bool,
+    onnx_provider: str = "auto",
+    onnx_quantization: str | None = None,
+    onnx_model_dir: str | None = None,
+    onnx_vad_model: str = "silero",
     platform_name: str = __import__("sys").platform,
     machine_name: str = __import__("platform").machine(),
     import_probe: Callable[[tuple[str, ...]], bool] = _default_import_probe,
@@ -98,6 +117,10 @@ def create_backend_from_config(
         model_revision=model_revision,
         mlx_repo=mlx_model_repo,
         allow_fallback=allow_fallback,
+        onnx_provider=onnx_provider,
+        onnx_quantization=onnx_quantization,
+        onnx_model_dir=onnx_model_dir,
+        onnx_vad_model=onnx_vad_model,
         platform_name=platform_name,
         machine_name=machine_name,
         import_probe=import_probe,

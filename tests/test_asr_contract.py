@@ -8,6 +8,7 @@ from src.core.asr.types import BackendCapabilities, TranscriptionSegment, parse_
 def test_validate_backend_name_accepts_known_values():
     assert validate_backend_name("auto") == "auto"
     assert validate_backend_name("MLX") == "mlx"
+    assert validate_backend_name("ONNX") == "onnx"
     assert validate_backend_name("pytorch") == "pytorch"
 
 
@@ -37,6 +38,22 @@ def test_backend_capabilities_fields_are_typed_and_readable():
     caps = BackendCapabilities(backend="pytorch", model="e2e_rnnt", device="cpu")
     assert caps.backend == "pytorch"
     assert caps.supports_local_asr is True
+    assert caps.provider is None
+    assert caps.quantization is None
+
+
+def test_backend_capabilities_expose_onnx_runtime_details():
+    caps = BackendCapabilities(
+        backend="onnx",
+        model="v3_e2e_rnnt",
+        device="cuda",
+        provider="CUDAExecutionProvider",
+        quantization="int8",
+        provider_fallback_reason=None,
+    )
+
+    assert caps.provider == "CUDAExecutionProvider"
+    assert caps.quantization == "int8"
 
 
 def test_progress_callback_signature_remains_optional():

@@ -6,6 +6,10 @@ from ..config import (
     ASR_BACKEND,
     ASR_MODEL,
     MLX_MODEL_REPO,
+    ONNX_MODEL_DIR,
+    ONNX_PROVIDER,
+    ONNX_QUANTIZATION,
+    ONNX_VAD_MODEL,
 )
 from .asr.factory import create_backend_from_config
 from .asr.models import validate_asr_model
@@ -24,6 +28,10 @@ class ModelLoader:
         model_name: str | None = None,
         model_revision: str | None = None,
         mlx_model_repo: str | None = None,
+        onnx_provider: str | None = None,
+        onnx_quantization: str | None = None,
+        onnx_model_dir: str | None = None,
+        onnx_vad_model: str | None = None,
     ):
         self.model = None
         self.device = None
@@ -33,12 +41,22 @@ class ModelLoader:
         self._model_name = model_name or ASR_MODEL
         self._model_revision = validate_asr_model(model_revision or ASR_MODEL)
         self._mlx_model_repo = mlx_model_repo or MLX_MODEL_REPO
+        self._onnx_provider = onnx_provider or ONNX_PROVIDER
+        self._onnx_quantization = (
+            ONNX_QUANTIZATION if onnx_quantization is None else onnx_quantization
+        )
+        self._onnx_model_dir = onnx_model_dir or ONNX_MODEL_DIR
+        self._onnx_vad_model = onnx_vad_model or ONNX_VAD_MODEL
         self._fallback_reason = None
         self._factory_error: str | None = None
 
     @property
     def requested_backend(self) -> str:
         return self._requested_backend
+
+    @property
+    def requested_provider(self) -> str:
+        return self._onnx_provider
 
     @property
     def active_backend(self) -> str:
@@ -69,6 +87,10 @@ class ModelLoader:
             model_revision=self._model_revision,
             mlx_model_repo=self._mlx_model_repo,
             allow_fallback=self._allow_fallback,
+            onnx_provider=self._onnx_provider,
+            onnx_quantization=self._onnx_quantization,
+            onnx_model_dir=self._onnx_model_dir,
+            onnx_vad_model=self._onnx_vad_model,
         )
         self._backend = backend
         self._fallback_reason = fallback_reason
@@ -84,9 +106,11 @@ class ModelLoader:
         if hasattr(self._backend, "device"):
             self.device = self._backend.device
 
-    def _switch_to_pytorch_fallback(self) -> bool:
+    def _switch_to_pytorch_fallback(self, failed_backend: str = "MLX") -> bool:
         self._backend = PyTorchBackend(model=self._model_name, revision=self._model_revision)
-        self._fallback_reason = "Аварийный fallback: MLX не загрузился, использован PyTorch backend"
+        self._fallback_reason = (
+            f"Аварийный fallback: {failed_backend} не загрузился, использован PyTorch backend"
+        )
         self._factory_error = None
         return self._backend.load()
 
@@ -100,17 +124,18 @@ class ModelLoader:
 
         if (
             self._requested_backend == "auto"
-            and self._backend.name == "mlx"
+            and self._backend.name in {"mlx", "onnx"}
             and self._allow_fallback
         ):
-            self._factory_error = "MLX не загрузился"
+            failed_name = self._backend.name.upper()
+            self._factory_error = f"{failed_name} не загрузился"
             if self._backend is not None:
                 try:
                     self._backend.unload()
                 except Exception:
                     pass
             try:
-                if self._switch_to_pytorch_fallback():
+                if self._switch_to_pytorch_fallback(failed_backend=failed_name):
                     self._sync_from_backend()
                     return True
             except Exception as exc:
@@ -191,7 +216,16 @@ class ModelLoader:
         if not self._backend.is_loaded():
             raise RuntimeError("Модель не загружена")
 
-        return self._backend.transcribe_longform(audio_path, progress_callback=progress_callback)
+        try:
+            return self._backend.transcribe_longform(
+                audio_path,
+                progress_callback=progress_callback,
+            )
+        finally:
+            # ONNX backend может подменить сессию на CPU прямо во время
+            # inference. Без ресинка loader держал бы ссылку на упавшую
+            # сессию и показывал её provider в диагностике.
+            self._sync_from_backend()
 
     def unload(self):
         """Выгружает модель и освобождает память."""
@@ -218,6 +252,9 @@ class ModelLoader:
         active = self.backend_name
         segmentation_mode = None
         segmentation_fallback_reason = None
+        provider = None
+        quantization = None
+        provider_fallback_reason = None
 
         if self._backend is not None:
             try:
@@ -228,6 +265,13 @@ class ModelLoader:
                 segmentation_fallback_reason = getattr(
                     capabilities,
                     "segmentation_fallback_reason",
+                    None,
+                )
+                provider = getattr(capabilities, "provider", None)
+                quantization = getattr(capabilities, "quantization", None)
+                provider_fallback_reason = getattr(
+                    capabilities,
+                    "provider_fallback_reason",
                     None,
                 )
             except Exception:
@@ -241,6 +285,10 @@ class ModelLoader:
             "device": device or "N/A",
             "segmentation_mode": segmentation_mode,
             "segmentation_fallback_reason": segmentation_fallback_reason,
+            "requested_provider": self._onnx_provider,
+            "provider": provider,
+            "quantization": quantization,
+            "provider_fallback_reason": provider_fallback_reason,
             "cache_root": self._bundle_download_root,
             "repo": self._mlx_model_repo,
             "loader_loaded": self.is_loaded(),
@@ -262,3 +310,12 @@ class ModelLoader:
         """Переконфигурировать backend перед следующей загрузкой."""
         requested = (requested_backend or ASR_BACKEND).strip().lower() or ASR_BACKEND
         self._apply_requested_backend(requested)
+
+    def configure_onnx_runtime(self, *, provider: str) -> None:
+        """Выбрать ONNX Runtime provider для следующей загрузки модели."""
+        selected = (provider or "auto").strip().lower() or "auto"
+        if selected not in {"auto", "cpu", "cuda", "tensorrt", "coreml", "directml"}:
+            raise ValueError(f"Unsupported ONNX provider: {selected}")
+        if selected != self._onnx_provider:
+            self._onnx_provider = selected
+            self.unload()

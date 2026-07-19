@@ -294,4 +294,8 @@ def stitch_overlapping_text(previous: str, current: str) -> tuple[str, str, int]
         cut = len(current)
     trimmed = current[cut:].lstrip(" \t\r\n,.;:!?…—-")
     cleaned_previous = _TRAILING_CONTINUATION_RE.sub("", previous).rstrip()
-    return cleaned_previous, trimmed, overlap
+    # Третьим значением возвращается число слов, реально удалённых из текста, а
+    # не число совпавших: при вставке между совпавшими блоками из текста уходят
+    # ещё и слова вставки. Потребители режут этим значением список words, и
+    # рассинхрон приводил к дублю слова на стыке либо к потере таймкодов.
+    return cleaned_previous, trimmed, trim_words

@@ -17,7 +17,7 @@ from ...config import (
 )
 from .chunking import AudioChunk, plan_audio_chunks, stitch_overlapping_text
 from .types import BackendCapabilities, TranscriptionSegment, TranscriptionWord
-from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError
+from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
 
 
 class PyTorchBackend:
@@ -276,7 +276,7 @@ class PyTorchBackend:
 
         hf_token = os.getenv("HF_TOKEN", "").strip() or None
         if self.segmentation_strategy == "vad":
-            vad_device = ASR_VAD_DEVICE
+            vad_device = resolve_vad_device(ASR_VAD_DEVICE)
             token_fingerprint = hashlib.sha256((hf_token or "").encode()).digest()
             segmenter_key = (token_fingerprint, vad_device)
             try:

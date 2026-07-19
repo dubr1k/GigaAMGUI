@@ -316,6 +316,42 @@ def test_speakers_spinbox_auto_value():
     window.close()
 
 
+def test_desktop_gui_selects_and_persists_onnx_coreml(monkeypatch):
+    window = _new_window()
+    monkeypatch.setattr(
+        "src.gui.app_qt.ASRBackendDialog.pick_configuration",
+        lambda *args, **kwargs: ("onnx", "coreml"),
+    )
+
+    window._select_asr_backend()
+
+    assert window.model_loader.requested_backend == "onnx"
+    assert window.model_loader.requested_provider == "coreml"
+    assert window.user_settings.get_value("asr_backend") == "onnx"
+    assert window.user_settings.get_value("onnx_provider") == "coreml"
+    window.close()
+
+
+def test_desktop_gui_selects_and_persists_large_ctc(monkeypatch):
+    from PyQt6.QtWidgets import QInputDialog
+
+    window = _new_window()
+    monkeypatch.setattr(
+        QInputDialog,
+        "getItem",
+        lambda *args, **kwargs: (
+            "GigaAM Multilingual Large CTC (600M) [multilingual_large_ctc]",
+            True,
+        ),
+    )
+
+    window._select_asr_model()
+
+    assert window.model_loader.requested_model == "multilingual_large_ctc"
+    assert window.user_settings.get_value("asr_model") == "multilingual_large_ctc"
+    window.close()
+
+
 def test_audio_preprocessing_mode_defaults_translates_and_persists():
     window = _new_window()
     assert window.combo_audio_preprocessing.currentData() == AUDIO_PREPROCESSING_MODE

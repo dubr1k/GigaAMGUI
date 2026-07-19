@@ -52,9 +52,10 @@ def test_process_transcription_persists_progress_metadata_from_events(monkeypatc
             estimated_conversion_ratio=0.05,
             estimated_transcription_ratio=0.95,
             enable_diarization=False,
-            num_speakers=None,
-            output_formats=None,
-            audio_preprocessing_mode="auto",
+                num_speakers=None,
+                output_formats=None,
+                diarization_backend="pyannote",
+                audio_preprocessing_mode="auto",
         ):
             assert audio_preprocessing_mode == "auto"
             if self.progress_callback:

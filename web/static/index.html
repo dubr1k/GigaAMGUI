@@ -82,9 +82,43 @@
             <div id="file-list" class="file-list hidden"></div>
         </div>
 
-        <!-- 2. Диаризация -->
+        <!-- 2. ASR runtime -->
         <div class="card">
-            <h2 class="card-title" data-i18n="cardDiarization">2. Диаризация спикеров</h2>
+            <h2 class="card-title" data-i18n="cardAsr">2. Модель распознавания</h2>
+            <div class="row mt-8">
+                <label for="asrBackend" class="label" data-i18n="asrBackend">Backend:</label>
+                <select id="asrBackend" class="input input-small">
+                    <option value="auto">Auto</option>
+                    <option value="onnx">ONNX Runtime</option>
+                    <option value="mlx">MLX</option>
+                    <option value="pytorch">PyTorch</option>
+                </select>
+            </div>
+            <div class="row mt-8">
+                <label for="asrModel" class="label" data-i18n="asrModel">Модель:</label>
+                <select id="asrModel" class="input input-small">
+                    <option value="v3_e2e_rnnt">GigaAM v3 e2e RNNT</option>
+                    <option value="multilingual_ctc">Multilingual CTC (220M)</option>
+                    <option value="multilingual_large_ctc">Multilingual Large CTC (600M)</option>
+                </select>
+            </div>
+            <div class="row mt-8">
+                <label for="onnxProvider" class="label" data-i18n="onnxProvider">ONNX provider:</label>
+                <select id="onnxProvider" class="input input-small">
+                    <option value="auto">Auto</option>
+                    <option value="coreml">CoreML</option>
+                    <option value="cpu">CPU</option>
+                    <option value="cuda">CUDA</option>
+                    <option value="tensorrt">TensorRT</option>
+                    <option value="directml">DirectML</option>
+                </select>
+            </div>
+            <p class="hint" data-i18n="asrHint">Пустые серверные настройки не изменяются; выбор применяется только к новым задачам.</p>
+        </div>
+
+        <!-- 3. Диаризация -->
+        <div class="card">
+            <h2 class="card-title" data-i18n="cardDiarization">3. Диаризация спикеров</h2>
             <label class="checkbox-label">
                 <input type="checkbox" id="cb-diarization">
                 <span data-i18n="enableDiarization">Включить диаризацию спикеров</span>
@@ -93,6 +127,7 @@
                 <label for="diarization-backend" class="label" data-i18n="diarizationBackend">Движок:</label>
                 <select id="diarization-backend" class="input input-small">
                     <option value="pyannote">Pyannote 3.1</option>
+                    <option value="onnx">ONNX (PyAnnote + WeSpeaker)</option>
                     <option value="sortformer">NVIDIA Sortformer v2.1</option>
                 </select>
             </div>
@@ -103,9 +138,9 @@
             <p class="hint" data-i18n="diarizationHint">Автоматическое определение спикеров (требуется HF_TOKEN)</p>
         </div>
 
-        <!-- 3. Форматы вывода -->
+        <!-- 4. Форматы вывода -->
         <div class="card">
-            <h2 class="card-title" data-i18n="cardFormats">3. Форматы вывода</h2>
+            <h2 class="card-title" data-i18n="cardFormats">4. Форматы вывода</h2>
             <div class="formats-row">
                 <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt" checked><span>Текст (.txt)</span></label>
                 <label class="checkbox-label"><input type="checkbox" class="fmt-cb" data-fmt="txt_timecodes" checked><span>Таймкоды (_timecodes.txt)</span></label>

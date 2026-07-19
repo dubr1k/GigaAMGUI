@@ -37,6 +37,24 @@ class VadUnavailableError(RuntimeError):
     """The VAD model could not be initialized in the current runtime."""
 
 
+def resolve_vad_device(requested: str, *, torch_module=None) -> str:
+    """Resolve ``auto`` lazily so startup remains free of torch imports."""
+
+    normalized = (requested or "auto").strip().lower() or "auto"
+    if normalized != "auto":
+        return normalized
+    try:
+        torch = torch_module or __import__("torch")
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except (ImportError, AttributeError):
+        pass
+    return "cpu"
+
+
 def load_pyannote_vad_pipeline(*, token: str | None, device: str) -> VadPipeline:
     """Load segmentation-3.0 through the API exposed by the installed pyannote."""
 

@@ -8,7 +8,25 @@ from types import SimpleNamespace
 import pytest
 
 from src.core.asr import vad
-from src.core.asr.vad import PyannoteVadSegmenter, VadUnavailableError, merge_speech_regions
+from src.core.asr.vad import (
+    PyannoteVadSegmenter,
+    VadUnavailableError,
+    merge_speech_regions,
+    resolve_vad_device,
+)
+
+
+def test_auto_vad_device_prefers_mps_when_available():
+    torch_module = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+    )
+
+    assert resolve_vad_device("auto", torch_module=torch_module) == "mps"
+
+
+def test_explicit_vad_device_is_preserved_without_torch_probe():
+    assert resolve_vad_device("cpu", torch_module=object()) == "cpu"
 
 
 def test_merge_speech_regions_preserves_vad_outer_boundaries():

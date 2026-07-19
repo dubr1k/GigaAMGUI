@@ -19,11 +19,13 @@ def test_asr_health_none_loader():
     assert result["device"] == "N/A"
     assert result["loader_loaded"] is False
     assert result["active_backend"] is None
-    # ровно 11 ключей контракта
+    # Полный стабильный набор полей ASR и ONNX runtime.
     assert set(result) == {
         "requested_backend", "active_backend", "fallback_reason", "model",
         "device", "repo", "cache_root", "loader_loaded", "error",
         "segmentation_mode", "segmentation_fallback_reason",
+        "requested_provider", "provider", "quantization",
+        "provider_fallback_reason",
     }
 
 
@@ -34,6 +36,10 @@ def test_asr_health_with_diagnostics():
         "model": "v3",
         "segmentation_mode": "vad",
         "segmentation_fallback_reason": None,
+        "requested_provider": "auto",
+        "provider": "CoreMLExecutionProvider",
+        "quantization": None,
+        "provider_fallback_reason": None,
     }, True)
     result = health.asr_health(loader)
     assert result["active_backend"] == "mlx"
@@ -41,6 +47,7 @@ def test_asr_health_with_diagnostics():
     assert result["loader_loaded"] is True
     assert result["segmentation_mode"] == "vad"
     assert result["segmentation_fallback_reason"] is None
+    assert result["provider"] == "CoreMLExecutionProvider"
 
 
 def test_asr_health_device_fallback_when_empty():

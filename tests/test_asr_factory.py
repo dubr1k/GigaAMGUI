@@ -3,6 +3,7 @@
 import pytest
 
 from src.core.asr.factory import create_backend_from_config
+from src.core.asr.onnx_backend import OnnxBackend
 from src.core.asr.pytorch_backend import PyTorchBackend
 
 
@@ -38,6 +39,39 @@ def test_auto_falls_back_to_pytorch_on_non_macos(monkeypatch):
     )
     assert backend.name == "pytorch"
     assert isinstance(backend, PyTorchBackend)
+    assert reason is None
+
+
+def test_auto_keeps_pytorch_on_non_macos_until_quality_gate_passes():
+    backend, reason = create_backend_from_config(
+        requested_backend="auto",
+        model_name="v3_e2e_rnnt",
+        model_revision="v3_e2e_rnnt",
+        mlx_model_repo="repo/mlx",
+        allow_fallback=True,
+        platform_name="linux",
+        machine_name="x86_64",
+        import_probe=lambda modules: modules == ("onnx_asr", "onnxruntime"),
+    )
+
+    assert isinstance(backend, PyTorchBackend)
+    assert reason is None
+
+
+def test_explicit_onnx_creates_onnx_backend_without_import_probe():
+    backend, reason = create_backend_from_config(
+        requested_backend="onnx",
+        model_name="v3_e2e_rnnt",
+        model_revision="v3_e2e_rnnt",
+        mlx_model_repo="repo/mlx",
+        allow_fallback=False,
+        platform_name="linux",
+        machine_name="x86_64",
+        import_probe=lambda modules: False,
+    )
+
+    assert isinstance(backend, OnnxBackend)
+    assert backend.model_revision == "v3_e2e_rnnt"
     assert reason is None
 
 

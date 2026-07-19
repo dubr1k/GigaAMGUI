@@ -98,10 +98,36 @@ def _is_mlx_available() -> bool:
     )
 
 
+def _is_onnx_available() -> bool:
+    import importlib.util
+
+    try:
+        return (
+            importlib.util.find_spec("onnx_asr") is not None
+            and importlib.util.find_spec("onnxruntime") is not None
+        )
+    except (ImportError, ValueError):
+        return False
+
+
+def _saved_asr_backend() -> str:
+    """Прочитать backend без импорта Qt и torch-тяжёлой цепочки настроек."""
+    try:
+        payload = json.loads((_user_config_dir() / "user_settings.json").read_text(encoding="utf-8"))
+        backend = str(payload.get("asr_backend") or "").strip().lower() if isinstance(payload, dict) else ""
+        if backend in {"auto", "mlx", "onnx", "pytorch"}:
+            return backend
+    except (OSError, ValueError, TypeError):
+        pass
+    return (ASR_BACKEND or "auto").strip().lower()
+
+
 def _boot_requires_torch() -> bool:
-    backend = (ASR_BACKEND or "auto").strip().lower()
+    backend = _saved_asr_backend()
     if backend == "pytorch":
         return True
+    if backend == "onnx":
+        return False
     if backend == "mlx":
         return not _is_mlx_available()
     if not (sys.platform == "darwin" and platform.machine() == "arm64"):
@@ -216,15 +242,16 @@ def main():
     from src.core.asr.models import ASR_MODELS
     from src.utils.user_settings import UserSettings
     settings = UserSettings()
-    if not _torch_is_available():
+    if not settings.get_value("asr_model"):
         from PyQt6.QtWidgets import QInputDialog
 
         model_ids = list(ASR_MODELS)
         labels = [f"{ASR_MODELS[model]} [{model}]" for model in model_ids]
+        is_ru = settings.get_value("language", "ru") == "ru"
         selected, accepted = QInputDialog.getItem(
             None,
-            "Модель распознавания",
-            "Выберите модель GigaAM:" ,
+            "Модель распознавания" if is_ru else "Recognition model",
+            "Выберите модель GigaAM:" if is_ru else "Choose a GigaAM model:",
             labels,
             0,
             False,

@@ -25,6 +25,7 @@ def test_dialog_is_localized_for_russian_parent(monkeypatch):
     dialog = ASRBackendDialog(parent=parent, mlx_supported=True)
     assert dialog.windowTitle() == "Выбор движка распознавания"
     assert dialog.note_label.text().startswith("Авто:")
+    assert "ONNX" not in dialog.note_label.text()
 
 
 def test_dialog_returns_selected_backend(monkeypatch):
@@ -34,3 +35,16 @@ def test_dialog_returns_selected_backend(monkeypatch):
     assert idx >= 0
     dialog.backend_combo.setCurrentIndex(idx)
     assert dialog.selected_backend == "auto"
+
+
+def test_dialog_exposes_onnx_backend_and_independent_provider():
+    app = QApplication.instance() or QApplication([])
+    dialog = ASRBackendDialog(
+        current_backend="onnx",
+        current_provider="cuda",
+        mlx_supported=False,
+    )
+
+    assert dialog.backend_combo.findData("onnx") >= 0
+    assert dialog.selected_backend == "onnx"
+    assert dialog.selected_provider == "cuda"

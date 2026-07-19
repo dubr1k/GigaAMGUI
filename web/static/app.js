@@ -33,13 +33,18 @@ const I18N = {
         chooseFolder: 'Выбрать папку',
         dropFiles: 'Перетащите файлы сюда',
         cardFiles: '1. Выбор файлов',
-        cardDiarization: '2. Диаризация спикеров',
+        cardAsr: '2. Модель распознавания',
+        asrBackend: 'Backend:',
+        asrModel: 'Модель:',
+        onnxProvider: 'ONNX provider:',
+        asrHint: 'Выбор применяется только к новым задачам; все бэкенды остаются доступны.',
+        cardDiarization: '3. Диаризация спикеров',
         enableDiarization: 'Включить диаризацию спикеров',
         diarizationBackend: 'Движок:',
         speakersCount: 'Кол-во спикеров:',
         speakersAutoPlaceholder: 'Пусто = авто',
         diarizationHint: 'Автоматическое определение спикеров (требуется HF_TOKEN)',
-        cardFormats: '3. Форматы вывода',
+        cardFormats: '4. Форматы вывода',
         overallProgress: 'Общий прогресс',
         llmChooseFiles: 'Выбрать транскрипты',
         llmProcess: 'ОБРАБОТАТЬ',
@@ -106,13 +111,18 @@ const I18N = {
         chooseFolder: 'Choose folder',
         dropFiles: 'Drop files here',
         cardFiles: '1. File selection',
-        cardDiarization: '2. Speaker diarization',
+        cardAsr: '2. Recognition model',
+        asrBackend: 'Backend:',
+        asrModel: 'Model:',
+        onnxProvider: 'ONNX provider:',
+        asrHint: 'The selection applies only to new tasks; every backend remains available.',
+        cardDiarization: '3. Speaker diarization',
         enableDiarization: 'Enable speaker diarization',
         diarizationBackend: 'Backend:',
         speakersCount: 'Speakers count:',
         speakersAutoPlaceholder: 'Empty = auto',
         diarizationHint: 'Automatic speaker detection (HF_TOKEN required)',
-        cardFormats: '3. Output formats',
+        cardFormats: '4. Output formats',
         overallProgress: 'Overall progress',
         llmChooseFiles: 'Choose transcripts',
         llmProcess: 'PROCESS',
@@ -269,6 +279,7 @@ async function initApp() {
     setupFileSelection();
     setupDragDrop();
     setupDiarization();
+    await loadAsrOptions();
     setupFormats();
     setupStartButton();
     setupClearButton();
@@ -276,6 +287,43 @@ async function initApp() {
     setupTabs();
     setupUrlDownload();
     setupLlmTab();
+}
+
+async function loadAsrOptions() {
+    const backend = document.getElementById('asrBackend');
+    const model = document.getElementById('asrModel');
+    const provider = document.getElementById('onnxProvider');
+    const updateProvider = () => { provider.disabled = backend.value !== 'onnx'; };
+    backend.addEventListener('change', updateProvider);
+    try {
+        const res = await fetch(`${API}/asr-options`);
+        if (res.ok) {
+            const data = await res.json();
+            // Список backend зависит от платформы сервера (MLX только на
+            // macOS arm64). Статические <option> предлагали недоступный выбор.
+            if (Array.isArray(data.backends) && data.backends.length) {
+                const labels = {
+                    auto: 'Auto',
+                    onnx: 'ONNX Runtime',
+                    mlx: 'MLX',
+                    pytorch: 'PyTorch',
+                };
+                backend.innerHTML = '';
+                for (const name of data.backends) {
+                    const option = document.createElement('option');
+                    option.value = name;
+                    option.textContent = labels[name] || name;
+                    backend.appendChild(option);
+                }
+            }
+            backend.value = data.defaults.asr_backend;
+            model.value = data.defaults.asr_model;
+            provider.value = data.defaults.onnx_provider;
+        }
+    } catch (e) {
+        addLog(`${currentLang === 'ru' ? 'Настройки ASR недоступны' : 'ASR settings unavailable'}: ${e}`, 'error');
+    }
+    updateProvider();
 }
 
 async function loadDeviceInfo() {
@@ -462,11 +510,14 @@ function setupDiarization() {
 
     const updateControls = () => {
         const sortformer = backend.value === 'sortformer';
+        const onnx = backend.value === 'onnx';
         numSpeakers.disabled = !cb.checked || sortformer;
         if (sortformer) numSpeakers.value = '';
         hint.textContent = sortformer
             ? (currentLang === 'ru' ? 'NVIDIA Sortformer: автоопределение, максимум 4 спикера; нужен NeMo' : 'NVIDIA Sortformer: auto-detect, up to 4 speakers; NeMo required')
-            : t('diarizationHint');
+            : onnx
+                ? (currentLang === 'ru' ? 'ONNX: без PyTorch и HF_TOKEN; сохраняет перекрывающуюся речь' : 'ONNX: no PyTorch or HF_TOKEN; preserves overlapping speech')
+                : t('diarizationHint');
     };
 
     cb.addEventListener('change', () => {
@@ -513,6 +564,9 @@ function setupUrlDownload() {
         const diar = document.getElementById('cb-diarization').checked;
         const diarBackend = document.getElementById('diarization-backend').value;
         const ns = document.getElementById('num-speakers').value;
+        const asrBackend = document.getElementById('asrBackend').value;
+        const asrModel = document.getElementById('asrModel').value;
+        const onnxProvider = document.getElementById('onnxProvider').value;
 
         const formData = new FormData();
         formData.append('url', url);
@@ -520,6 +574,9 @@ function setupUrlDownload() {
         formData.append('enable_diarization', diar);
         formData.append('diarization_backend', diarBackend);
         formData.append('num_speakers', ns);
+        formData.append('asr_backend', asrBackend);
+        formData.append('asr_model', asrModel);
+        formData.append('onnx_provider', onnxProvider);
 
         document.getElementById('btn-download-url').disabled = true;
         document.getElementById('download-progress').classList.remove('hidden');
@@ -559,6 +616,9 @@ function setupStartButton() {
         const diar = document.getElementById('cb-diarization').checked;
         const diarBackend = document.getElementById('diarization-backend').value;
         const ns = document.getElementById('num-speakers').value;
+        const asrBackend = document.getElementById('asrBackend').value;
+        const asrModel = document.getElementById('asrModel').value;
+        const onnxProvider = document.getElementById('onnxProvider').value;
 
         const formData = new FormData();
         selectedFiles.forEach(f => formData.append('files', f));
@@ -566,6 +626,9 @@ function setupStartButton() {
         formData.append('enable_diarization', diar);
         formData.append('diarization_backend', diarBackend);
         formData.append('num_speakers', ns);
+        formData.append('asr_backend', asrBackend);
+        formData.append('asr_model', asrModel);
+        formData.append('onnx_provider', onnxProvider);
 
         document.getElementById('btn-start').disabled = true;
         document.getElementById('btn-start').textContent = t('uploadInProgress');

@@ -1,0 +1,13 @@
+# Альтернатива CPU-пакету onnxruntime из requirements.txt для NVIDIA CUDA.
+# Перед установкой удалите CPU-дистрибутив:
+#   python -m pip uninstall -y onnxruntime
+#   python -m pip install -r requirements-onnx-gpu.txt
+#
+# ВНИМАНИЕ: gigaam жёстко требует onnxruntime==1.23.*, поэтому после этой
+# установки `pip check` покажет нарушенную зависимость — это ожидаемо, оба
+# дистрибутива ставят один и тот же каталог onnxruntime/. Из этого следует
+# главное: повторный `pip install -r requirements.txt` вернёт CPU-колесо
+# поверх GPU-файлов, и ONNX_PROVIDER=auto молча уедет на CPU без ошибки.
+# После любой синхронизации окружения проверяйте провайдер:
+#   python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+onnxruntime-gpu==1.23.2

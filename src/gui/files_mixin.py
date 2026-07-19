@@ -143,7 +143,9 @@ class FilesMixin:
 
     def _update_diarization_backend_controls(self):
         is_sortformer = self.diarization_backend == "sortformer"
-        self.btn_hf_token.setEnabled(not is_sortformer and not self.is_processing)
+        is_pyannote = self.diarization_backend == "pyannote"
+        is_onnx = self.diarization_backend == "onnx"
+        self.btn_hf_token.setEnabled(is_pyannote and not self.is_processing)
         self.entry_num_speakers.setEnabled(
             self.enable_diarization and not is_sortformer and not self.is_processing
         )
@@ -153,6 +155,11 @@ class FilesMixin:
                 "NVIDIA Sortformer: auto-detect, up to 4 speakers; NeMo required",
             )
             if is_sortformer
+            else self._t(
+                "ONNX: без PyTorch и HF_TOKEN; поддерживает известное число спикеров",
+                "ONNX: no PyTorch or HF_TOKEN; supports a known speaker count",
+            )
+            if is_onnx
             else self._t(
                 "Pyannote: автоопределение спикеров (требуется HF_TOKEN)",
                 "Pyannote: automatic speaker detection (HF_TOKEN required)",

@@ -39,11 +39,13 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты проекта
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, SUPPORTED_FORMATS
+from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.services import file_policy, task_store, transcription_service
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
+from src.utils.diarization import normalize_diarization_backend
 from src.utils.logger import setup_logger
 from src.utils.output_naming import find_result_file, output_filename
 from src.utils.processing_stats import ProcessingStats
@@ -264,9 +266,29 @@ def _fsync_path(path: Path):
         os.close(fd)
 
 
-def _register_task(task_id: str, filename: str, file_size: int):
+def _register_task(
+    task_id: str,
+    filename: str,
+    file_size: int,
+    asr_selection: transcription_service.AsrSelection | None = None,
+    *,
+    enable_diarization: bool = False,
+    diarization_backend: str = "pyannote",
+    num_speakers: int | None = None,
+):
     """Создаёт запись о задаче в хранилище"""
-    tasks_storage[task_id] = task_store.new_task_record(task_id, filename, file_size)
+    extra = asr_selection.as_dict() if asr_selection is not None else {}
+    extra.update({
+        "enable_diarization": enable_diarization,
+        "diarization_backend": diarization_backend,
+        "num_speakers": num_speakers,
+    })
+    tasks_storage[task_id] = task_store.new_task_record(
+        task_id,
+        filename,
+        file_size,
+        extra=extra,
+    )
 
 
 async def _save_upload(file: UploadFile, request: Request) -> tuple:
@@ -375,6 +397,13 @@ def restore_tasks_from_results():
                 'progress_indeterminate': False,
                 'filename': meta['filename'],
                 'file_size': meta.get('file_size', 0),
+                'asr_backend': meta.get('asr_backend'),
+                'asr_model': meta.get('asr_model'),
+                'onnx_provider': meta.get('onnx_provider'),
+                'asr_diagnostics': meta.get('asr_diagnostics', {}),
+                'enable_diarization': meta.get('enable_diarization', False),
+                'diarization_backend': meta.get('diarization_backend', 'pyannote'),
+                'num_speakers': meta.get('num_speakers'),
                 'message': 'Задача восстановлена из результатов при запуске API'
             }
             restored_count += 1
@@ -461,7 +490,15 @@ async def _cleanup_loop():
                 logger.error(f"Ошибка в цикле очистки задач: {e}")
 
 
-async def process_transcription(task_id: str, file_path: Path, filename: str):
+async def process_transcription(
+    task_id: str,
+    file_path: Path,
+    filename: str,
+    asr_selection: transcription_service.AsrSelection | None = None,
+    enable_diarization: bool = False,
+    diarization_backend: str = "pyannote",
+    num_speakers: int | None = None,
+):
     """
     Фоновая обработка транскрибации
 
@@ -470,6 +507,11 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
         file_path: путь к файлу
         filename: имя файла
     """
+    # Проверка loader-а живёт внутри try ниже: подняв её сюда, мы бы убили
+    # фоновую задачу до создания обработчика ошибок, и запись в tasks_storage
+    # навсегда осталась бы в статусе pending.
+    request_loader = model_loader
+    owns_loader = False
     async with processing_semaphore:
         try:
             # Файл уже записан и fsync-нут в _save_upload до планирования задачи —
@@ -552,9 +594,26 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 task['total_seconds'] = total_seconds
                 task['progress_indeterminate'] = stage_progress is None
 
+            if model_loader is None:
+                raise RuntimeError("ASR model loader не инициализирован")
+            if asr_selection is not None:
+                request_loader, owns_loader = transcription_service.acquire_request_model_loader(
+                    model_loader,
+                    asr_selection,
+                    loader_factory=ModelLoader,
+                )
+            if owns_loader:
+                loop = asyncio.get_running_loop()
+                loaded = await loop.run_in_executor(
+                    None,
+                    lambda: request_loader.load_model(logger=lambda msg: logger.info(f"[{task_id}] {msg}")),
+                )
+                if not loaded:
+                    raise RuntimeError("Не удалось загрузить выбранный ASR backend")
+
             # Процессор
             processor = transcription_service.build_processor(
-                model_loader,
+                request_loader,
                 stats_manager,
                 logger=lambda msg: logger.debug(f"[{task_id}] {msg}"),
                 progress_callback=progress_callback,
@@ -572,7 +631,10 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     0,
                     1,
                     filename,  # Передаем оригинальное имя файла
+                    enable_diarization=enable_diarization,
+                    num_speakers=num_speakers,
                     output_formats=['txt', 'txt_timecodes'],
+                    diarization_backend=diarization_backend,
                     audio_preprocessing_mode=AUDIO_PREPROCESSING_MODE,
                 )
             )
@@ -595,6 +657,11 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     transcription_timecoded = await f.read()
 
             # Обновляем задачу (если она ещё существует)
+            asr_diagnostics = (
+                request_loader.diagnostics()
+                if hasattr(request_loader, "diagnostics")
+                else {}
+            )
             if task_id in tasks_storage:
                 tasks_storage[task_id].update({
                     'status': 'completed',
@@ -610,6 +677,10 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     'processing_time': result['total_time'],
                     'media_duration': result.get('media_duration', 0),
                     'audio_preprocessing': result.get('audio_preprocessing'),
+                    'asr_diagnostics': asr_diagnostics,
+                    'enable_diarization': enable_diarization,
+                    'diarization_backend': diarization_backend,
+                    'num_speakers': num_speakers,
                     'message': 'Транскрибация успешно завершена'
                 })
 
@@ -624,6 +695,11 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                     'created_at': task.get('created_at'),
                     'started_at': task.get('started_at'),
                     'completed_at': task.get('completed_at'),
+                    **(asr_selection.as_dict() if asr_selection is not None else {}),
+                    'asr_diagnostics': asr_diagnostics,
+                    'enable_diarization': enable_diarization,
+                    'diarization_backend': diarization_backend,
+                    'num_speakers': num_speakers,
                 })
             except OSError as meta_err:
                 logger.debug(f"[{task_id}] Не удалось сохранить meta.json: {meta_err}")
@@ -647,6 +723,8 @@ async def process_transcription(task_id: str, file_path: Path, filename: str):
                 tasks_storage[task_id].update(update)
 
         finally:
+            if owns_loader and request_loader is not None:
+                request_loader.unload()
             # Удаляем загруженный файл только после успешной обработки
             # (при ошибке файл может понадобиться для повторной попытки)
             task_status = tasks_storage.get(task_id, {}).get('status', 'unknown')
@@ -804,6 +882,22 @@ async def health_check():
     }
 
 
+@app.get(
+    "/api/v1/asr/options",
+    dependencies=[Depends(verify_api_key)],
+)
+async def get_asr_options():
+    if model_loader is None:
+        raise HTTPException(status_code=503, detail="ASR model loader не инициализирован")
+    return {
+        "backends": transcription_service.available_asr_backends(),
+        "models": ASR_MODELS,
+        "onnx_providers": list(transcription_service.ONNX_PROVIDERS),
+        "defaults": transcription_service.normalize_asr_selection(model_loader).as_dict(),
+        "active": model_loader.diagnostics(),
+    }
+
+
 
 
 @app.post(
@@ -816,7 +910,13 @@ async def health_check():
 async def upload_file(
     request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(..., description="Аудио или видео файл")
+    file: UploadFile = File(..., description="Аудио или видео файл"),
+    asr_backend: str | None = Query(None),
+    asr_model: str | None = Query(None),
+    onnx_provider: str | None = Query(None),
+    enable_diarization: bool = Query(False),
+    diarization_backend: str = Query("pyannote"),
+    num_speakers: int | None = Query(None, ge=1),
 ):
     """
     Загрузить файл для транскрибации
@@ -827,12 +927,48 @@ async def upload_file(
 
     Возвращает task_id для проверки статуса и получения результата.
     """
+    try:
+        asr_selection = transcription_service.normalize_asr_selection(
+            model_loader,
+            backend=asr_backend,
+            model=asr_model,
+            onnx_provider=onnx_provider,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        diarization_backend = normalize_diarization_backend(diarization_backend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if enable_diarization and diarization_backend == "sortformer" and num_speakers is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="NVIDIA Sortformer определяет число спикеров автоматически",
+        )
+
     # Валидация, сохранение и проверка файла (HTTPException пробрасывается с корректным кодом)
     task_id, file_path, filename, file_size = await _save_upload(file, request)
 
     # Создаем задачу и запускаем обработку в фоне
-    _register_task(task_id, filename, file_size)
-    background_tasks.add_task(process_transcription, task_id, file_path, filename)
+    _register_task(
+        task_id,
+        filename,
+        file_size,
+        asr_selection,
+        enable_diarization=enable_diarization,
+        diarization_backend=diarization_backend,
+        num_speakers=num_speakers,
+    )
+    background_tasks.add_task(
+        process_transcription,
+        task_id,
+        file_path,
+        filename,
+        asr_selection,
+        enable_diarization,
+        diarization_backend,
+        num_speakers,
+    )
 
     logger.info(f"Создана задача {task_id}: {filename} ({file_size/1024/1024:.1f} MB)")
 
@@ -855,7 +991,13 @@ async def upload_file(
 async def upload_files_batch(
     request: Request,
     background_tasks: BackgroundTasks,
-    files: list[UploadFile] = File(..., description="Список аудио или видео файлов")
+    files: list[UploadFile] = File(..., description="Список аудио или видео файлов"),
+    asr_backend: str | None = Query(None),
+    asr_model: str | None = Query(None),
+    onnx_provider: str | None = Query(None),
+    enable_diarization: bool = Query(False),
+    diarization_backend: str = Query("pyannote"),
+    num_speakers: int | None = Query(None, ge=1),
 ):
     """
     Загрузить несколько файлов для транскрибации
@@ -867,6 +1009,25 @@ async def upload_files_batch(
 
     Возвращает список task_id для проверки статуса каждого файла.
     """
+
+    try:
+        asr_selection = transcription_service.normalize_asr_selection(
+            model_loader,
+            backend=asr_backend,
+            model=asr_model,
+            onnx_provider=onnx_provider,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        diarization_backend = normalize_diarization_backend(diarization_backend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if enable_diarization and diarization_backend == "sortformer" and num_speakers is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="NVIDIA Sortformer определяет число спикеров автоматически",
+        )
 
     # Проверка количества файлов
     if len(files) > 10:
@@ -887,8 +1048,25 @@ async def upload_files_batch(
         # Валидация, сохранение и проверка файла (общий хелпер; HTTPException пробрасывается)
         task_id, file_path, filename, file_size = await _save_upload(file, request)
 
-        _register_task(task_id, filename, file_size)
-        background_tasks.add_task(process_transcription, task_id, file_path, filename)
+        _register_task(
+            task_id,
+            filename,
+            file_size,
+            asr_selection,
+            enable_diarization=enable_diarization,
+            diarization_backend=diarization_backend,
+            num_speakers=num_speakers,
+        )
+        background_tasks.add_task(
+            process_transcription,
+            task_id,
+            file_path,
+            filename,
+            asr_selection,
+            enable_diarization,
+            diarization_backend,
+            num_speakers,
+        )
 
         logger.info(f"Создана задача {task_id}: {filename} ({file_size/1024/1024:.1f} MB)")
 

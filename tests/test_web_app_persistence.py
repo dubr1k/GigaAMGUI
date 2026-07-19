@@ -80,6 +80,18 @@ def test_web_frontend_posts_selected_diarization_backend():
     assert "formData.append('diarization_backend', diarBackend)" in javascript
 
 
+def test_web_frontend_posts_selected_asr_runtime():
+    html = (web_app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    javascript = (web_app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="asrBackend"' in html
+    assert 'id="asrModel"' in html
+    assert 'id="onnxProvider"' in html
+    assert "formData.append('asr_backend', asrBackend)" in javascript
+    assert "formData.append('asr_model', asrModel)" in javascript
+    assert "formData.append('onnx_provider', onnxProvider)" in javascript
+
+
 def test_restore_marks_active_task_failed_and_preserves_user(web_state):
     # Given: сервер был остановлен, пока пользовательская задача была в обработке.
     web_app.save_json_atomic(str(web_app.TASKS_INDEX_PATH), {"task-alice": _task("task-alice", "alice", "processing")})
@@ -220,6 +232,9 @@ def test_startup_tombstone_cleanup_prevents_deleted_task_restore(web_state):
 def test_health_includes_asr_and_runtime(web_state, monkeypatch):
     class _FakeModelLoader:
         device = "cpu"
+        requested_backend = "pytorch"
+        requested_model = "v3_e2e_rnnt"
+        requested_provider = "auto"
 
         def load_model(self, logger=None):
             return True
@@ -251,3 +266,7 @@ def test_health_includes_asr_and_runtime(web_state, monkeypatch):
         assert payload["asr"]["active_backend"] == "pytorch"
         assert payload["runtime"]["platform"]
         assert payload["runtime"]["machine"]
+
+        options = asyncio.run(web_app.get_asr_options(user="test-user"))
+        assert set(options["backends"]) == {"auto", "onnx", "mlx", "pytorch"}
+        assert options["defaults"]["asr_backend"] == "pytorch"

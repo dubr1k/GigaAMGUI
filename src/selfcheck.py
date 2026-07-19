@@ -19,6 +19,8 @@ from pathlib import Path
 # Порядок важен: torchvision тянет PIL.ImageEnhance (это и был #19),
 # torchmetrics тянет torchvision, pyannote тянет всё лестницей.
 _CHAIN = [
+    "onnxruntime",
+    "onnx_asr",
     "PIL.ImageEnhance",
     "PIL.ImageOps",
     "torchvision",
