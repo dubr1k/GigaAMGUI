@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Callable, Iterable
 
 from src.core.asr.models import ONNX_ASR_MODELS, onnx_model_name, validate_asr_model
@@ -14,6 +15,17 @@ from src.core.asr.onnx_provider import (
 )
 
 DEFAULT_ONNX_MODELS = tuple(ONNX_ASR_MODELS)
+
+
+def force_utf8_output() -> None:
+    """Не дать кириллице уронить скрипт на консоли Windows.
+
+    По умолчанию там cp1252, и первое же сообщение о загруженной модели
+    падает UnicodeEncodeError — уже после того, как модель успешно скачана.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def download_onnx_models(
@@ -111,6 +123,7 @@ def download_pytorch_models() -> tuple[list[str], list[str]]:
 
 
 def main() -> int:
+    force_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
     # Значения по умолчанию берём из конфигурации: иначе модели уезжали в
     # HF-кэш, а рантайм искал их в ONNX_MODEL_DIR и качал заново.

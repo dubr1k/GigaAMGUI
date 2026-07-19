@@ -128,6 +128,22 @@ def test_offline_smoke_refuses_a_build_without_bundled_models():
     assert "Офлайн-сборка должна умолчанием выбирать onnx" in entrypoint
 
 
+def test_builder_survives_a_windows_console(tmp_path):
+    """Консоль Windows — cp1252, и кириллица в выводе роняла сборку моделей."""
+    import subprocess
+
+    environment = dict(os.environ, PYTHONIOENCODING="cp1252")
+    result = subprocess.run(
+        [sys.executable, str(BUILDER_PATH), "--skip-download", "--output", str(tmp_path)],
+        capture_output=True,
+        env=environment,
+    )
+
+    # Кэш приложения в тестовой среде может быть пуст — важно, что падение
+    # не про кодировку.
+    assert b"UnicodeEncodeError" not in result.stderr
+
+
 def test_ci_gates_offline_bundle_size():
     """2 ГБ — жёсткий предел ассета GitHub Release, за ним публикация падает."""
     text = WORKFLOW_PATH.read_text(encoding="utf-8")

@@ -85,6 +85,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from download_models import force_utf8_output
+
+    force_utf8_output()
+
     if not args.skip_download:
         fetch_models(args.provider)
 
