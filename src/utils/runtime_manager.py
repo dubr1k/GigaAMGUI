@@ -152,6 +152,37 @@ def hf_cache_dir() -> Path:
     return base_dir() / "hf"
 
 
+def bundled_hf_cache_dir(frozen: bool | None = None) -> Path | None:
+    """Кэш моделей, положенный рядом со сборкой в офлайн-варианте релиза.
+
+    Офлайн-сборка везёт модели папкой ``models/hf`` рядом с исполняемым файлом,
+    а не внутри него: в onefile-бинарнике их пришлось бы распаковывать во
+    временный каталог при каждом запуске. Папка обычная и доступна на запись,
+    поэтому докачка остальных моделей идёт туда же.
+    """
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    if not frozen:
+        return None
+
+    executable = Path(sys.executable).resolve()
+    candidates = [executable.parent]
+    if sys.platform == "darwin":
+        parents = executable.parents
+        if len(parents) > 3 and parents[2].name.endswith(".app"):
+            # Рядом с самим .app и внутри Contents/Resources.
+            candidates.extend((parents[3], parents[1] / "Resources"))
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass))
+
+    for candidate in candidates:
+        hub = candidate / "models" / "hf" / "hub"
+        if hub.is_dir() and any(hub.iterdir()):
+            return hub.parent
+    return None
+
+
 def _runtimes_root() -> Path:
     return base_dir() / "torch"
 

@@ -110,8 +110,10 @@ def _setup_huggingface_cache():
     # Если HF_HOME не задан явно — используем общий кэш приложения.
     if 'HF_HOME' not in os.environ:
         try:
-            from .utils.runtime_manager import hf_cache_dir
-            hf_dir = hf_cache_dir()
+            from .utils.runtime_manager import bundled_hf_cache_dir, hf_cache_dir
+            # Офлайн-сборка везёт модели папкой рядом с собой: без этой ветки
+            # приложение полезло бы за ними в сеть, хотя они уже лежат рядом.
+            hf_dir = bundled_hf_cache_dir() or hf_cache_dir()
         except Exception:
             hf_dir = Path("C:/GigaAMGUICash/hf")
         try:

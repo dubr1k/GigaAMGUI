@@ -27,18 +27,21 @@ jobs:
           - os: windows-latest
             label: Windows x64
             asset: GigaAMTranscriber-windows-x64.exe
+            offline_asset: GigaAMTranscriber-windows-x64-offline.zip
             built: dist/GigaAMTranscriber_portable.exe
             torch_index: "--index-url https://download.pytorch.org/whl/cpu"
 
           - os: macos-14
             label: macOS arm64
             asset: GigaAMTranscriber-macos-arm64
+            offline_asset: GigaAMTranscriber-macos-arm64-offline.zip
             built: dist/GigaAMTranscriber_portable
             torch_index: ""
 
           - os: ubuntu-latest
             label: Linux x64
             asset: GigaAMTranscriber-linux-x64
+            offline_asset: GigaAMTranscriber-linux-x64-offline.zip
             built: dist/GigaAMTranscriber_portable
             torch_index: "--index-url https://download.pytorch.org/whl/cpu"
 
@@ -159,6 +162,56 @@ jobs:
         if: runner.os != 'Windows'
         run: chmod +x "out/${{ matrix.asset }}"
 
+      # Офлайн-вариант: тот же бинарник плюс папка models рядом с ним. Внутрь
+      # onefile модели не вшиваем — иначе 884 МБ распаковывались бы во временный
+      # каталог при каждом запуске.
+      - name: Assemble offline bundle
+        shell: bash
+        run: |
+          python scripts/build_offline_models.py --output offline/models/hf
+          cp "out/${{ matrix.asset }}" "offline/${{ matrix.asset }}"
+
+      - name: Archive offline bundle (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p out
+          chmod +x "offline/${{ matrix.asset }}"
+          (cd offline && zip -qr "../out/${{ matrix.offline_asset }}" .)
+
+      - name: Archive offline bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Compress-Archive -Path offline/* -DestinationPath "out/${{ matrix.offline_asset }}" -Force
+
+      - name: Check offline bundle size
+        shell: bash
+        run: |
+          ARCHIVE="out/${{ matrix.offline_asset }}"
+          ARCHIVE_BYTES=$(python -c "import os,sys; print(os.path.getsize(sys.argv[1]))" "$ARCHIVE")
+          MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+          echo "офлайн-архив: $((ARCHIVE_BYTES / 1024 / 1024)) МБ"
+          test "$ARCHIVE_BYTES" -lt "$MAX_RELEASE_ASSET_BYTES" || {
+            echo "Офлайн-архив слишком велик для GitHub Release: $ARCHIVE_BYTES байт"
+            exit 1
+          }
+
+      - name: Upload offline artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.offline_asset }}
+          path: out/${{ matrix.offline_asset }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Attach offline bundle to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/${{ matrix.offline_asset }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -260,3 +313,40 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.archive.outputs.path }}
+
+      # Офлайн-вариант: тот же .app плюс папка models рядом с ним. Внутрь
+      # бандла модели не кладём, чтобы не ломать подпись при докачке остальных.
+      - name: Archive offline full app
+        id: archive_offline
+        shell: bash
+        run: |
+          python scripts/build_offline_models.py --output offline/models/hf
+          ditto dist/GigaAMTranscriber.app offline/GigaAMTranscriber.app
+
+          SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
+          ARCHIVE="out/GigaAMTranscriber-macos-app-offline-${SAFE_REF_NAME}.zip"
+          mkdir -p out
+          ditto -c -k --sequesterRsrc offline "$ARCHIVE"
+          unzip -tq "$ARCHIVE"
+          ARCHIVE_BYTES=$(stat -f%z "$ARCHIVE")
+          MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+          test "$ARCHIVE_BYTES" -lt "$MAX_RELEASE_ASSET_BYTES" || {
+            echo "Офлайн-архив слишком велик для GitHub Release: $ARCHIVE_BYTES байт"
+            exit 1
+          }
+          echo "path=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload offline full app artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive_offline.outputs.name }}
+          path: ${{ steps.archive_offline.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Attach offline full app to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.archive_offline.outputs.path }}

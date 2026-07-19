@@ -11,6 +11,7 @@ scripts/*
 !scripts/__init__.py
 !scripts/benchmark_asr_backends.py
 !scripts/benchmark_diarization_backends.py
+!scripts/build_offline_models.py
 *.py[cod]
 *$py.class
 *.so
