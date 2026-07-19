@@ -9,8 +9,14 @@ from collections.abc import Callable
 
 from ...config import ASR_SEGMENTATION_MODE, ASR_VAD_DEVICE
 from .chunking import AudioChunk, plan_audio_chunks, stitch_overlapping_text
+from .token_timestamps import tokens_to_words
 from .types import BackendCapabilities, TranscriptionSegment
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
+
+# Conv1dSubsampling энкодера — два Conv1d со stride 2, то есть 4 кадра mel на кадр выхода.
+_ENCODER_SUBSAMPLING = 4
+# Тот же предел на число символов в кадре, что и в greedy-цикле gigaam_mlx.
+_MAX_SYMBOLS_PER_FRAME = 10
 
 
 class MLXBackend:
@@ -110,12 +116,14 @@ class MLXBackend:
             if end < start:
                 end = start
 
-            segments.append(
-                {
-                    "transcription": text,
-                    "boundaries": (start, end),
-                }
-            )
+            segment: TranscriptionSegment = {
+                "transcription": text,
+                "boundaries": (start, end),
+            }
+            words = (item or {}).get("words")
+            if words:
+                segment["words"] = words
+            segments.append(segment)
 
         return segments
 
@@ -263,6 +271,84 @@ class MLXBackend:
             )
         return chunks
 
+    def _frame_seconds(self) -> float:
+        """Длительность одного кадра энкодера в секундах."""
+        audio = getattr(self._gigaam_mlx, "audio", None)
+        hop = float(getattr(audio, "HOP_LENGTH", 160))
+        sample_rate = float(getattr(audio, "SAMPLE_RATE", 16000))
+        if hop <= 0.0 or sample_rate <= 0.0:
+            return 0.0
+        return hop / sample_rate * _ENCODER_SUBSAMPLING
+
+    def _decode_with_frames(self, encoded, seq_len, mx) -> tuple[list[int], list[int]] | None:
+        """Greedy RNNT-декодирование, запоминающее кадр эмиссии каждого токена.
+
+        RNNT кадрово-синхронный, и индекс кадра уже есть в самом цикле, но
+        ``gigaam_mlx.decode`` возвращает только токены — поэтому цикл повторён
+        здесь. Модели без RNNT-головы обслуживает штатный ``model.decode``.
+        """
+        model = self.model
+        decoder = getattr(model, "decoder", None)
+        joint = getattr(model, "joint", None)
+        blank_id = getattr(decoder, "blank_id", None)
+        if getattr(model, "model_type", None) != "rnnt" or joint is None or blank_id is None:
+            return None
+
+        enc = encoded[0]
+        tokens: list[int] = []
+        frames: list[int] = []
+        state = None
+        last_label = None
+        for frame in range(int(seq_len)):
+            step = enc[:, frame : frame + 1].T
+            step = mx.expand_dims(step, axis=0) if step.ndim == 2 else step
+            for _symbol in range(_MAX_SYMBOLS_PER_FRAME):
+                prediction, new_state = decoder.predict(last_label, state)
+                token = int(mx.argmax(joint(step, prediction)[0, 0, 0, :]).item())
+                if token == blank_id:
+                    break
+                tokens.append(token)
+                frames.append(frame)
+                state = new_state
+                last_label = mx.array([[token]])
+        return tokens, frames
+
+    def _words_from_frames(
+        self,
+        token_ids,
+        frames: list[int] | None,
+        *,
+        decode_start_sec: float,
+        duration: float,
+    ) -> list[dict] | None:
+        id_to_piece = getattr(self.tokenizer, "id_to_piece", None)
+        if frames is None or id_to_piece is None:
+            return None
+
+        frame_seconds = self._frame_seconds()
+        if frame_seconds <= 0.0:
+            return None
+        try:
+            pieces = [str(id_to_piece(int(token_id))) for token_id in token_ids]
+        except Exception:
+            return None
+
+        relative_words = tokens_to_words(
+            pieces,
+            [frame * frame_seconds for frame in frames],
+            duration=duration,
+        )
+        if relative_words is None:
+            return None
+        return [
+            {
+                "text": word["text"],
+                "start": round(decode_start_sec + word["start"], 9),
+                "end": round(decode_start_sec + word["end"], 9),
+            }
+            for word in relative_words
+        ]
+
     def _transcribe_in_chunks(
         self,
         audio_path: str,
@@ -297,8 +383,19 @@ class MLXBackend:
 
             encoded, seq_len = self.model.encode(mel_mx)  # type: ignore[union-attr]
             mx.eval(encoded)
-            token_ids = self.model.decode(encoded, seq_len)  # type: ignore[union-attr]
+            decoded = self._decode_with_frames(encoded, seq_len, mx)
+            if decoded is None:
+                token_ids = self.model.decode(encoded, seq_len)  # type: ignore[union-attr]
+                frames = None
+            else:
+                token_ids, frames = decoded
             text = self.tokenizer.decode(token_ids) if self.tokenizer is not None else ""
+            words = self._words_from_frames(
+                token_ids,
+                frames,
+                decode_start_sec=float(start_sample) / sample_rate,
+                duration=float(end_sample - start_sample) / sample_rate,
+            )
 
             text = str(text).strip()
             if text:
@@ -308,21 +405,28 @@ class MLXBackend:
                     and previous_group == chunk.group
                 ):
                     previous_text = result_segments[previous_result_index]["text"]
-                    previous_text, text, _overlap = stitch_overlapping_text(
+                    previous_text, text, overlap_words = stitch_overlapping_text(
                         previous_text,
                         text,
                     )
                     result_segments[previous_result_index]["text"] = previous_text
-                    if not text and _overlap:
+                    if words is not None and overlap_words:
+                        # Сшивка удалила из текста ровно overlap_words слов —
+                        # столько же надо снять с начала word-таймкодов.
+                        words = words[overlap_words:]
+                    if not text and overlap_words:
                         result_segments[previous_result_index]["end"] = float(
                             chunk.end_sec
                         )
                 if text:
-                    result_segments.append({
+                    segment: dict = {
                         "start": float(chunk.start_sec),
                         "end": float(chunk.end_sec),
                         "text": text,
-                    })
+                    }
+                    if words is not None:
+                        segment["words"] = words
+                    result_segments.append(segment)
                     previous_result_index = len(result_segments) - 1
                     previous_group = chunk.group
             else:
