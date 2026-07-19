@@ -180,6 +180,55 @@ def run_asr_model_smoke(audio_path: str) -> dict[str, object]:
         backend.unload()
 
 
+def run_offline_models_smoke(audio_path: str | None = None) -> dict[str, object]:
+    """Проверить, что офлайн-сборка работает на привезённых моделях.
+
+    Поднимает всю ONNX-цепочку — распознавание, VAD и обе модели диаризации —
+    и требует, чтобы папка моделей рядом со сборкой действительно нашлась. Без
+    такого гейта офлайн-артефакт мог бы уехать в релиз, молча продолжая ходить
+    в сеть за весами. Аудио необязательно: без него проверяется, что все модели
+    открываются локально, с ним — что цепочка ещё и считает.
+    """
+    from src.config import ASR_BACKEND, BUNDLED_MODELS_DIR, DIARIZATION_BACKEND
+    from src.core.asr.onnx_backend import OnnxBackend
+    from src.core.diarization.onnx_embeddings import OnnxSpeakerEmbeddings
+    from src.core.diarization.onnx_segmentation import OnnxSegmentation
+
+    if BUNDLED_MODELS_DIR is None:
+        raise RuntimeError("Папка моделей рядом со сборкой не найдена")
+    if ASR_BACKEND != "onnx" or DIARIZATION_BACKEND != "onnx":
+        raise RuntimeError(
+            "Офлайн-сборка должна умолчанием выбирать onnx, а выбрала "
+            f"asr={ASR_BACKEND}, diarization={DIARIZATION_BACKEND}"
+        )
+
+    report: dict[str, object] = {
+        "models_dir": str(BUNDLED_MODELS_DIR),
+        "asr_backend": ASR_BACKEND,
+        "diarization_backend": DIARIZATION_BACKEND,
+    }
+
+    backend = OnnxBackend(model="v3_e2e_rnnt")
+    if not backend.load():
+        raise RuntimeError("ONNX backend не загрузился из привезённых моделей")
+    try:
+        backend._ensure_vad_segmenter()
+        report["vad"] = backend.vad_model
+        OnnxSegmentation()._ensure_session()
+        OnnxSpeakerEmbeddings()._ensure_model()
+        report["diarization_models"] = "ok"
+
+        if audio_path:
+            segments = backend.transcribe_longform(audio_path)
+            report["segments"] = len(segments)
+            report["words"] = sum(
+                len(segment.get("words") or []) for segment in segments
+            )
+    finally:
+        backend.unload()
+    return report
+
+
 def run_media_download_smoke(url: str, target_dir: str) -> dict[str, list[str]]:
     """Exercise the bundled yt-dlp path and return downloaded files."""
     from src.utils.media_downloader import MediaDownloader
@@ -201,6 +250,17 @@ def main():
         if index + 1 >= len(sys.argv):
             raise SystemExit("--asr-model-smoke requires an audio path")
         print(json.dumps(run_asr_model_smoke(sys.argv[index + 1]), ensure_ascii=False, sort_keys=True))
+        return
+    if "--offline-models-smoke" in sys.argv:
+        index = sys.argv.index("--offline-models-smoke")
+        audio = sys.argv[index + 1] if index + 1 < len(sys.argv) else None
+        print(
+            json.dumps(
+                run_offline_models_smoke(audio),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
         return
     if "--media-download-smoke" in sys.argv:
         index = sys.argv.index("--media-download-smoke")

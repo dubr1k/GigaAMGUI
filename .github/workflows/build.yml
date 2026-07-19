@@ -171,6 +171,21 @@ jobs:
           python scripts/build_offline_models.py --output offline/models/hf
           cp "out/${{ matrix.asset }}" "offline/${{ matrix.asset }}"
 
+      # Гейт офлайн-артефакта: гоняем СОБРАННЫЙ бинарь с пустым кэшем и
+      # HF_HUB_OFFLINE=1. Если хоть одна модель не нашлась рядом, job падает —
+      # иначе «офлайн»-сборка молча ушла бы в релиз, продолжая ходить в сеть.
+      - name: Smoke-test offline bundle (no network for models)
+        shell: bash
+        timeout-minutes: 20
+        env:
+          GIGAAM_RUNTIME_DIR: ${{ runner.temp }}/gigaam_offline
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          BIN="offline/${{ matrix.asset }}"
+          chmod +x "$BIN" || true
+          "$BIN" --offline-models-smoke
+
       - name: Archive offline bundle (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
@@ -322,6 +337,13 @@ jobs:
         run: |
           python scripts/build_offline_models.py --output offline/models/hf
           ditto dist/GigaAMTranscriber.app offline/GigaAMTranscriber.app
+
+          # Тот же гейт, что и для портативных сборок: модели обязаны найтись
+          # рядом с .app, без обращения к сети.
+          env GIGAAM_RUNTIME_DIR="${RUNNER_TEMP}/gigaam_offline" \
+              HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+              offline/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber \
+              --offline-models-smoke
 
           SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
           ARCHIVE="out/GigaAMTranscriber-macos-app-offline-${SAFE_REF_NAME}.zip"

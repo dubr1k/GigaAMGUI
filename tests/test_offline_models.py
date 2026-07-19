@@ -110,6 +110,24 @@ def test_ci_publishes_offline_variant_for_every_platform():
     assert "Attach offline full app to release" in text
 
 
+def test_ci_proves_offline_bundle_needs_no_network():
+    """Гейт обязателен: без него «офлайн»-сборка молча ушла бы качать модели."""
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    entrypoint = Path("app.py").read_text(encoding="utf-8")
+
+    assert "--offline-models-smoke" in entrypoint
+    assert workflow.count("--offline-models-smoke") >= 2
+    assert 'HF_HUB_OFFLINE: "1"' in workflow
+    assert "HF_HUB_OFFLINE=1" in workflow
+
+
+def test_offline_smoke_refuses_a_build_without_bundled_models():
+    entrypoint = Path("app.py").read_text(encoding="utf-8")
+
+    assert 'raise RuntimeError("Папка моделей рядом со сборкой не найдена")' in entrypoint
+    assert "Офлайн-сборка должна умолчанием выбирать onnx" in entrypoint
+
+
 def test_ci_gates_offline_bundle_size():
     """2 ГБ — жёсткий предел ассета GitHub Release, за ним публикация падает."""
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
