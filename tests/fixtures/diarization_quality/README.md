@@ -40,18 +40,26 @@ PYTHONPATH=. python scripts/benchmark_diarization_backends.py manifest.json \
     --collar 0.25 --output sweep.json
 ```
 
-Measured on one 5-minute two-voice interview against a pyannote pseudo-reference
-(single file — indicative, not conclusive):
+Measured on two segments of the same two-voice interview against a pyannote
+pseudo-reference, collar 0.25. On both, pyannote and Sortformer independently
+agree on 2 speakers, and they disagree with each other by DER 0.070 (5 min) and
+0.067 (15 min) — that is the noise floor below which nothing here means anything.
 
-| Mode | Speakers | DER | Confusion |
-|---|---|---|---|
-| auto, threshold 0.35 | 5 | 0.111 | 0.046 |
-| auto, threshold 0.5 | 4 | 0.103 | 0.046 |
-| auto, threshold 0.6–0.8 | 3 | 0.103 | 0.046 |
-| `num_speakers=2` | 2 | 0.152 | 0.141 |
+| Mode | 5 min: speakers / DER | 15 min: speakers / DER |
+|---|---|---|
+| auto, threshold 0.35 | 5 / 0.111 | 9 / 0.128 |
+| auto, threshold 0.5 | 4 / 0.103 | 3 / 0.117 |
+| auto, threshold 0.6 and above | 3 / 0.103 | 3 / 0.117 |
+| `num_speakers=2` | 2 / 0.152 | 2 / 0.059 |
 
-Two things follow. Raising the threshold past 0.6 changes nothing, so the
-speaker over-count is bounded by the cannot-link constraint, not by the
-threshold. And forcing the speaker count fixes the count while making the
-assignment worse — the relaxed cannot-link merges the wrong pair. Neither
-conclusion should be acted on until it reproduces across a real corpus.
+One conclusion replicates: raising the threshold past ~0.5–0.6 changes nothing
+at all, so the speaker over-count is bounded by the cannot-link constraint, not
+by the threshold. Tuning the threshold further is wasted effort.
+
+The other does not. On the 5-minute segment forcing the speaker count made the
+assignment much worse (0.152 against 0.103); on the 15-minute one it was by far
+the best result measured (0.059 — better than the two reference engines agree
+with each other). Whether the forced merge picks the right pair evidently
+depends on the material, and a single file will happily support either
+conclusion. That is the whole argument for building a corpus before touching
+`clustering.py`.
