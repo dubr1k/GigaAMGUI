@@ -14,5 +14,12 @@ soundfile>=0.13.0
 librosa>=0.11.0
 pyannote.audio>=3.1.1
 
+# TUI предлагает `/backend onnx` и `/onnx-provider`, а диаризация на ONNX —
+# единственная, которой не нужны ни torch, ни токен HuggingFace. Без этих двух
+# пакетов команды есть, а выполнить их воркер не может.
+onnx-asr==0.12.0
+onnxruntime==1.23.2
+soxr>=1.0.0
+
 # GigaAM is installed separately by each bootstrap with --no-build-isolation:
 # its pinned revision still imports pkg_resources during setup.
