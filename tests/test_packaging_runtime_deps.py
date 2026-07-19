@@ -91,6 +91,32 @@ def test_docker_replaces_cpu_ort_with_gpu_distribution():
     assert "onnxruntime-gpu==1.23.2" in text
 
 
+def test_docker_installs_pinned_torch_once_before_dependency_resolution():
+    """Раньше torch приезжал дважды: как зависимость и принудительной переустановкой."""
+    text = Path("Dockerfile").read_text(encoding="utf-8")
+
+    torch_at = text.find("torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0")
+    gigaam_at = text.find("git clone https://github.com/salute-developers/GigaAM.git")
+    requirements_at = text.find("pip install --no-cache-dir -r /tmp/req.txt")
+
+    assert torch_at != -1
+    assert gigaam_at != -1
+    assert requirements_at != -1
+    assert torch_at < gigaam_at
+    assert torch_at < requirements_at
+    assert text.count("torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0") == 1
+    assert "--force-reinstall" not in text
+
+
+def test_docker_asserts_pinned_torch_survives_later_installs():
+    """Единственная установка работает только пока её никто не перебивает."""
+    text = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "assert torch.__version__ == '2.6.0+cu124'" in text
+    assert "assert torchaudio.__version__ == '2.6.0+cu124'" in text
+    assert "assert torchvision.__version__ == '0.21.0+cu124'" in text
+
+
 def test_all_specs_use_shared_runtime_dependency_contract():
     for spec in PACKAGING_DIR.glob("*.spec"):
         text = spec.read_text(encoding="utf-8")

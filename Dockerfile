@@ -31,6 +31,16 @@ RUN python -m pip install --upgrade pip "setuptools<81" wheel
 # Рабочая директория
 WORKDIR /app
 
+# Официальная согласованная тройка cu124 ставится ДО остальных зависимостей:
+# бинарные расширения torchaudio и torchvision нельзя смешивать с другим
+# релизом torch. И gigaam (torch>=2.5,<2.9), и requirements.txt
+# (torch>=2.6.0,<2.9.0) принимают 2.6.0, поэтому pip оставит её как есть.
+# Установка после них означала бы скачивание torch дважды (~1.6 ГБ впустую).
+# Слой идёт до COPY requirements.txt, чтобы правка requirements его не сбрасывала.
+RUN pip install --no-cache-dir \
+    torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 \
+    --index-url https://download.pytorch.org/whl/cu124
+
 # Копирование requirements и установка зависимостей
 COPY requirements.txt requirements-sortformer.txt /app/
 # Установка gigaam из git (без build isolation, чтобы работал pkg_resources)
@@ -53,11 +63,6 @@ RUN pip install --no-cache-dir onnxruntime-gpu==1.23.2
 RUN python -c "from importlib.metadata import distributions; names = {d.metadata['Name'].lower() for d in distributions()}; assert 'onnxruntime-gpu' in names and 'onnxruntime' not in names, sorted(n for n in names if n.startswith('onnxruntime'))"
 # Дополнительные зависимости для Web GUI
 RUN pip install --no-cache-dir itsdangerous python-multipart
-# Фиксируем официальную согласованную тройку: бинарные расширения torchaudio и
-# torchvision нельзя смешивать с другим релизом torch.
-RUN pip install --no-cache-dir --force-reinstall \
-    torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 \
-    --index-url https://download.pytorch.org/whl/cu124
 
 # NeMo значительно увеличивает образ, поэтому Sortformer включается явно:
 # docker compose build --build-arg INSTALL_SORTFORMER=1 gigaam-web
@@ -65,6 +70,17 @@ ARG INSTALL_SORTFORMER=0
 RUN if [ "$INSTALL_SORTFORMER" = "1" ]; then \
         pip install --no-cache-dir -r requirements-sortformer.txt; \
     fi
+
+# Финальный контракт окружения. Раньше согласованная тройка torch навязывалась
+# принудительной переустановкой в конце; теперь она ставится первой, поэтому
+# любой последующий шаг (gigaam, requirements, NeMo) обязан её сохранить —
+# проверяем это явно, чтобы молчаливая подмена не уехала в образ.
+RUN python -c "import torch, torchaudio, torchvision; from importlib.metadata import distributions; \
+names = {d.metadata['Name'].lower() for d in distributions()}; \
+assert torch.__version__ == '2.6.0+cu124', torch.__version__; \
+assert torchaudio.__version__ == '2.6.0+cu124', torchaudio.__version__; \
+assert torchvision.__version__ == '0.21.0+cu124', torchvision.__version__; \
+assert 'onnxruntime-gpu' in names and 'onnxruntime' not in names, sorted(n for n in names if n.startswith('onnxruntime'))"
 
 # Копирование исходного кода
 COPY . /app/
