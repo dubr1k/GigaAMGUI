@@ -33,6 +33,7 @@ class OnnxSpeakerEmbeddings:
         sample_rate: int = 16_000,
         threshold: float = 0.5,
         min_speech_seconds: float = 0.5,
+        batch_size: int = 16,
         model_factory: Callable[..., Any] | None = None,
         available_provider_probe: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
@@ -41,6 +42,7 @@ class OnnxSpeakerEmbeddings:
         self.sample_rate = sample_rate
         self.threshold = threshold
         self.min_speech_seconds = min_speech_seconds
+        self.batch_size = max(1, int(batch_size))
         self._model_factory = model_factory
         self._available_provider_probe = available_provider_probe or available_onnx_providers
         self._model: Any | None = None
@@ -69,6 +71,35 @@ class OnnxSpeakerEmbeddings:
                 model_dir=self.model_dir,
             )
         return self._model
+
+    @staticmethod
+    def _is_out_of_memory(exc: Exception) -> bool:
+        message = f"{type(exc).__name__}: {exc}".lower()
+        return "failed to allocate memory" in message or "out of memory" in message
+
+    def _embed_in_batches(self, model, waveforms: list[np.ndarray]) -> list[np.ndarray]:
+        """Считать эмбеддинги батчами, уменьшая батч при нехватке памяти.
+
+        Свободную память ускорителя нельзя узнать заранее: ORT её не отдаёт, а
+        рядом уже лежит ASR-модель. Поэтому вместо угадывания размера батча
+        ловим отказ аллокации и делим батч пополам — это работает одинаково для
+        CUDA, DirectML, CoreML и CPU.
+        """
+        batch_size = self.batch_size
+        while True:
+            chunks: list[np.ndarray] = []
+            try:
+                for start in range(0, len(waveforms), batch_size):
+                    raw = np.asarray(
+                        model.embedding(waveforms[start : start + batch_size]),
+                        dtype=np.float32,
+                    )
+                    chunks.append(raw[None, :] if raw.ndim == 1 else raw)
+                return chunks
+            except Exception as exc:
+                if batch_size <= 1 or not self._is_out_of_memory(exc):
+                    raise
+                batch_size = max(1, batch_size // 2)
 
     def extract(self, waveform: np.ndarray, segmentation: SegmentationResult) -> EmbeddingResult:
         audio = np.asarray(waveform, dtype=np.float32).reshape(-1)
@@ -108,9 +139,12 @@ class OnnxSpeakerEmbeddings:
         if not waveforms:
             embeddings = np.empty((rows, 0), dtype=np.float32)
         else:
-            raw = np.asarray(self._ensure_model().embedding(waveforms), dtype=np.float32)
-            if raw.ndim == 1:
-                raw = raw[None, :]
+            # Батчами, а не одним вызовом: preprocessor выравнивает батч по самому
+            # длинному отрезку, поэтому на 20-минутном файле один общий вызов
+            # запрашивал ~600 МБ и падал на GPU с 4 ГБ (GTX 1650, CUDA).
+            model = self._ensure_model()
+            chunks = self._embed_in_batches(model, waveforms)
+            raw = np.concatenate(chunks, axis=0) if len(chunks) > 1 else chunks[0]
             norms = np.linalg.norm(raw, axis=1, keepdims=True)
             normalized = raw / np.maximum(norms, np.finfo(np.float32).eps)
             embeddings = np.zeros((rows, normalized.shape[1]), dtype=np.float32)

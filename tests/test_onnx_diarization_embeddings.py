@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from src.core.diarization.onnx_embeddings import OnnxSpeakerEmbeddings
 from src.core.diarization.onnx_segmentation import SegmentationResult
@@ -71,6 +72,89 @@ def test_model_factory_receives_resolved_provider_chain():
     extractor.extract(np.ones(2, dtype=np.float32), segmentation)
 
     assert calls == [{"providers": ["CPUExecutionProvider"], "model_dir": None}]
+
+
+def test_embeddings_are_extracted_in_bounded_batches():
+    """Один общий вызов запрашивал ~600 МБ и падал на GPU с 4 ГБ."""
+    batches = []
+
+    class Model:
+        def embedding(self, waveforms):
+            batches.append(len(waveforms))
+            return np.tile(np.asarray([[1.0, 0.0]], dtype=np.float32), (len(waveforms), 1))
+
+    extractor = OnnxSpeakerEmbeddings(
+        model_factory=lambda **_: Model(),
+        min_speech_seconds=0.25,
+        sample_rate=4,
+        batch_size=2,
+    )
+    probabilities = [[[0.9, 0.9, 0.9]] * 2] * 3
+    segmentation = SegmentationResult(
+        probabilities=np.asarray(probabilities, dtype=np.float32),
+        window_starts=np.asarray([0.0, 0.5, 1.0], dtype=np.float64),
+        frame_step=0.25,
+        audio_duration=2.0,
+    )
+
+    result = extractor.extract(np.ones(16, dtype=np.float32), segmentation)
+
+    assert int(result.valid.sum()) == 9
+    assert batches == [2, 2, 2, 2, 1]
+    assert result.embeddings.shape == (9, 2)
+
+
+def test_batch_is_halved_when_accelerator_runs_out_of_memory():
+    """Свободную VRAM заранее не узнать, поэтому OOM ловится и батч уменьшается."""
+    attempts = []
+
+    class Model:
+        def embedding(self, waveforms):
+            attempts.append(len(waveforms))
+            if len(waveforms) > 1:
+                raise RuntimeError(
+                    "[ONNXRuntimeError] : 6 : RUNTIME_EXCEPTION : "
+                    "Failed to allocate memory for requested buffer of size 601667840"
+                )
+            return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    extractor = OnnxSpeakerEmbeddings(
+        model_factory=lambda **_: Model(),
+        min_speech_seconds=0.25,
+        sample_rate=4,
+        batch_size=4,
+    )
+    segmentation = _segmentation(
+        [[[0.9, 0.1, 0.1], [0.9, 0.1, 0.1]]], frame_step=0.25, duration=0.5
+    )
+
+    result = extractor.extract(np.ones(2, dtype=np.float32), segmentation)
+
+    assert attempts[0] == 1  # один валидный отрезок, батч не превышает его
+    assert int(result.valid.sum()) == 1
+
+
+def test_non_memory_errors_are_not_retried():
+    calls = []
+
+    class Model:
+        def embedding(self, waveforms):
+            calls.append(len(waveforms))
+            raise RuntimeError("модель повреждена")
+
+    extractor = OnnxSpeakerEmbeddings(
+        model_factory=lambda **_: Model(),
+        min_speech_seconds=0.25,
+        sample_rate=4,
+        batch_size=4,
+    )
+    segmentation = _segmentation(
+        [[[0.9, 0.1, 0.1], [0.9, 0.1, 0.1]]], frame_step=0.25, duration=0.5
+    )
+
+    with pytest.raises(RuntimeError, match="повреждена"):
+        extractor.extract(np.ones(2, dtype=np.float32), segmentation)
+    assert len(calls) == 1
 
 
 def test_only_active_speech_reaches_the_embedding_model():
