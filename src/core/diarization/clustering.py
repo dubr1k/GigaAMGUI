@@ -26,18 +26,38 @@ def _cosine_distance(left: np.ndarray, right: np.ndarray) -> np.ndarray:
         return (1.0 - left @ right).astype(np.float32)
 
 
+def _closest_active_pair(
+    centroids: np.ndarray,
+    active: np.ndarray,
+) -> tuple[int, int] | None:
+    """Ближайшая пара активных кластеров без учёта cannot-link."""
+    active_index = np.flatnonzero(active)
+    if len(active_index) < 2:
+        return None
+    subset = centroids[active_index]
+    distances = _cosine_distance(subset, subset.T)
+    np.fill_diagonal(distances, np.inf)
+    flat = int(np.argmin(distances))
+    left, right = divmod(flat, len(active_index))
+    return int(active_index[left]), int(active_index[right])
+
+
 def cluster_embeddings(
     result: EmbeddingResult,
     *,
     num_speakers: int | None = None,
-    threshold: float = 0.35,
+    threshold: float = 0.6,
 ) -> np.ndarray:
     """Cluster valid rows while forbidding two speakers from one window to merge.
 
-    Запрошенное число спикеров трактуется как пожелание: если оно недостижимо
-    (валидных строк меньше, либо cannot-link ограничения не дают слить кластеры
-    до нужного количества), возвращается ближайший достижимый разбор. Ронять
-    обработку целого файла из-за значения, выставленного в UI, нельзя.
+    Порог подобран под эмбеддинги wespeaker-voxceleb-resnet34: на реальном
+    двухголосом интервью медиана попарных дистанций около 0.35, поэтому прежнее
+    значение 0.35 резало одного спикера на несколько кластеров.
+
+    Явно заданное число спикеров выполняется всегда. Cannot-link (два локальных
+    спикера одного окна) — эвристика, и когда она заводит слияния в тупик выше
+    запрошенного количества, ограничение ослабляется: пожелание пользователя
+    важнее эвристики. Без этого запрос «2 спикера» молча возвращал 4.
     """
 
     valid_rows = np.flatnonzero(result.valid)
@@ -74,11 +94,19 @@ def cluster_embeddings(
         candidates = np.where(active, nearest_distance, np.inf)
         left = int(np.argmin(candidates))
         best = float(candidates[left])
-        if not np.isfinite(best):
-            break
-        if target is None and best > threshold:
-            break
-        right = int(nearest[left])
+        if np.isfinite(best):
+            if target is None and best > threshold:
+                break
+            right = int(nearest[left])
+        else:
+            # Разрешённых слияний не осталось: кластеры накопили общие окна.
+            # Без цели останавливаемся, с целью — ослабляем cannot-link.
+            if target is None:
+                break
+            forced = _closest_active_pair(centroids, active)
+            if forced is None:
+                break
+            left, right = forced
 
         sums[left] += sums[right]
         centroids[left] = sums[left] / max(float(np.linalg.norm(sums[left])), _EPS)
