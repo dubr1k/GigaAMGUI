@@ -350,3 +350,82 @@ def test_auto_provider_does_not_retry_user_callback_failure_on_cpu(tmp_path):
 
     assert len(calls) == 1
     assert backend.capabilities().provider == "CoreMLExecutionProvider"
+
+
+def test_segmentation_mode_defaults_to_configured_value(monkeypatch):
+    """ASR_SEGMENTATION_MODE обязан действовать и для ONNX backend."""
+    monkeypatch.setattr("src.core.asr.onnx_backend.ASR_SEGMENTATION_MODE", "fixed_chunks")
+
+    backend = OnnxBackend(
+        model_factory=lambda *args, **kwargs: _FakeTimestampModel(),
+        available_provider_probe=lambda: ("CPUExecutionProvider",),
+    )
+
+    assert backend.segmentation_strategy == "fixed_chunks"
+
+
+def test_stitched_words_stay_consistent_with_transcription(tmp_path):
+    """Текст сегмента пересобирается из слов, иначе слова и текст разъезжаются."""
+    wav_path = tmp_path / "stitch.wav"
+    sf.write(wav_path, np.zeros(25 * 16000, dtype=np.float32), 16000)
+    model = _FakeTimestampModel(
+        [
+            SimpleNamespace(
+                text="альфа бета гамма",
+                tokens=[" альфа", " бета", " гамма"],
+                timestamps=[0.1, 10.0, 11.0],
+            ),
+            SimpleNamespace(
+                text="бета гамма дельта",
+                tokens=[" бета", " гамма", " дельта"],
+                timestamps=[0.1, 1.0, 10.0],
+            ),
+        ]
+    )
+    backend = OnnxBackend(
+        segmentation_mode="overlap_chunks",
+        model_factory=lambda *args, **kwargs: model,
+        available_provider_probe=lambda: ("CPUExecutionProvider",),
+    )
+    assert backend.load()
+
+    result = backend.transcribe_longform(str(wav_path))
+
+    for segment in result:
+        words = segment.get("words")
+        if words is not None:
+            assert segment["transcription"] == " ".join(word["text"] for word in words)
+
+
+def test_failed_vad_initialization_is_not_retried_for_every_file(tmp_path):
+    """Недоступную модель VAD нельзя тянуть заново на каждом файле батча."""
+    first = tmp_path / "one.wav"
+    second = tmp_path / "two.wav"
+    for path in (first, second):
+        sf.write(path, np.zeros(16000, dtype=np.float32), 16000)
+
+    model = _FakeTimestampModel(
+        [
+            SimpleNamespace(text="текст", tokens=[" текст"], timestamps=[0.1]),
+            SimpleNamespace(text="текст", tokens=[" текст"], timestamps=[0.1]),
+        ]
+    )
+    factory_calls = []
+
+    def failing_factory(**kwargs):
+        factory_calls.append(kwargs)
+        raise RuntimeError("silero download failed")
+
+    backend = OnnxBackend(
+        segmentation_mode="vad",
+        model_factory=lambda *args, **kwargs: model,
+        available_provider_probe=lambda: ("CPUExecutionProvider",),
+        vad_segmenter_factory=failing_factory,
+    )
+    assert backend.load()
+
+    assert backend.transcribe_longform(str(first))
+    assert backend.transcribe_longform(str(second))
+
+    assert len(factory_calls) == 1
+    assert backend.capabilities().segmentation_mode == "overlap_chunks"

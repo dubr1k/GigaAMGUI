@@ -153,9 +153,9 @@ ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
 ASR_SEGMENTATION_MODE = os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
 if ASR_SEGMENTATION_MODE not in {"vad", "overlap_chunks", "fixed_chunks"}:
     ASR_SEGMENTATION_MODE = "vad"
-# Use the best available torch accelerator; explicit cpu remains available for
-# low-memory and concurrent workloads.
-ASR_VAD_DEVICE = os.getenv("ASR_VAD_DEVICE", "auto").strip().lower() or "auto"
+# Keep the additional segmentation model off the ASR accelerator by default:
+# pyannote VAD next to GigaAM on the same GPU/MPS is a real OOM source.
+ASR_VAD_DEVICE = os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu"
 MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
 ONNX_PROVIDER = _validate_onnx_provider(os.getenv("ONNX_PROVIDER"))
 ONNX_QUANTIZATION = _validate_onnx_quantization(os.getenv("ONNX_QUANTIZATION"))

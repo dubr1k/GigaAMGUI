@@ -247,10 +247,11 @@ def main():
 
         model_ids = list(ASR_MODELS)
         labels = [f"{ASR_MODELS[model]} [{model}]" for model in model_ids]
+        is_ru = settings.get_value("language", "ru") == "ru"
         selected, accepted = QInputDialog.getItem(
             None,
-            "Модель распознавания",
-            "Выберите модель GigaAM:" ,
+            "Модель распознавания" if is_ru else "Recognition model",
+            "Выберите модель GigaAM:" if is_ru else "Choose a GigaAM model:",
             labels,
             0,
             False,

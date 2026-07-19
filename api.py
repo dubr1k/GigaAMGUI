@@ -507,8 +507,9 @@ async def process_transcription(
         file_path: путь к файлу
         filename: имя файла
     """
-    if model_loader is None:
-        raise RuntimeError("ASR model loader не инициализирован")
+    # Проверка loader-а живёт внутри try ниже: подняв её сюда, мы бы убили
+    # фоновую задачу до создания обработчика ошибок, и запись в tasks_storage
+    # навсегда осталась бы в статусе pending.
     request_loader = model_loader
     owns_loader = False
     async with processing_semaphore:
@@ -889,7 +890,7 @@ async def get_asr_options():
     if model_loader is None:
         raise HTTPException(status_code=503, detail="ASR model loader не инициализирован")
     return {
-        "backends": ["auto", "onnx", "mlx", "pytorch"],
+        "backends": transcription_service.available_asr_backends(),
         "models": ASR_MODELS,
         "onnx_providers": list(transcription_service.ONNX_PROVIDERS),
         "defaults": transcription_service.normalize_asr_selection(model_loader).as_dict(),

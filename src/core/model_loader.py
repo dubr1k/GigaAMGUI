@@ -106,9 +106,11 @@ class ModelLoader:
         if hasattr(self._backend, "device"):
             self.device = self._backend.device
 
-    def _switch_to_pytorch_fallback(self) -> bool:
+    def _switch_to_pytorch_fallback(self, failed_backend: str = "MLX") -> bool:
         self._backend = PyTorchBackend(model=self._model_name, revision=self._model_revision)
-        self._fallback_reason = "Аварийный fallback: MLX не загрузился, использован PyTorch backend"
+        self._fallback_reason = (
+            f"Аварийный fallback: {failed_backend} не загрузился, использован PyTorch backend"
+        )
         self._factory_error = None
         return self._backend.load()
 
@@ -125,14 +127,15 @@ class ModelLoader:
             and self._backend.name in {"mlx", "onnx"}
             and self._allow_fallback
         ):
-            self._factory_error = f"{self._backend.name.upper()} не загрузился"
+            failed_name = self._backend.name.upper()
+            self._factory_error = f"{failed_name} не загрузился"
             if self._backend is not None:
                 try:
                     self._backend.unload()
                 except Exception:
                     pass
             try:
-                if self._switch_to_pytorch_fallback():
+                if self._switch_to_pytorch_fallback(failed_backend=failed_name):
                     self._sync_from_backend()
                     return True
             except Exception as exc:
@@ -213,7 +216,16 @@ class ModelLoader:
         if not self._backend.is_loaded():
             raise RuntimeError("Модель не загружена")
 
-        return self._backend.transcribe_longform(audio_path, progress_callback=progress_callback)
+        try:
+            return self._backend.transcribe_longform(
+                audio_path,
+                progress_callback=progress_callback,
+            )
+        finally:
+            # ONNX backend может подменить сессию на CPU прямо во время
+            # inference. Без ресинка loader держал бы ссылку на упавшую
+            # сессию и показывал её provider в диагностике.
+            self._sync_from_backend()
 
     def unload(self):
         """Выгружает модель и освобождает память."""

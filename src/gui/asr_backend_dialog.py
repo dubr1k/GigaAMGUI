@@ -118,6 +118,8 @@ class ASRBackendDialog(QDialog):
         layout.addWidget(self.note_label)
         layout.addWidget(buttons)
 
+        self._sync_provider_enabled()
+
     def _label(self, key: str) -> str:
         ru, en = self.LABELS.get(key, (key, key))
         return ru if self._is_ru else en
@@ -130,6 +132,15 @@ class ASRBackendDialog(QDialog):
         data = self.backend_combo.currentData()
         key = data if data in self.NOTES else "auto"
         self.note_label.setText(self._note(key))
+        self._sync_provider_enabled()
+
+    def _sync_provider_enabled(self) -> None:
+        """Provider применим только к ONNX.
+
+        Иначе смена значения при PyTorch/MLX выглядела бы как изменение
+        конфигурации и приводила к бессмысленной выгрузке модели.
+        """
+        self.provider_combo.setEnabled(self.backend_combo.currentData() == "onnx")
 
     @property
     def selected_backend(self) -> str:

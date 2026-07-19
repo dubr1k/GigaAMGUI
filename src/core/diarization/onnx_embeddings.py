@@ -79,6 +79,7 @@ class OnnxSpeakerEmbeddings:
         local_speakers = np.tile(np.arange(probabilities.shape[2]), probabilities.shape[0])
         waveforms: list[np.ndarray] = []
         valid_rows: list[int] = []
+        min_samples = max(1, int(round(self.min_speech_seconds * self.sample_rate)))
 
         for row, (window_index, speaker_index) in enumerate(
             zip(window_indices, local_speakers, strict=True)
@@ -93,8 +94,13 @@ class OnnxSpeakerEmbeddings:
             end = min(len(audio), start + len(mask))
             if end <= start:
                 continue
-            chunk = audio[start:end].copy()
-            chunk *= mask[: len(chunk)]
+            # Вырезаем активную речь, а не глушим остальное окно нулями:
+            # иначе строка с 0.5 c речи отдавала бы в WeSpeaker ~9.5 c тишины,
+            # fbank/CMN-статистики считались бы по ней и эмбеддинги разных
+            # спикеров стягивались бы к «эмбеддингу тишины».
+            chunk = np.ascontiguousarray(audio[start:end][mask[: end - start]])
+            if len(chunk) < min_samples:
+                continue
             valid[row] = True
             valid_rows.append(row)
             waveforms.append(chunk)

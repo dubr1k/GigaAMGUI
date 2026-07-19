@@ -44,6 +44,7 @@ class TranscriptionProcessor:
         self.time_formatter = TimeFormatter()
         self._diarization_manager = None
         self._active_diarization_backend = "pyannote"
+        self._diarization_provider = None
         self._progress_plan = None
 
     def _emit_progress(self, event: ProgressEvent) -> None:
@@ -78,6 +79,9 @@ class TranscriptionProcessor:
 
         backend = normalize_diarization_backend(self._active_diarization_backend)
         hf_token = os.getenv("HF_TOKEN", "").strip()
+        # Provider переключается в настройках уже после создания processor,
+        # поэтому берём актуальное значение loader-а, а не снимок из .env.
+        provider = getattr(self.model_loader, "requested_provider", None) or ONNX_PROVIDER
 
         # Токен можно заменить в GUI уже после создания processor. Не держим
         # менеджер (и загруженный им pipeline) со старым токеном.
@@ -85,6 +89,7 @@ class TranscriptionProcessor:
             self._diarization_manager is not None
             and (
                 getattr(self._diarization_manager, "backend", "pyannote") != backend
+                or (backend == "onnx" and self._diarization_provider != provider)
                 or (
                     backend == "pyannote"
                     and getattr(self._diarization_manager, "hf_token", hf_token) != hf_token
@@ -103,9 +108,10 @@ class TranscriptionProcessor:
                     backend,
                     hf_token=hf_token or None,
                     device="auto",
-                    provider=ONNX_PROVIDER,
+                    provider=provider,
                     model_dir=ONNX_MODEL_DIR,
                 )
+                self._diarization_provider = provider
             except Exception as e:
                 self.logger(f"Не удалось инициализировать менеджер диаризации: {e}")
         return self._diarization_manager

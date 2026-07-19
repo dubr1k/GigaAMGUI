@@ -71,3 +71,33 @@ def test_model_factory_receives_resolved_provider_chain():
     extractor.extract(np.ones(2, dtype=np.float32), segmentation)
 
     assert calls == [{"providers": ["CPUExecutionProvider"], "model_dir": None}]
+
+
+def test_only_active_speech_reaches_the_embedding_model():
+    """Тишина не должна разбавлять эмбеддинг — она вырезается, а не зануляется."""
+    captured = []
+
+    class Model:
+        def embedding(self, waveforms):
+            captured.extend(waveforms)
+            return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    extractor = OnnxSpeakerEmbeddings(
+        model_factory=lambda **_: Model(),
+        min_speech_seconds=0.5,
+        sample_rate=4,
+    )
+    # Речь только в первом фрейме окна; остальные два — тишина.
+    segmentation = _segmentation([[[0.9, 0.1, 0.1], [0.1, 0.1, 0.1], [0.1, 0.1, 0.1]]])
+    audio = np.concatenate(
+        [
+            np.ones(2, dtype=np.float32),
+            np.full(4, 0.25, dtype=np.float32),
+        ]
+    )
+
+    result = extractor.extract(audio, segmentation)
+
+    assert result.valid.tolist() == [True, False, False]
+    assert len(captured) == 1
+    np.testing.assert_allclose(captured[0], np.ones(2, dtype=np.float32))

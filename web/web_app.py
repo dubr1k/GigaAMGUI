@@ -513,13 +513,18 @@ async def process_transcription(
     if processing_semaphore is None:
         raise RuntimeError("Семафор обработки не инициализирован")
 
-    if model_loader is None:
-        raise RuntimeError("ASR model loader не инициализирован")
-    asr_selection = asr_selection or transcription_service.normalize_asr_selection(model_loader)
+    # Проверка loader-а живёт внутри try ниже: подняв её сюда, мы бы убили
+    # фоновую задачу до создания обработчика ошибок, и запись в tasks_storage
+    # навсегда осталась бы в статусе pending.
     request_loader = model_loader
     owns_loader = False
     async with processing_semaphore:
         try:
+            if model_loader is None:
+                raise RuntimeError("ASR model loader не инициализирован")
+            asr_selection = asr_selection or transcription_service.normalize_asr_selection(
+                model_loader
+            )
             if not file_path.exists() or task_id not in tasks_storage:
                 return
 
@@ -873,7 +878,7 @@ async def get_asr_options(user: str = Depends(require_auth)):
     if model_loader is None:
         raise HTTPException(status_code=503, detail="ASR model loader не инициализирован")
     return {
-        "backends": ["auto", "onnx", "mlx", "pytorch"],
+        "backends": transcription_service.available_asr_backends(),
         "models": ASR_MODELS,
         "onnx_providers": list(transcription_service.ONNX_PROVIDERS),
         "defaults": transcription_service.normalize_asr_selection(model_loader).as_dict(),
@@ -920,7 +925,7 @@ async def upload_files(
                 ns = None
         except ValueError:
             ns = None
-    if diarization_backend == "sortformer" and ns is not None:
+    if enable_diarization and diarization_backend == "sortformer" and ns is not None:
         raise HTTPException(
             status_code=400,
             detail="NVIDIA Sortformer определяет число спикеров автоматически",
@@ -992,7 +997,7 @@ async def download_from_url(
                 ns = None
         except ValueError:
             ns = None
-    if diarization_backend == "sortformer" and ns is not None:
+    if enable_diarization and diarization_backend == "sortformer" and ns is not None:
         raise HTTPException(
             status_code=400,
             detail="NVIDIA Sortformer определяет число спикеров автоматически",

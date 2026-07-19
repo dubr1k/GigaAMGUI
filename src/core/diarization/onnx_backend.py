@@ -40,10 +40,26 @@ class OnnxDiarizationBackend(SpeakerMappingMixin):
         self._cluster_fn = cluster_fn
         self._reconstruct_fn = reconstruct_fn
 
+    SAMPLE_RATE = 16_000
+
     @staticmethod
     def _progress(callback, value: float) -> None:
         if callback is not None:
             callback(value, None, None)
+
+    @classmethod
+    def _to_target_rate(cls, waveform: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Привести дорожку к 16 кГц.
+
+        AUDIO_SAMPLE_RATE настраивается через env, а pyannote и Sortformer
+        ресемплируют сами — падать на легитимной настройке нельзя.
+        """
+        if sample_rate == cls.SAMPLE_RATE:
+            return waveform
+        import soxr  # noqa: PLC0415
+
+        resampled = soxr.resample(waveform, sample_rate, cls.SAMPLE_RATE)
+        return np.asarray(resampled, dtype=np.float32)
 
     def diarize(
         self,
@@ -54,9 +70,8 @@ class OnnxDiarizationBackend(SpeakerMappingMixin):
         import soundfile as sf  # noqa: PLC0415
 
         samples, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
-        if sample_rate != 16_000:
-            raise ValueError(f"ONNX diarization ожидает 16000 Гц, получено {sample_rate}")
         waveform = samples.mean(axis=1).astype(np.float32, copy=False)
+        waveform = self._to_target_rate(waveform, sample_rate)
         segmentation = self._segmenter.infer(waveform)
         self._progress(progress_callback, 0.35)
         embeddings = self._embedding_extractor.extract(waveform, segmentation)

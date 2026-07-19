@@ -43,8 +43,14 @@ RUN git clone https://github.com/salute-developers/GigaAM.git /tmp/gigaam && \
 # ни одним модулем web-слоя, только раздувает образ).
 RUN grep -viE 'gigaam|torchcodec|pyqt6|^onnxruntime==' requirements.txt > /tmp/req.txt && \
     pip install --no-cache-dir -r /tmp/req.txt
-# В одном окружении должен быть ровно один ORT-дистрибутив.
+# В одном окружении должен быть ровно один ORT-дистрибутив. Фильтра по
+# requirements недостаточно: gigaam жёстко требует onnxruntime==1.23.*, поэтому
+# CPU-колесо приезжает вместе с ним и его надо снять до установки GPU-варианта —
+# иначе оба дистрибутива делят каталог onnxruntime/ и любая последующая
+# переустановка молча возвращает CPU-провайдер.
+RUN pip uninstall -y onnxruntime || true
 RUN pip install --no-cache-dir onnxruntime-gpu==1.23.2
+RUN python -c "from importlib.metadata import distributions; names = {d.metadata['Name'].lower() for d in distributions()}; assert 'onnxruntime-gpu' in names and 'onnxruntime' not in names, sorted(n for n in names if n.startswith('onnxruntime'))"
 # Дополнительные зависимости для Web GUI
 RUN pip install --no-cache-dir itsdangerous python-multipart
 # Фиксируем официальную согласованную тройку: бинарные расширения torchaudio и

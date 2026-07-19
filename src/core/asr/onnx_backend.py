@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from ...config import ASR_SEGMENTATION_MODE
 from .chunking import plan_audio_chunks, stitch_overlapping_text
 from .models import onnx_model_name, validate_asr_model
 from .onnx_provider import (
@@ -33,7 +34,7 @@ class OnnxBackend:
         quantization: str | None = None,
         model_dir: str | None = None,
         vad_model: str = "silero",
-        segmentation_mode: str = "vad",
+        segmentation_mode: str | None = None,
         model_factory: Callable[..., Any] | None = None,
         available_provider_probe: Callable[[], tuple[str, ...]] | None = None,
         vad_segmenter_factory: Callable[..., VadSegmenter] | None = None,
@@ -44,7 +45,7 @@ class OnnxBackend:
         self.quantization = normalized_quantization or None
         self.model_dir = model_dir
         self.vad_model = vad_model
-        self.segmentation_strategy = segmentation_mode
+        self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
         if self.segmentation_strategy not in {"vad", "overlap_chunks", "fixed_chunks"}:
             raise ValueError(f"Неизвестный режим сегментации: {self.segmentation_strategy}")
 
@@ -57,6 +58,7 @@ class OnnxBackend:
         self._available_provider_probe = available_provider_probe or available_onnx_providers
         self._vad_segmenter_factory = vad_segmenter_factory or OnnxVadSegmenter
         self._vad_segmenter: VadSegmenter | None = None
+        self._vad_unavailable_reason: str | None = None
         self._logger: Callable[[str], None] | None = None
         self._inference_lock = threading.Lock()
 
@@ -173,6 +175,24 @@ class OnnxBackend:
         markers = provider_markers.get(provider, ())
         return "executionprovider" in message or any(marker in message for marker in markers)
 
+    def _ensure_vad_segmenter(self) -> VadSegmenter:
+        if self._vad_unavailable_reason is not None:
+            raise RuntimeError(self._vad_unavailable_reason)
+        if self._vad_segmenter is None:
+            try:
+                self._vad_segmenter = self._vad_segmenter_factory(
+                    model=self.vad_model,
+                    provider=self.requested_provider,
+                    quantization=self.quantization,
+                    model_dir=self.model_dir,
+                )
+            except Exception as exc:
+                # Модель VAD не поднимается в этом окружении. Без запоминания
+                # каждый файл батча заново пытался бы её скачать и загрузить.
+                self._vad_unavailable_reason = f"{type(exc).__name__}: {exc}"
+                raise
+        return self._vad_segmenter
+
     def _transcribe_longform_unlocked(
         self,
         audio_path: str,
@@ -209,14 +229,7 @@ class OnnxBackend:
             )
         elif self.segmentation_strategy == "vad":
             try:
-                if self._vad_segmenter is None:
-                    self._vad_segmenter = self._vad_segmenter_factory(
-                        model=self.vad_model,
-                        provider=self.requested_provider,
-                        quantization=self.quantization,
-                        model_dir=self.model_dir,
-                    )
-                boundaries = self._vad_segmenter.segment_file(
+                boundaries = self._ensure_vad_segmenter().segment_file(
                     audio_path,
                     audio_duration=total_seconds,
                 )
@@ -229,7 +242,6 @@ class OnnxBackend:
                 self.segmentation_mode = "vad"
                 self.segmentation_fallback_reason = None
             except Exception as exc:
-                self._vad_segmenter = None
                 chunks = plan_audio_chunks(
                     audio,
                     [(0.0, total_seconds)],
@@ -299,7 +311,19 @@ class OnnxBackend:
                     )
                     results[previous_result_index]["transcription"] = previous_text
                     if words is not None and overlap_words:
+                        # Слова из двух проходов декодера дрожат вокруг стыка:
+                        # оставляем первый проход, срезаем совпавший префикс и
+                        # пересобираем текст, чтобы он не разошёлся со словами.
                         words = words[overlap_words:]
+                        text = " ".join(word["text"] for word in words).strip()
+                    if not text and overlap_words:
+                        previous_start, _previous_end = results[previous_result_index][
+                            "boundaries"
+                        ]
+                        results[previous_result_index]["boundaries"] = (
+                            previous_start,
+                            min(total_seconds, float(chunk.end_sec)),
+                        )
 
                 start_time = max(0.0, float(chunk.start_sec))
                 end_time = min(total_seconds, float(chunk.end_sec))
@@ -331,6 +355,7 @@ class OnnxBackend:
         with self._inference_lock:
             self.model = None
             self._vad_segmenter = None
+            self._vad_unavailable_reason = None
             self.provider_selection = None
             self.device = None
             self.segmentation_mode = "not_run"

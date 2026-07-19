@@ -6,13 +6,12 @@ import numpy as np
 
 from .onnx_embeddings import EmbeddingResult
 
+_EPS = float(np.finfo(np.float32).eps)
 
-def _cosine_distance(left: np.ndarray, right: np.ndarray) -> float:
-    left_norm = float(np.linalg.norm(left))
-    right_norm = float(np.linalg.norm(right))
-    if left_norm == 0.0 or right_norm == 0.0:
-        return 1.0
-    return 1.0 - float(np.dot(left, right) / (left_norm * right_norm))
+
+def _unit_rows(matrix: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / np.maximum(norms, _EPS)
 
 
 def cluster_embeddings(
@@ -21,52 +20,78 @@ def cluster_embeddings(
     num_speakers: int | None = None,
     threshold: float = 0.35,
 ) -> np.ndarray:
-    """Cluster valid rows while forbidding two speakers from one window to merge."""
+    """Cluster valid rows while forbidding two speakers from one window to merge.
+
+    Запрошенное число спикеров трактуется как пожелание: если оно недостижимо
+    (валидных строк меньше, либо cannot-link ограничения не дают слить кластеры
+    до нужного количества), возвращается ближайший достижимый разбор. Ронять
+    обработку целого файла из-за значения, выставленного в UI, нельзя.
+    """
+
     valid_rows = np.flatnonzero(result.valid)
     labels = np.full(len(result.valid), -1, dtype=np.int64)
     if len(valid_rows) == 0:
         return labels
-    if num_speakers is not None and (num_speakers < 1 or num_speakers > len(valid_rows)):
-        raise ValueError("Некорректное число спикеров для clustering")
 
-    clusters: list[set[int]] = [{int(row)} for row in valid_rows]
+    count = len(valid_rows)
+    target = None if num_speakers is None else max(1, min(int(num_speakers), count))
 
-    def centroid(cluster: set[int]) -> np.ndarray:
-        value = result.embeddings[sorted(cluster)].mean(axis=0)
-        norm = np.linalg.norm(value)
-        return value if norm == 0 else value / norm
+    sums = np.asarray(result.embeddings[valid_rows], dtype=np.float32).copy()
+    centroids = _unit_rows(sums)
+    windows = np.asarray(result.window_indices)[valid_rows]
 
-    def allowed(left: set[int], right: set[int]) -> bool:
-        left_windows = set(result.window_indices[list(left)])
-        right_windows = set(result.window_indices[list(right)])
-        return left_windows.isdisjoint(right_windows)
+    # Дистанции пересчитываются только для изменившегося кластера, поэтому
+    # стоимость агломерации линейна по числу слияний, а не кубична.
+    distances = (1.0 - centroids @ centroids.T).astype(np.float32)
+    distances[windows[:, None] == windows[None, :]] = np.inf
 
-    while True:
-        candidate: tuple[float, int, int] | None = None
-        for left_index in range(len(clusters)):
-            for right_index in range(left_index + 1, len(clusters)):
-                if not allowed(clusters[left_index], clusters[right_index]):
-                    continue
-                distance = _cosine_distance(
-                    centroid(clusters[left_index]),
-                    centroid(clusters[right_index]),
-                )
-                if candidate is None or distance < candidate[0]:
-                    candidate = (distance, left_index, right_index)
+    masks = [1 << int(window) for window in windows]
+    members: list[list[int]] = [[int(row)] for row in valid_rows]
+    active = np.ones(count, dtype=np.bool_)
+    nearest = np.argmin(distances, axis=1)
+    nearest_distance = distances[np.arange(count), nearest]
 
-        if num_speakers is not None:
-            if len(clusters) <= num_speakers:
-                break
-            if candidate is None:
-                raise ValueError("Невозможно выполнить clustering: cannot-link constraints")
-        elif candidate is None or candidate[0] > threshold:
+    remaining = count
+    while remaining > 1:
+        if target is not None and remaining <= target:
             break
+        candidates = np.where(active, nearest_distance, np.inf)
+        left = int(np.argmin(candidates))
+        best = float(candidates[left])
+        if not np.isfinite(best):
+            break
+        if target is None and best > threshold:
+            break
+        right = int(nearest[left])
 
-        _, left_index, right_index = candidate
-        clusters[left_index] |= clusters[right_index]
-        clusters.pop(right_index)
+        sums[left] += sums[right]
+        centroids[left] = sums[left] / max(float(np.linalg.norm(sums[left])), _EPS)
+        masks[left] |= masks[right]
+        members[left].extend(members[right])
+        active[right] = False
+        remaining -= 1
 
-    clusters.sort(key=lambda cluster: min(cluster))
+        distances[right, :] = np.inf
+        distances[:, right] = np.inf
+
+        row = (1.0 - centroids @ centroids[left]).astype(np.float32)
+        blocked = np.fromiter(
+            ((masks[left] & mask) != 0 for mask in masks),
+            dtype=np.bool_,
+            count=count,
+        )
+        row[blocked | ~active] = np.inf
+        row[left] = np.inf
+        distances[left, :] = row
+        distances[:, left] = row
+
+        stale = np.flatnonzero(active & ((nearest == left) | (nearest == right)))
+        for index in (*stale.tolist(), left):
+            nearest[index] = int(np.argmin(distances[index]))
+            nearest_distance[index] = distances[index, nearest[index]]
+
+    clusters = [members[index] for index in np.flatnonzero(active)]
+    clusters.sort(key=min)
     for label, cluster in enumerate(clusters):
-        labels[list(cluster)] = label
+        labels[cluster] = label
     return labels

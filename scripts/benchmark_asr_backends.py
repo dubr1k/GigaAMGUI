@@ -6,9 +6,26 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import resource
+import sys
 import time
 from pathlib import Path
+
+try:  # resource отсутствует на Windows, где тоже собирается portable-сборка
+    import resource
+except ImportError:  # pragma: no cover - платформенная ветка
+    resource = None
+
+
+def peak_rss_bytes() -> int:
+    """Пиковый RSS процесса в байтах.
+
+    ru_maxrss измеряется в килобайтах на Linux и в байтах на macOS/BSD —
+    без этой поправки метрика памяти на macOS завышалась в 1024 раза.
+    """
+    if resource is None:
+        return 0
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return int(peak) if sys.platform == "darwin" else int(peak) * 1024
 
 
 def normalize_text(text: str) -> str:
@@ -98,7 +115,7 @@ def main() -> int:
             info = sf.info(entry["audio"])
             hypothesis = " ".join(segment["transcription"] for segment in segments)
             diagnostics = loader.diagnostics()
-            peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+            peak = peak_rss_bytes()
             records.append(quality_record(
                 backend=backend, model=args.model, provider=diagnostics.get("provider"),
                 reference=entry["reference"], hypothesis=hypothesis,

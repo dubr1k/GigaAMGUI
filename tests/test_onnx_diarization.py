@@ -95,3 +95,25 @@ def test_onnx_manager_maps_words_with_shared_mapping_contract():
         ],
     )
     assert [item["speaker"] for item in mapped] == ["A", "B"]
+
+
+def test_non_16k_audio_is_resampled_instead_of_rejected(tmp_path):
+    """AUDIO_SAMPLE_RATE настраивается — падать на 48 кГц WAV нельзя."""
+    path = tmp_path / "48k.wav"
+    sf.write(path, np.zeros(48_000 * 2, dtype=np.float32), 48_000)
+    seen = {}
+
+    class _RecordingSegmenter(_Segmenter):
+        def infer(self, waveform):
+            seen["samples"] = len(waveform)
+            return super().infer(waveform)
+
+    manager = OnnxDiarizationBackend(
+        segmenter=_RecordingSegmenter(),
+        embedding_extractor=_Extractor(),
+    )
+
+    segments = manager.diarize(str(path), num_speakers=2)
+
+    assert segments
+    assert seen["samples"] == pytest.approx(32_000, rel=0.01)

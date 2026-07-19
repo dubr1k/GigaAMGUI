@@ -19,10 +19,40 @@ def test_default_requirements_pin_onnx_asr_without_conflicting_ort_packages():
     assert "onnxruntime-gpu" not in text
 
 
+def _requirement_lines(path: str) -> list[str]:
+    text = Path(path).read_text(encoding="utf-8")
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
 def test_gpu_onnx_requirements_select_only_gpu_distribution():
+    requirements = _requirement_lines("requirements-onnx-gpu.txt")
+
+    assert "onnxruntime-gpu==1.23.2" in requirements
+    assert not any(line.startswith("onnxruntime==") for line in requirements)
+
+
+def test_gpu_onnx_requirements_warn_about_cpu_wheel_reinstall():
+    """Пин gigaam на CPU-колесо возвращает CPU-провайдер молча — это должно быть в файле."""
     text = Path("requirements-onnx-gpu.txt").read_text(encoding="utf-8")
-    assert "onnxruntime-gpu==1.23.2" in text
-    assert "onnxruntime==" not in text
+
+    assert "gigaam" in text
+    assert "get_available_providers" in text
+
+
+def test_docker_removes_cpu_ort_before_installing_gpu_distribution():
+    """gigaam тянет onnxruntime==1.23.* сам, поэтому фильтра requirements мало."""
+    text = Path("Dockerfile").read_text(encoding="utf-8")
+
+    uninstall_at = text.find("pip uninstall -y onnxruntime")
+    install_at = text.find("pip install --no-cache-dir onnxruntime-gpu")
+
+    assert uninstall_at != -1
+    assert install_at != -1
+    assert uninstall_at < install_at
 
 
 def test_common_runtime_contract_collects_asteroid_filterbanks():

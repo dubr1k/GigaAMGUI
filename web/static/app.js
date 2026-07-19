@@ -299,6 +299,23 @@ async function loadAsrOptions() {
         const res = await fetch(`${API}/asr-options`);
         if (res.ok) {
             const data = await res.json();
+            // Список backend зависит от платформы сервера (MLX только на
+            // macOS arm64). Статические <option> предлагали недоступный выбор.
+            if (Array.isArray(data.backends) && data.backends.length) {
+                const labels = {
+                    auto: 'Auto',
+                    onnx: 'ONNX Runtime',
+                    mlx: 'MLX',
+                    pytorch: 'PyTorch',
+                };
+                backend.innerHTML = '';
+                for (const name of data.backends) {
+                    const option = document.createElement('option');
+                    option.value = name;
+                    option.textContent = labels[name] || name;
+                    backend.appendChild(option);
+                }
+            }
             backend.value = data.defaults.asr_backend;
             model.value = data.defaults.asr_model;
             provider.value = data.defaults.onnx_provider;
