@@ -115,17 +115,31 @@ class OnnxBackend:
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
     ) -> list[TranscriptionSegment]:
         with self._inference_lock:
+            observed_total: float | None = None
+
+            tracked_callback = progress_callback
+            if progress_callback is not None:
+
+                def tracked_callback(ratio, processed, total):
+                    nonlocal observed_total
+                    observed_total = total
+                    progress_callback(ratio, processed, total)
+
             try:
                 return self._transcribe_longform_unlocked(
                     audio_path,
-                    progress_callback=progress_callback,
+                    progress_callback=tracked_callback,
                 )
             except Exception as exc:
                 if not self._retry_on_cpu_after_provider_failure(exc):
                     raise
+                if progress_callback is not None:
+                    # Повтор идёт с начала файла. Без явного нуля потребитель
+                    # видит только скачок прогресса назад и не понимает, почему.
+                    progress_callback(0.0, 0.0, observed_total)
                 return self._transcribe_longform_unlocked(
                     audio_path,
-                    progress_callback=progress_callback,
+                    progress_callback=tracked_callback,
                 )
 
     def _retry_on_cpu_after_provider_failure(self, exc: Exception) -> bool:
@@ -143,7 +157,8 @@ class OnnxBackend:
             return False
         reason = (
             f"{failed_provider} завершил inference с ошибкой "
-            f"{type(exc).__name__}: {exc}; использован CPUExecutionProvider"
+            f"{type(exc).__name__}: {exc}; транскрибация начата заново "
+            "на CPUExecutionProvider, прогресс отсчитывается с нуля"
         )
         cpu_selection = ProviderSelection(
             requested="auto",

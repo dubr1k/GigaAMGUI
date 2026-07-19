@@ -436,3 +436,56 @@ def test_failed_vad_initialization_is_not_retried_for_every_file(tmp_path):
 
     assert len(factory_calls) == 1
     assert backend.capabilities().segmentation_mode == "overlap_chunks"
+
+
+def test_cpu_retry_reports_explicit_progress_reset(tmp_path):
+    """Повтор идёт с начала файла, и откат прогресса должен быть объяснён."""
+    wav_path = tmp_path / "midway-failure.wav"
+    sf.write(wav_path, np.zeros(16000 * 60, dtype=np.float32), 16000)
+    logs: list[str] = []
+
+    def _result():
+        return SimpleNamespace(text="текст", tokens=[" текст"], timestamps=[0.1])
+
+    class _FailsAfterFirstChunk(_FakeTimestampModel):
+        def recognize(self, waveform, *, sample_rate):
+            self.recognize_calls.append((np.asarray(waveform).copy(), sample_rate))
+            if len(self.recognize_calls) > 1:
+                raise RuntimeError("CoreML execution failed")
+            return _result()
+
+    accelerator_model = _FailsAfterFirstChunk()
+    cpu_model = _FakeTimestampModel([_result() for _ in range(16)])
+
+    def factory(*args, **kwargs):
+        first_provider = kwargs["providers"][0]
+        if isinstance(first_provider, tuple):
+            first_provider = first_provider[0]
+        return cpu_model if first_provider == "CPUExecutionProvider" else accelerator_model
+
+    backend = OnnxBackend(
+        provider="auto",
+        segmentation_mode="fixed_chunks",
+        model_factory=factory,
+        available_provider_probe=lambda: (
+            "CoreMLExecutionProvider",
+            "CPUExecutionProvider",
+        ),
+    )
+    assert backend.load(logger=logs.append)
+
+    events: list[tuple[float, float | None, float | None]] = []
+    assert backend.transcribe_longform(
+        str(wav_path),
+        progress_callback=lambda ratio, processed, total: events.append(
+            (ratio, processed, total)
+        ),
+    )
+
+    ratios = [event[0] for event in events]
+    reset_at = ratios.index(0.0)
+    # До падения прогресс успел вырасти, после сброса снова растёт с нуля.
+    assert max(ratios[:reset_at]) > 0.0
+    assert events[reset_at] == (0.0, 0.0, 60.0)
+    assert ratios[reset_at + 1] > 0.0
+    assert any("заново" in message for message in logs)
