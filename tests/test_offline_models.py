@@ -134,6 +134,15 @@ def test_config_points_huggingface_at_the_bundled_cache(tmp_path, monkeypatch):
     assert Path(os.environ["HF_HOME"]) == cache
 
 
+def test_offline_bundle_switches_default_backends_to_onnx():
+    """auto выбрал бы MLX или PyTorch, которых в офлайн-наборе нет."""
+    text = Path("src/config.py").read_text(encoding="utf-8")
+
+    assert '_DEFAULT_ASR_BACKEND = "onnx" if BUNDLED_MODELS_DIR else "auto"' in text
+    assert 'os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND)' in text
+    assert '"onnx" if BUNDLED_MODELS_DIR else "pyannote"' in text
+
+
 def test_explicit_huggingface_home_still_wins(tmp_path, monkeypatch):
     import src.config as config
 

@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from ..config import DIARIZATION_BACKEND
 from ..utils.audio_converter import AudioConverter
 from ..utils.audio_preprocessing import AudioPreprocessor, FFmpegAudioPreprocessingBackend
 from ..utils.deepfilter_backend import DeepFilterNetBinaryBackend
@@ -43,7 +44,7 @@ class TranscriptionProcessor:
         )
         self.time_formatter = TimeFormatter()
         self._diarization_manager = None
-        self._active_diarization_backend = "pyannote"
+        self._active_diarization_backend = DIARIZATION_BACKEND
         self._diarization_provider = None
         self._progress_plan = None
 
@@ -145,7 +146,7 @@ class TranscriptionProcessor:
                      enable_diarization: bool = False,
                      num_speakers: int | None = None,
                      output_formats: list | None = None,
-                     diarization_backend: str = "pyannote",
+                     diarization_backend: str = DIARIZATION_BACKEND,
                      audio_preprocessing_mode: str = "off") -> dict:
         """
         Обрабатывает один файл

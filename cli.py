@@ -31,7 +31,13 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты из проекта
 from src.cli_support import interactive as cli_interactive
-from src.config import ASR_BACKEND, AUDIO_PREPROCESSING_MODE, ONNX_PROVIDER, OUTPUT_FORMATS
+from src.config import (
+    ASR_BACKEND,
+    AUDIO_PREPROCESSING_MODE,
+    DIARIZATION_BACKEND,
+    ONNX_PROVIDER,
+    OUTPUT_FORMATS,
+)
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.core.progress import ProgressEvent
@@ -394,7 +400,7 @@ def display_results(results: list[dict]):
 @click.option(
     '--diarization-backend',
     type=click.Choice(["pyannote", "sortformer", "onnx"]),
-    default="pyannote",
+    default=DIARIZATION_BACKEND,
     show_default=True,
     help='Движок диаризации: ONNX, pyannote или NVIDIA Sortformer v2.1',
 )

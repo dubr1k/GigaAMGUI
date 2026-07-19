@@ -92,6 +92,10 @@ def _has_cyrillic(text: str) -> bool:
     return bool(re.search(r'[а-яА-ЯёЁ]', text))
 
 
+# Папка с моделями, привезёнными офлайн-сборкой (заполняется ниже).
+BUNDLED_MODELS_DIR = None
+
+
 def _setup_huggingface_cache():
     """
     Настраивает директорию кэша HuggingFace.
@@ -108,12 +112,14 @@ def _setup_huggingface_cache():
             os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 
     # Если HF_HOME не задан явно — используем общий кэш приложения.
+    global BUNDLED_MODELS_DIR
     if 'HF_HOME' not in os.environ:
         try:
             from .utils.runtime_manager import bundled_hf_cache_dir, hf_cache_dir
             # Офлайн-сборка везёт модели папкой рядом с собой: без этой ветки
             # приложение полезло бы за ними в сеть, хотя они уже лежат рядом.
-            hf_dir = bundled_hf_cache_dir() or hf_cache_dir()
+            BUNDLED_MODELS_DIR = bundled_hf_cache_dir()
+            hf_dir = BUNDLED_MODELS_DIR or hf_cache_dir()
         except Exception:
             hf_dir = Path("C:/GigaAMGUICash/hf")
         try:
@@ -148,8 +154,19 @@ if HF_TOKEN and HF_TOKEN.startswith("hf_"):
 MODEL_NAME = os.getenv("MODEL_NAME", "ai-sage/GigaAM-v3")
 MODEL_REVISION = os.getenv("MODEL_REVISION", "e2e_rnnt")
 
-# ASR backend strategy
-ASR_BACKEND = _validate_backend_name(os.getenv("ASR_BACKEND", "auto"))
+# ASR backend strategy. Офлайн-сборка везёт только ONNX-цепочку, а auto выбрал
+# бы MLX или PyTorch и полез бы за ними в сеть — ровно то, ради чего затевался
+# офлайн-вариант. Явная настройка пользователя по-прежнему главнее.
+_DEFAULT_ASR_BACKEND = "onnx" if BUNDLED_MODELS_DIR else "auto"
+ASR_BACKEND = _validate_backend_name(os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND))
+# По той же причине диаризация по умолчанию тоже ONNX: pyannote требует torch
+# и токен HuggingFace, которых в офлайн-наборе нет.
+DIARIZATION_BACKEND = (
+    os.getenv("DIARIZATION_BACKEND", "onnx" if BUNDLED_MODELS_DIR else "pyannote")
+    .strip()
+    .lower()
+    or "pyannote"
+)
 ASR_MODEL = os.getenv("ASR_MODEL", MODEL_REVISION)
 ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
 ASR_SEGMENTATION_MODE = os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
