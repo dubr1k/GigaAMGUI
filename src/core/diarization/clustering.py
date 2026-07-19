@@ -14,6 +14,18 @@ def _unit_rows(matrix: np.ndarray) -> np.ndarray:
     return matrix / np.maximum(norms, _EPS)
 
 
+def _cosine_distance(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """1 - косинусное сходство для строк единичной длины.
+
+    Accelerate BLAS на Apple Silicon выставляет FPU-флаги overflow/invalid на
+    полностью корректных входах (SIMD считает и padding-дорожки), из-за чего
+    numpy печатал RuntimeWarning на каждый файл. Входы санитизируются до
+    вызова, поэтому флаги здесь заведомо ложные и глушатся точечно.
+    """
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        return (1.0 - left @ right).astype(np.float32)
+
+
 def cluster_embeddings(
     result: EmbeddingResult,
     *,
@@ -37,12 +49,16 @@ def cluster_embeddings(
     target = None if num_speakers is None else max(1, min(int(num_speakers), count))
 
     sums = np.asarray(result.embeddings[valid_rows], dtype=np.float32).copy()
+    if not np.isfinite(sums).all():
+        # Нечисловой эмбеддинг мог бы разъехаться по всей матрице дистанций,
+        # а глушение FPU-флагов ниже скрыло бы это.
+        sums = np.nan_to_num(sums, nan=0.0, posinf=0.0, neginf=0.0)
     centroids = _unit_rows(sums)
     windows = np.asarray(result.window_indices)[valid_rows]
 
     # Дистанции пересчитываются только для изменившегося кластера, поэтому
     # стоимость агломерации линейна по числу слияний, а не кубична.
-    distances = (1.0 - centroids @ centroids.T).astype(np.float32)
+    distances = _cosine_distance(centroids, centroids.T)
     distances[windows[:, None] == windows[None, :]] = np.inf
 
     masks = [1 << int(window) for window in windows]
@@ -74,7 +90,7 @@ def cluster_embeddings(
         distances[right, :] = np.inf
         distances[:, right] = np.inf
 
-        row = (1.0 - centroids @ centroids[left]).astype(np.float32)
+        row = _cosine_distance(centroids, centroids[left])
         blocked = np.fromiter(
             ((masks[left] & mask) != 0 for mask in masks),
             dtype=np.bool_,

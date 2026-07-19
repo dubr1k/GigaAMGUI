@@ -1,4 +1,5 @@
 import time
+import warnings
 
 import numpy as np
 
@@ -86,3 +87,36 @@ def test_large_input_clusters_without_cubic_blowup():
 
     assert sorted(set(labels.tolist())) == [0, 1, 2]
     assert elapsed < 10.0
+
+
+def test_clustering_is_silent_on_realistic_embedding_dimensions():
+    """Accelerate BLAS сыпал RuntimeWarning на каждый файл — вывод должен быть чистым."""
+    rng = np.random.default_rng(3)
+    windows = np.repeat(np.arange(40), 3)
+    speakers = np.tile(np.arange(3), 40)
+    centers = rng.normal(size=(3, 256)).astype(np.float32)
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    embeddings = centers[speakers] + rng.normal(0.0, 0.01, size=(len(speakers), 256))
+    embeddings = embeddings.astype(np.float32)
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    result = _result(embeddings, windows, speakers)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        labels = cluster_embeddings(result, num_speakers=3)
+
+    assert sorted(set(labels.tolist())) == [0, 1, 2]
+    assert [str(w.message) for w in caught if w.category is RuntimeWarning] == []
+
+
+def test_non_finite_embeddings_do_not_poison_the_distance_matrix():
+    rng = np.random.default_rng(5)
+    embeddings = rng.normal(size=(6, 8)).astype(np.float32)
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings[2] = np.nan
+    embeddings[4, 0] = np.inf
+    result = _result(embeddings, [0, 1, 2, 3, 4, 5], np.zeros(6, dtype=int))
+
+    labels = cluster_embeddings(result, num_speakers=2)
+
+    assert set(labels.tolist()) == {0, 1}

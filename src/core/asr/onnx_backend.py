@@ -312,10 +312,9 @@ class OnnxBackend:
                     results[previous_result_index]["transcription"] = previous_text
                     if words is not None and overlap_words:
                         # Слова из двух проходов декодера дрожат вокруг стыка:
-                        # оставляем первый проход, срезаем совпавший префикс и
-                        # пересобираем текст, чтобы он не разошёлся со словами.
+                        # оставляем первый проход и срезаем ровно те слова,
+                        # которые сшивка удалила из текста.
                         words = words[overlap_words:]
-                        text = " ".join(word["text"] for word in words).strip()
                     if not text and overlap_words:
                         previous_start, _previous_end = results[previous_result_index][
                             "boundaries"

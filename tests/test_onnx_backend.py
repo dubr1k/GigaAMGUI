@@ -365,20 +365,25 @@ def test_segmentation_mode_defaults_to_configured_value(monkeypatch):
 
 
 def test_stitched_words_stay_consistent_with_transcription(tmp_path):
-    """Текст сегмента пересобирается из слов, иначе слова и текст разъезжаются."""
+    """Вставка внутри перекрытия режет из текста больше слов, чем равен overlap.
+
+    stitch_overlapping_text возвращает число *совпавших* слов, а из текста
+    удаляет ещё и вставки между совпавшими блоками. Если срезать words по
+    overlap и не пересобрать текст, слова и transcription расходятся.
+    """
     wav_path = tmp_path / "stitch.wav"
     sf.write(wav_path, np.zeros(25 * 16000, dtype=np.float32), 16000)
     model = _FakeTimestampModel(
         [
             SimpleNamespace(
-                text="альфа бета гамма",
-                tokens=[" альфа", " бета", " гамма"],
-                timestamps=[0.1, 10.0, 11.0],
+                text="раз два три четыре",
+                tokens=[" раз", " два", " три", " четыре"],
+                timestamps=[0.1, 8.0, 9.0, 10.0],
             ),
             SimpleNamespace(
-                text="бета гамма дельта",
-                tokens=[" бета", " гамма", " дельта"],
-                timestamps=[0.1, 1.0, 10.0],
+                text="раз два три вставка четыре пять",
+                tokens=[" раз", " два", " три", " вставка", " четыре", " пять"],
+                timestamps=[0.1, 1.0, 2.0, 3.0, 4.0, 10.0],
             ),
         ]
     )
@@ -391,10 +396,12 @@ def test_stitched_words_stay_consistent_with_transcription(tmp_path):
 
     result = backend.transcribe_longform(str(wav_path))
 
+    assert [item["transcription"] for item in result] == ["раз два три четыре", "пять"]
     for segment in result:
         words = segment.get("words")
         if words is not None:
             assert segment["transcription"] == " ".join(word["text"] for word in words)
+    assert [word["text"] for word in result[-1]["words"]] == ["пять"]
 
 
 def test_failed_vad_initialization_is_not_retried_for_every_file(tmp_path):
