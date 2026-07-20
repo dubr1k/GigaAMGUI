@@ -235,6 +235,62 @@ def test_jittered_boundary_word_is_emitted_once(tmp_path, monkeypatch):
         for segment in segments
         for word in segment.get("words", [])
     ) == 1
+    for segment in segments:
+        start, end = segment["boundaries"]
+        assert all(
+            start <= word["start"] < word["end"] <= end
+            for word in segment.get("words", [])
+        )
+    assert segments[0]["words"][-1]["end"] <= segments[1]["words"][0]["start"]
+
+
+def test_overlap_rebuilds_text_from_words_retained_in_nominal_chunk(tmp_path, monkeypatch):
+    wav_path = tmp_path / "issue-33-overlap.wav"
+    sf.write(wav_path, np.zeros(20 * 16000, dtype=np.float32), 16000)
+    chunks = [
+        pytorch_backend.AudioChunk(0, 0, 12 * 16000, 0.0, 10.0, False),
+        pytorch_backend.AudioChunk(0, 8 * 16000, 20 * 16000, 10.0, 20.0, True),
+    ]
+    monkeypatch.setattr(pytorch_backend, "plan_audio_chunks", lambda *args, **kwargs: chunks)
+    calls = iter([
+        [
+            SimpleNamespace(text="вопросам", start=7.0, end=7.8),
+            SimpleNamespace(text="в", start=8.0, end=8.1),
+            SimpleNamespace(text="мире", start=8.2, end=8.8),
+            SimpleNamespace(text="были", start=9.0, end=9.5),
+            SimpleNamespace(text="едины", start=9.6, end=10.4),
+        ],
+        [
+            SimpleNamespace(text="во", start=0.1, end=0.3),
+            SimpleNamespace(text="всем", start=0.4, end=0.8),
+            SimpleNamespace(text="мире", start=0.9, end=1.2),
+            SimpleNamespace(text="были", start=1.3, end=1.6),
+            SimpleNamespace(text="едины", start=1.7, end=2.1),
+            SimpleNamespace(text="лишнее", start=1.8, end=1.9),
+            SimpleNamespace(text="продолжение", start=2.4, end=3.0),
+        ],
+    ])
+    model = SimpleNamespace(
+        _device="cpu",
+        _dtype=torch.float32,
+        head=object(),
+        forward=lambda wav, length: (wav, length),
+    )
+    model._decode = lambda *args, **kwargs: [("unused", next(calls))]
+    backend = PyTorchBackend(segmentation_mode="overlap_chunks")
+    backend.model = model
+    backend.device = "cpu"
+
+    segments = backend.transcribe_longform(str(wav_path))
+
+    assert [segment["transcription"] for segment in segments] == [
+        "вопросам в мире были едины",
+        "продолжение",
+    ]
+    assert segments[0]["words"][-1]["end"] == 10.0
+    assert segments[1]["words"] == [
+        {"text": "продолжение", "start": 10.4, "end": 11.0}
+    ]
 
 
 def test_transcribe_longform_raises_on_unloaded_model():
