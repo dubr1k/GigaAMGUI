@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from src.core.asr import chunking
 from src.core.asr.chunking import plan_audio_chunks, stitch_overlapping_text
 
 
@@ -128,3 +129,70 @@ def test_stitch_uses_latest_repeated_overlap_occurrence():
     assert previous.endswith("Три ноля, Ольга.")
     assert current == "здравствуйте."
     assert overlap >= 4
+
+
+def test_stitch_issue_33_accepts_divergent_words_before_matching_tail():
+    previous, current, overlap = stitch_overlapping_text(
+        "По ключевым вопросам в мире, были едины.",
+        "Во всём мире были едины в отстаивании той или иной точки зрения.",
+    )
+
+    assert previous == "По ключевым вопросам в мире, были едины."
+    assert current == "в отстаивании той или иной точки зрения."
+    assert overlap == 5
+
+
+def test_stitch_issue_33_accepts_filler_gap_in_previous_tail():
+    previous, current, overlap = stitch_overlapping_text(
+        "Мы занимались сельским хозяйством, э-э, медициной.",
+        "Хозяйством, медициной, образованием, фармакологическим производством.",
+    )
+
+    assert previous == "Мы занимались сельским хозяйством, э-э, медициной."
+    assert current == "образованием, фармакологическим производством."
+    assert overlap == 2
+
+
+def test_normalize_chunk_words_returns_none_without_usable_timestamps():
+    assert chunking.normalize_chunk_words(None, start_sec=10.0, end_sec=20.0) is None
+    assert (
+        chunking.normalize_chunk_words(
+            [{"text": "слово", "start": float("nan"), "end": 11.0}],
+            start_sec=10.0,
+            end_sec=20.0,
+        )
+        is None
+    )
+
+
+def test_normalize_chunk_words_trims_and_clips_to_nominal_interval():
+    words = chunking.normalize_chunk_words(
+        [
+            {"text": "повтор", "start": 8.9, "end": 10.2},
+            {"text": "новое", "start": 9.8, "end": 10.4},
+            {"text": "слово", "start": 10.3, "end": 12.0},
+            {"text": "снаружи", "start": 20.1, "end": 20.4},
+        ],
+        start_sec=10.0,
+        end_sec=20.0,
+        trim_prefix_words=1,
+    )
+
+    assert words == [
+        {"text": "новое", "start": 10.0, "end": 10.4},
+        {"text": "слово", "start": 10.4, "end": 12.0},
+    ]
+
+
+def test_normalize_chunk_words_drops_zero_duration_after_clipping():
+    words = chunking.normalize_chunk_words(
+        [
+            {"text": "до", "start": 8.0, "end": 9.0},
+            {"text": "граница", "start": 9.0, "end": 10.0},
+            {"text": "после", "start": 19.9, "end": 21.0},
+        ],
+        start_sec=10.0,
+        end_sec=20.0,
+    )
+
+    assert words == [{"text": "после", "start": 19.9, "end": 20.0}]

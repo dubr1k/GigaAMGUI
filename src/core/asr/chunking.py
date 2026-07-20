@@ -11,6 +11,8 @@ from typing import Any
 
 import numpy as np
 
+from .types import TranscriptionWord
+
 
 @dataclass(frozen=True)
 class AudioChunk:
@@ -210,49 +212,96 @@ def _aligned_tail_prefix_overlap(
 
     left = [item[0] for item in previous_words[-24:]]
     right = [item[0] for item in current_words[:24]]
-    anchor_start = None
-    for anchor_size in range(min(4, len(right)), 1, -1):
-        candidates = [
-            index
-            for index in range(0, len(left) - anchor_size + 1)
-            if left[index : index + anchor_size] == right[:anchor_size]
-        ]
-        if candidates:
-            anchor_start = candidates[-1]
-            break
-    if anchor_start is None:
+    if not left or not right:
         return 0, 0
 
-    left = left[anchor_start:]
-    blocks = [
-        block
-        for block in SequenceMatcher(None, left, right, autojunk=False).get_matching_blocks()
-        if block.size
-    ]
-    if not blocks:
+    # (matched, meaningful, total_gaps, previous_start, current_start)
+    paths: dict[tuple[int, int], tuple[int, int, int, int, int]] = {}
+    for previous_index, previous_word in enumerate(left):
+        for current_index, current_word in enumerate(right):
+            if previous_word != current_word:
+                continue
+
+            candidates: list[tuple[int, int, int, int, int]] = []
+            if current_index <= 2:
+                candidates.append(
+                    (
+                        1,
+                        int(len(previous_word) >= 3),
+                        0,
+                        previous_index,
+                        current_index,
+                    )
+                )
+
+            for previous_step in range(1, 4):
+                for current_step in range(1, 4):
+                    predecessor = paths.get(
+                        (previous_index - previous_step, current_index - current_step)
+                    )
+                    if predecessor is None:
+                        continue
+                    matched, meaningful, gaps, previous_start, current_start = predecessor
+                    candidates.append(
+                        (
+                            matched + 1,
+                            meaningful + int(len(previous_word) >= 3),
+                            gaps + previous_step + current_step - 2,
+                            previous_start,
+                            current_start,
+                        )
+                    )
+
+            if candidates:
+                paths[(previous_index, current_index)] = max(
+                    candidates,
+                    key=lambda item: (
+                        item[1],
+                        item[0],
+                        item[3],
+                        -item[2],
+                        -item[4],
+                    ),
+                )
+
+    accepted: list[tuple[int, int, int, int, int, int]] = []
+    previous_end = len(left) - 1
+    for (previous_index, current_index), path in paths.items():
+        if previous_index != previous_end:
+            continue
+        matched, meaningful, gaps, previous_start, current_start = path
+        strong_alignment = meaningful >= 3
+        two_word_alignment = (
+            matched == meaningful == 2
+            and gaps <= 1
+            and len(left[previous_start]) >= 4
+            and len(left[previous_end]) >= 4
+        )
+        if strong_alignment or two_word_alignment:
+            accepted.append(
+                (
+                    current_index + 1,
+                    matched,
+                    meaningful,
+                    gaps,
+                    previous_start,
+                    current_start,
+                )
+            )
+
+    if not accepted:
         return 0, 0
 
-    first = blocks[0]
-    if first.a != 0 or first.b != 0 or first.size < 2:
-        return 0, 0
-
-    matched = first.size
-    trim_words = first.b + first.size
-    previous_end = first.a + first.size
-    current_end = first.b + first.size
-
-    for block in blocks[1:]:
-        previous_gap = block.a - previous_end
-        current_gap = block.b - current_end
-        if previous_gap > 3 or current_gap > 3:
-            break
-        matched += block.size
-        trim_words = block.b + block.size
-        previous_end = block.a + block.size
-        current_end = block.b + block.size
-
-    if matched < 3 or trim_words < 3:
-        return 0, 0
+    trim_words, matched, _, _, _, _ = max(
+        accepted,
+        key=lambda item: (
+            item[2],
+            item[1],
+            item[4],
+            -item[3],
+            -item[5],
+        ),
+    )
     return trim_words, matched
 
 
@@ -299,3 +348,50 @@ def stitch_overlapping_text(previous: str, current: str) -> tuple[str, str, int]
     # ещё и слова вставки. Потребители режут этим значением список words, и
     # рассинхрон приводил к дублю слова на стыке либо к потере таймкодов.
     return cleaned_previous, trimmed, trim_words
+
+
+def normalize_chunk_words(
+    words: list[TranscriptionWord] | None,
+    *,
+    start_sec: float,
+    end_sec: float,
+    trim_prefix_words: int = 0,
+) -> list[TranscriptionWord] | None:
+    """Оставить слова текущего чанка только в его номинальном интервале."""
+
+    if words is None:
+        return None
+    if not math.isfinite(start_sec) or not math.isfinite(end_sec) or end_sec < start_sec:
+        raise ValueError("Границы чанка должны быть конечными и упорядоченными")
+    if trim_prefix_words < 0:
+        raise ValueError("trim_prefix_words не может быть отрицательным")
+
+    validated: list[tuple[str, float, float]] = []
+    for word in words:
+        try:
+            start = float(word["start"])
+            end = float(word["end"])
+            text = str(word["text"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not math.isfinite(start) or not math.isfinite(end) or end < start:
+            return None
+        validated.append((text, start, end))
+
+    normalized: list[TranscriptionWord] = []
+    previous_end = start_sec
+    for text, start, end in validated[trim_prefix_words:]:
+        clipped_start = max(start_sec, previous_end, start)
+        clipped_end = min(end_sec, end)
+        if clipped_end <= clipped_start:
+            continue
+        normalized.append(
+            {
+                "text": text,
+                "start": clipped_start,
+                "end": clipped_end,
+            }
+        )
+        previous_end = clipped_end
+
+    return normalized
