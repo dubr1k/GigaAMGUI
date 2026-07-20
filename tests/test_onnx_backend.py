@@ -5,6 +5,7 @@ import pytest
 import soundfile as sf
 
 from src.core.asr import onnx_backend as onnx_backend_module
+from src.core.asr.chunking import AudioChunk
 from src.core.asr.onnx_backend import OnnxBackend
 
 
@@ -193,6 +194,65 @@ def test_overlap_chunks_remove_repeated_text_and_words(tmp_path):
         "финал",
     ]
     assert len(model.recognize_calls) == 2
+
+
+def test_overlap_chunks_bound_issue_33_words_to_nominal_timeline(tmp_path, monkeypatch):
+    wav_path = tmp_path / "issue-33.wav"
+    sf.write(wav_path, np.zeros(20 * 16000, dtype=np.float32), 16000)
+    monkeypatch.setattr(
+        onnx_backend_module,
+        "plan_audio_chunks",
+        lambda *args, **kwargs: [
+            AudioChunk(0, 0, 12 * 16000, 0.0, 10.0, False),
+            AudioChunk(0, 8 * 16000, 20 * 16000, 10.0, 20.0, True),
+        ],
+    )
+    model = _FakeTimestampModel(
+        [
+            SimpleNamespace(
+                text="вопросам в мире были едины",
+                tokens=[" вопросам", " в", " мире", " были", " едины"],
+                timestamps=[7.0, 8.0, 8.2, 9.0, 9.98],
+            ),
+            SimpleNamespace(
+                text="во всем мире были едины лишнее продолжение",
+                tokens=[
+                    " во",
+                    " всем",
+                    " мире",
+                    " были",
+                    " едины",
+                    " лишнее",
+                    " продолжение",
+                ],
+                timestamps=[0.1, 0.4, 0.9, 1.3, 1.7, 1.8, 2.4],
+            ),
+        ]
+    )
+    backend = OnnxBackend(
+        segmentation_mode="overlap_chunks",
+        model_factory=lambda *args, **kwargs: model,
+        available_provider_probe=lambda: ("CPUExecutionProvider",),
+    )
+    assert backend.load()
+
+    result = backend.transcribe_longform(str(wav_path))
+
+    assert [segment["transcription"] for segment in result] == [
+        "вопросам в мире были едины",
+        "лишнее продолжение",
+    ]
+    assert [word["text"] for word in result[1]["words"]] == [
+        "лишнее",
+        "продолжение",
+    ]
+    for segment in result:
+        start, end = segment["boundaries"]
+        assert all(
+            start <= word["start"] < word["end"] <= end
+            for word in segment["words"]
+        )
+    assert result[0]["words"][-1]["end"] <= result[1]["words"][0]["start"]
 
 
 def test_vad_boundaries_drive_chunk_boundaries(tmp_path):

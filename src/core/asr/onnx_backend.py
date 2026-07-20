@@ -8,7 +8,7 @@ from typing import Any
 
 from ...config import ASR_SEGMENTATION_MODE
 from ...utils.model_cache import resolve_model_dir
-from .chunking import plan_audio_chunks, stitch_overlapping_text
+from .chunking import normalize_chunk_words, plan_audio_chunks, stitch_overlapping_text
 from .models import onnx_model_name, onnx_model_repo, validate_asr_model
 from .onnx_provider import (
     ProviderSelection,
@@ -322,6 +322,7 @@ class OnnxBackend:
                 ]
 
             if text:
+                overlap_words = 0
                 if (
                     chunk.overlaps_previous
                     and previous_result_index is not None
@@ -333,22 +334,28 @@ class OnnxBackend:
                         text,
                     )
                     results[previous_result_index]["transcription"] = previous_text
-                    if words is not None and overlap_words:
-                        # Слова из двух проходов декодера дрожат вокруг стыка:
-                        # оставляем первый проход и срезаем ровно те слова,
-                        # которые сшивка удалила из текста.
-                        words = words[overlap_words:]
-                    if not text and overlap_words:
-                        previous_start, _previous_end = results[previous_result_index][
-                            "boundaries"
-                        ]
-                        results[previous_result_index]["boundaries"] = (
-                            previous_start,
-                            min(total_seconds, float(chunk.end_sec)),
-                        )
 
                 start_time = max(0.0, float(chunk.start_sec))
                 end_time = min(total_seconds, float(chunk.end_sec))
+                if end_time < start_time:
+                    continue
+                if words is not None:
+                    words = normalize_chunk_words(
+                        words,
+                        start_sec=start_time,
+                        end_sec=end_time,
+                        trim_prefix_words=overlap_words,
+                    )
+                    if words is not None:
+                        text = " ".join(word["text"] for word in words).strip()
+                if not text and overlap_words and previous_result_index is not None:
+                    previous_start, _previous_end = results[previous_result_index][
+                        "boundaries"
+                    ]
+                    results[previous_result_index]["boundaries"] = (
+                        previous_start,
+                        end_time,
+                    )
                 if text and end_time >= start_time:
                     segment: TranscriptionSegment = {
                         "transcription": text,

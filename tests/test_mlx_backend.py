@@ -562,16 +562,17 @@ def test_word_timestamps_are_trimmed_by_overlap_stitching(monkeypatch):
     """Сшивка удаляет слова из текста — ровно столько же должно уйти из words."""
     model = _ScriptedRnnt(
         [
-            {0: [2], 3: [0], 5: [1]},  # "мир привет"
-            {0: [0], 2: [1], 5: [2]},  # "привет мир" — голова повторяет хвост
-        ]
+            {0: [2], 24: [0], 26: [1]},  # "мир привет", последнее слово пересекает cut
+            {0: [0], 2: [1], 15: [2]},  # "привет мир" — голова повторяет хвост
+        ],
+        seq_len=30,
     )
     backend = _rnnt_backend(monkeypatch, model, duration_seconds=2.0)
     backend._resolve_chunks = lambda *args, **kwargs: [
         AudioChunk(
             group=0,
             decode_start_sample=0,
-            decode_end_sample=16000,
+            decode_end_sample=24000,
             start_sec=0.0,
             end_sec=1.0,
         ),
@@ -588,8 +589,12 @@ def test_word_timestamps_are_trimmed_by_overlap_stitching(monkeypatch):
     segments = backend.transcribe_longform("/tmp/audio.wav")
 
     assert [segment["transcription"] for segment in segments] == ["мир привет", "мир"]
-    # Повторённое "привет" срезано и из текста, и из слов; оставшееся слово
-    # отсчитывается от начала окна декодирования (0.5 с), а не от start_sec.
     assert segments[1]["words"] == [
-        {"text": "мир", "start": pytest.approx(0.7), "end": pytest.approx(0.74)},
+        {"text": "мир", "start": pytest.approx(1.1), "end": pytest.approx(1.14)},
     ]
+    for segment in segments:
+        start, end = segment["boundaries"]
+        assert all(
+            start <= word["start"] < word["end"] <= end
+            for word in segment["words"]
+        )

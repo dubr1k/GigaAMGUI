@@ -8,7 +8,12 @@ import threading
 from collections.abc import Callable
 
 from ...config import ASR_SEGMENTATION_MODE, ASR_VAD_DEVICE
-from .chunking import AudioChunk, plan_audio_chunks, stitch_overlapping_text
+from .chunking import (
+    AudioChunk,
+    normalize_chunk_words,
+    plan_audio_chunks,
+    stitch_overlapping_text,
+)
 from .token_timestamps import tokens_to_words
 from .types import BackendCapabilities, TranscriptionSegment
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
@@ -399,6 +404,7 @@ class MLXBackend:
 
             text = str(text).strip()
             if text:
+                overlap_words = 0
                 if (
                     chunk.overlaps_previous
                     and previous_result_index is not None
@@ -410,18 +416,25 @@ class MLXBackend:
                         text,
                     )
                     result_segments[previous_result_index]["text"] = previous_text
-                    if words is not None and overlap_words:
-                        # Сшивка удалила из текста ровно overlap_words слов —
-                        # столько же надо снять с начала word-таймкодов.
-                        words = words[overlap_words:]
-                    if not text and overlap_words:
-                        result_segments[previous_result_index]["end"] = float(
-                            chunk.end_sec
-                        )
+                start_time = max(0.0, float(chunk.start_sec))
+                end_time = min(total_seconds, float(chunk.end_sec))
+                if end_time < start_time:
+                    continue
+                if words is not None:
+                    words = normalize_chunk_words(
+                        words,
+                        start_sec=start_time,
+                        end_sec=end_time,
+                        trim_prefix_words=overlap_words,
+                    )
+                    if words is not None:
+                        text = " ".join(word["text"] for word in words).strip()
+                if not text and overlap_words and previous_result_index is not None:
+                    result_segments[previous_result_index]["end"] = end_time
                 if text:
                     segment: dict = {
-                        "start": float(chunk.start_sec),
-                        "end": float(chunk.end_sec),
+                        "start": start_time,
+                        "end": end_time,
                         "text": text,
                     }
                     if words is not None:
