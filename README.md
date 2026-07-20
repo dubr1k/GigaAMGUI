@@ -240,5 +240,6 @@ GigaAMGUI/
 - [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
 - [GigaAM-v3 on Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
+- Разработчикам [ONNX](https://onnx.ai/) и [ONNX Runtime](https://onnxruntime.ai/) — за открытый формат моделей и кроссплатформенный движок инференса
 - [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
 - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT, optional neural noise suppression
