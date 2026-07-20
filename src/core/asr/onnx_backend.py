@@ -7,8 +7,9 @@ from collections.abc import Callable
 from typing import Any
 
 from ...config import ASR_SEGMENTATION_MODE
+from ...utils.model_cache import resolve_model_dir
 from .chunking import plan_audio_chunks, stitch_overlapping_text
-from .models import onnx_model_name, validate_asr_model
+from .models import onnx_model_name, onnx_model_repo, validate_asr_model
 from .onnx_provider import (
     ProviderSelection,
     available_onnx_providers,
@@ -55,7 +56,9 @@ class OnnxBackend:
         self.segmentation_fallback_reason: str | None = None
         self.provider_selection: ProviderSelection | None = None
         self._model_factory = model_factory
-        self._available_provider_probe = available_provider_probe or available_onnx_providers
+        self._available_provider_probe = available_provider_probe or (
+            lambda: available_onnx_providers(self.requested_provider)
+        )
         self._vad_segmenter_factory = vad_segmenter_factory or OnnxVadSegmenter
         self._vad_segmenter: VadSegmenter | None = None
         self._vad_unavailable_reason: str | None = None
@@ -69,13 +72,14 @@ class OnnxBackend:
         return onnx_asr.load_model(*args, **kwargs)
 
     def _bundled_download_root(self) -> str | None:
-        return self.model_dir
+        return self.model_dir or resolve_model_dir(onnx_model_repo(self.model_revision))
 
     def _create_model(self, selection: ProviderSelection) -> Any:
         factory = self._model_factory or self._load_onnx_model
+        model_dir = self.model_dir or resolve_model_dir(onnx_model_repo(self.model_revision))
         raw_model = factory(
             onnx_model_name(self.model_revision),
-            path=self.model_dir,
+            path=model_dir,
             quantization=self.quantization,
             providers=onnx_session_providers(selection),
             preprocessor_config={"use_numpy_preprocessors": False},
@@ -96,10 +100,14 @@ class OnnxBackend:
             self.provider_selection = selection
             self.device = selection.active
             if logger:
-                logger(
+                message = (
                     "ONNX ASR загружен: "
-                    f"{self.model_revision}, provider={selection.providers[0]}"
+                    f"{self.model_revision}, provider chain="
+                    + " → ".join(selection.providers)
                 )
+                if selection.fallback_reason:
+                    message += f"; {selection.fallback_reason}"
+                logger(message)
             return True
         except Exception as exc:
             self.model = None

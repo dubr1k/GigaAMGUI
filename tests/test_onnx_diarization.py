@@ -6,6 +6,7 @@ from src.core.diarization.base import SpeakerSegment
 from src.core.diarization.onnx_backend import OnnxDiarizationBackend
 from src.core.diarization.onnx_embeddings import EmbeddingResult
 from src.core.diarization.onnx_segmentation import SegmentationResult
+from src.core.model_preparation import PreparationState
 
 
 class _Segmenter:
@@ -117,3 +118,44 @@ def test_non_16k_audio_is_resampled_instead_of_rejected(tmp_path):
 
     assert segments
     assert seen["samples"] == pytest.approx(32_000, rel=0.01)
+
+
+def test_prepare_eagerly_downloads_and_initializes_both_onnx_models(monkeypatch):
+    from src.core.diarization import onnx_backend
+
+    calls = []
+    events = []
+    monkeypatch.setattr(onnx_backend, "hf_repo_is_cached", lambda _repo: False)
+
+    class Segmenter:
+        def _ensure_session(self):
+            calls.append("segmentation")
+
+        def unload(self):
+            pass
+
+    class Extractor:
+        def _ensure_model(self):
+            calls.append("embeddings")
+
+        def unload(self):
+            pass
+
+    backend = OnnxDiarizationBackend(
+        segmenter=Segmenter(),
+        embedding_extractor=Extractor(),
+    )
+
+    prepared = backend.prepare(
+        report=lambda state, **kwargs: events.append((state, kwargs)),
+        cancel_check=lambda: False,
+    )
+
+    assert prepared is backend
+    assert calls == ["segmentation", "embeddings"]
+    assert [state for state, _kwargs in events] == [
+        PreparationState.DOWNLOADING,
+        PreparationState.LOADING,
+        PreparationState.DOWNLOADING,
+        PreparationState.LOADING,
+    ]

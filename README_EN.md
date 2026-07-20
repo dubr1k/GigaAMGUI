@@ -20,6 +20,7 @@ Russian speech-to-text transcription for audio and video powered by **GigaAM-v3*
 - [Configuration](#configuration)
 - [Intelligent audio preprocessing](#intelligent-audio-preprocessing)
 - [ASR backend](#asr-backend)
+- [Offline builds](#offline-builds)
 - [Project layout](#project-layout)
 - [Screenshots](#screenshots)
 - [Credits](#credits)
@@ -73,8 +74,11 @@ speakers, supports at most four voices, and does not require `HF_TOKEN`.
 ASR-model-independent diarization was verified with `v3_e2e_rnnt`,
 `multilingual_ctc` (220M), and `multilingual_large_ctc` (600M). Both CTC models
 use the PyTorch backend.
-CUDA is recommended; CPU is much slower. NeMo does not support MPS, so it falls
-back to CPU. The model (~471 MB) is downloaded on first use. The Space's NeMo 2.5.3 pin
+CUDA is recommended; CPU is much slower. On Apple Silicon, Sortformer runs on
+MPS. If a particular NeMo operation fails on MPS, the application retries once
+on CPU and records the fallback reason in the processing log. The model
+(~471 MB) is downloaded after the first **Start processing** click with
+Sortformer selected and remains in the user cache. The Space's NeMo 2.5.3 pin
 is intentionally avoided because later releases fix known vulnerabilities; the
 optional requirements file pins the reviewed 2.7 branch.
 For the Web UI, build the extended image with
@@ -142,6 +146,21 @@ python cli.py --audio-preprocessing auto -f noisy.wav
 
 On macOS Apple Silicon, `auto` uses [gigaam-mlx](https://github.com/aystream/gigaam-mlx) and falls back to PyTorch when necessary. On other platforms, `auto` currently keeps PyTorch as the validated default. The new `onnx` backend uses `onnx-asr==0.12.0`, does not import PyTorch, and supports CPU, CUDA, TensorRT, CoreML, and DirectML.
 
+Portable 1.3.1 builds align ONNX acceleration with the selected device:
+
+- Windows/Linux ship one `onnxruntime-gpu` distribution. `auto` resolves
+  `CUDAExecutionProvider → CPUExecutionProvider` and reuses CUDA/cuDNN from the
+  selected hot-swappable PyTorch runtime (`cu124`/`cu128`), so ASR and
+  Sortformer do not unexpectedly use different devices;
+- macOS ships the regular `onnxruntime` and resolves
+  `CoreMLExecutionProvider → CPUExecutionProvider`;
+- DirectML and TensorRT remain explicit advanced choices and are accepted only
+  when the installed ONNX Runtime exposes them.
+
+Selecting CPU never downloads a CUDA runtime. An already selected and installed
+CUDA runtime is activated before provider discovery, and the actual provider
+chain is printed in the model-preparation log.
+
 ```bash
 python cli.py --backend auto -f audio.wav
 python cli.py --backend mlx -f audio.wav
@@ -168,7 +187,7 @@ ONNX diarization is also available without PyTorch or an HF token:
 python cli.py --backend onnx --diarize --diarization-backend onnx -f audio.wav
 ```
 
-It preserves overlapping-speech powerset classes, extracts WeSpeaker embeddings, and performs constrained clustering. Pyannote and Sortformer remain validated fallback backends; ONNX becomes the default only after the local WER/CER and DER/JER quality gates pass.
+It preserves overlapping-speech powerset classes, extracts WeSpeaker embeddings, and performs constrained clustering. Pyannote and Sortformer remain validated fallback backends; ONNX becomes the default only after the local WER/CER and DER/JER quality gates pass. Native Windows always routes Sortformer through ONNX without NeMo. Linux/macOS use native NeMo when it is installed and otherwise select portable ONNX automatically. ONNX Sortformer uses CUDA→CPU on Windows/Linux and CoreML→CPU on macOS.
 
 Run comparisons on a local licensed corpus:
 
@@ -176,6 +195,24 @@ Run comparisons on a local licensed corpus:
 python scripts/benchmark_asr_backends.py corpus/asr.json --backend onnx --backend pytorch --output asr-metrics.json
 python scripts/benchmark_diarization_backends.py corpus/diarization.json --backend onnx --backend pyannote --output diarization-metrics.json
 ```
+
+## Offline builds
+
+Each release provides two variants:
+
+- the standard build checks the selected ASR, preprocessing, and diarization
+  chain after **Start processing**, logs every cache check/download/load and the
+  selected device/provider, then downloads only missing artifacts;
+- `*-offline.zip` includes the base ONNX ASR, VAD, and
+  Pyannote+WeSpeaker diarization chain in a read-only `models` directory next to
+  the executable.
+
+Sortformer, multilingual/MLX models, and gated pyannote models not present in
+the offline bundle are downloaded to the writable user cache when selected and
+network access is available. Pyannote still requires a valid read `HF_TOKEN`
+and accepted terms for every gated repository. Preparation runs once before the
+first file in a batch; a component-specific error stops the queue before
+processing starts.
 
 ## Project layout
 

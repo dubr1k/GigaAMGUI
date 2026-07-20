@@ -88,7 +88,7 @@ def test_offline_builder_covers_the_whole_onnx_chain():
 
 
 def test_offline_builder_skips_blobs():
-    """Копирование вместе с blobs удваивает размер: 1.7 ГБ вместо 884 МБ."""
+    """Копирование вместе с blobs почти удваивает и без того большой архив."""
     text = BUILDER_PATH.read_text(encoding="utf-8")
 
     assert '("refs", "snapshots")' in text
@@ -128,6 +128,15 @@ def test_offline_smoke_refuses_a_build_without_bundled_models():
     assert "Офлайн-сборка должна умолчанием выбирать onnx" in entrypoint
 
 
+def test_ci_smoke_tests_sortformer_onnx_inside_windows_portable():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    entrypoint = Path("app.py").read_text(encoding="utf-8")
+
+    assert "--sortformer-onnx-smoke" in entrypoint
+    assert "--sortformer-onnx-smoke" in workflow
+    assert "Smoke-test Windows Sortformer ONNX" in workflow
+
+
 def test_builder_survives_a_windows_console(tmp_path):
     """Консоль Windows — cp1252, и кириллица в выводе роняла сборку моделей."""
     import subprocess
@@ -152,20 +161,26 @@ def test_ci_gates_offline_bundle_size():
     assert "Офлайн-архив слишком велик для GitHub Release" in text
 
 
-def test_config_points_huggingface_at_the_bundled_cache(tmp_path, monkeypatch):
-    """Ради этого всё и делается: офлайн-сборка не должна лезть в сеть."""
+def test_config_keeps_huggingface_writable_and_tracks_bundled_cache(tmp_path, monkeypatch):
+    """Встроенные модели читаются отдельно, а недостающие качаются в user cache."""
     import src.config as config
 
     cache = _make_cache(tmp_path)
+    writable = tmp_path / "writable-hf"
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(
         "src.utils.runtime_manager.bundled_hf_cache_dir",
         lambda frozen=None: cache,
     )
+    monkeypatch.setattr(
+        "src.utils.runtime_manager.hf_cache_dir",
+        lambda: writable,
+    )
 
     config._setup_huggingface_cache()
 
-    assert Path(os.environ["HF_HOME"]) == cache
+    assert Path(os.environ["HF_HOME"]) == writable
+    assert config.BUNDLED_MODELS_DIR == cache
 
 
 def test_offline_bundle_switches_default_backends_to_onnx():

@@ -18,6 +18,107 @@
 - Настройки в GUI
 - История обработанных файлов
 
+## [1.3.1] - 2026-07-20
+
+### Исправлено
+
+- Issue #32: native Windows больше не пытается импортировать неподдерживаемый
+  NVIDIA NeMo при выборе Sortformer. Backend всегда маршрутизируется в
+  независимую реализацию Streaming Sortformer v2.1 через ONNX Runtime.
+- Загрузка моделей больше не начинается от одного выбора пункта в интерфейсе.
+  После нажатия «Начать обработку» приложение сначала готовит всю выбранную
+  цепочку и только затем переходит к первому файлу.
+- Недостающие ASR-веса, DeepFilterNet, Pyannote, ONNX-диаризация и Sortformer
+  теперь обнаруживаются до обработки. Ошибка загрузки относится к конкретному
+  компоненту и не маскируется успешным стартом очереди.
+- Папка моделей из offline-архива больше не используется как каталог записи.
+  Она остаётся read-only, а модели, отсутствующие в комплекте, сохраняются в
+  пользовательский Hugging Face-кэш приложения.
+- Проверка локальных PyTorch-весов учитывает выбранную модель GigaAM, включая
+  CTC/RNNT-варианты и соответствующий tokenizer, а не только `v3_e2e_rnnt`.
+- При явно заданном числе спикеров ONNX-диаризация объединяет несколько
+  локальных дорожек одного окна максимумом вероятностей. Прежнее усреднение
+  могло опускать реальную речь ниже onset-порога и терять фрагменты реплик.
+- Windows/Linux portable теперь содержат один `onnxruntime-gpu` вместо
+  конфликтующих CPU/GPU-дистрибутивов. CPU provider остаётся внутри GPU-wheel.
+- ONNX `auto` на Windows/Linux однозначно выбирает CUDA → CPU. DirectML больше
+  не перехватывает `auto`, но остаётся доступен как явная advanced-настройка.
+- Перед обнаружением CUDA provider приложение активирует уже выбранный
+  `cu124`/`cu128` runtime и вызывает `onnxruntime.preload_dlls()`, поэтому ONNX
+  использует те же CUDA/cuDNN, что и PyTorch ASR.
+- Native NeMo Sortformer на Apple Silicon теперь использует MPS. При ошибке
+  transfer/inference выполняется ровно один повтор на CPU, причина показывается
+  в журнале, фиктивная односпикерная разметка не создаётся.
+
+### Добавлено
+
+- Portable Sortformer ONNX без зависимости от PyTorch/NeMo: закреплены
+  репозиторий `Scrybl/diar_streaming_sortformer_4spk-v2.1`, точная ревизия и
+  SHA-256 модели; перед inference проверяются checksum и имена входов/выходов.
+- Общий контракт подготовки компонентов со стадиями `checking`, `downloading`,
+  `loading`, `ready`, `failed` и `cancelled`.
+- Двуязычный журнал GUI для подготовки моделей. Для DeepFilterNet дополнительно
+  показываются объём и процент скачивания с шагом 10%.
+- Реальный CI smoke для Windows portable: собранный `.exe` скачивает Sortformer
+  ONNX, открывает CPU-сессию ONNX Runtime и выполняет один streaming inference.
+- Реальный CoreML smoke на macOS portable и CPU-fallback smoke на Windows/Linux;
+  отчёт содержит requested provider и providers созданной ORT-сессии.
+- В обработочный журнал добавлены provider chain для ONNX, device для NeMo и
+  явное сообщение о fallback MPS → CPU.
+- MIT-лицензия `parakeet-rs`, алгоритм которого использован как референс для
+  streaming state и постобработки portable Sortformer.
+
+### Как теперь работает подготовка
+
+1. Выбор backend или модели в GUI ничего не скачивает.
+2. После «Начать обработку» строится план только для выбранной конфигурации:
+   ASR; DeepFilterNet для режимов `auto`/`denoise`; диаризация, если она включена.
+3. Для каждого компонента проверяются bundled cache и пользовательский cache.
+   Найденные веса сразу загружаются; отсутствующие сначала скачиваются.
+4. Все компоненты готовятся один раз до первого файла и переиспользуются всей
+   очередью. При ошибке очередь не стартует, а журнал показывает проблемный этап.
+5. Отмена до или между этапами завершает подготовку без запуска обработки.
+
+Поведение Sortformer зависит от платформы и типа сборки:
+
+- **Windows portable:** NeMo не ищется и не устанавливается. Используется
+  Sortformer ONNX; публичная модель скачивается при первом запуске обработки.
+  В сборке находится `onnxruntime-gpu`, а `auto` выбирает CUDA → CPU. CUDA/cuDNN
+  берутся из выбранного приложением runtime `cu124`/`cu128`.
+- **macOS full `.app`:** пакет NeMo уже встроен в приложение. При первом запуске
+  скачиваются только официальные веса NVIDIA Sortformer; `HF_TOKEN` не нужен.
+  NeMo работает через MPS с диагностируемым CPU fallback.
+- **Linux portable:** как и Windows, содержит `onnxruntime-gpu` с цепочкой
+  CUDA → CPU. При установленном NeMo используется официальный backend; без него
+  автоматически выбирается Sortformer ONNX.
+- **macOS ONNX:** `auto` использует CoreML → CPU. Это относится к ONNX ASR,
+  ONNX-диаризации и portable Sortformer.
+- **Pyannote:** при первом запуске проверяются все необходимые gated-модели.
+  Нужны действующий `HF_TOKEN` и принятые условия каждой модели.
+- **Offline-архив:** содержит базовую ONNX-цепочку ASR, VAD и кластерную
+  Pyannote+WeSpeaker-диаризацию. Sortformer намеренно не включён из-за размера;
+  при его выборе веса докачиваются в пользовательский кэш, если сеть доступна.
+
+### Что проверить перед публикацией
+
+| Платформа/сценарий | Ожидаемый результат |
+|---|---|
+| Windows portable, NVIDIA + `cu124`/`cu128`, чистый кэш, Sortformer | После старта видны `Проверка → Скачивание → Загрузка → Готово`; NeMo не импортируется; provider chain — CUDA → CPU, inference выполняется на CUDA. |
+| Windows portable, CPU выбран явно | CUDA runtime не скачивается; Sortformer выполняется через CPUExecutionProvider. |
+| Windows portable, повторный запуск | Модель берётся из пользовательского кэша без повторного скачивания. |
+| Linux portable, NVIDIA | Provider chain — CUDA → CPU; actual CUDA smoke возвращает 124 кадра и 4 канала спикеров. |
+| Linux/Windows CI без GPU | Frozen binary выполняет `--selfcheck` и реальный Sortformer ONNX smoke через CPU fallback. |
+| macOS portable | Реальный Sortformer ONNX smoke создаёт CoreML → CPU session и выполняет streaming inference. |
+| macOS full `.app`, NeMo | Bundle имеет версию 1.3.1; с `PYTORCH_ENABLE_MPS_FALLBACK=0` native Sortformer обрабатывает тест двух спикеров на MPS. |
+| macOS MPS unsupported-op | В журнале видна исходная MPS-ошибка и один повтор на CPU; результат не подменяется фиктивным спикером. |
+| Linux/macOS без NeMo | Выбор Sortformer автоматически запускает ONNX-вариант и не требует установки NeMo. |
+| Pyannote с новым кэшем | С валидным токеном и принятыми лицензиями скачиваются все три репозитория; без доступа показывается исходная ошибка конкретной модели. |
+| ONNX-диаризация, `num_speakers` задан | Число голосов соблюдается, речь не исчезает при объединении локальных дорожек, overlap сохраняется. |
+| Offline-архив без сети | Базовые ASR/VAD/ONNX-диаризация проходят `HF_HUB_OFFLINE=1 --offline-models-smoke`; запись рядом с бинарником не требуется. |
+| Offline-архив + отсутствующая модель | При наличии сети новая модель попадает в пользовательский cache, а папка `models` рядом с приложением не меняется. |
+| Batch из нескольких файлов | Подготовка выполняется один раз до первого файла; на следующих файлах повторных загрузок нет. |
+| RU/EN GUI и ошибка сети | Все стадии журнала локализованы; ошибка скачивания останавливает очередь до первого файла и называет компонент. |
+
 ## [1.3.0] - 2026-07-19
 
 ### Добавлено
@@ -119,5 +220,8 @@
 
 ---
 
-[Unreleased]: https://github.com/your-username/GigaAMv3/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/your-username/GigaAMv3/releases/tag/v1.0.0
+[Unreleased]: https://github.com/dubr1k/GigaAMGUI/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/dubr1k/GigaAMGUI/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/dubr1k/GigaAMGUI/releases/tag/v1.3.0
+[1.1.2]: https://github.com/dubr1k/GigaAMGUI/releases/tag/v1.1.2
+[1.0.0]: https://github.com/dubr1k/GigaAMGUI/releases/tag/v1.0.0

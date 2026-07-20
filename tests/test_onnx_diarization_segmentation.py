@@ -1,5 +1,9 @@
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 
+from src.core.diarization import onnx_segmentation as segmentation_module
 from src.core.diarization.onnx_segmentation import OnnxSegmentation
 
 
@@ -49,3 +53,24 @@ def test_long_audio_keeps_overlapping_window_alignment():
 
     assert result.window_starts.tolist() == [0.0, 5.0]
     assert len(session.calls) == 2
+
+
+def test_segmentation_uses_matching_bundled_snapshot(monkeypatch, tmp_path):
+    bundled = tmp_path / "segmentation"
+    calls = []
+    session = _Session(np.full((4, 7), 1 / 7, dtype=np.float32))
+    vad = SimpleNamespace(_model=session)
+    monkeypatch.setattr(
+        segmentation_module,
+        "resolve_model_dir",
+        lambda repo_id, **_kwargs: bundled,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "onnx_asr",
+        SimpleNamespace(load_vad=lambda *args, **kwargs: calls.append((args, kwargs)) or vad),
+    )
+
+    OnnxSegmentation()._ensure_session()
+
+    assert calls[0][1]["path"] == bundled

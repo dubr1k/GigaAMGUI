@@ -52,6 +52,22 @@ def test_bundled_download_root_prefers_local_bundle(tmp_path, monkeypatch):
     assert backend._bundled_download_root() == str(model_dir)
 
 
+def test_bundled_download_root_does_not_capture_a_different_selected_model(
+    tmp_path,
+    monkeypatch,
+):
+    meipass = tmp_path / "meipass"
+    model_dir = meipass / "models" / "gigaam"
+    model_dir.mkdir(parents=True)
+    (model_dir / "v3_e2e_rnnt.ckpt").write_bytes(b"0")
+    (model_dir / "v3_e2e_rnnt_tokenizer.model").write_bytes(b"0")
+    monkeypatch.setattr(__import__("sys"), "_MEIPASS", str(meipass), raising=False)
+
+    backend = PyTorchBackend(revision="v3_e2e_ctc")
+
+    assert backend._bundled_download_root() is None
+
+
 def test_transcribe_longform_filters_empty_text_and_limits_chunks(tmp_path, monkeypatch):
     wav_path = tmp_path / "sample.wav"
     sf.write(wav_path, np.zeros(160000, dtype=np.float32), 16000)

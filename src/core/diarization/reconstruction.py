@@ -34,15 +34,24 @@ def reconstruct_speaker_segments(
 
     for window_index, window_start in enumerate(segmentation.window_starts):
         start_frame = int(round(float(window_start) / segmentation.frame_step))
-        for local_speaker in range(local_count):
-            label = int(labels[window_index * local_count + local_speaker])
-            if label < 0:
-                continue
-            end_frame = min(total_frames, start_frame + probabilities.shape[1])
-            length = end_frame - start_frame
-            if length <= 0:
-                continue
-            sums[start_frame:end_frame, label] += probabilities[window_index, :length, local_speaker]
+        end_frame = min(total_frames, start_frame + probabilities.shape[1])
+        length = end_frame - start_frame
+        if length <= 0:
+            continue
+        window_labels = labels[
+            window_index * local_count : (window_index + 1) * local_count
+        ]
+        for label in np.unique(window_labels[window_labels >= 0]):
+            # При заданном num_speakers cannot-link намеренно ослабляется, и
+            # несколько локальных дорожек одного окна могут стать одним
+            # глобальным голосом. Их надо объединять максимумом внутри окна;
+            # среднее делило одиночную речь на число дорожек и стирало её ниже
+            # onset-порога. Между перекрывающимися окнами среднее сохраняется.
+            local_mask = window_labels == label
+            window_probability = probabilities[window_index, :length, :][:, local_mask].max(
+                axis=1
+            )
+            sums[start_frame:end_frame, label] += window_probability
             counts[start_frame:end_frame, label] += 1
 
     global_probabilities = np.divide(

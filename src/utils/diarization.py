@@ -9,13 +9,17 @@
 import inspect
 import logging
 import os
+import sys
 import threading
 import warnings
 from contextlib import nullcontext
 from pathlib import Path
 
 from ..core.diarization.base import SpeakerSegment
+from ..core.diarization.factory import should_use_sortformer_onnx
 from ..core.diarization.mapping import SpeakerMappingMixin
+from ..core.model_preparation import PreparationCancelled, PreparationState
+from .model_cache import hf_repo_is_cached
 
 # Патч pyannote применяется лениво в _load_pipeline (а не при импорте модуля),
 # чтобы простой импорт src.utils не переписывал pyannote глобально, когда
@@ -261,6 +265,24 @@ class DiarizationManager(SpeakerMappingMixin):
             logger.warning(f"Не удалось переместить pipeline на {self.device}: {e}")
 
         return pipeline
+
+    def prepare(self, report=None, cancel_check=None):
+        """Скачать недостающие веса и загрузить pyannote до первого файла."""
+        emit = report or (lambda _state, **_kwargs: None)
+        cancelled = cancel_check or (lambda: False)
+        if cancelled():
+            raise PreparationCancelled("Подготовка Pyannote отменена")
+        missing = [repo for repo in _DIARIZATION_REQUIRED_REPOS if not hf_repo_is_cached(repo)]
+        if missing:
+            emit(
+                PreparationState.DOWNLOADING,
+                message="Недостающие модели Pyannote: " + ", ".join(missing),
+            )
+        emit(PreparationState.LOADING, message=_DIARIZATION_MODEL_ID)
+        _ = self.pipeline
+        if cancelled():
+            raise PreparationCancelled("Подготовка Pyannote отменена")
+        return self
 
     def diarize(
         self,
@@ -620,6 +642,7 @@ class SortformerDiarizationManager(DiarizationManager):
         self._pipeline = None
         self._inference_lock = self._shared_inference_lock
         self._inference_context = nullcontext
+        self.last_fallback_reason: str | None = None
 
     @property
     def pipeline(self):
@@ -636,19 +659,44 @@ class SortformerDiarizationManager(DiarizationManager):
 
     @staticmethod
     def _resolve_sortformer_device(device: str) -> str:
-        """NeMo поддерживает CUDA/CPU; MPS пока оставляем на безопасном CPU."""
+        """Выбрать CUDA/MPS/CPU без неявного переноса MPS на CPU."""
         if device not in {"auto", "cuda", "cpu", "mps"}:
             raise ValueError(f"Неподдерживаемое устройство Sortformer: {device}")
-        if device in {"cpu", "mps"}:
+        if device == "cpu":
             return "cpu"
         try:
             import torch
 
-            if torch.cuda.is_available():
+            if device in {"auto", "cuda"} and torch.cuda.is_available():
                 return "cuda"
+            mps = getattr(getattr(torch, "backends", None), "mps", None)
+            if device in {"auto", "mps"} and mps is not None and mps.is_available():
+                return "mps"
         except ImportError:
             pass
         return "cpu"
+
+    def _fallback_to_cpu(self) -> None:
+        """Сбросить нерабочий MPS pipeline и лениво загрузить отдельный CPU."""
+        cls = type(self)
+        failed_pipeline = self._pipeline
+        with self._shared_load_lock:
+            if cls._shared_pipelines.get("mps") is failed_pipeline:
+                cls._shared_pipelines.pop("mps", None)
+                cls._shared_inference_contexts.pop("mps", None)
+            self._pipeline = None
+            self._inference_context = nullcontext
+            self.device = "cpu"
+        _ = self.pipeline
+
+    def _run_sortformer(self, audio_path: Path):
+        with self._inference_lock:
+            pipeline = self.pipeline
+            with self._inference_context():
+                return pipeline.diarize(
+                    audio=[str(audio_path)],
+                    override_config=self._diarize_config(),
+                )
 
     def _load_pipeline(self):
         try:
@@ -676,6 +724,28 @@ class SortformerDiarizationManager(DiarizationManager):
         modules._check_streaming_parameters()
         logger.info("Модель %s загружена на %s", _SORTFORMER_MODEL_ID, self.device)
         return model
+
+    def prepare(self, report=None, cancel_check=None):
+        """Скачать и загрузить NeMo Sortformer до обработки первого файла."""
+        emit = report or (lambda _state, **_kwargs: None)
+        cancelled = cancel_check or (lambda: False)
+        if cancelled():
+            raise PreparationCancelled("Подготовка Sortformer отменена")
+        cached = hf_repo_is_cached(_SORTFORMER_MODEL_ID)
+        if not cached:
+            emit(
+                PreparationState.DOWNLOADING,
+                message=f"Sortformer NeMo ({_SORTFORMER_MODEL_ID})",
+            )
+        emit(
+            PreparationState.LOADING,
+            message=f"Sortformer NeMo (device={self.device})",
+            cached=cached,
+        )
+        _ = self.pipeline
+        if cancelled():
+            raise PreparationCancelled("Подготовка Sortformer отменена")
+        return self
 
     @staticmethod
     def _diarize_config():
@@ -719,13 +789,18 @@ class SortformerDiarizationManager(DiarizationManager):
 
         audio_path = Path(audio_path)
         try:
-            with self._inference_lock:
-                pipeline = self.pipeline
-                with self._inference_context():
-                    predicted = pipeline.diarize(
-                        audio=[str(audio_path)],
-                        override_config=self._diarize_config(),
-                    )
+            try:
+                predicted = self._run_sortformer(audio_path)
+            except Exception as exc:
+                if self.device != "mps":
+                    raise
+                self.last_fallback_reason = f"MPS: {exc}; использован CPU"
+                logger.warning(
+                    "Sortformer не выполнился на MPS (%s); повторяем на CPU",
+                    exc,
+                )
+                self._fallback_to_cpu()
+                predicted = self._run_sortformer(audio_path)
             if not predicted or not isinstance(predicted, (list, tuple)):
                 raise ValueError("Sortformer не вернул результаты")
             raw_segments = predicted[0]
@@ -798,6 +873,17 @@ def get_diarization_manager(
             model_dir=kwargs.pop("model_dir", None),
         )
     if backend == "sortformer":
+        if should_use_sortformer_onnx(
+            platform_name=sys.platform,
+            nemo_available=kwargs.pop("nemo_available", None),
+        ):
+            from ..core.diarization.sortformer_onnx import SortformerOnnxDiarizationManager
+
+            return SortformerOnnxDiarizationManager(
+                device=device,
+                provider=kwargs.pop("provider", "auto"),
+                model_dir=kwargs.pop("model_dir", None),
+            )
         return SortformerDiarizationManager(device=device)
     return DiarizationManager(
         hf_token=hf_token,

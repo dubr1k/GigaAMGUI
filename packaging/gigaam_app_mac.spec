@@ -107,6 +107,7 @@ hiddenimports += onnx_h
 datas += [
     (os.path.join(project_root, "src"), "src"),
     (os.path.join(project_root, "assets", "icon.ico"), "."),
+    (os.path.join(project_root, "licenses", "parakeet-rs-MIT.md"), "licenses"),
 ]
 
 bundled_gigaam_dir = os.path.join(project_root, "models", "gigaam")
@@ -221,8 +222,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "GigaAM Transcriber",
         "CFBundleDisplayName": "GigaAM Transcriber",
-        "CFBundleShortVersionString": "1.3.0",
-        "CFBundleVersion": "1.3.0",
+        "CFBundleShortVersionString": "1.3.1",
+        "CFBundleVersion": "1.3.1",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
         "CFBundleDocumentTypes": [

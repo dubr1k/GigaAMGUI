@@ -17,6 +17,7 @@ import tempfile
 import threading
 import urllib.request
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -120,7 +121,14 @@ class DeepFilterBinaryManager:
         )
 
     @classmethod
-    def _download(cls, url: str, target: Path) -> None:
+    def _download(
+        cls,
+        url: str,
+        target: Path,
+        *,
+        progress_callback: Callable[[int, int | None], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> None:
         if not cls._trusted_download_url(url):
             raise RuntimeError("DeepFilterNet download URL must use trusted GitHub HTTPS")
         request = urllib.request.Request(url, headers={"User-Agent": "GigaAMGUI-audio-enhancement"})
@@ -130,11 +138,14 @@ class DeepFilterBinaryManager:
             final_url = response.geturl()
             if not cls._trusted_download_url(final_url):
                 raise RuntimeError("DeepFilterNet download redirected outside trusted GitHub HTTPS")
-            content_length = response.headers.get("Content-Length")
-            if content_length and int(content_length) > cls._max_download_bytes:
+            content_length_header = response.headers.get("Content-Length")
+            content_length = int(content_length_header) if content_length_header else None
+            if content_length and content_length > cls._max_download_bytes:
                 raise RuntimeError("DeepFilterNet download exceeds the size limit")
             downloaded = 0
             while True:
+                if cancel_check and cancel_check():
+                    raise InterruptedError("Загрузка DeepFilterNet отменена")
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
@@ -142,10 +153,29 @@ class DeepFilterBinaryManager:
                 if downloaded > cls._max_download_bytes:
                     raise RuntimeError("DeepFilterNet download exceeds the size limit")
                 output.write(chunk)
+                if progress_callback:
+                    progress_callback(downloaded, content_length)
 
-    def ensure(self) -> str:
+    def is_ready(self) -> bool:
+        if self.asset is None:
+            return False
+        target = self.cache_dir / self.asset.filename
+        return (
+            not target.is_symlink()
+            and target.is_file()
+            and _sha256(target) == self.asset.sha256
+        )
+
+    def ensure(
+        self,
+        *,
+        progress_callback: Callable[[int, int | None], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> str:
         if self.asset is None:
             raise RuntimeError("DeepFilterNet binary is unavailable for this OS/architecture")
+        if cancel_check and cancel_check():
+            raise InterruptedError("Загрузка DeepFilterNet отменена")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         target = self.cache_dir / self.asset.filename
         with self._download_lock:
@@ -158,7 +188,15 @@ class DeepFilterBinaryManager:
             target.unlink(missing_ok=True)
             temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.download")
             try:
-                self._download(self.asset.url, temporary)
+                if progress_callback is None and cancel_check is None:
+                    self._download(self.asset.url, temporary)
+                else:
+                    self._download(
+                        self.asset.url,
+                        temporary,
+                        progress_callback=progress_callback,
+                        cancel_check=cancel_check,
+                    )
                 actual = _sha256(temporary)
                 if actual != self.asset.sha256:
                     raise RuntimeError(

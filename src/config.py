@@ -111,17 +111,20 @@ def _setup_huggingface_cache():
         if 'HF_HUB_DISABLE_SYMLINKS_WARNING' not in os.environ:
             os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 
-    # Если HF_HOME не задан явно — используем общий кэш приложения.
+    # Встроенный кэш служит только read-only источником готовых snapshots.
+    # HF_HOME обязан оставаться пользовательским и доступным на запись: иначе
+    # выбор модели, которой нет в offline-наборе, пытается писать рядом с exe.
     global BUNDLED_MODELS_DIR
+    try:
+        from .utils.runtime_manager import bundled_hf_cache_dir, hf_cache_dir
+
+        BUNDLED_MODELS_DIR = bundled_hf_cache_dir()
+        hf_dir = hf_cache_dir()
+    except Exception:
+        BUNDLED_MODELS_DIR = None
+        hf_dir = Path("C:/GigaAMGUICash/hf")
+
     if 'HF_HOME' not in os.environ:
-        try:
-            from .utils.runtime_manager import bundled_hf_cache_dir, hf_cache_dir
-            # Офлайн-сборка везёт модели папкой рядом с собой: без этой ветки
-            # приложение полезло бы за ними в сеть, хотя они уже лежат рядом.
-            BUNDLED_MODELS_DIR = bundled_hf_cache_dir()
-            hf_dir = BUNDLED_MODELS_DIR or hf_cache_dir()
-        except Exception:
-            hf_dir = Path("C:/GigaAMGUICash/hf")
         try:
             hf_dir.mkdir(parents=True, exist_ok=True)
             os.environ['HF_HOME'] = str(hf_dir)

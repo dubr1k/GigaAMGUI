@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from src.core.model_preparation import PreparationState
 from src.core.processor import TranscriptionProcessor
 from src.utils import diarization
 
@@ -30,6 +31,7 @@ def test_factory_builds_sortformer_without_hf_token():
         backend="sortformer",
         hf_token=None,
         device="cpu",
+        nemo_available=True,
     )
 
     assert isinstance(manager, diarization.SortformerDiarizationManager)
@@ -64,6 +66,84 @@ def test_sortformer_pipeline_is_shared_process_wide(monkeypatch):
     assert first.pipeline is shared_model
     assert second.pipeline is shared_model
     assert len(loads) == 1
+
+
+def test_sortformer_prepare_checks_its_own_model_not_pyannote(monkeypatch):
+    events = []
+    checked = []
+    monkeypatch.setattr(
+        diarization,
+        "hf_repo_is_cached",
+        lambda repo: checked.append(repo) or False,
+    )
+    manager = diarization.SortformerDiarizationManager(device="cpu")
+    manager._pipeline = object()
+
+    prepared = manager.prepare(
+        report=lambda state, **kwargs: events.append((state, kwargs)),
+        cancel_check=lambda: False,
+    )
+
+    assert prepared is manager
+    assert checked == ["nvidia/diar_streaming_sortformer_4spk-v2.1"]
+    assert [state for state, _ in events] == [
+        PreparationState.DOWNLOADING,
+        PreparationState.LOADING,
+    ]
+
+
+def test_sortformer_auto_prefers_mps_when_cuda_is_unavailable(monkeypatch):
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+        backends=types.SimpleNamespace(
+            mps=types.SimpleNamespace(is_available=lambda: True),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert diarization.SortformerDiarizationManager._resolve_sortformer_device("auto") == "mps"
+
+
+def test_sortformer_explicit_mps_is_honored_when_available(monkeypatch):
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+        backends=types.SimpleNamespace(
+            mps=types.SimpleNamespace(is_available=lambda: True),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert diarization.SortformerDiarizationManager._resolve_sortformer_device("mps") == "mps"
+
+
+def test_sortformer_mps_inference_retries_once_on_cpu(monkeypatch, caplog):
+    class FailingMpsModel:
+        def diarize(self, **_kwargs):
+            raise RuntimeError("unsupported MPS operator")
+
+    class CpuModel:
+        def diarize(self, **_kwargs):
+            return [["0.00 1.00 speaker_0"]]
+
+    manager = diarization.SortformerDiarizationManager(device="cpu")
+    manager.device = "mps"
+    manager._pipeline = FailingMpsModel()
+    manager._diarize_config = lambda: object()
+    cpu_model = CpuModel()
+
+    def switch_to_cpu():
+        manager.device = "cpu"
+        manager._pipeline = cpu_model
+
+    monkeypatch.setattr(manager, "_fallback_to_cpu", switch_to_cpu)
+
+    result = manager.diarize("/tmp/audio.wav")
+
+    assert [(item.start, item.end, item.speaker) for item in result] == [
+        (0.0, 1.0, "Спикер №1")
+    ]
+    assert "повторяем на CPU" in caplog.text
+    assert manager.last_fallback_reason == "MPS: unsupported MPS operator; использован CPU"
 
 
 def test_sortformer_loads_v21_with_official_high_latency_configuration(monkeypatch):

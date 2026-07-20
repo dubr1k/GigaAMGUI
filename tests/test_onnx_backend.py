@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from src.core.asr import onnx_backend as onnx_backend_module
 from src.core.asr.onnx_backend import OnnxBackend
 
 
@@ -89,6 +90,29 @@ def test_bundled_download_root_returns_explicit_model_directory(tmp_path):
     backend = OnnxBackend(model_dir=str(tmp_path))
 
     assert backend._bundled_download_root() == str(tmp_path)
+
+
+def test_load_uses_matching_bundled_asr_snapshot_when_path_is_not_explicit(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+    raw_model = _FakeTimestampModel()
+    monkeypatch.setattr(
+        onnx_backend_module,
+        "resolve_model_dir",
+        lambda repo_id, **_kwargs: tmp_path / repo_id.replace("/", "--"),
+    )
+    backend = OnnxBackend(
+        model="v3_e2e_rnnt",
+        provider="cpu",
+        model_factory=lambda *args, **kwargs: calls.append((args, kwargs)) or raw_model,
+        available_provider_probe=lambda: ("CPUExecutionProvider",),
+    )
+
+    assert backend.load()
+
+    assert calls[0][1]["path"] == tmp_path / "istupakov--gigaam-v3-onnx"
 
 
 def test_transcribe_short_file_returns_absolute_words_and_progress(tmp_path):

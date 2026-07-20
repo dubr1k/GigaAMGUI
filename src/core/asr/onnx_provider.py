@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 _PROVIDER_NAMES = {
     "cpu": "CPUExecutionProvider",
@@ -48,8 +51,6 @@ def onnx_session_providers(selection: ProviderSelection) -> list[object]:
 def _auto_priority(platform_name: str) -> tuple[str, ...]:
     if platform_name == "darwin":
         return ("coreml", "cpu")
-    if platform_name == "win32":
-        return ("directml", "cuda", "cpu")
     return ("cuda", "cpu")
 
 
@@ -104,9 +105,26 @@ def resolve_onnx_providers(
     )
 
 
-def available_onnx_providers() -> tuple[str, ...]:
-    """Лениво получить providers, доступные в установленном ONNX Runtime."""
+def available_onnx_providers(
+    requested: str = "auto",
+    *,
+    platform_name: str = sys.platform,
+    ort_module=None,
+) -> tuple[str, ...]:
+    """Лениво подготовить CUDA DLL и получить providers установленного ORT."""
 
-    import onnxruntime  # noqa: PLC0415
+    if ort_module is None:
+        import onnxruntime as ort_module  # noqa: PLC0415
 
-    return tuple(onnxruntime.get_available_providers())
+    normalized = (requested or "auto").strip().lower() or "auto"
+    wants_cuda_stack = (
+        platform_name == "win32" or platform_name.startswith("linux")
+    ) and normalized in {"auto", "cuda", "tensorrt"}
+    preload = getattr(ort_module, "preload_dlls", None)
+    if wants_cuda_stack and callable(preload):
+        try:
+            preload()
+        except Exception as exc:  # ORT всё ещё может безопасно продолжить на CPU
+            logger.warning("Не удалось предварительно загрузить CUDA/cuDNN для ONNX: %s", exc)
+
+    return tuple(ort_module.get_available_providers())

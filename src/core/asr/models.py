@@ -12,6 +12,12 @@ ONNX_ASR_MODELS = {
     "multilingual_large_ctc": "gigaam-multilingual-large-ctc",
 }
 
+ONNX_ASR_REPOS = {
+    "v3_e2e_rnnt": "istupakov/gigaam-v3-onnx",
+    "multilingual_ctc": "istupakov/gigaam-multilingual-ctc-onnx",
+    "multilingual_large_ctc": "istupakov/gigaam-multilingual-large-ctc-onnx",
+}
+
 # Older installations store the short GigaAM name in .env. Keep it working
 # while persisting the explicit v3 name in new settings.
 _ASR_MODEL_ALIASES = {
@@ -31,3 +37,9 @@ def onnx_model_name(model: str | None) -> str:
     """Вернуть идентификатор модели, поддерживаемый ``onnx-asr``."""
 
     return ONNX_ASR_MODELS[validate_asr_model(model)]
+
+
+def onnx_model_repo(model: str | None) -> str:
+    """Вернуть Hugging Face repo, соответствующий выбранной ONNX-модели."""
+
+    return ONNX_ASR_REPOS[validate_asr_model(model)]

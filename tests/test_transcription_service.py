@@ -35,3 +35,17 @@ def test_build_processor_defaults_logger_to_print():
     # процессор подставляет print, если logger не задан
     assert proc.logger is print
     assert proc.progress_callback is None
+
+
+def test_build_processor_accepts_prepared_diarization_backend():
+    prepared = object()
+
+    processor = transcription_service.build_processor(
+        _Loader(),
+        _Stats(),
+        diarization_manager=prepared,
+        diarization_backend="onnx",
+    )
+
+    assert processor._diarization_manager is prepared
+    assert processor._active_diarization_backend == "onnx"

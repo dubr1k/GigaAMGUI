@@ -52,3 +52,30 @@ def test_hysteresis_bridges_short_probability_dip():
     )
 
     assert [(s.start, s.end) for s in segments] == [(0.0, 3.0)]
+
+
+def test_forced_single_speaker_uses_max_within_window_instead_of_diluting_tracks():
+    """num_speakers=1 may merge permuted local tracks from the same window.
+
+    Averaging all three tracks divided each 0.9 activation by three and erased
+    the entire utterance below the 0.5 onset threshold.
+    """
+    segmentation = _seg(
+        [[
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.0, 0.9, 0.0],
+            [0.0, 0.9, 0.0],
+        ]],
+        [0.0],
+        duration=4.0,
+    )
+
+    segments = reconstruct_speaker_segments(
+        segmentation,
+        np.asarray([0, 0, 0]),
+    )
+
+    assert [(s.start, s.end, s.speaker) for s in segments] == [
+        (0.0, 4.0, "SPEAKER_00"),
+    ]

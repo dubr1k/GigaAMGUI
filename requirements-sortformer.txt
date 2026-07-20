@@ -1,4 +1,5 @@
-# Optional NVIDIA Streaming Sortformer diarization backend.
+# Optional NVIDIA Streaming Sortformer diarization backend for Linux/macOS.
+# Native Windows uses the ONNX Runtime implementation from requirements.txt.
 # Install the regular project requirements first, then this file.
 # 2.5.3 (used by the reference HF Space) is intentionally not used because
 # fixed security advisories affect older NeMo releases.

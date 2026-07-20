@@ -7,11 +7,14 @@ from typing import Any
 
 import numpy as np
 
+from ...utils.model_cache import resolve_model_dir
 from ..asr.onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
     resolve_onnx_providers,
 )
+
+ONNX_SEGMENTATION_REPO = "onnx-community/pyannote-segmentation-3.0"
 
 
 @dataclass(frozen=True)
@@ -50,11 +53,12 @@ class OnnxSegmentation:
 
         selection = resolve_onnx_providers(
             self.provider,
-            available=available_onnx_providers(),
+            available=available_onnx_providers(self.provider),
         )
+        model_dir = self.model_dir or resolve_model_dir(ONNX_SEGMENTATION_REPO)
         vad = onnx_asr.load_vad(
-            "onnx-community/pyannote-segmentation-3.0",
-            path=self.model_dir,
+            ONNX_SEGMENTATION_REPO,
+            path=model_dir,
             providers=onnx_session_providers(selection),
         )
         session = getattr(vad, "_model", None)

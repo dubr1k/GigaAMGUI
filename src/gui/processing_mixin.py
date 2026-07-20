@@ -18,6 +18,12 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..core.model_preparation import (
+    PreparationCancelled,
+    PreparationError,
+    PreparationEvent,
+    PreparationState,
+)
 from ..core.progress import ProgressEvent
 from ..services import transcription_service
 
@@ -142,6 +148,7 @@ class ProcessingMixin:
             "output_dir": self.output_dir,
             "files": list(self.files_to_process),
             "start_time": self.start_time,
+            "hf_token": os.getenv("HF_TOKEN", "").strip() or None,
         }
         self._set_processing_controls_enabled(False)
         threading.Thread(target=self._process_files, kwargs={"snapshot": snapshot}, daemon=True).start()
@@ -171,14 +178,26 @@ class ProcessingMixin:
         output_dir = snapshot["output_dir"]
         files = snapshot["files"]
         start_time = snapshot["start_time"]
+        hf_token = snapshot.get("hf_token")
         total_files = len(files)
         try:
-            if not self.model_loader.load_model(self.log):
-                self.signals.processing_finished.emit(False, self._t("Не удалось загрузить модель", "Failed to load model"))
-                return
+            self._preparation_log_progress = {}
+            preparation = transcription_service.build_processing_preparation_plan(
+                self.model_loader,
+                enable_diarization=enable_diarization,
+                diarization_backend=diarization_backend,
+                audio_preprocessing_mode=audio_preprocessing_mode,
+                hf_token=hf_token,
+            )
+            prepared = preparation.run(
+                self._on_preparation_event,
+                cancel_check=lambda: self._cancel_requested,
+            )
             processor = transcription_service.build_processor(
                 self.model_loader, self.stats, logger=self.log,
                 progress_callback=self._on_file_progress,
+                diarization_manager=prepared.get("diarization"),
+                diarization_backend=diarization_backend if enable_diarization else None,
             )
             if enable_diarization:
                 self.log(self._t(f"Количество спикеров: {num_speakers if num_speakers else 'автоопределение'}", f"Speaker count: {num_speakers if num_speakers else 'auto-detect'}"))
@@ -248,6 +267,17 @@ class ProcessingMixin:
             success = (files_processed > 0) and (files_failed == 0) and not cancelled
             self._last_generated_transcript_files = generated_transcript_files
             self.signals.processing_finished.emit(success, message)
+        except PreparationCancelled:
+            self.log(self._t("Подготовка моделей отменена пользователем", "Model preparation cancelled by user"))
+            self.signals.processing_finished.emit(False, self._t("Обработка отменена", "Processing cancelled"))
+        except PreparationError as e:
+            self.signals.processing_finished.emit(
+                False,
+                self._t(
+                    f"Не удалось подготовить компоненты: {e}",
+                    f"Failed to prepare components: {e}",
+                ),
+            )
         except Exception as e:
             self.log(self._t(f"Критическая ошибка: {str(e)}", f"Critical error: {str(e)}"))
             self.signals.processing_finished.emit(False, self._t(f"Ошибка: {str(e)}", f"Error: {str(e)}"))
@@ -255,6 +285,65 @@ class ProcessingMixin:
     # ──────────────────────────────────────────────────────────────
     # Прогресс
     # ──────────────────────────────────────────────────────────────
+
+    _PREPARATION_COMPONENT_NAMES = {
+        "asr": ("ASR-модели", "ASR model"),
+        "audio-preprocessing": ("аудиопредобработки", "audio preprocessing"),
+        "diarization": ("модели диаризации", "diarization model"),
+    }
+
+    @staticmethod
+    def _format_download_size(value: int | None) -> str:
+        if value is None:
+            return ""
+        amount = float(value)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if amount < 1024.0 or unit == "GiB":
+                return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+            amount /= 1024.0
+        return ""
+
+    def _on_preparation_event(self, event: PreparationEvent) -> None:
+        """Показать проверку, скачивание и загрузку выбранных моделей в журнале."""
+        names = self._PREPARATION_COMPONENT_NAMES.get(
+            event.component,
+            (event.component, event.component),
+        )
+        component = self._t(*names)
+        detail = f" — {event.message}" if event.message else ""
+
+        if event.state is PreparationState.DOWNLOADING and event.completed_bytes is not None:
+            if event.total_bytes:
+                percent = min(100, int(event.completed_bytes * 100 / event.total_bytes))
+                bucket = percent // 10
+                key = (event.component, event.state.value)
+                if self._preparation_log_progress.get(key) == bucket:
+                    return
+                self._preparation_log_progress[key] = bucket
+                progress = (
+                    f" {percent}% "
+                    f"({self._format_download_size(event.completed_bytes)} / "
+                    f"{self._format_download_size(event.total_bytes)})"
+                )
+            else:
+                progress = f" ({self._format_download_size(event.completed_bytes)})"
+        else:
+            progress = ""
+
+        if event.state is PreparationState.CHECKING:
+            text = self._t(f"Проверка: {component}", f"Checking: {component}")
+        elif event.state is PreparationState.DOWNLOADING:
+            text = self._t(f"Скачивание {component}", f"Downloading {component}") + progress
+        elif event.state is PreparationState.LOADING:
+            text = self._t(f"Загрузка {component}", f"Loading {component}")
+        elif event.state is PreparationState.READY:
+            cached = self._t(" (уже в кэше)", " (already cached)") if event.cached else ""
+            text = self._t(f"Готово: {component}", f"Ready: {component}") + cached
+        elif event.state is PreparationState.FAILED:
+            text = self._t(f"Ошибка подготовки: {component}", f"Preparation failed: {component}")
+        else:
+            text = self._t(f"Отменено: {component}", f"Cancelled: {component}")
+        self.log(text + detail)
 
     _STAGE_NAMES = {
         'preparing': ('Подготовка…', 'Preparing…'),

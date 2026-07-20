@@ -57,14 +57,16 @@ class PyTorchBackend:
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         ]
         model_dir = "models/gigaam"
-        ckpt = "v3_e2e_rnnt.ckpt"
-        tokenizer = "v3_e2e_rnnt_tokenizer.model"
+        revision = str(self.model_revision)
+        if revision in {"ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"}:
+            revision = f"v3_{revision}"
+        required = [f"{revision}.ckpt"]
+        if revision != "v1_rnnt" and "e2e" in revision:
+            required.append(f"{revision}_tokenizer.model")
 
         for root in candidates:
             candidate = os.path.join(root, model_dir)
-            ckpt_path = os.path.join(candidate, ckpt)
-            tokenizer_path = os.path.join(candidate, tokenizer)
-            if os.path.isfile(ckpt_path) and os.path.isfile(tokenizer_path):
+            if all(os.path.isfile(os.path.join(candidate, name)) for name in required):
                 return candidate
         return None
 

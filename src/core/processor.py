@@ -25,7 +25,16 @@ if TYPE_CHECKING:
 class TranscriptionProcessor:
     """Класс для обработки файлов транскрибации"""
 
-    def __init__(self, model_loader, stats_manager, logger: Callable = None, progress_callback: Callable = None):
+    def __init__(
+        self,
+        model_loader,
+        stats_manager,
+        logger: Callable = None,
+        progress_callback: Callable = None,
+        *,
+        diarization_manager=None,
+        diarization_backend: str | None = None,
+    ):
         """
         Args:
             model_loader: экземпляр ModelLoader
@@ -43,8 +52,8 @@ class TranscriptionProcessor:
             neural_backend=DeepFilterNetBinaryBackend(self.logger),
         )
         self.time_formatter = TimeFormatter()
-        self._diarization_manager = None
-        self._active_diarization_backend = DIARIZATION_BACKEND
+        self._diarization_manager = diarization_manager
+        self._active_diarization_backend = diarization_backend or DIARIZATION_BACKEND
         self._diarization_provider = None
         self._progress_plan = None
 
@@ -344,6 +353,20 @@ class TranscriptionProcessor:
             if enable_diarization and utterances and len(utterances) > 0:
                 self.logger(f"Применение диаризации спикеров ({self._active_diarization_backend})...")
                 try:
+                    active_diarization_manager = self.diarization_manager
+                    runtime_details = []
+                    if active_diarization_manager is not None:
+                        device = getattr(active_diarization_manager, "device", None)
+                        provider = getattr(active_diarization_manager, "provider", None)
+                        if device:
+                            runtime_details.append(f"device={device}")
+                        if provider:
+                            runtime_details.append(f"provider={provider}")
+                    if runtime_details:
+                        self.logger(
+                            "Вычислительный runtime диаризации: "
+                            + ", ".join(runtime_details)
+                        )
                     self._update_progress("diarization", None)
                     utterances = self._apply_diarization(
                         diarization_audio,
@@ -359,6 +382,17 @@ class TranscriptionProcessor:
                     diarization_applied = True
                     result['diarization']['applied'] = True
                     self._update_progress("diarization", 1.0)
+                    fallback_reason = getattr(
+                        active_diarization_manager,
+                        "last_fallback_reason",
+                        None,
+                    )
+                    if fallback_reason:
+                        self.logger(
+                            "ПРЕДУПРЕЖДЕНИЕ: fallback диаризации — "
+                            + fallback_reason
+                        )
+                        active_diarization_manager.last_fallback_reason = None
                     self.logger(f"Диаризация завершена. Найдено спикеров: {len(set(u.get('speaker', 'Неизвестный спикер') for u in utterances))}")
                 except Exception as e:
                     result['diarization']['error'] = str(e)

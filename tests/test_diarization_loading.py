@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from src.core.model_preparation import PreparationState
 from src.core.processor import TranscriptionProcessor
 from src.utils import diarization
 
@@ -73,6 +74,22 @@ def test_pipeline_preserves_internal_type_error_without_legacy_retry(monkeypatch
         manager._load_pipeline()
 
     assert calls == ["pyannote/speaker-diarization-3.1"]
+
+
+def test_pyannote_prepare_eagerly_loads_pipeline(monkeypatch):
+    pipeline = object()
+    events = []
+    manager = diarization.DiarizationManager(hf_token="hf_test", device="cpu")
+    monkeypatch.setattr(manager, "_load_pipeline", lambda: pipeline)
+
+    prepared = manager.prepare(
+        report=lambda state, **kwargs: events.append((state, kwargs)),
+        cancel_check=lambda: False,
+    )
+
+    assert prepared is manager
+    assert manager.pipeline is pipeline
+    assert events[-1][0] is PreparationState.LOADING
 
 
 def _install_pipeline_dependencies(monkeypatch, pipeline_class):

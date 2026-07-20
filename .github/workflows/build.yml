@@ -126,6 +126,42 @@ jobs:
           python -c "import pkg_resources; print('pkg_resources: OK before GigaAM install')"
           python -m pip install "git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam" --no-build-isolation
 
+      # GPU-wheel содержит также CPUExecutionProvider. Оставляем ровно один
+      # дистрибутив: установка GigaAM выше возвращает CPU-wheel своей жёсткой
+      # зависимостью, поэтому замену выполняем последней.
+      - name: Install GPU ONNX Runtime (Windows/Linux)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          python -m pip uninstall -y onnxruntime onnxruntime-gpu
+          python -m pip install --no-cache-dir -r requirements-onnx-gpu.txt
+          python - <<'PY'
+          import importlib.metadata
+          import onnxruntime
+
+          assert importlib.metadata.version("onnxruntime-gpu") == "1.23.2"
+          assert callable(onnxruntime.preload_dlls)
+          providers = onnxruntime.get_available_providers()
+          assert "CUDAExecutionProvider" in providers, providers
+          assert "CPUExecutionProvider" in providers, providers
+          print("ONNX Runtime GPU providers:", providers)
+          PY
+
+      - name: Verify macOS CoreML ONNX Runtime
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import onnxruntime
+
+          assert importlib.metadata.version("onnxruntime") == "1.23.2"
+          providers = onnxruntime.get_available_providers()
+          assert "CoreMLExecutionProvider" in providers, providers
+          assert "CPUExecutionProvider" in providers, providers
+          print("ONNX Runtime macOS providers:", providers)
+          PY
+
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
 
@@ -151,6 +187,28 @@ jobs:
             cat "$GIGAAM_RUNTIME_DIR/selfcheck.log" 2>/dev/null || echo "(no selfcheck.log written)"
             exit 1
           fi
+
+      - name: Smoke-test Windows Sortformer ONNX and Linux CPU fallback
+        if: runner.os != 'macOS'
+        shell: bash
+        timeout-minutes: 20
+        env:
+          GIGAAM_RUNTIME_DIR: ${{ runner.temp }}/gigaam_sortformer_onnx
+        run: |
+          BIN="${{ matrix.built }}"
+          "$BIN" --sortformer-onnx-smoke
+
+      - name: Smoke-test macOS Sortformer ONNX CoreML
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 20
+        env:
+          GIGAAM_RUNTIME_DIR: ${{ runner.temp }}/gigaam_sortformer_coreml
+          GIGAAM_SMOKE_ONNX_PROVIDER: coreml
+        run: |
+          BIN="${{ matrix.built }}"
+          chmod +x "$BIN"
+          "$BIN" --sortformer-onnx-smoke
 
       - name: Rename artifact
         shell: bash

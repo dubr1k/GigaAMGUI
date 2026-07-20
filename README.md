@@ -74,8 +74,11 @@ high-latency параметрами model card. Модель сама опред
 Диаризация не зависит от ASR-модели: она проверена с `v3_e2e_rnnt`,
 `multilingual_ctc` (220M) и `multilingual_large_ctc` (600M). Обе CTC-модели
 работают через PyTorch backend.
-Рекомендуется CUDA; CPU работает значительно медленнее. MPS не поддерживается
-NeMo и переключается на CPU. Модель (~471 МБ) загружается при первом запуске.
+Рекомендуется CUDA; CPU работает значительно медленнее. На Apple Silicon
+Sortformer запускается на MPS; если конкретная операция NeMo не выполнится на
+MPS, приложение один раз повторит диаризацию на CPU и покажет причину fallback
+в журнале. Модель (~471 МБ) загружается после первого нажатия «Начать обработку»
+с выбранным Sortformer и затем остаётся в пользовательском кэше.
 NeMo из Space (`2.5.3`) намеренно не используется из-за исправленных в новых
 релизах уязвимостей; optional-файл фиксирует проверенную безопасную ветку 2.7.
 Для Web GUI соберите расширенный образ: `INSTALL_SORTFORMER=1 docker compose build gigaam-web`.
@@ -155,6 +158,21 @@ python cli.py --audio-preprocessing off -f studio.wav
 
 `auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. На остальных платформах `auto` пока сохраняет PyTorch как проверенный default. Новый backend `onnx` использует `onnx-asr==0.12.0`, не импортирует PyTorch и поддерживает CPU, CUDA, TensorRT, CoreML и DirectML.
 
+В portable-сборках 1.3.1 ускорение ONNX согласовано с выбранным устройством:
+
+- Windows/Linux содержат один `onnxruntime-gpu`; его `auto` использует
+  `CUDAExecutionProvider → CPUExecutionProvider`. CUDA/cuDNN берутся из
+  выбранного сменного PyTorch runtime (`cu124`/`cu128`), поэтому ASR и
+  Sortformer не расходятся по устройствам. CPU остаётся встроенным fallback;
+- macOS содержит обычный `onnxruntime`; `auto` использует
+  `CoreMLExecutionProvider → CPUExecutionProvider`;
+- DirectML и TensorRT остаются явными advanced-настройками и используются
+  только когда установленный ORT действительно предоставляет такой provider.
+
+Выбор CPU не скачивает CUDA runtime. Если CUDA runtime уже выбран и установлен,
+приложение активирует его до обнаружения providers и вызывает preload
+CUDA/cuDNN. Фактическая provider chain отображается в журнале подготовки.
+
 ```bash
 python cli.py --backend auto -f audio.wav
 python cli.py --backend mlx -f audio.wav
@@ -181,7 +199,7 @@ ONNX-диаризация также доступна без PyTorch и HF_TOKEN
 python cli.py --backend onnx --diarize --diarization-backend onnx -f audio.wav
 ```
 
-Она сохраняет powerset-классы перекрывающейся речи, извлекает WeSpeaker embeddings и выполняет constrained clustering. Pyannote и Sortformer оставлены как проверяемые fallback-backend-ы: ONNX станет default только после прохождения локальных WER/CER и DER/JER ворот качества.
+Она сохраняет powerset-классы перекрывающейся речи, извлекает WeSpeaker embeddings и выполняет constrained clustering. Pyannote и Sortformer оставлены как проверяемые fallback-backend-ы: ONNX станет default только после прохождения локальных WER/CER и DER/JER ворот качества. На native Windows Sortformer запускается через ONNX Runtime без NeMo; на Linux/macOS официальный NeMo backend используется, когда он установлен, иначе автоматически выбирается тот же portable ONNX runtime. На Windows/Linux ONNX Sortformer использует CUDA выбранного runtime и CPU fallback; на macOS — CoreML и CPU fallback.
 
 Сравнение на локальном лицензированном корпусе:
 
@@ -194,17 +212,21 @@ python scripts/benchmark_diarization_backends.py corpus/diarization.json --backe
 
 Каждый релиз выходит в двух вариантах:
 
-- **обычный** — при первом запуске докачивает модели (и PyTorch, если выбран
-  соответствующий backend);
+- **обычный** — после нажатия «Начать обработку» проверяет выбранную цепочку,
+  показывает скачивание/загрузку, device/provider и fallback в журнале и
+  докачивает недостающие модели (и PyTorch runtime, если он нужен выбранному
+  PyTorch/NeMo/CUDA-сценарию);
 - **офлайн** (`*-offline.zip`) — рядом с исполняемым файлом лежит папка
-  `models` с полной ONNX-цепочкой: распознавание, VAD и обе модели диаризации.
+  `models` с базовой ONNX-цепочкой: распознавание, VAD и
+  Pyannote+WeSpeaker-диаризация.
   Такой сборке не нужны ни сеть, ни токен Hugging Face, ни PyTorch.
 
 Распакуйте архив целиком и запускайте бинарник из распакованной папки: модели
 ищутся рядом с ним. Приложение само выбирает `onnx` и для распознавания, и для
 диаризации — явная настройка в `.env` или переменной окружения по-прежнему
-имеет приоритет. Докачанные позже модели (multilingual, MLX, Sortformer)
-попадают в ту же папку `models`.
+имеет приоритет. Папка офлайн-моделей используется только для чтения, а
+докачанные позже модели (multilingual, MLX, Pyannote, Sortformer) попадают в доступный для
+записи кэш приложения.
 
 Собрать такой набор самостоятельно:
 
@@ -242,4 +264,6 @@ GigaAMGUI/
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
 - [istupakov / onnx-asr](https://github.com/istupakov/onnx-asr) — за лёгкую кроссплатформенную реализацию распознавания речи на ONNX
 - [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
+- [Scrybl / Sortformer v2.1 ONNX](https://huggingface.co/Scrybl/diar_streaming_sortformer_4spk-v2.1) — закреплённый ONNX-экспорт для native Windows
+- [parakeet-rs](https://github.com/altunenes/parakeet-rs) — MIT, референс потокового Sortformer ONNX
 - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT, optional neural noise suppression

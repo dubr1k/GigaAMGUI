@@ -8,12 +8,15 @@ from typing import Any
 
 import numpy as np
 
+from ...utils.model_cache import resolve_model_dir
 from ..asr.onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
     resolve_onnx_providers,
 )
 from .onnx_segmentation import SegmentationResult
+
+ONNX_EMBEDDING_REPO = "wespeaker/wespeaker-voxceleb-resnet34"
 
 
 @dataclass(frozen=True)
@@ -44,7 +47,9 @@ class OnnxSpeakerEmbeddings:
         self.min_speech_seconds = min_speech_seconds
         self.batch_size = max(1, int(batch_size))
         self._model_factory = model_factory
-        self._available_provider_probe = available_provider_probe or available_onnx_providers
+        self._available_provider_probe = available_provider_probe or (
+            lambda: available_onnx_providers(self.provider)
+        )
         self._model: Any | None = None
 
     @staticmethod
@@ -66,9 +71,10 @@ class OnnxSpeakerEmbeddings:
                 available=self._available_provider_probe(),
             )
             factory = self._model_factory or self._load_model
+            model_dir = self.model_dir or resolve_model_dir(ONNX_EMBEDDING_REPO)
             self._model = factory(
                 providers=onnx_session_providers(selection),
-                model_dir=self.model_dir,
+                model_dir=model_dir,
             )
         return self._model
 

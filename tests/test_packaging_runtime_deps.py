@@ -43,6 +43,25 @@ def test_gpu_onnx_requirements_warn_about_cpu_wheel_reinstall():
     assert "get_available_providers" in text
 
 
+def test_portable_ci_replaces_cpu_ort_with_gpu_distribution_on_windows_linux():
+    text = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+
+    assert "Install GPU ONNX Runtime (Windows/Linux)" in text
+    assert "runner.os != 'macOS'" in text
+    uninstall_at = text.find("pip uninstall -y onnxruntime onnxruntime-gpu")
+    install_at = text.find("pip install --no-cache-dir -r requirements-onnx-gpu.txt")
+    verify_at = text.find("onnxruntime.preload_dlls")
+    assert -1 not in {uninstall_at, install_at, verify_at}
+    assert uninstall_at < install_at < verify_at
+
+
+def test_portable_ci_keeps_cpu_ort_on_macos():
+    text = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+
+    assert "Verify macOS CoreML ONNX Runtime" in text
+    assert "CoreMLExecutionProvider" in text
+
+
 def test_docker_removes_cpu_ort_before_installing_gpu_distribution():
     """gigaam тянет onnxruntime==1.23.* сам, поэтому фильтра requirements мало."""
     text = Path("Dockerfile").read_text(encoding="utf-8")

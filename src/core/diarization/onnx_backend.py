@@ -6,10 +6,12 @@ from collections.abc import Callable
 
 import numpy as np
 
+from ...utils.model_cache import hf_repo_is_cached
+from ..model_preparation import PreparationCancelled, PreparationState
 from .clustering import cluster_embeddings
 from .mapping import SpeakerMappingMixin
-from .onnx_embeddings import OnnxSpeakerEmbeddings
-from .onnx_segmentation import OnnxSegmentation
+from .onnx_embeddings import ONNX_EMBEDDING_REPO, OnnxSpeakerEmbeddings
+from .onnx_segmentation import ONNX_SEGMENTATION_REPO, OnnxSegmentation
 from .reconstruction import reconstruct_speaker_segments
 
 
@@ -85,6 +87,24 @@ class OnnxDiarizationBackend(SpeakerMappingMixin):
         segments = self._rename_speakers(segments)
         self._progress(progress_callback, 1.0)
         return segments
+
+    def prepare(self, report=None, cancel_check=None):
+        """Загрузить обе ONNX-модели до обработки первого файла."""
+        emit = report or (lambda _state, **_kwargs: None)
+        cancelled = cancel_check or (lambda: False)
+        if cancelled():
+            raise PreparationCancelled("Подготовка ONNX-диаризации отменена")
+        if not hf_repo_is_cached(ONNX_SEGMENTATION_REPO):
+            emit(PreparationState.DOWNLOADING, message="ONNX segmentation-3.0")
+        emit(PreparationState.LOADING, message="ONNX segmentation-3.0")
+        self._segmenter._ensure_session()  # noqa: SLF001
+        if cancelled():
+            raise PreparationCancelled("Подготовка ONNX-диаризации отменена")
+        if not hf_repo_is_cached(ONNX_EMBEDDING_REPO):
+            emit(PreparationState.DOWNLOADING, message="WeSpeaker embeddings")
+        emit(PreparationState.LOADING, message="WeSpeaker embeddings")
+        self._embedding_extractor._ensure_model()  # noqa: SLF001
+        return self
 
     def unload(self) -> None:
         self._segmenter.unload()

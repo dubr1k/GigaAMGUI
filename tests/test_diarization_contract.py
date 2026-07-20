@@ -42,6 +42,7 @@ def test_factory_routes_legacy_backends():
     backend = create_diarization_backend(
         "sortformer",
         device="cpu",
+        nemo_available=True,
         legacy_factory=lambda **kwargs: calls.append(kwargs) or _Backend(),
     )
 

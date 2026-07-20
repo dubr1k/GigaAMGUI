@@ -57,7 +57,8 @@ datas = list(
     pyqt6_d + einops_d + omegaconf_d + accelerate_d + pyannote_d + lightning_d + ptl_d +
     runtime_d + onnx_d +
     [(os.path.join(project_root, 'src'), 'src'),
-     (os.path.join(project_root, 'assets', 'icon.ico'), '.')]
+     (os.path.join(project_root, 'assets', 'icon.ico'), '.'),
+     (os.path.join(project_root, 'licenses', 'parakeet-rs-MIT.md'), 'licenses')]
 )
 
 # Добавляем только ffmpeg/ffprobe, совместимые с текущей ОС сборки.

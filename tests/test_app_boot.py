@@ -44,3 +44,54 @@ def test_boot_uses_saved_onnx_backend_before_torch_activation(monkeypatch, tmp_p
     )
 
     assert app._boot_requires_torch() is False
+
+
+def test_saved_onnx_provider_is_read_without_qt_or_torch(monkeypatch, tmp_path):
+    monkeypatch.setenv("GIGAAM_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "user_settings.json").write_text(
+        json.dumps({"onnx_provider": "CUDA"}),
+        encoding="utf-8",
+    )
+
+    assert app._saved_onnx_provider() == "cuda"
+
+
+def test_onnx_auto_activates_an_installed_selected_cuda_runtime(monkeypatch):
+    fake_rm = type(
+        "RuntimeManager",
+        (),
+        {
+            "get_selected_variant": staticmethod(lambda: "cu124"),
+            "is_installed": staticmethod(lambda variant: variant == "cu124"),
+            "torch_device_for": staticmethod(lambda variant: "cuda"),
+        },
+    )
+    monkeypatch.setattr(app.sys, "platform", "win32", raising=False)
+
+    assert app._installed_onnx_cuda_variant("auto", runtime_manager=fake_rm) == "cu124"
+
+
+def test_onnx_cpu_does_not_activate_or_download_cuda_runtime(monkeypatch):
+    class RuntimeManager:
+        @staticmethod
+        def get_selected_variant():
+            raise AssertionError("CPU provider must not inspect/install CUDA runtime")
+
+    monkeypatch.setattr(app.sys, "platform", "linux", raising=False)
+
+    assert app._installed_onnx_cuda_variant("cpu", runtime_manager=RuntimeManager) is None
+
+
+def test_onnx_auto_does_not_download_when_cuda_runtime_is_missing(monkeypatch):
+    fake_rm = type(
+        "RuntimeManager",
+        (),
+        {
+            "get_selected_variant": staticmethod(lambda: "cu128"),
+            "is_installed": staticmethod(lambda _variant: False),
+            "torch_device_for": staticmethod(lambda _variant: "cuda"),
+        },
+    )
+    monkeypatch.setattr(app.sys, "platform", "linux", raising=False)
+
+    assert app._installed_onnx_cuda_variant("auto", runtime_manager=fake_rm) is None

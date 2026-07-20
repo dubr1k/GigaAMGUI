@@ -7,12 +7,18 @@ from typing import Any
 
 import numpy as np
 
+from ...utils.model_cache import resolve_model_dir
 from .onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
     resolve_onnx_providers,
 )
 from .vad import VadUnavailableError, merge_speech_regions
+
+_VAD_REPOS = {
+    "silero": "istupakov/silero-vad-onnx",
+    "onnx-community/pyannote-segmentation-3.0": "onnx-community/pyannote-segmentation-3.0",
+}
 
 
 class OnnxVadSegmenter:
@@ -33,7 +39,9 @@ class OnnxVadSegmenter:
         self.quantization = quantization
         self.model_dir = model_dir
         self._vad_factory = vad_factory
-        self._available_provider_probe = available_provider_probe or available_onnx_providers
+        self._available_provider_probe = available_provider_probe or (
+            lambda: available_onnx_providers(self.provider)
+        )
         self._vad: Any | None = None
 
     @staticmethod
@@ -51,9 +59,13 @@ class OnnxVadSegmenter:
                 available=self._available_provider_probe(),
             )
             factory = self._vad_factory or self._load_vad
+            repo_id = _VAD_REPOS.get(self.model, self.model if "/" in self.model else None)
+            model_dir = self.model_dir
+            if model_dir is None and repo_id is not None:
+                model_dir = resolve_model_dir(repo_id)
             vad = factory(
                 self.model,
-                path=self.model_dir,
+                path=model_dir,
                 quantization=self.quantization,
                 providers=onnx_session_providers(selection),
             )

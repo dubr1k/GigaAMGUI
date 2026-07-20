@@ -15,6 +15,7 @@ sys.modules.setdefault("gigaam", types.SimpleNamespace(load_model=lambda *args, 
 sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
 from src.config import AUDIO_PREPROCESSING_MODE  # noqa: E402
+from src.core.model_preparation import PreparationEvent, PreparationState  # noqa: E402
 from src.gui.app_qt import GigaTranscriberQtApp  # noqa: E402
 
 
@@ -394,6 +395,133 @@ def test_audio_preprocessing_mode_is_snapshotted_and_locked(monkeypatch):
     assert captured["started"] is True
     assert window.combo_audio_preprocessing.isEnabled() is False
     window.is_processing = False
+    window.close()
+
+
+def test_processing_snapshot_captures_hf_token(monkeypatch):
+    window = _new_window()
+    window.files_to_process = ["/tmp/input.wav"]
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, *, target, kwargs, daemon):
+            captured.update(target=target, kwargs=kwargs, daemon=daemon)
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setenv("HF_TOKEN", "token-at-start")
+    monkeypatch.setattr(threading, "Thread", FakeThread)
+
+    window._start_processing_thread()
+
+    assert captured["kwargs"]["snapshot"]["hf_token"] == "token-at-start"
+    window.is_processing = False
+    window.close()
+
+
+def test_processing_prepares_selected_models_before_first_file(monkeypatch, tmp_path):
+    from src.gui import processing_mixin
+
+    window = _new_window()
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"audio")
+    call_order = []
+    prepared_diarizer = object()
+
+    class FakePlan:
+        def run(self, callback, *, cancel_check):
+            call_order.append("prepare")
+            callback(PreparationEvent("diarization", PreparationState.DOWNLOADING))
+            callback(PreparationEvent("diarization", PreparationState.READY))
+            assert cancel_check() is False
+            return {"asr": window.model_loader, "diarization": prepared_diarizer}
+
+    class FakeProcessor:
+        def process_file(self, filepath, output_dir, index, total, **kwargs):
+            call_order.append("process")
+            return {
+                "file_path": filepath,
+                "file_size": 5,
+                "media_duration": 1,
+                "conversion_time": 0,
+                "transcription_time": 0,
+                "total_time": 0,
+                "success": True,
+                "saved_files": [],
+            }
+
+    plan_args = {}
+    processor_args = {}
+
+    def build_plan(model_loader, **kwargs):
+        plan_args.update(kwargs)
+        return FakePlan()
+
+    def build_processor(model_loader, stats, **kwargs):
+        processor_args.update(kwargs)
+        return FakeProcessor()
+
+    monkeypatch.setattr(
+        processing_mixin.transcription_service,
+        "build_processing_preparation_plan",
+        build_plan,
+    )
+    monkeypatch.setattr(
+        processing_mixin.transcription_service,
+        "build_processor",
+        build_processor,
+    )
+    window.stats = types.SimpleNamespace(add_processing_record=lambda **_kwargs: None)
+    window.signals = types.SimpleNamespace(
+        current_file_info=types.SimpleNamespace(emit=lambda *_args: None),
+        log_message=types.SimpleNamespace(emit=window._append_log),
+        processing_finished=types.SimpleNamespace(emit=lambda *_args: None),
+    )
+    window._cancel_requested = False
+    snapshot = {
+        "num_speakers": None,
+        "enable_diarization": True,
+        "diarization_backend": "pyannote",
+        "audio_preprocessing_mode": "auto",
+        "selected_formats": ["txt"],
+        "output_dir": str(tmp_path),
+        "files": [str(source)],
+        "start_time": __import__("time").time(),
+        "hf_token": "snapshot-token",
+    }
+
+    window._process_files(snapshot)
+
+    assert call_order == ["prepare", "process"]
+    assert plan_args == {
+        "enable_diarization": True,
+        "diarization_backend": "pyannote",
+        "audio_preprocessing_mode": "auto",
+        "hf_token": "snapshot-token",
+    }
+    assert processor_args["diarization_manager"] is prepared_diarizer
+    assert processor_args["diarization_backend"] == "pyannote"
+    assert "Скачивание модели диаризации" in window.log_text.toPlainText()
+    window.close()
+
+
+def test_preparation_download_progress_is_visible_and_throttled():
+    window = _new_window()
+    window._preparation_log_progress = {}
+    event = PreparationEvent(
+        "asr",
+        PreparationState.DOWNLOADING,
+        completed_bytes=50 * 1024 * 1024,
+        total_bytes=100 * 1024 * 1024,
+    )
+
+    window._on_preparation_event(event)
+    window._on_preparation_event(event)
+
+    lines = [line for line in window.log_text.toPlainText().splitlines() if "50%" in line]
+    assert len(lines) == 1
+    assert "50.0 MiB / 100.0 MiB" in lines[0]
     window.close()
 
 

@@ -1,5 +1,6 @@
 """Модуль загрузки и управления моделью GigaAM."""
 
+from pathlib import Path
 
 from ..config import (
     ASR_ALLOW_FALLBACK,
@@ -11,8 +12,9 @@ from ..config import (
     ONNX_QUANTIZATION,
     ONNX_VAD_MODEL,
 )
+from ..utils.model_cache import hf_repo_is_cached
 from .asr.factory import create_backend_from_config
-from .asr.models import validate_asr_model
+from .asr.models import onnx_model_repo, validate_asr_model
 from .asr.pytorch_backend import PyTorchBackend
 from .asr.types import ProgressCallback
 
@@ -176,6 +178,44 @@ class ModelLoader:
             f"Не удалось загрузить backend {self._backend.name if self._backend else 'неизвестный'}"
         )
         return False
+
+    def missing_asr_resources(self) -> tuple[str, ...]:
+        """Вернуть веса, которые выбранный backend будет скачивать при загрузке."""
+        if self.is_loaded():
+            return ()
+        self._ensure_backend()
+        backend = self._backend
+        if backend is None:
+            return ()
+
+        if backend.name == "onnx":
+            explicit = getattr(backend, "model_dir", None)
+            if explicit is not None:
+                directory = Path(explicit)
+                if directory.is_dir() and any(path.is_file() for path in directory.rglob("*")):
+                    return ()
+            repo_id = onnx_model_repo(backend.model_revision)
+            return () if hf_repo_is_cached(repo_id) else (f"ONNX ASR: {repo_id}",)
+
+        if backend.name == "mlx":
+            repo_id = backend.repo_id
+            return () if hf_repo_is_cached(repo_id) else (f"MLX ASR: {repo_id}",)
+
+        if backend.name == "pytorch":
+            bundled = backend._bundled_download_root()  # noqa: SLF001
+            revision = str(backend.model_revision)
+            if revision in {"ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"}:
+                revision = f"v3_{revision}"
+            root = Path(bundled) if bundled else Path.home() / ".cache" / "gigaam"
+            missing = []
+            if not (root / f"{revision}.ckpt").is_file():
+                missing.append(f"GigaAM checkpoint: {revision}.ckpt")
+            if revision != "v1_rnnt" and "e2e" in revision:
+                tokenizer = root / f"{revision}_tokenizer.model"
+                if not tokenizer.is_file():
+                    missing.append(f"GigaAM tokenizer: {tokenizer.name}")
+            return tuple(missing)
+        return ()
 
     @property
     def _bundle_download_root(self) -> str | None:

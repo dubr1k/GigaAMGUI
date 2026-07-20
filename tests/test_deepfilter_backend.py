@@ -44,6 +44,28 @@ def test_binary_manager_downloads_atomically_and_verifies_checksum(monkeypatch, 
     assert not list(tmp_path.glob("*.download"))
 
 
+def test_binary_manager_reports_download_bytes_and_honors_cancellation(monkeypatch, tmp_path):
+    payload = b"binary"
+    asset = DeepFilterAsset("deep-filter", hashlib.sha256(payload).hexdigest())
+    manager = DeepFilterBinaryManager(cache_dir=tmp_path, asset=asset)
+    progress = []
+
+    def fake_download(url, target, *, progress_callback=None, cancel_check=None):
+        assert not cancel_check()
+        target.write_bytes(payload)
+        progress_callback(len(payload), len(payload))
+
+    monkeypatch.setattr(DeepFilterBinaryManager, "_download", staticmethod(fake_download))
+
+    path = manager.ensure(
+        progress_callback=lambda completed, total: progress.append((completed, total)),
+        cancel_check=lambda: False,
+    )
+
+    assert path == str(tmp_path / asset.filename)
+    assert progress == [(len(payload), len(payload))]
+
+
 def test_binary_manager_replaces_symlink_in_executable_cache(monkeypatch, tmp_path):
     payload = b"verified-deepfilter-binary"
     asset = DeepFilterAsset("test-binary", hashlib.sha256(payload).hexdigest())

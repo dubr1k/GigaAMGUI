@@ -28,7 +28,7 @@ if "--selfcheck" in sys.argv:
     raise SystemExit(run_selfcheck())
 
 
-from src.config import ASR_BACKEND, HF_TOKEN
+from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER
 
 
 def _user_config_dir() -> Path:
@@ -122,6 +122,36 @@ def _saved_asr_backend() -> str:
     return (ASR_BACKEND or "auto").strip().lower()
 
 
+def _saved_onnx_provider() -> str:
+    """Прочитать ONNX provider до импорта Qt, torch и ONNX Runtime."""
+    try:
+        payload = json.loads((_user_config_dir() / "user_settings.json").read_text(encoding="utf-8"))
+        provider = str(payload.get("onnx_provider") or "").strip().lower() if isinstance(payload, dict) else ""
+        if provider in {"auto", "cpu", "cuda", "tensorrt", "coreml", "directml"}:
+            return provider
+    except (OSError, ValueError, TypeError):
+        pass
+    return (ONNX_PROVIDER or "auto").strip().lower()
+
+
+def _installed_onnx_cuda_variant(provider: str, *, runtime_manager=None) -> str | None:
+    """Найти уже установленный CUDA runtime, не запуская загрузку."""
+    normalized = (provider or "auto").strip().lower() or "auto"
+    if normalized not in {"auto", "cuda", "tensorrt"}:
+        return None
+    if sys.platform != "win32" and not sys.platform.startswith("linux"):
+        return None
+    if runtime_manager is None:
+        from src.utils import runtime_manager
+
+    variant = runtime_manager.get_selected_variant()
+    if not variant or not runtime_manager.is_installed(variant):
+        return None
+    if runtime_manager.torch_device_for(variant) != "cuda":
+        return None
+    return variant
+
+
 def _boot_requires_torch() -> bool:
     backend = _saved_asr_backend()
     if backend == "pytorch":
@@ -157,6 +187,36 @@ def run_sortformer_runtime_smoke() -> dict[str, str]:
     return {"sortformer": model_class.__name__}
 
 
+def run_sortformer_onnx_smoke(provider: str = "cpu") -> dict[str, object]:
+    """Download and execute the NeMo-free portable Sortformer runtime."""
+    from src.core.diarization.sortformer_onnx import SortformerOnnxDiarizationManager
+
+    manager = SortformerOnnxDiarizationManager(provider=provider)
+    try:
+        manager.prepare()
+        return {"sortformer_onnx": manager.smoke_test()}
+    finally:
+        manager.unload()
+
+
+def run_sortformer_model_smoke(audio_path: str, device: str = "mps") -> dict[str, object]:
+    """Run the native NeMo Sortformer on a real file and report its device."""
+    from src.utils.diarization import SortformerDiarizationManager
+
+    manager = SortformerDiarizationManager(device=device)
+    manager.prepare()
+    try:
+        segments = manager.diarize(audio_path)
+        return {
+            "backend": "sortformer-nemo",
+            "device": manager.device,
+            "segments": len(segments),
+            "speakers": len({segment.speaker for segment in segments}),
+        }
+    finally:
+        manager.unload()
+
+
 def run_asr_model_smoke(audio_path: str) -> dict[str, object]:
     """Run the same end-to-end MLX path used by the desktop processor."""
     from src.core.asr.mlx_backend import MLXBackend
@@ -183,7 +243,7 @@ def run_asr_model_smoke(audio_path: str) -> dict[str, object]:
 def run_offline_models_smoke(audio_path: str | None = None) -> dict[str, object]:
     """Проверить, что офлайн-сборка работает на привезённых моделях.
 
-    Поднимает всю ONNX-цепочку — распознавание, VAD и обе модели диаризации —
+    Поднимает всю базовую ONNX-цепочку — распознавание, VAD и кластерную диаризацию —
     и требует, чтобы папка моделей рядом со сборкой действительно нашлась. Без
     такого гейта офлайн-артефакт мог бы уехать в релиз, молча продолжая ходить
     в сеть за весами. Аудио необязательно: без него проверяется, что все модели
@@ -244,6 +304,29 @@ def main():
         return
     if "--sortformer-runtime-smoke" in sys.argv:
         print(json.dumps(run_sortformer_runtime_smoke(), ensure_ascii=False, sort_keys=True))
+        return
+    if "--sortformer-onnx-smoke" in sys.argv:
+        provider = os.environ.get("GIGAAM_SMOKE_ONNX_PROVIDER", "cpu")
+        print(
+            json.dumps(
+                run_sortformer_onnx_smoke(provider),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
+    if "--sortformer-model-smoke" in sys.argv:
+        index = sys.argv.index("--sortformer-model-smoke")
+        if index + 1 >= len(sys.argv):
+            raise SystemExit("--sortformer-model-smoke requires an audio path")
+        device = os.environ.get("GIGAAM_SMOKE_TORCH_DEVICE", "mps")
+        print(
+            json.dumps(
+                run_sortformer_model_smoke(sys.argv[index + 1], device),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
         return
     if "--asr-model-smoke" in sys.argv:
         index = sys.argv.index("--asr-model-smoke")
@@ -320,10 +403,24 @@ def main():
             sys.exit(0)
         settings.set_value("asr_model", model_ids[labels.index(selected)])
 
+    # ONNX Runtime GPU использует CUDA/cuDNN из уже выбранного PyTorch runtime.
+    # Для auto ничего не скачиваем: CUDA активируется, только если пользователь
+    # ранее выбрал и установил её в меню устройства; иначе ORT продолжит на CPU.
+    from src.utils import runtime_manager as rm
+
+    saved_backend = _saved_asr_backend()
+    saved_provider = _saved_onnx_provider()
+    onnx_cuda_variant = (
+        _installed_onnx_cuda_variant(saved_provider, runtime_manager=rm)
+        if saved_backend == "onnx"
+        else None
+    )
+    if onnx_cuda_variant:
+        rm.activate(onnx_cuda_variant)
+
     # Если выбранный backend требует PyTorch, и он ещё не установлен — предлагаем выбрать runtime.
     if _boot_requires_torch() and not _torch_is_available():
         from src.gui.device_dialog import ensure_device_ready
-        from src.utils import runtime_manager as rm
 
         variant = ensure_device_ready()
         if not variant:
