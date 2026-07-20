@@ -56,13 +56,14 @@ Clamp each formatted entry to the end of the previous entry. This is small but
 only hides the timecode symptom. It leaves duplicate words in the transcript,
 can create zero-length cues, and assigns misleading times to speech. Rejected.
 
-### Nominal word ownership
+### Alignment followed by nominal clipping
 
-Retain overlapping decoder windows but assign timestamped words to the nominal
-chunk whose interval contains the word midpoint. Rebuild the segment text from
-the owned words, then pass the reconciled segments to diarization and export.
-This restores the planner's intended ownership contract with limited release
-risk. Selected.
+Retain overlapping decoder windows and use the two text hypotheses to select a
+single copy of repeated boundary words. Trim the matched prefix from the next
+window, then clip surviving word timestamps to the nominal interval of the
+segment that retained them. This preserves a boundary word even when the two
+decoders jitter its midpoint to opposite sides of the cut, while preventing its
+decoder-context timestamp from leaking into exports. Selected.
 
 ### Global decoder-lattice merge
 
@@ -72,36 +73,33 @@ changes recognition semantics and needs a larger evaluation corpus. Deferred.
 
 ## Selected architecture
 
-### Shared word-ownership helper
+### Shared boundary-normalization helper
 
 Add a backend-independent helper in the shared ASR layer. It accepts absolute
-word timestamps and one `AudioChunk`, then returns a normalized list:
+word timestamps, nominal segment boundaries, and the number of prefix words
+removed by overlap alignment. It returns a normalized list:
 
-- use the midpoint `(start + end) / 2` for ownership;
-- the lower boundary is inclusive;
-- the upper boundary is exclusive except for the final chunk in a speech
-  region, which includes its end;
-- preserve measured absolute word start/end values inside the ownership
-  interval, clipping a boundary-spanning word to
-  `chunk.start_sec/chunk.end_sec` so adjacent chunks cannot overlap;
-- keep every retained word internally monotonic after clipping and omit an
-  empty word only when clipping leaves no usable duration;
-- reject non-finite timestamps through the existing timestamp fallback path;
-- preserve word order.
+- remove exactly the prefix count reported by `stitch_overlapping_text`;
+- preserve the decoder hypothesis selected by that alignment instead of making
+  an independent midpoint decision;
+- clip every retained word to `chunk.start_sec/chunk.end_sec`, so a
+  boundary-spanning word remains present once but cannot overlap the next
+  nominal segment;
+- omit words wholly outside the selected segment and omit an empty word only
+  when clipping leaves no usable duration;
+- keep retained words internally monotonic and reject non-finite timestamps
+  through the existing timestamp fallback path;
+- preserve word order and rebuild transcription from the resulting words.
 
-The first and last decoder windows already cover the complete speech region.
-Midpoint ownership chooses the previous hypothesis before a nominal cut and the
-next hypothesis after it, while both decoders still receive overlap context.
+PyTorch, MLX, and ONNX follow one order of operations: decode text and words,
+align the previous tail with the current prefix, trim the matched current words,
+normalize the surviving timestamps to the nominal interval, and rebuild the
+segment text. The previous segment keeps the selected copy of a boundary word;
+its timestamp has already been clipped to its own nominal end.
 
-PyTorch, MLX, and ONNX call this helper after obtaining absolute words and
-before appending a `TranscriptionSegment`. When usable words remain, the segment
-text is rebuilt with the existing word-joining convention. Empty ownership for
-one decoder window does not produce an empty exported segment; processing and
-progress reporting continue normally.
-
-Text-only decoders retain `stitch_overlapping_text`. Timestamped paths may keep
-the stitch as a defensive duplicate check, but nominal ownership is the source
-of truth for which words reach downstream consumers.
+Text-only decoders use the same enhanced `stitch_overlapping_text` alignment but
+skip word normalization. An overlap window that contributes no surviving words
+does not produce an empty exported segment; progress reporting still advances.
 
 ### Textual fallback alignment
 
@@ -126,7 +124,7 @@ real speaker changes. It must additionally enforce its public output invariant:
   their times are contiguous and no real speaker change intervenes;
 - do not conceal upstream corruption by blindly stretching or zeroing cues.
 
-The ASR ownership helper is the primary correction. Mapping checks are defense
+The ASR boundary-normalization helper is the primary correction. Mapping checks are defense
 in depth and make future contract violations fail in tests instead of reaching
 formatters.
 
@@ -143,11 +141,13 @@ Tests are written before implementation:
 
 - exact issue #33 text pairs are deduplicated by the text-only fallback;
 - unrelated short prefixes are retained;
-- word midpoint ownership partitions two decoder windows at their nominal cut;
-- timestamped text and word lists remain consistent after ownership filtering;
+- a boundary word jittered by the two decoders to opposite sides of the cut is
+  retained exactly once;
+- retained word timestamps are clipped to adjacent nominal intervals;
+- timestamped text and word lists remain consistent after reconciliation;
 - a deterministic two-chunk MLX fixture that currently maps
   `(0.0–1.0), (1.0–1.5)` to overlapping turns remains monotonic after the fix;
-- equivalent PyTorch and ONNX paths use the shared ownership behavior;
+- equivalent PyTorch and ONNX paths use the shared reconciliation behavior;
 - speaker mapping handles two adjacent ASR segments and merges the same speaker
   without backward time movement;
 - real speaker changes remain distinct;
@@ -182,6 +182,6 @@ Tests are written before implementation:
 - The issue #33 repetitions are removed in timestamped and text-only paths.
 - No exported segment or diarized turn moves backward or overlaps its successor.
 - ASR quality retains overlapping acoustic context at long-form cuts.
-- PyTorch, MLX, and ONNX obey one shared word-ownership contract.
+- PyTorch, MLX, and ONNX obey one shared boundary-reconciliation contract.
 - The verified macOS application exists at `dist/GigaAMTranscriber.app`.
 - Pushing `v1.3.2` starts the GitHub Actions release workflow.
