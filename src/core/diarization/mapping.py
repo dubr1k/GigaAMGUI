@@ -7,6 +7,7 @@ from .base import SpeakerSegment
 UNKNOWN_SPEAKER = "Неизвестный спикер"
 MAX_SPEAKER_SNAP_DISTANCE_SEC = 2.0
 MIN_SPEAKER_TURN_SEC = 0.4
+TIMELINE_EPSILON_SEC = 1e-6
 
 
 class SpeakerMappingMixin:
@@ -26,10 +27,41 @@ class SpeakerMappingMixin:
         for trans_seg in transcription_segments:
             words = self._resolve_word_speakers(trans_seg, speaker_segments)
             if not words:
-                mapped.append(self._map_segment_without_words(trans_seg, speaker_segments))
+                turns = [self._map_segment_without_words(trans_seg, speaker_segments)]
+                self._append_mapped_turns(mapped, turns)
                 continue
-            mapped.extend(self._group_words_into_turns(self._smooth_micro_turns(words)))
+            turns = self._group_words_into_turns(self._smooth_micro_turns(words))
+            self._append_mapped_turns(mapped, turns)
         return mapped
+
+    @staticmethod
+    def _append_mapped_turns(mapped, turns):
+        """Добавить реплики, сохраняя строгий хронологический контракт."""
+
+        for turn in turns:
+            start, end = turn["boundaries"]
+            start = float(start)
+            end = float(end)
+            if end < start - TIMELINE_EPSILON_SEC:
+                raise ValueError("Invalid diarization timeline: turn end precedes start")
+
+            if mapped:
+                previous_start, previous_end = mapped[-1]["boundaries"]
+                previous_end = float(previous_end)
+                if start < previous_end - TIMELINE_EPSILON_SEC:
+                    raise ValueError("Diarization output overlap between adjacent ASR chunks")
+                if (
+                    abs(start - previous_end) <= TIMELINE_EPSILON_SEC
+                    and mapped[-1]["speaker"] == turn["speaker"]
+                ):
+                    mapped[-1]["transcription"] += f' {turn["transcription"]}'
+                    mapped[-1]["boundaries"] = (
+                        float(previous_start),
+                        max(previous_end, end),
+                    )
+                    continue
+
+            mapped.append(turn)
 
     def _map_segment_without_words(self, trans_seg, speaker_segments):
         segment = dict(trans_seg)

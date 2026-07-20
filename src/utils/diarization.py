@@ -463,9 +463,11 @@ class DiarizationManager(SpeakerMappingMixin):
         for trans_seg in transcription_segments:
             words = self._resolve_word_speakers(trans_seg, speaker_segments)
             if not words:
-                mapped.append(self._map_segment_without_words(trans_seg, speaker_segments))
+                turns = [self._map_segment_without_words(trans_seg, speaker_segments)]
+                self._append_mapped_turns(mapped, turns)
                 continue
-            mapped.extend(self._group_words_into_turns(self._smooth_micro_turns(words)))
+            turns = self._group_words_into_turns(self._smooth_micro_turns(words))
+            self._append_mapped_turns(mapped, turns)
 
         return mapped
 

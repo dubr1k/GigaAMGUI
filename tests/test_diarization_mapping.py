@@ -97,6 +97,65 @@ def test_map_speakers_splits_word_timed_segment_at_speaker_changes():
 
 
 @_MANAGER_FACTORIES
+def test_adjacent_same_speaker_chunks_merge_only_when_they_touch(make_manager):
+    mgr = make_manager()
+    speaker_segs = [SpeakerSegment(0.0, 4.0, "A")]
+    trans = [
+        {
+            "transcription": "первый",
+            "boundaries": (0.0, 1.0),
+            "words": [{"text": "первый", "start": 0.0, "end": 1.0}],
+        },
+        {
+            "transcription": "второй",
+            "boundaries": (1.0, 2.0),
+            "words": [{"text": "второй", "start": 1.0, "end": 2.0}],
+        },
+        {
+            "transcription": "после паузы",
+            "boundaries": (2.2, 3.0),
+            "words": [{"text": "после паузы", "start": 2.2, "end": 3.0}],
+        },
+    ]
+
+    mapped = mgr.map_speakers_to_transcription(trans, speaker_segs)
+
+    assert mapped == [
+        {
+            "transcription": "первый второй",
+            "boundaries": (0.0, 2.0),
+            "speaker": "A",
+        },
+        {
+            "transcription": "после паузы",
+            "boundaries": (2.2, 3.0),
+            "speaker": "A",
+        },
+    ]
+
+
+@_MANAGER_FACTORIES
+def test_overlapping_asr_chunk_timelines_fail_before_formatting(make_manager):
+    mgr = make_manager()
+    speaker_segs = [SpeakerSegment(0.0, 3.0, "A")]
+    trans = [
+        {
+            "transcription": "первый",
+            "boundaries": (0.0, 1.2),
+            "words": [{"text": "первый", "start": 0.0, "end": 1.2}],
+        },
+        {
+            "transcription": "второй",
+            "boundaries": (1.0, 2.0),
+            "words": [{"text": "второй", "start": 1.0, "end": 2.0}],
+        },
+    ]
+
+    with pytest.raises(ValueError, match="overlap"):
+        mgr.map_speakers_to_transcription(trans, speaker_segs)
+
+
+@_MANAGER_FACTORIES
 def test_word_in_speaker_pause_snaps_to_nearest_speaker(make_manager):
     """Regression issue #27: однофреймовое слово в паузе не должно рвать реплику.
 
