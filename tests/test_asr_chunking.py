@@ -155,6 +155,7 @@ def test_stitch_issue_33_accepts_filler_gap_in_previous_tail():
 
 def test_normalize_chunk_words_returns_none_without_usable_timestamps():
     assert chunking.normalize_chunk_words(None, start_sec=10.0, end_sec=20.0) is None
+    assert chunking.normalize_chunk_words([], start_sec=10.0, end_sec=20.0) is None
     assert (
         chunking.normalize_chunk_words(
             [{"text": "слово", "start": float("nan"), "end": 11.0}],

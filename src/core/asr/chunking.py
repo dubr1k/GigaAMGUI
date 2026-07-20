@@ -359,7 +359,7 @@ def normalize_chunk_words(
 ) -> list[TranscriptionWord] | None:
     """Оставить слова текущего чанка только в его номинальном интервале."""
 
-    if words is None:
+    if not words:
         return None
     if not math.isfinite(start_sec) or not math.isfinite(end_sec) or end_sec < start_sec:
         raise ValueError("Границы чанка должны быть конечными и упорядоченными")
