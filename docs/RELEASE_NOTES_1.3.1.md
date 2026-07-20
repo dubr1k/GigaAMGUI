@@ -54,23 +54,5 @@ repository/token error and never silently label the whole file as one speaker.
   GTX 1650 with session providers `CUDAExecutionProvider,
   CPUExecutionProvider`.
 
-## What to test in the release artifacts
-
-- Windows NVIDIA with both `cu124` and `cu128` device choices: first download,
-  CUDA provider log, processing result, and repeat launch from cache.
-- Windows explicit CPU: no CUDA runtime download and successful ORT CPU
-  fallback.
-- Linux NVIDIA and CPU-only machines: CUDA → CPU selection and packaged CPU
-  fallback respectively.
-- macOS portable: CoreML Sortformer ONNX smoke and an ordinary transcription.
-- macOS full `.app`: GigaAM MLX/PyTorch MPS, native NeMo Sortformer MPS, and the
-  logged MPS → CPU fallback path.
-- Standard versus offline packages with empty caches; confirm bundled models are
-  read-only and missing models go to the user cache.
-- Pyannote with valid/invalid tokens and accepted/missing model terms; confirm
-  the log identifies the exact failing repository.
-- RU and EN GUI logs, cancellation during preparation, and a multi-file batch;
-  preparation must run once before the first file.
-
-Full implementation details and the complete QA matrix are in
-[`docs/CHANGELOG.md`](https://github.com/dubr1k/GigaAMGUI/blob/v1.3.1/docs/CHANGELOG.md).
+Full implementation details are in
+[`docs/CHANGELOG.md`](https://github.com/dubr1k/GigaAMGUI/blob/main/docs/CHANGELOG.md).
