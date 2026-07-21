@@ -255,7 +255,7 @@ GigaAMGUI/
 
 | Обработка | LLM | Настройки LLM |
 |---|---|---|
-| ![Обработка](https://i.postimg.cc/1XVNkf3V/Processing.png) | ![LLM](https://i.postimg.cc/7bvTwwCy/LLM-tab.png) | ![Настройки LLM](https://i.postimg.cc/c1PDr3Yk/LLM-settings.png) |
+| ![Обработка](assets/screenshots/processing.png) | ![LLM](assets/screenshots/llm.png) | ![Настройки LLM](assets/screenshots/llm-settings.png) |
 
 ## Благодарности
 

@@ -235,7 +235,7 @@ GigaAMGUI/
 
 | Processing | LLM | LLM settings |
 |---|---|---|
-| ![Processing](https://i.postimg.cc/KYbrtrvN/Processing.png) | ![LLM](https://i.postimg.cc/wjMdgLpK/LLM-tab.png) | ![LLM settings](https://i.postimg.cc/K8jyxByH/LLM-settings.png) |
+| ![Processing](assets/screenshots/processing.png) | ![LLM](assets/screenshots/llm.png) | ![LLM settings](assets/screenshots/llm-settings.png) |
 
 ## Credits
 
