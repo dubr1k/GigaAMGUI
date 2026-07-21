@@ -25,6 +25,7 @@ from ..asr.onnx_provider import (
     resolve_onnx_providers,
 )
 from ..model_preparation import PreparationCancelled, PreparationState
+from .mapping import SpeakerMappingMixin
 
 SORTFORMER_ONNX_REPO_ID = "Scrybl/diar_streaming_sortformer_4spk-v2.1"
 SORTFORMER_ONNX_REVISION = "3be92087de17e4e9063c9cfabc104f9809b2d037"
@@ -88,7 +89,7 @@ def _download_sortformer_artifact() -> Path:
     )
 
 
-class SortformerOnnxDiarizationManager:
+class SortformerOnnxDiarizationManager(SpeakerMappingMixin):
     """Streaming Sortformer with a portable NumPy/librosa frontend."""
 
     backend = "sortformer"
@@ -494,15 +495,6 @@ class SortformerOnnxDiarizationManager:
             for start, end, speaker in raw
             if min(end, audio_duration) > start
         ]
-
-    @staticmethod
-    def _rename_speakers(segments):
-        names: dict[str, str] = {}
-        for segment in sorted(segments, key=lambda item: item.start):
-            if segment.speaker not in names:
-                names[segment.speaker] = f"Спикер №{len(names) + 1}"
-            segment.speaker = names[segment.speaker]
-        return segments
 
     def diarize(
         self,

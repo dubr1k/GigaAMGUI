@@ -268,5 +268,7 @@ def test_health_includes_asr_and_runtime(web_state, monkeypatch):
         assert payload["runtime"]["machine"]
 
         options = asyncio.run(web_app.get_asr_options(user="test-user"))
-        assert set(options["backends"]) == {"auto", "onnx", "mlx", "pytorch"}
+        assert set(options["backends"]) == set(
+            web_app.transcription_service.available_asr_backends()
+        )
         assert options["defaults"]["asr_backend"] == "pytorch"

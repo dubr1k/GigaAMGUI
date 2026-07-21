@@ -268,14 +268,18 @@ def test_processor_selects_sortformer_without_hf_token(monkeypatch):
         backend = "sortformer"
         hf_token = None
 
-    def fake_factory(*, backend, hf_token, device):
-        created.append((backend, hf_token, device))
+    def fake_factory(backend, *, hf_token, device, provider, model_dir):
+        created.append((backend, hf_token, device, provider, model_dir))
         return FakeManager()
 
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr(diarization, "get_diarization_manager", fake_factory)
+    monkeypatch.setattr(
+        "src.core.diarization.factory.create_diarization_backend",
+        fake_factory,
+    )
     processor = TranscriptionProcessor(object(), _Stats())
     processor._active_diarization_backend = "sortformer"
 
     assert processor.diarization_manager.backend == "sortformer"
-    assert created == [("sortformer", None, "auto")]
+    assert created[0][:3] == ("sortformer", None, "auto")
+    assert created[0][3] == "auto"

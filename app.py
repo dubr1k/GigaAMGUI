@@ -188,13 +188,41 @@ def run_sortformer_runtime_smoke() -> dict[str, str]:
 
 
 def run_sortformer_onnx_smoke(provider: str = "cpu") -> dict[str, object]:
-    """Download and execute the NeMo-free portable Sortformer runtime."""
+    """Execute portable Sortformer and its processor-facing mapping contract."""
+    from src.core.diarization.base import SpeakerSegment
     from src.core.diarization.sortformer_onnx import SortformerOnnxDiarizationManager
 
     manager = SortformerOnnxDiarizationManager(provider=provider)
     try:
         manager.prepare()
-        return {"sortformer_onnx": manager.smoke_test()}
+        runtime = manager.smoke_test()
+        mapped = manager.map_speakers_to_transcription(
+            [{
+                "transcription": "тест",
+                "boundaries": (0.0, 0.5),
+                "words": [{"text": "тест", "start": 0.0, "end": 0.5}],
+            }],
+            [SpeakerSegment(0.0, 0.5, "Спикер №1")],
+        )
+        mapping_contract = {
+            "turns": len(mapped),
+            "speakers": [turn["speaker"] for turn in mapped],
+            "text": " ".join(turn["transcription"] for turn in mapped),
+        }
+        expected_mapping = {
+            "turns": 1,
+            "speakers": ["Спикер №1"],
+            "text": "тест",
+        }
+        if mapping_contract != expected_mapping:
+            raise RuntimeError(
+                "Sortformer ONNX mapping contract failed: "
+                f"expected {expected_mapping!r}, got {mapping_contract!r}"
+            )
+        return {
+            "sortformer_onnx": runtime,
+            "mapping_contract": mapping_contract,
+        }
     finally:
         manager.unload()
 

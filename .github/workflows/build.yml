@@ -165,8 +165,18 @@ jobs:
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
 
-      - name: Test runtime compatibility layer
-        run: python -m pytest tests/test_runtime_patches.py tests/test_torch_downloader.py tests/test_runtime_manager.py tests/test_selfcheck.py tests/test_packaging_runtime_deps.py -q
+      - name: Test runtime and processor compatibility layer
+        run: >-
+          python -m pytest
+          tests/test_runtime_patches.py
+          tests/test_torch_downloader.py
+          tests/test_runtime_manager.py
+          tests/test_selfcheck.py
+          tests/test_packaging_runtime_deps.py
+          tests/test_sortformer_onnx.py
+          tests/test_app_sortformer_smoke.py
+          tests/test_processor_progress.py
+          -q
 
       - name: Build (PyInstaller, portable spec)
         run: python -m PyInstaller packaging/gigaam_app_portable.spec --noconfirm

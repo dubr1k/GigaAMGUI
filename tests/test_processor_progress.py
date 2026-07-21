@@ -92,6 +92,10 @@ class FailingDiarizationManager:
         raise RuntimeError("diarization failed")
 
 
+class FailingSortformerOnnxManager(FailingDiarizationManager):
+    backend = "sortformer"
+
+
 def _prepare_inputs(tmp_path: Path) -> Path:
     path = tmp_path / "in.wav"
     path.write_bytes(b"stub")
@@ -303,6 +307,36 @@ def test_failed_diarization_does_not_create_plain_file_with_diarized_name(monkey
 
     assert result["success"]
     assert not (tmp_path / "in_diarize.txt").exists()
+
+
+def test_sortformer_failure_does_not_show_irrelevant_huggingface_hint(monkeypatch, tmp_path):
+    path = _prepare_inputs(tmp_path)
+    logs = []
+    processor = TranscriptionProcessor(
+        DummyLoaderWithValue(),
+        DummyStats(),
+        logger=logs.append,
+        diarization_manager=FailingSortformerOnnxManager(),
+        diarization_backend="sortformer",
+    )
+    monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
+    monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
+
+    result = processor.process_file(
+        filepath=str(path),
+        output_dir=str(path.parent),
+        file_index=0,
+        total_files=1,
+        original_filename=path.name,
+        output_formats=["txt", "txt_diarize"],
+        enable_diarization=True,
+        diarization_backend="sortformer",
+    )
+
+    assert result["success"]
+    assert result["diarization"]["error"] == "diarization failed"
+    assert not any("huggingface" in line.lower() for line in logs)
+    assert any("diarization failed" in line for line in logs)
 
 
 def test_empty_diarization_timeline_is_reported_as_failure(monkeypatch, tmp_path):

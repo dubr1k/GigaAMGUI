@@ -399,10 +399,13 @@ class TranscriptionProcessor:
                     # Диаризация не удалась — сохраняем транскрипт БЕЗ фиктивной
                     # разметки «Спикер №1» и даём пользователю реальную причину.
                     self.logger(f"ОШИБКА: диаризация не выполнена — спикеры НЕ размечены: {e}")
-                    self.logger("Частая причина: на huggingface.co не приняты условия ВСЕХ моделей —")
-                    self.logger("  pyannote/segmentation-3.0, pyannote/speaker-diarization-3.1")
-                    self.logger("  и модели эмбеддингов (wespeaker-voxceleb-resnet34-LM),")
-                    self.logger("либо у токена нет доступа read. Транскрипт сохранён без разметки спикеров.")
+                    if self._active_diarization_backend == "pyannote":
+                        self.logger("Частая причина: на huggingface.co не приняты условия ВСЕХ моделей —")
+                        self.logger("  pyannote/segmentation-3.0, pyannote/speaker-diarization-3.1")
+                        self.logger("  и модели эмбеддингов (wespeaker-voxceleb-resnet34-LM),")
+                        self.logger("либо у токена нет доступа read. Транскрипт сохранён без разметки спикеров.")
+                    else:
+                        self.logger("Транскрипт сохранён без разметки спикеров; подробности ошибки приведены выше.")
 
             # Проверка результатов транскрибации
             if not utterances or len(utterances) == 0:

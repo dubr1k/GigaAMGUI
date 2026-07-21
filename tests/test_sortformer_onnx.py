@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from src.core.diarization.base import DiarizationBackend, SpeakerSegment
 from src.core.diarization.factory import create_diarization_backend
 from src.core.diarization.sortformer_onnx import (
     SORTFORMER_ONNX_FILENAME,
@@ -129,6 +130,31 @@ def test_sortformer_smoke_reports_actual_session_provider_chain():
         "requested_provider": "auto",
         "session_providers": ["CPUExecutionProvider"],
     }
+
+
+def test_sortformer_onnx_implements_shared_mapping_contract():
+    manager = SortformerOnnxDiarizationManager(session=_FakeSession(), checksum=None)
+
+    assert isinstance(manager, DiarizationBackend)
+    mapped = manager.map_speakers_to_transcription(
+        [{
+            "transcription": "раз два",
+            "boundaries": (0.0, 2.0),
+            "words": [
+                {"text": "раз", "start": 0.1, "end": 0.8},
+                {"text": "два", "start": 1.2, "end": 1.8},
+            ],
+        }],
+        [
+            SpeakerSegment(0.0, 1.0, "Спикер №1"),
+            SpeakerSegment(1.0, 2.0, "Спикер №2"),
+        ],
+    )
+
+    assert [(item["speaker"], item["transcription"]) for item in mapped] == [
+        ("Спикер №1", "раз"),
+        ("Спикер №2", "два"),
+    ]
 
 
 def test_sortformer_frontend_matches_export_shape_and_is_finite():

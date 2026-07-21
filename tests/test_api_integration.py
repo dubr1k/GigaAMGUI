@@ -122,7 +122,9 @@ def test_asr_options_expose_all_selectable_backends(client):
     r = client.get("/api/v1/asr/options", headers={"X-API-Key": VALID_KEY})
 
     assert r.status_code == 200
-    assert set(r.json()["backends"]) == {"auto", "onnx", "mlx", "pytorch"}
+    assert set(r.json()["backends"]) == set(
+        api.transcription_service.available_asr_backends()
+    )
     assert "multilingual_large_ctc" in r.json()["models"]
     assert "coreml" in r.json()["onnx_providers"]
 

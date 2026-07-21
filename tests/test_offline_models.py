@@ -36,6 +36,7 @@ def test_cache_next_to_macos_app_bundle_is_found(tmp_path, monkeypatch):
     cache = _make_cache(tmp_path)
     executable = tmp_path / "GigaAMTranscriber.app" / "Contents" / "MacOS" / "GigaAMTranscriber"
     executable.parent.mkdir(parents=True)
+    monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(sys, "executable", str(executable))
 
     assert bundled_hf_cache_dir(frozen=True) == cache
@@ -45,6 +46,7 @@ def test_cache_inside_macos_resources_is_found(tmp_path, monkeypatch):
     contents = tmp_path / "GigaAMTranscriber.app" / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     cache = _make_cache(contents / "Resources")
+    monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(sys, "executable", str(contents / "MacOS" / "GigaAMTranscriber"))
 
     assert bundled_hf_cache_dir(frozen=True) == cache

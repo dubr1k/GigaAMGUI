@@ -9,6 +9,20 @@ from src.core.asr.chunking import AudioChunk
 from src.core.asr.onnx_backend import OnnxBackend
 
 
+@pytest.fixture
+def use_macos_provider_priority(monkeypatch):
+    resolve = onnx_backend_module.resolve_onnx_providers
+
+    def resolve_for_macos(requested, *, available):
+        return resolve(requested, available=available, platform_name="darwin")
+
+    monkeypatch.setattr(
+        onnx_backend_module,
+        "resolve_onnx_providers",
+        resolve_for_macos,
+    )
+
+
 class _FakeTimestampModel:
     def __init__(self, results=None):
         self.timestamp_requests = 0
@@ -314,7 +328,10 @@ def test_vad_failure_uses_overlap_fallback_with_visible_reason(tmp_path):
     assert "vad graph failed" in capabilities.segmentation_fallback_reason
 
 
-def test_auto_provider_retries_inference_on_cpu_after_accelerator_failure(tmp_path):
+def test_auto_provider_retries_inference_on_cpu_after_accelerator_failure(
+    tmp_path,
+    use_macos_provider_priority,
+):
     wav_path = tmp_path / "coreml-failure.wav"
     sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
     calls = []
@@ -401,7 +418,10 @@ def test_explicit_coreml_does_not_silently_retry_on_cpu(tmp_path):
     )]]
 
 
-def test_auto_provider_does_not_retry_user_callback_failure_on_cpu(tmp_path):
+def test_auto_provider_does_not_retry_user_callback_failure_on_cpu(
+    tmp_path,
+    use_macos_provider_priority,
+):
     wav_path = tmp_path / "callback-failure.wav"
     sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)
     calls = []
@@ -522,7 +542,10 @@ def test_failed_vad_initialization_is_not_retried_for_every_file(tmp_path):
     assert backend.capabilities().segmentation_mode == "overlap_chunks"
 
 
-def test_cpu_retry_reports_explicit_progress_reset(tmp_path):
+def test_cpu_retry_reports_explicit_progress_reset(
+    tmp_path,
+    use_macos_provider_priority,
+):
     """Повтор идёт с начала файла, и откат прогресса должен быть объяснён."""
     wav_path = tmp_path / "midway-failure.wav"
     sf.write(wav_path, np.zeros(16000 * 60, dtype=np.float32), 16000)

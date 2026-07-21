@@ -1,6 +1,13 @@
 import json
 
+import pytest
+
 import app
+
+
+@pytest.fixture(autouse=True)
+def isolate_saved_boot_settings(monkeypatch, tmp_path):
+    monkeypatch.setenv("GIGAAM_CONFIG_DIR", str(tmp_path))
 
 
 def test_boot_does_not_require_torch_when_mlx_is_available(monkeypatch):
