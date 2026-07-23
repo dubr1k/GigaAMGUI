@@ -10,6 +10,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .data_paths import bootstrap_data_dir
+
 APP_CONFIG_DIR_NAME = "GigaAMTranscriber"
 
 
@@ -141,11 +143,13 @@ def load_env():
             load_dotenv(env_path, override=False)
 
 
-# Настраиваем HuggingFace cache ДО загрузки переменных окружения
-_setup_huggingface_cache()
-
-# Загружаем переменные окружения
+# Сначала загружаем overrides, затем назначаем default HF_HOME. Старый порядок
+# игнорировал HF_HOME/GIGAAM_RUNTIME_DIR из persistent .env.
 load_env()
+# GIGAAM_DATA_DIR может прийти из project/user .env.
+bootstrap_data_dir()
+
+_setup_huggingface_cache()
 
 # HuggingFace токен для доступа к моделям
 HF_TOKEN = os.getenv("HF_TOKEN", "")

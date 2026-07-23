@@ -14,6 +14,14 @@ import time
 import warnings
 from pathlib import Path
 
+from src.data_paths import (
+    DATA_DIR_RECOVERY_ENV,
+    apply_data_dir,
+    has_data_dir_selection,
+    save_data_dir_selection,
+    save_default_data_dir_selection,
+)
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - macOS build uses fcntl
@@ -44,13 +52,78 @@ def _user_config_dir() -> Path:
 
 def _argv_open_paths(argv: list[str]) -> list[str]:
     paths = []
+    skip_next = False
     for arg in argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--data-dir":
+            skip_next = True
+            continue
+        if arg.startswith("--data-dir="):
+            continue
         if arg.startswith("-psn_"):
             continue
         path = os.path.abspath(os.path.expanduser(arg))
         if os.path.exists(path):
             paths.append(path)
     return paths
+
+
+def _qt_argv(argv: list[str]) -> list[str]:
+    """Не передавать служебный --data-dir парсеру Qt."""
+    result = [argv[0]]
+    skip_next = False
+    for arg in argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--data-dir":
+            skip_next = True
+            continue
+        if arg.startswith("--data-dir="):
+            continue
+        result.append(arg)
+    return result
+
+
+def _offer_data_directory_on_first_portable_launch(parent=None) -> str | None:
+    """До первой загрузки runtime предложить portable-сборке другой диск."""
+    if not getattr(sys, "frozen", False):
+        return None
+    if os.environ.get("GIGAAM_DATA_DIR") or (
+        has_data_dir_selection() and os.environ.get(DATA_DIR_RECOVERY_ENV) != "1"
+    ):
+        return None
+
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+    answer = QMessageBox.question(
+        parent,
+        "Папка данных / Data directory",
+        "Модели и runtime занимают несколько гигабайт. Выбрать папку для них "
+        "сейчас?\n\nModels and runtimes take several GB. Choose their directory now?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        save_default_data_dir_selection()
+        return None
+    selected = QFileDialog.getExistingDirectory(
+        parent,
+        "Папка данных GigaAM / GigaAM data directory",
+        str(Path.home()),
+    )
+    if not selected:
+        return None
+    apply_data_dir(selected, force_specialized=True)
+    save_data_dir_selection(selected)
+    # config импортирован до показа Qt chooser; обновляем единственную path-
+    # константу, которую последующие ModelLoader/diarization импортируют by value.
+    from src import config as app_config
+
+    app_config.ONNX_MODEL_DIR = os.environ.get("ONNX_MODEL_DIR")
+    return selected
 
 
 def _try_acquire_instance_lock():
@@ -405,8 +478,10 @@ def main():
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(_qt_argv(sys.argv))
     app._gigaam_instance_lock_file = early_lock
+
+    _offer_data_directory_on_first_portable_launch()
 
     # On first launch choose the recognition model before the (larger) PyTorch
     # runtime download. This does not load torch and is persisted for the GUI.

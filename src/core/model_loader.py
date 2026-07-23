@@ -1,5 +1,6 @@
 """Модуль загрузки и управления моделью GigaAM."""
 
+import os
 from pathlib import Path
 
 from ..config import (
@@ -206,7 +207,9 @@ class ModelLoader:
             revision = str(backend.model_revision)
             if revision in {"ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"}:
                 revision = f"v3_{revision}"
-            root = Path(bundled) if bundled else Path.home() / ".cache" / "gigaam"
+            configured = os.environ.get("GIGAAM_PYTORCH_MODEL_DIR")
+            root_value = bundled or configured
+            root = Path(root_value) if root_value else Path.home() / ".cache" / "gigaam"
             missing = []
             if not (root / f"{revision}.ckpt").is_file():
                 missing.append(f"GigaAM checkpoint: {revision}.ckpt")

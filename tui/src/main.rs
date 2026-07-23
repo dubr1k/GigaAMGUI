@@ -321,6 +321,58 @@ fn request_llm(app: &mut App) {
     }
 }
 
+fn data_dir_from_args<I, S>(args: I) -> Result<Option<String>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let values: Vec<String> = args
+        .into_iter()
+        .map(|value| value.as_ref().to_string())
+        .collect();
+    for (index, value) in values.iter().enumerate().skip(1) {
+        if let Some(path) = value.strip_prefix("--data-dir=") {
+            if path.is_empty() {
+                return Err("--data-dir requires a path".into());
+            }
+            return Ok(Some(path.into()));
+        }
+        if value == "--data-dir" {
+            return values
+                .get(index + 1)
+                .filter(|path| !path.is_empty() && !path.starts_with('-'))
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| "--data-dir requires a path".into());
+        }
+    }
+    Ok(None)
+}
+
+fn apply_data_dir_argument() -> io::Result<()> {
+    let Some(root) = data_dir_from_args(std::env::args())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+    else {
+        return Ok(());
+    };
+    let root = PathBuf::from(root);
+    std::env::set_var("GIGAAM_DATA_DIR", &root);
+
+    if std::env::var_os("GIGAAM_RUNTIME_DIR").is_none() {
+        std::env::set_var("GIGAAM_RUNTIME_DIR", root.join("runtimes"));
+    }
+    if std::env::var_os("GIGAAM_PYTORCH_MODEL_DIR").is_none() {
+        std::env::set_var(
+            "GIGAAM_PYTORCH_MODEL_DIR",
+            root.join("models").join("gigaam"),
+        );
+    }
+    if std::env::var_os("HF_HOME").is_none() {
+        std::env::set_var("HF_HOME", root.join("models").join("huggingface"));
+    }
+    Ok(())
+}
+
 fn settings_path() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("GIGAAM_CONFIG_DIR") {
         return Some(PathBuf::from(directory).join("tui_settings.json"));
@@ -1582,6 +1634,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 }
 
 fn main() -> io::Result<()> {
+    apply_data_dir_argument()?;
     let (mut child, mut worker, mut events) = spawn_worker()?;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1910,6 +1963,20 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_directory_argument_accepts_separate_and_equals_forms() {
+        assert_eq!(
+            data_dir_from_args(["gigaam", "--data-dir", "/mnt/models"]),
+            Ok(Some("/mnt/models".into()))
+        );
+        assert_eq!(
+            data_dir_from_args(["gigaam", "--data-dir=/srv/gigaam"]),
+            Ok(Some("/srv/gigaam".into()))
+        );
+        assert!(data_dir_from_args(["gigaam", "--data-dir"]).is_err());
+        assert!(data_dir_from_args(["gigaam", "--data-dir", "--help"]).is_err());
+    }
 
     #[test]
     fn shell_path_split_keeps_escaped_and_quoted_spaces() {

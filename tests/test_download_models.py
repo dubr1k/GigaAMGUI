@@ -33,3 +33,16 @@ def test_download_onnx_models_reports_individual_failure():
 
     assert downloaded == []
     assert failed == ["v3_e2e_rnnt"]
+
+
+def test_download_pytorch_models_uses_selected_data_directory(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("GIGAAM_PYTORCH_MODEL_DIR", str(tmp_path))
+
+    downloaded, failed = download_models.download_pytorch_models(
+        loader=lambda model, **kwargs: calls.append((model, kwargs)) or object()
+    )
+
+    assert failed == []
+    assert downloaded == ["v3_e2e_rnnt", "v3_e2e_ctc", "v3_ctc", "v3_rnnt"]
+    assert all(kwargs["download_root"] == str(tmp_path) for _, kwargs in calls)

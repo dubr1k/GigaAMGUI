@@ -103,7 +103,38 @@ gigaam
 
 ## Configuration
 
-For the Web UI, add these values to `.env`:
+### Data and model directory
+
+Set `GIGAAM_DATA_DIR` to place every large download on a drive of your choice.
+The application creates `runtimes` plus dedicated `models/gigaam`,
+`models/huggingface`, `models/onnx`, `models/torch`, `models/nemo`, and
+`models/deepfilter` subdirectories. This covers the PyTorch runtime, GigaAM,
+ONNX/MLX, Pyannote/Sortformer, NeMo, and DeepFilterNet.
+
+- **Desktop GUI:** use `Settings → Data and model directory…`. Portable builds
+  also offer this choice before the first download. Restart after changing it;
+  existing models are deliberately not moved automatically.
+- **GUI/CLI:** `python app.py --data-dir /mnt/large/GigaAMData` or
+  `python cli.py --data-dir /mnt/large/GigaAMData ...`.
+- **TUI:** `gigaam --data-dir /mnt/large/GigaAMData`.
+- **REST API/Web:** set `GIGAAM_DATA_DIR` before server startup. With Docker
+  Compose it is the selected **host** path:
+
+```bash
+GIGAAM_DATA_DIR=/mnt/large/GigaAMData docker compose up -d --build gigaam-web
+```
+
+Specialized variables (`HF_HOME`, `HUGGINGFACE_HUB_CACHE`, `TRANSFORMERS_CACHE`,
+`TORCH_HOME`, `NEMO_HOME`, `ONNX_MODEL_DIR`, `GIGAAM_RUNTIME_DIR`, `GIGAAM_CONFIG_DIR`,
+`GIGAAM_PYTORCH_MODEL_DIR`, and `GIGAAM_DEEPFILTER_DIR`) retain priority for
+advanced layouts. On Windows, keep model/runtime paths free of Cyrillic
+characters because some native DLL loaders cannot handle them reliably.
+
+Small user settings stay in the system config directory so changing disks does
+not reset language, tokens, or processing preferences. Set `GIGAAM_CONFIG_DIR`
+separately when a fully self-contained configuration is required.
+
+For the Web UI, configure `.env`:
 
 ```env
 WEB_SECRET=change_me

@@ -18,6 +18,33 @@
 - Настройки в GUI
 - История обработанных файлов
 
+## [1.3.5] - 2026-07-23
+
+### Добавлено
+
+- Issue #35: единый выбираемый `GIGAAM_DATA_DIR` для моделей, PyTorch runtime,
+  Hugging Face/ONNX/MLX-кэшей и DeepFilterNet.
+  Desktop GUI предлагает выбор до первой тяжёлой загрузки и сохраняет его в
+  настройках; тот же root доступен через `--data-dir` в GUI, CLI, downloader и
+  TUI, через environment для REST API/Web и через host mount Docker Compose.
+- В GUI LLM-постобработки отображаются текущий прогресс и этап выполнения.
+- Ответы совместимых LLM API передаются в GUI потоково, поэтому результат виден
+  сразу по мере генерации.
+
+### Исправлено
+
+- Legacy PyTorch-модели больше не обходят выбранный каталог и не записываются
+  напрямую в `%USERPROFILE%\\.cache` / `~/.cache`.
+- Значения `HF_HOME` и runtime-каталога из persistent `.env` применяются до
+  инициализации model cache.
+- Portable Windows заранее отклоняет пути с кириллицей, которые не поддерживают
+  отдельные нативные DLL, вместо позднего неясного падения.
+
+### Проверка
+
+- Добавлены unit/integration-тесты приоритетов путей, persistence, GUI, CLI,
+  downloader, Docker Compose и PyTorch model root; TUI покрыт Rust-тестами.
+
 ## [1.3.3] - 2026-07-21
 
 ### Исправлено

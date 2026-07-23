@@ -222,6 +222,9 @@ class I18nMixin:
             self._menu_file.setTitle("Файл" if is_ru else "File")
             self._menu_view.setTitle("Вид" if is_ru else "View")
             self._menu_settings.setTitle("Настройки" if is_ru else "Settings")
+            if hasattr(self, "_act_data_dir"):
+                self._act_data_dir.setText("Папка данных и моделей…" if is_ru else "Data and model directory…")
+                self._act_data_dir.setStatusTip("Выбрать диск для моделей, кэшей и runtime" if is_ru else "Choose a drive for models, caches, and runtimes")
             self._menu_help.setTitle("Справка" if is_ru else "Help")
             self._act_files.setText("Выбрать файлы…" if is_ru else "Choose files…")
             self._act_folder.setText("Выбрать папку с файлами…" if is_ru else "Choose folder with files…")

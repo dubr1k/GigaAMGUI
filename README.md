@@ -102,6 +102,37 @@ gigaam
 
 ## Конфигурация
 
+### Папка данных и моделей
+
+Все крупные загрузки можно направить на выбранный диск единым параметром
+`GIGAAM_DATA_DIR`. Внутри автоматически создаются `runtimes` и отдельные
+подкаталоги `models/gigaam`, `models/huggingface`, `models/onnx`,
+`models/torch`, `models/nemo` и `models/deepfilter`. Это включает PyTorch
+runtime, GigaAM, ONNX/MLX, Pyannote/Sortformer, NeMo и DeepFilterNet.
+
+- **Desktop GUI:** `Настройки → Папка данных и моделей…`. Portable-сборка также
+  предлагает выбрать папку до первой загрузки. После смены папки нужен перезапуск;
+  уже загруженные модели намеренно не перемещаются автоматически.
+- **GUI/CLI:** `python app.py --data-dir /mnt/large/GigaAMData` или
+  `python cli.py --data-dir /mnt/large/GigaAMData ...`.
+- **TUI:** `gigaam --data-dir /mnt/large/GigaAMData`.
+- **REST API/Web:** задайте `GIGAAM_DATA_DIR` до запуска сервера. Для Docker
+  Compose эта переменная означает путь **на хосте**:
+
+```bash
+GIGAAM_DATA_DIR=/mnt/large/GigaAMData docker compose up -d --build gigaam-web
+```
+
+Узкие переменные (`HF_HOME`, `HUGGINGFACE_HUB_CACHE`, `TRANSFORMERS_CACHE`,
+`TORCH_HOME`, `NEMO_HOME`, `ONNX_MODEL_DIR`, `GIGAAM_RUNTIME_DIR`, `GIGAAM_CONFIG_DIR`,
+`GIGAAM_PYTORCH_MODEL_DIR`, `GIGAAM_DEEPFILTER_DIR`) сохраняют приоритет, если
+нужно разместить отдельный компонент иначе. В Windows путь моделей/runtime не
+должен содержать кириллицу из-за ограничений некоторых нативных DLL.
+
+Небольшие пользовательские настройки остаются в системном config-каталоге, чтобы
+смена диска не сбрасывала язык, токены и параметры обработки. Для полностью
+самостоятельной конфигурации её можно отдельно перенести через `GIGAAM_CONFIG_DIR`.
+
 Для Web UI задайте в `.env`:
 
 ```env

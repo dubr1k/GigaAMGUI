@@ -258,6 +258,12 @@ class UiBuildMixin:
         settings_menu.addAction(act_device)
 
         settings_menu.addSeparator()
+        self._act_data_dir = QAction("Папка данных и моделей…", self)
+        self._act_data_dir.setStatusTip("Выбрать диск для моделей, кэшей и runtime")
+        self._act_data_dir.triggered.connect(self._select_data_directory)
+        settings_menu.addAction(self._act_data_dir)
+
+        settings_menu.addSeparator()
         self._act_llm = QAction("LLM API…", self)
         act_llm = self._act_llm
         act_llm.setStatusTip("Настроить API URL, ключ, модель и папку результатов LLM")

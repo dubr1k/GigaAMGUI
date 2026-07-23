@@ -1,4 +1,6 @@
 import json
+import sys
+import types
 
 import pytest
 
@@ -102,3 +104,64 @@ def test_onnx_auto_does_not_download_when_cuda_runtime_is_missing(monkeypatch):
     monkeypatch.setattr(app.sys, "platform", "linux", raising=False)
 
     assert app._installed_onnx_cuda_variant("auto", runtime_manager=fake_rm) is None
+
+
+def test_gui_data_directory_argument_is_not_treated_as_an_open_path(tmp_path):
+    media = tmp_path / "audio.wav"
+    media.write_bytes(b"audio")
+
+    argv = ["app.py", "--data-dir", str(tmp_path), str(media)]
+
+    assert app._qt_argv(argv) == ["app.py", str(media)]
+    assert app._argv_open_paths(argv) == [str(media)]
+
+
+def test_first_portable_launch_recovers_unavailable_saved_root_before_model_download(
+    tmp_path, monkeypatch
+):
+    from src import config
+
+    selected = tmp_path / "portable"
+    calls = []
+    monkeypatch.setattr(config, "ONNX_MODEL_DIR", None)
+
+    class FakeMessageBox:
+        class StandardButton:
+            Yes = 1
+            No = 2
+
+        @staticmethod
+        def question(*_args, **_kwargs):
+            return FakeMessageBox.StandardButton.Yes
+
+    fake_widgets = types.SimpleNamespace(
+        QFileDialog=types.SimpleNamespace(
+            getExistingDirectory=lambda *_args, **_kwargs: str(selected)
+        ),
+        QMessageBox=FakeMessageBox,
+    )
+    monkeypatch.setitem(sys.modules, "PyQt6.QtWidgets", fake_widgets)
+    monkeypatch.setattr(app.sys, "frozen", True, raising=False)
+    monkeypatch.delenv("GIGAAM_DATA_DIR", raising=False)
+    monkeypatch.setenv(app.DATA_DIR_RECOVERY_ENV, "1")
+    monkeypatch.setattr(app, "has_data_dir_selection", lambda: True)
+    monkeypatch.setattr(
+        app,
+        "apply_data_dir",
+        lambda path, **kwargs: (
+            monkeypatch.setenv("ONNX_MODEL_DIR", str(selected / "models" / "onnx")),
+            calls.append(("apply", path, kwargs)),
+        )[-1],
+    )
+    monkeypatch.setattr(
+        app,
+        "save_data_dir_selection",
+        lambda path: calls.append(("save", path)),
+    )
+
+    assert app._offer_data_directory_on_first_portable_launch() == str(selected)
+    assert calls == [
+        ("apply", str(selected), {"force_specialized": True}),
+        ("save", str(selected)),
+    ]
+    assert config.ONNX_MODEL_DIR == str(selected / "models" / "onnx")

@@ -11,6 +11,17 @@ import time
 # Подавляем предупреждения
 import warnings
 
+from src.data_paths import DATA_DIR_ENV, apply_data_dir, data_dir_from_argv, layout_for
+
+# До config только фиксируем явный CLI root. Сам config сначала загрузит .env,
+# затем разложит root по специализированным переменным до ML-импортов.
+try:
+    _early_data_dir = data_dir_from_argv(sys.argv)
+    if _early_data_dir:
+        os.environ[DATA_DIR_ENV] = str(layout_for(_early_data_dir).root)
+except ValueError as exc:
+    raise SystemExit(str(exc)) from exc
+
 import click
 import questionary
 from questionary import Style
@@ -342,6 +353,11 @@ def display_results(results: list[dict]):
 
 @click.command()
 @click.option(
+    "--data-dir",
+    type=click.Path(file_okay=False, path_type=str),
+    help="Единая папка runtime и моделей (также GIGAAM_DATA_DIR)",
+)
+@click.option(
     '--files', '-f',
     multiple=True,
     type=click.Path(exists=True),
@@ -418,7 +434,7 @@ def display_results(results: list[dict]):
     help='Интеллектуальная подготовка аудио перед распознаванием',
 )
 def main(
-    files, directory, output, interactive, verbose, formats, backend, model, onnx_provider,
+    data_dir, files, directory, output, interactive, verbose, formats, backend, model, onnx_provider,
     diarize, diarization_backend, speakers, audio_preprocessing,
 ):
     """
@@ -444,6 +460,8 @@ def main(
     # Неинтерактивный режим с подробным выводом
     python cli.py -d /path/to/dir -n -v
     """
+    if data_dir:
+        apply_data_dir(data_dir, force_specialized=True)
 
     # Баннер
     print_banner()

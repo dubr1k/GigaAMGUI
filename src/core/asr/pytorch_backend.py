@@ -73,6 +73,10 @@ class PyTorchBackend:
             candidate = os.path.join(root, model_dir)
             if all(os.path.isfile(os.path.join(candidate, name)) for name in required):
                 return candidate
+        selected = os.environ.get("GIGAAM_PYTORCH_MODEL_DIR")
+        if selected:
+            os.makedirs(selected, exist_ok=True)
+            return selected
         return None
 
     def _select_device(self) -> str:

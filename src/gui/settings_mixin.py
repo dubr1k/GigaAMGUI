@@ -19,10 +19,41 @@ from ..config import (
     LLM_TEMPERATURE,
     save_env_value,
 )
+from ..data_paths import save_data_dir_selection
 from .llm_mixin import SUMMARY_PROMPT, TASKS_PROMPT
 
 
 class SettingsMixin:
+    def _select_data_directory(self):
+        """Сохранить новый единый data root; он применится после restart."""
+        current = os.environ.get("GIGAAM_DATA_DIR") or os.path.expanduser("~")
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            self._t("Папка данных GigaAM", "GigaAM data directory"),
+            current,
+        )
+        if not selected:
+            return
+        try:
+            save_data_dir_selection(selected)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                self._t("Папка данных", "Data directory"),
+                self._t("Не удалось сохранить выбор:\n", "Could not save the selection:\n") + str(exc),
+            )
+            return
+        QMessageBox.information(
+            self,
+            self._t("Папка данных", "Data directory"),
+            self._t(
+                f"Новая папка сохранена:\n{selected}\n\nПерезапустите приложение. "
+                "Существующие модели автоматически не перемещаются.",
+                f"The new directory has been saved:\n{selected}\n\nRestart the application. "
+                "Existing models are not moved automatically.",
+            ),
+        )
+
     def _restore_geometry(self):
         # Геометрию из безголовых/тестовых сессий не восстанавливаем
         if self._is_headless():
