@@ -48,6 +48,17 @@ def test_file_progress_still_accepts_integer():
     window.close()
 
 
+def test_llm_progress_updates_bar():
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+
+    window._update_llm_progress(2, 3)
+
+    assert window.progress_bar_llm.value() == 67
+    assert "2 из 3" in window.lbl_llm_status.text()
+    window.close()
+
+
 def test_processing_tab_in_scroll_area_no_overlap_when_short():
     # Регрессия: вкладка «Обработка» в QScrollArea, элементы не наезжают при низком окне
     from PyQt6.QtWidgets import QScrollArea

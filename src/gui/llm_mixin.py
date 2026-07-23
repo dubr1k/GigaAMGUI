@@ -63,6 +63,8 @@ class LlmMixin:
         try:
             results = []
             total = len(items)
+            total_operations = total * len(modes)
+            completed_operations = 0
             last_name = "llm_result"
             provider = llm_settings.get("provider", "API")
             for item_index, item in enumerate(items, start=1):
@@ -72,6 +74,8 @@ class LlmMixin:
                 for mode_suffix, mode_label, prompt in modes:
                     self.log(f"LLM: обработка {item_index}/{total} — {name} — {mode_label} — {provider}")
                     answer = self._run_llm_provider(llm_settings, item["text"], prompt)
+                    completed_operations += 1
+                    self.signals.llm_progress_update.emit(completed_operations, total_operations)
                     saved_paths = self._save_llm_result(item, answer, mode_suffix, export_formats)
                     block = f"=== {name} / {mode_label} / {provider} ===\n{answer}"
                     if saved_paths:
@@ -161,9 +165,23 @@ class LlmMixin:
         self.btn_llm_process.setEnabled(enabled)
         self.btn_llm_clear.setEnabled(enabled)
 
+    def _update_llm_progress(self, completed: int, total: int):
+        if total <= 0:
+            return
+        percent = round(completed * 100 / total)
+        self.progress_bar_llm.setValue(percent)
+        self.lbl_llm_status.setText(
+            self._t(
+                f"LLM-обработка: {completed} из {total} ({percent}%)",
+                f"LLM processing: {completed} of {total} ({percent}%)",
+            )
+        )
+
     def _on_llm_finished(self, success: bool, message: str, result_text: str):
         self.is_llm_processing = False
         self._set_llm_buttons_enabled(True)
+        if success:
+            self.progress_bar_llm.setValue(100)
         self.lbl_llm_status.setText(message)
         if result_text:
             self.llm_last_result_text = result_text
@@ -361,6 +379,7 @@ class LlmMixin:
         self.is_llm_processing = True
         self._set_llm_buttons_enabled(False)
         self.lbl_llm_status.setText("Идет LLM-обработка...")
+        self.progress_bar_llm.setValue(0)
         self.txt_llm_result.clear()
         threading.Thread(
             target=self._run_llm_processing,

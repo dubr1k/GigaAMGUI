@@ -493,6 +493,9 @@ class LlmUiMixin:
         )
         layout.addWidget(self.lbl_llm_status)
 
+        self.progress_bar_llm = self._make_progress_bar(height=16, font_pt=8)
+        layout.addWidget(self.progress_bar_llm)
+
         self.txt_llm_result = QTextEdit()
         self.txt_llm_result.setReadOnly(True)
         self.txt_llm_result.setFont(self._font(10, fixed=True))
