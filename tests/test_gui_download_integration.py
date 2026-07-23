@@ -59,6 +59,18 @@ def test_llm_progress_updates_bar():
     window.close()
 
 
+def test_llm_progress_is_indeterminate_while_request_runs():
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+
+    window._start_llm_progress(1, 3)
+
+    assert window.progress_bar_llm.minimum() == 0
+    assert window.progress_bar_llm.maximum() == 0
+    assert "размышляет" in window.lbl_llm_status.text()
+    window.close()
+
+
 def test_processing_tab_in_scroll_area_no_overlap_when_short():
     # Регрессия: вкладка «Обработка» в QScrollArea, элементы не наезжают при низком окне
     from PyQt6.QtWidgets import QScrollArea

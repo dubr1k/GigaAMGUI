@@ -67,6 +67,8 @@ class WorkerSignals(QObject):
     download_failed = pyqtSignal(str)
     llm_finished = pyqtSignal(bool, str, str)
     llm_progress_update = pyqtSignal(int, int)
+    llm_progress_started = pyqtSignal(int, int)
+    llm_response_ready = pyqtSignal()
 
 
 class GigaApplication(QApplication):
@@ -181,6 +183,8 @@ class GigaTranscriberQtApp(
         self.signals.download_failed.connect(self._on_download_failed)
         self.signals.llm_finished.connect(self._on_llm_finished)
         self.signals.llm_progress_update.connect(self._update_llm_progress)
+        self.signals.llm_progress_started.connect(self._start_llm_progress)
+        self.signals.llm_response_ready.connect(self._on_llm_response_ready)
 
         saved_output_dir = self.user_settings.get_last_output_dir()
         saved_input_dir = self.user_settings.get_last_files_dir()
