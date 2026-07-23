@@ -56,10 +56,10 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # ffmpeg нужен приложению в рантайме; в Linux ставим системный для сборки IO-зависимостей.
-      - name: Install ffmpeg (Linux)
+      # ffmpeg нужен приложению в рантайме; EGL/GL — для offscreen PyQt GUI-тестов.
+      - name: Install ffmpeg and Qt runtime libraries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libegl1 libgl1
 
       # --- Вкладываем ПРАВИЛЬНЫЙ по ОС/арх. ffmpeg в bin/, чтобы он вшился в
       # портативный бинарник (спек забирает bin/ffmpeg.exe на Windows и
