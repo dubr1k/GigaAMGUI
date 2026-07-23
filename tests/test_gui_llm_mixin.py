@@ -45,21 +45,22 @@ def test_run_llm_provider_delegates_and_normalizes_other(monkeypatch):
     stub = _Stub()
     captured = {}
 
-    def fake_run(settings, text, prompt, *, provider, strict_empty_cli):
+    def fake_run(settings, text, prompt, *, provider, strict_empty_cli, on_stream_chunk=None):
         captured["provider"] = provider
         captured["strict"] = strict_empty_cli
+        captured["stream_callback"] = on_stream_chunk
         return "ok"
 
     monkeypatch.setattr(llm_service, "run_provider", fake_run)
     result = stub._run_llm_provider({"provider": "Другое"}, "t", "p")
     assert result == "ok"
-    assert captured == {"provider": "Other", "strict": True}
+    assert captured == {"provider": "Other", "strict": True, "stream_callback": None}
 
 
 def test_run_llm_provider_unknown_maps_to_runtimeerror(monkeypatch):
     stub = _Stub()
 
-    def fake_run(*a, provider, strict_empty_cli, **k):
+    def fake_run(*a, provider, strict_empty_cli, on_stream_chunk=None, **k):
         raise llm_service.UnknownLLMProvider(provider)
 
     monkeypatch.setattr(llm_service, "run_provider", fake_run)

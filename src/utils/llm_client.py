@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from collections.abc import Callable
 
 import requests
 
@@ -67,6 +69,7 @@ class LLMClient:
         transcript_text: str,
         prompt: str,
         system_prompt: str | None = None,
+        stream_callback: Callable[[str], None] | None = None,
     ) -> str:
         transcript = (transcript_text or "").strip()
         if not transcript:
@@ -78,10 +81,16 @@ class LLMClient:
 
         api_kind = self._detect_api_kind(self.settings.api_url)
         if api_kind == "anthropic":
-            return self._process_anthropic(transcript, user_prompt, system_prompt)
-        return self._process_openai(transcript, user_prompt, system_prompt)
+            return self._process_anthropic(transcript, user_prompt, system_prompt, stream_callback)
+        return self._process_openai(transcript, user_prompt, system_prompt, stream_callback)
 
-    def _process_openai(self, transcript: str, user_prompt: str, system_prompt: str | None) -> str:
+    def _process_openai(
+        self,
+        transcript: str,
+        user_prompt: str,
+        system_prompt: str | None,
+        stream_callback: Callable[[str], None] | None,
+    ) -> str:
         endpoint = self._build_openai_endpoint(self.settings.api_url)
         headers = {
             "Authorization": f"Bearer {self.settings.api_key.strip()}",
@@ -104,6 +113,26 @@ class LLMClient:
                 },
             ],
         }
+        if stream_callback:
+            payload["stream"] = True
+            response = requests.post(
+                endpoint, headers=headers, json=payload, timeout=self.settings.timeout, stream=True
+            )
+            response.raise_for_status()
+            parts = []
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content", "")
+                if delta:
+                    parts.append(delta)
+                    stream_callback(delta)
+            return self._extract_text_content("".join(parts))
+
         response = requests.post(endpoint, headers=headers, json=payload, timeout=self.settings.timeout)
         response.raise_for_status()
         data = response.json()
@@ -114,7 +143,13 @@ class LLMClient:
         content = message.get("content", "")
         return self._extract_text_content(content)
 
-    def _process_anthropic(self, transcript: str, user_prompt: str, system_prompt: str | None) -> str:
+    def _process_anthropic(
+        self,
+        transcript: str,
+        user_prompt: str,
+        system_prompt: str | None,
+        stream_callback: Callable[[str], None] | None,
+    ) -> str:
         endpoint = self._build_anthropic_endpoint(self.settings.api_url)
         headers = {
             "x-api-key": self.settings.api_key.strip(),
@@ -136,6 +171,24 @@ class LLMClient:
                 }
             ],
         }
+        if stream_callback:
+            payload["stream"] = True
+            response = requests.post(
+                endpoint, headers=headers, json=payload, timeout=self.settings.timeout, stream=True
+            )
+            response.raise_for_status()
+            parts = []
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                event = json.loads(line[6:])
+                delta = event.get("delta") or {}
+                text = delta.get("text", "") if delta.get("type") == "text_delta" else ""
+                if text:
+                    parts.append(text)
+                    stream_callback(text)
+            return self._extract_text_content("".join(parts))
+
         response = requests.post(endpoint, headers=headers, json=payload, timeout=self.settings.timeout)
         response.raise_for_status()
         data = response.json()

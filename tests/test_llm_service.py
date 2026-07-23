@@ -38,6 +38,29 @@ def test_run_provider_unknown_raises():
     assert exc.value.provider == "Nope"
 
 
+def test_api_provider_forwards_stream_callback(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, settings):
+            captured["settings"] = settings
+
+        def process_transcript(self, text, prompt, stream_callback=None):
+            stream_callback("часть")
+            return "ответ"
+
+    monkeypatch.setattr(llm_service, "LLMClient", FakeClient)
+    chunks = []
+
+    result = llm_service.run_provider(
+        {"api_url": "https://example.test", "api_key": "key", "model": "model", "temperature": 0.2},
+        "текст", "промпт", provider="API", strict_empty_cli=True, on_stream_chunk=chunks.append,
+    )
+
+    assert result == "ответ"
+    assert chunks == ["часть"]
+
+
 def test_claude_empty_strict_raises(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0, "", ""))
     with pytest.raises(llm_service.EmptyLLMResponse):

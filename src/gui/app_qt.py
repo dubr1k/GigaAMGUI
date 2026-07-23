@@ -69,6 +69,7 @@ class WorkerSignals(QObject):
     llm_progress_update = pyqtSignal(int, int)
     llm_progress_started = pyqtSignal(int, int)
     llm_response_ready = pyqtSignal()
+    llm_stream_chunk = pyqtSignal(str)
 
 
 class GigaApplication(QApplication):
@@ -185,6 +186,7 @@ class GigaTranscriberQtApp(
         self.signals.llm_progress_update.connect(self._update_llm_progress)
         self.signals.llm_progress_started.connect(self._start_llm_progress)
         self.signals.llm_response_ready.connect(self._on_llm_response_ready)
+        self.signals.llm_stream_chunk.connect(self._on_llm_stream_chunk)
 
         saved_output_dir = self.user_settings.get_last_output_dir()
         saved_input_dir = self.user_settings.get_last_files_dir()

@@ -47,14 +47,19 @@ def build_prompt_text(transcript_text: str, prompt: str) -> str:
     )
 
 
-def _run_api(settings: dict, transcript_text: str, prompt: str) -> str:
+def _run_api(
+    settings: dict,
+    transcript_text: str,
+    prompt: str,
+    on_stream_chunk=None,
+) -> str:
     client = LLMClient(LLMSettings(
         api_url=settings["api_url"],
         api_key=settings["api_key"],
         model=settings["model"],
         temperature=settings["temperature"],
     ))
-    return client.process_transcript(transcript_text, prompt)
+    return client.process_transcript(transcript_text, prompt, stream_callback=on_stream_chunk)
 
 
 def _run_claude(settings: dict, prompt_text: str, strict_empty: bool) -> str:
@@ -146,10 +151,11 @@ def run_provider(
     *,
     provider: str,
     strict_empty_cli: bool,
+    on_stream_chunk=None,
 ) -> str:
     """Запускает LLM-провайдера. `provider` — уже нормализованное каноническое имя."""
     if provider == "API":
-        return _run_api(llm_settings, transcript_text, prompt)
+        return _run_api(llm_settings, transcript_text, prompt, on_stream_chunk)
     prompt_text = build_prompt_text(transcript_text, prompt)
     if provider == "Claude Code":
         return _run_claude(llm_settings, prompt_text, strict_empty_cli)

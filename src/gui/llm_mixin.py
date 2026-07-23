@@ -45,13 +45,20 @@ class LlmMixin:
     def _build_llm_prompt_text(self, transcript_text: str, prompt: str) -> str:
         return llm_service.build_prompt_text(transcript_text, prompt)
 
-    def _run_llm_provider(self, llm_settings: dict, transcript_text: str, prompt: str) -> str:
+    def _run_llm_provider(
+        self,
+        llm_settings: dict,
+        transcript_text: str,
+        prompt: str,
+        on_stream_chunk=None,
+    ) -> str:
         raw = llm_settings.get("provider", "API")
         provider = "Other" if self._normalize_llm_provider(raw) == "Other" else raw
         try:
             return llm_service.run_provider(
                 llm_settings, transcript_text, prompt,
                 provider=provider, strict_empty_cli=True,
+                on_stream_chunk=on_stream_chunk,
             )
         except llm_service.UnknownLLMProvider as exc:
             raise RuntimeError(self._t(
@@ -74,7 +81,12 @@ class LlmMixin:
                 for mode_suffix, mode_label, prompt in modes:
                     self.log(f"LLM: обработка {item_index}/{total} — {name} — {mode_label} — {provider}")
                     self.signals.llm_progress_started.emit(completed_operations, total_operations)
-                    answer = self._run_llm_provider(llm_settings, item["text"], prompt)
+                    answer = self._run_llm_provider(
+                        llm_settings,
+                        item["text"],
+                        prompt,
+                        on_stream_chunk=self.signals.llm_stream_chunk.emit,
+                    )
                     self.signals.llm_response_ready.emit()
                     completed_operations += 1
                     self.signals.llm_progress_update.emit(completed_operations, total_operations)
@@ -196,6 +208,9 @@ class LlmMixin:
                 "LLM response received, saving result…",
             )
         )
+
+    def _on_llm_stream_chunk(self, _chunk: str):
+        self.lbl_llm_status.setText(self._t("LLM выдаёт текст…", "LLM is streaming text…"))
 
     def _on_llm_finished(self, success: bool, message: str, result_text: str):
         self.is_llm_processing = False
