@@ -11,6 +11,17 @@ import time
 # Подавляем предупреждения
 import warnings
 
+
+def force_utf8_output() -> None:
+    """Не даём Windows-консоли с cp1252 уронить Rich/Click на Unicode-символах."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+force_utf8_output()
+
 from src.data_paths import DATA_DIR_ENV, apply_data_dir, data_dir_from_argv, layout_for
 
 # До config только фиксируем явный CLI root. Сам config сначала загрузит .env,

@@ -8,6 +8,13 @@ from src.core.asr.pytorch_backend import PyTorchBackend  # noqa: E402
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _subprocess_env(*, encoding: str = "utf-8") -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = encoding
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def test_config_import_bootstraps_selected_data_directory(tmp_path):
     selected = tmp_path / "portable"
     env = os.environ.copy()
@@ -114,7 +121,9 @@ def test_cli_help_exposes_data_directory_option():
     result = subprocess.run(
         [sys.executable, "cli.py", "--help"],
         cwd=PROJECT_ROOT,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_subprocess_env(encoding="cp1252"),
         capture_output=True,
         check=True,
     )
@@ -138,7 +147,9 @@ def test_model_downloader_help_exposes_data_directory_option():
     result = subprocess.run(
         [sys.executable, "download_models.py", "--help"],
         cwd=PROJECT_ROOT,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_subprocess_env(),
         capture_output=True,
         check=True,
     )
