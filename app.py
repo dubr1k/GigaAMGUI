@@ -151,12 +151,29 @@ def _queue_open_request(paths: list[str]) -> None:
 
 
 def _torch_is_available() -> bool:
-    """True, если torch уже можно импортировать без загрузки (вшит/установлен)."""
+    """True, если доступен настоящий пакет torch, а не namespace-заглушка."""
     import importlib.util
+
     try:
-        return importlib.util.find_spec("torch") is not None
+        spec = importlib.util.find_spec("torch")
     except (ImportError, ValueError):
         return False
+    return spec is not None and spec.loader is not None and spec.origin is not None
+
+
+def _prepare_torch_runtime(runtime_manager, ensure_ready) -> bool:
+    """Активирует целый runtime и очищает возможную PyInstaller-заглушку torch."""
+    selected = runtime_manager.get_selected_variant()
+    if selected and runtime_manager.is_installed(selected):
+        runtime_manager.switch_runtime(selected)
+        return True
+    if _torch_is_available():
+        return True
+    selected = ensure_ready()
+    if not selected:
+        return False
+    runtime_manager.switch_runtime(selected)
+    return True
 
 
 def _is_mlx_available() -> bool:
@@ -521,14 +538,13 @@ def main():
     if onnx_cuda_variant:
         rm.activate(onnx_cuda_variant)
 
-    # Если выбранный backend требует PyTorch, и он ещё не установлен — предлагаем выбрать runtime.
-    if _boot_requires_torch() and not _torch_is_available():
+    # Для PyTorch всегда активируем сохранённый целый runtime до импорта модели.
+    # Это также удаляет namespace-заглушку torch, которую может оставить PyInstaller.
+    if _boot_requires_torch():
         from src.gui.device_dialog import ensure_device_ready
 
-        variant = ensure_device_ready()
-        if not variant:
+        if not _prepare_torch_runtime(rm, ensure_device_ready):
             sys.exit(0)
-        rm.activate(variant)
 
     if HF_TOKEN and str(HF_TOKEN).startswith("hf_"):
         from src.utils.pyannote_patch import apply_pyannote_patch
