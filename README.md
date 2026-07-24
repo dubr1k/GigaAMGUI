@@ -29,6 +29,8 @@
 
 - Пакетная обработка файлов и папок, рекурсивный поиск, drag & drop, загрузка через `yt-dlp`.
 - Экспорт: `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`.
+- SRT/VTT делятся на короткие фразы по пунктуации и word timestamps; число строк
+  и максимальная длина строки настраиваются отдельно, не затрагивая TXT/MD.
 - Выбираемая диаризация: `pyannote`, ONNX PyAnnote + WeSpeaker или NVIDIA Streaming Sortformer v2.1.
 - Автоматическая диагностика качества, консервативная очистка и safe fallback без сдвига таймкодов.
 - Ускорение MLX RNN-T на Apple Silicon; CPU, CUDA, Intel XPU и MPS.
@@ -99,6 +101,24 @@ NeMo из Space (`2.5.3`) намеренно не используется из-
 curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/install_tui.sh | bash
 gigaam
 ```
+
+### Настройки субтитров
+
+В Desktop GUI и Web UI параметры появляются рядом с форматами SRT/VTT. CLI
+принимает `--subtitle-sentence-split/--no-subtitle-sentence-split`,
+`--subtitle-max-lines` и `--subtitle-max-width`:
+
+```bash
+python cli.py -f audio.wav --format srt --format vtt \
+  --subtitle-sentence-split --subtitle-max-lines 2 --subtitle-max-width 64
+```
+
+В TUI доступны команды `/subtitle-split on|off`, `/subtitle-lines 1..4` и
+`/subtitle-width 20..100`. Настройки сохраняются между запусками. При наличии
+word timestamps cue получает точные границы; иначе используется детерминированное
+распределение внутри исходного ASR-сегмента. Лимит ширины учитывает также метку
+спикера; при экстремально узкой строке длинная метка сокращается с сохранением
+идентифицирующего суффикса.
 
 ## Конфигурация
 

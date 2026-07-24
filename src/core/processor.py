@@ -17,6 +17,7 @@ from ..utils.output_naming import output_path
 from ..utils.time_formatter import TimeFormatter
 from . import formatters
 from .progress import ProgressEvent, ProgressPlan
+from .subtitles import SubtitleOptions
 
 if TYPE_CHECKING:
     from .diarization.base import DiarizationBackend
@@ -156,7 +157,8 @@ class TranscriptionProcessor:
                      num_speakers: int | None = None,
                      output_formats: list | None = None,
                      diarization_backend: str = DIARIZATION_BACKEND,
-                     audio_preprocessing_mode: str = "off") -> dict:
+                     audio_preprocessing_mode: str = "off",
+                     subtitle_options: SubtitleOptions | None = None) -> dict:
         """
         Обрабатывает один файл
 
@@ -173,6 +175,7 @@ class TranscriptionProcessor:
             num_speakers: количество спикеров (если известно)
             diarization_backend: backend диаризации (`onnx`, `pyannote` или `sortformer`)
             audio_preprocessing_mode: подготовка аудио (`off`, `auto`, `light` или `denoise`)
+            subtitle_options: правила пофразной разбивки SRT/VTT
 
         Returns:
             dict: результаты обработки с ключами:
@@ -552,7 +555,7 @@ class TranscriptionProcessor:
                 elif fmt == 'srt':
                     # SRT субтитры
                     path_srt = output_path(output_dir, name_without_ext, 'srt')
-                    srt_content = self._generate_srt(utterances)
+                    srt_content = self._generate_srt(utterances, subtitle_options)
                     with open(path_srt, "w", encoding="utf-8") as f:
                         f.write(srt_content)
                     saved_files.append(path_srt)
@@ -560,7 +563,7 @@ class TranscriptionProcessor:
                 elif fmt == 'vtt':
                     # VTT субтитры
                     path_vtt = output_path(output_dir, name_without_ext, 'vtt')
-                    vtt_content = self._generate_vtt(utterances)
+                    vtt_content = self._generate_vtt(utterances, subtitle_options)
                     with open(path_vtt, "w", encoding="utf-8") as f:
                         f.write(vtt_content)
                     saved_files.append(path_vtt)
@@ -667,13 +670,21 @@ class TranscriptionProcessor:
             self.logger(traceback.format_exc().strip())
             raise
 
-    def _generate_srt(self, utterances: list) -> str:
+    def _generate_srt(
+        self,
+        utterances: list,
+        options: SubtitleOptions | None = None,
+    ) -> str:
         """Генерирует контент в формате SRT субтитров (делегирует в formatters)."""
-        return formatters.generate_srt(utterances)
+        return formatters.generate_srt(utterances, options)
 
-    def _generate_vtt(self, utterances: list) -> str:
+    def _generate_vtt(
+        self,
+        utterances: list,
+        options: SubtitleOptions | None = None,
+    ) -> str:
         """Генерирует контент в формате VTT субтитров (делегирует в formatters)."""
-        return formatters.generate_vtt(utterances)
+        return formatters.generate_vtt(utterances, options)
 
     def _generate_markdown(self, utterances: list, filename: str) -> str:
         """Генерирует контент в формате Markdown (делегирует в formatters)."""

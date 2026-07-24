@@ -42,6 +42,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
+from src.core.subtitles import SubtitleOptions
 from src.services import file_policy, llm_service, task_store, transcription_service
 from src.services import health as health_service
 from src.utils.atomic_json import load_json, save_json_atomic
@@ -360,6 +361,15 @@ def _restore_completed_task_from_meta(task_dir: Path) -> dict | None:
         'enable_diarization': meta.get('enable_diarization', False),
         'diarization_backend': meta.get('diarization_backend', 'pyannote'),
         'num_speakers': meta.get('num_speakers'),
+        'subtitle_options': (
+            dict(meta['subtitle_options'])
+            if isinstance(meta.get('subtitle_options'), dict)
+            else {
+                'sentence_split': True,
+                'max_line_count': 2,
+                'max_line_width': 64,
+            }
+        ),
         'asr_backend': meta.get('asr_backend'),
         'asr_model': meta.get('asr_model'),
         'onnx_provider': meta.get('onnx_provider'),
@@ -508,8 +518,10 @@ async def process_transcription(
     diarization_backend: str,
     num_speakers: int | None,
     asr_selection: transcription_service.AsrSelection | None = None,
+    subtitle_options: SubtitleOptions | None = None,
 ):
     """Фоновая обработка транскрибации."""
+    subtitle_options = subtitle_options or SubtitleOptions()
     if processing_semaphore is None:
         raise RuntimeError("Семафор обработки не инициализирован")
 
@@ -629,6 +641,7 @@ async def process_transcription(
                     diarization_backend=diarization_backend,
                     audio_preprocessing_mode=AUDIO_PREPROCESSING_MODE,
                     num_speakers=num_speakers,
+                    subtitle_options=subtitle_options,
                 ),
             )
 
@@ -695,6 +708,11 @@ async def process_transcription(
                     'enable_diarization': enable_diarization,
                     'diarization_backend': diarization_backend,
                     'num_speakers': num_speakers,
+                    'subtitle_options': {
+                        'sentence_split': subtitle_options.sentence_split,
+                        'max_line_count': subtitle_options.max_line_count,
+                        'max_line_width': subtitle_options.max_line_width,
+                    },
                     **asr_selection.as_dict(),
                     'asr_diagnostics': request_loader.diagnostics(),
                     'user': tasks_storage[task_id].get('user'),
@@ -897,6 +915,9 @@ async def upload_files(
     asr_backend: str = Form(""),
     asr_model: str = Form(""),
     onnx_provider: str = Form(""),
+    subtitle_sentence_split: bool = Form(True),
+    subtitle_max_lines: int = Form(2),
+    subtitle_max_width: int = Form(64),
     user: str = Depends(require_auth),
 ):
     """Загрузка одного или нескольких файлов для транскрибации."""
@@ -913,6 +934,11 @@ async def upload_files(
             backend=asr_backend,
             model=asr_model,
             onnx_provider=onnx_provider,
+        )
+        subtitle_options = SubtitleOptions(
+            sentence_split=subtitle_sentence_split,
+            max_line_count=subtitle_max_lines,
+            max_line_width=subtitle_max_width,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -939,6 +965,11 @@ async def upload_files(
         tasks_storage[task_id]['enable_diarization'] = enable_diarization
         tasks_storage[task_id]['diarization_backend'] = diarization_backend
         tasks_storage[task_id]['num_speakers'] = ns
+        tasks_storage[task_id]['subtitle_options'] = {
+            'sentence_split': subtitle_options.sentence_split,
+            'max_line_count': subtitle_options.max_line_count,
+            'max_line_width': subtitle_options.max_line_width,
+        }
         _persist_tasks_index()
 
         asyncio.create_task(
@@ -946,6 +977,7 @@ async def upload_files(
                 task_id, file_path, filename, fmt_list,
                 enable_diarization, diarization_backend, ns,
                 asr_selection,
+                subtitle_options,
             )
         )
         uploaded.append({
@@ -969,6 +1001,9 @@ async def download_from_url(
     asr_backend: str = Form(""),
     asr_model: str = Form(""),
     onnx_provider: str = Form(""),
+    subtitle_sentence_split: bool = Form(True),
+    subtitle_max_lines: int = Form(2),
+    subtitle_max_width: int = Form(64),
 ):
     """Загрузка медиа по URL через yt-dlp и постановка в очередь."""
     url = url.strip()
@@ -985,6 +1020,11 @@ async def download_from_url(
             backend=asr_backend,
             model=asr_model,
             onnx_provider=onnx_provider,
+        )
+        subtitle_options = SubtitleOptions(
+            sentence_split=subtitle_sentence_split,
+            max_line_count=subtitle_max_lines,
+            max_line_width=subtitle_max_width,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1009,6 +1049,11 @@ async def download_from_url(
     tasks_storage[task_id]['enable_diarization'] = enable_diarization
     tasks_storage[task_id]['diarization_backend'] = diarization_backend
     tasks_storage[task_id]['num_speakers'] = ns
+    tasks_storage[task_id]['subtitle_options'] = {
+        'sentence_split': subtitle_options.sentence_split,
+        'max_line_count': subtitle_options.max_line_count,
+        'max_line_width': subtitle_options.max_line_width,
+    }
     tasks_storage[task_id]['status'] = 'downloading'
     tasks_storage[task_id]['stage'] = 'Загрузка медиа...'
     tasks_storage[task_id]['message'] = 'Загрузка по URL'
@@ -1018,6 +1063,7 @@ async def download_from_url(
         _download_and_process(
             task_id, url, fmt_list, enable_diarization, diarization_backend, ns,
             asr_selection,
+            subtitle_options,
         )
     )
 
@@ -1032,6 +1078,7 @@ async def _download_and_process(
     diarization_backend: str,
     num_speakers: int | None,
     asr_selection: transcription_service.AsrSelection,
+    subtitle_options: SubtitleOptions,
 ):
     """Скачивает медиа по URL и запускает обработку."""
     try:
@@ -1105,6 +1152,7 @@ async def _download_and_process(
             task_id, file_path, filename, output_formats,
             enable_diarization, diarization_backend, num_speakers,
             asr_selection,
+            subtitle_options,
         )
 
     except Exception as e:

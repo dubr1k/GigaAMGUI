@@ -92,6 +92,163 @@ def test_web_frontend_posts_selected_asr_runtime():
     assert "formData.append('onnx_provider', onnxProvider)" in javascript
 
 
+def test_web_frontend_posts_subtitle_options():
+    html = (web_app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    javascript = (web_app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="subtitle-sentence-split"' in html
+    assert 'id="subtitle-max-lines"' in html
+    assert 'id="subtitle-max-width"' in html
+    assert html.count('class="subtitle-setting"') == 2
+    assert html.count('class="input subtitle-number"') == 2
+    assert "formData.append('subtitle_sentence_split', subtitleSentenceSplit)" in javascript
+    assert "formData.append('subtitle_max_lines', subtitleMaxLines)" in javascript
+    assert "formData.append('subtitle_max_width', subtitleMaxWidth)" in javascript
+
+
+def test_download_endpoint_forwards_validated_subtitle_options(monkeypatch):
+    selection = web_app.transcription_service.AsrSelection(
+        backend="auto",
+        model="v3_e2e_rnnt",
+        onnx_provider="auto",
+    )
+    monkeypatch.setattr(
+        web_app.transcription_service,
+        "normalize_asr_selection",
+        lambda *_args, **_kwargs: selection,
+    )
+    monkeypatch.setattr(web_app, "tasks_storage", {})
+    monkeypatch.setattr(web_app, "log_queues", {})
+    monkeypatch.setattr(web_app, "_persist_tasks_index", lambda: None)
+    captured = {}
+
+    async def fake_download(*args):
+        captured["subtitle_options"] = args[-1]
+
+    monkeypatch.setattr(web_app, "_download_and_process", fake_download)
+
+    async def scenario():
+        response = await web_app.download_from_url(
+            request=None,
+            user="alice",
+            url="https://example.com/media",
+            output_formats="srt",
+            enable_diarization=False,
+            diarization_backend="pyannote",
+            num_speakers="",
+            asr_backend="",
+            asr_model="",
+            onnx_provider="",
+            subtitle_sentence_split=False,
+            subtitle_max_lines=3,
+            subtitle_max_width=72,
+        )
+        await asyncio.sleep(0)
+        return response
+
+    response = asyncio.run(scenario())
+
+    assert response["task_id"] in web_app.tasks_storage
+    options = captured["subtitle_options"]
+    assert options.sentence_split is False
+    assert options.max_line_count == 3
+    assert options.max_line_width == 72
+
+
+def test_download_endpoint_rejects_invalid_subtitle_limits(monkeypatch):
+    selection = web_app.transcription_service.AsrSelection(
+        backend="auto",
+        model="v3_e2e_rnnt",
+        onnx_provider="auto",
+    )
+    monkeypatch.setattr(
+        web_app.transcription_service,
+        "normalize_asr_selection",
+        lambda *_args, **_kwargs: selection,
+    )
+
+    async def scenario():
+        with pytest.raises(HTTPException) as exc_info:
+            await web_app.download_from_url(
+                request=None,
+                user="alice",
+                url="https://example.com/media",
+                output_formats="srt",
+                enable_diarization=False,
+                diarization_backend="pyannote",
+                num_speakers="",
+                asr_backend="",
+                asr_model="",
+                onnx_provider="",
+                subtitle_sentence_split=True,
+                subtitle_max_lines=0,
+                subtitle_max_width=64,
+            )
+        return exc_info.value
+
+    error = asyncio.run(scenario())
+    assert error.status_code == 400
+    assert "max_line_count" in error.detail
+
+
+def test_upload_endpoint_forwards_validated_subtitle_options(monkeypatch, tmp_path):
+    selection = web_app.transcription_service.AsrSelection(
+        backend="auto",
+        model="v3_e2e_rnnt",
+        onnx_provider="auto",
+    )
+    monkeypatch.setattr(
+        web_app.transcription_service,
+        "normalize_asr_selection",
+        lambda *_args, **_kwargs: selection,
+    )
+    monkeypatch.setattr(web_app, "tasks_storage", {})
+    monkeypatch.setattr(web_app, "log_queues", {})
+    monkeypatch.setattr(web_app, "_persist_tasks_index", lambda: None)
+    captured = {}
+
+    async def fake_save_upload(_file, _request):
+        return "upload-task", tmp_path / "sample.wav", "sample.wav", 123
+
+    async def fake_process(*args):
+        captured["subtitle_options"] = args[-1]
+
+    monkeypatch.setattr(web_app, "_save_upload", fake_save_upload)
+    monkeypatch.setattr(web_app, "process_transcription", fake_process)
+
+    async def scenario():
+        response = await web_app.upload_files(
+            request=None,
+            files=[object()],
+            output_formats="srt,vtt",
+            enable_diarization=False,
+            diarization_backend="pyannote",
+            num_speakers="",
+            asr_backend="",
+            asr_model="",
+            onnx_provider="",
+            subtitle_sentence_split=False,
+            subtitle_max_lines=4,
+            subtitle_max_width=80,
+            user="alice",
+        )
+        await asyncio.sleep(0)
+        return response
+
+    response = asyncio.run(scenario())
+
+    assert response["tasks"][0]["task_id"] == "upload-task"
+    assert web_app.tasks_storage["upload-task"]["subtitle_options"] == {
+        "sentence_split": False,
+        "max_line_count": 4,
+        "max_line_width": 80,
+    }
+    options = captured["subtitle_options"]
+    assert options.sentence_split is False
+    assert options.max_line_count == 4
+    assert options.max_line_width == 80
+
+
 def test_restore_marks_active_task_failed_and_preserves_user(web_state):
     # Given: сервер был остановлен, пока пользовательская задача была в обработке.
     web_app.save_json_atomic(str(web_app.TASKS_INDEX_PATH), {"task-alice": _task("task-alice", "alice", "processing")})
@@ -116,6 +273,11 @@ def test_legacy_meta_restore_uses_configured_single_user(web_state):
         "created_at": "2026-01-01T00:00:00",
         "completed_at": "2026-01-01T00:01:00",
         "output_formats": ["txt"],
+        "subtitle_options": {
+            "sentence_split": False,
+            "max_line_count": 3,
+            "max_line_width": 72,
+        },
     })
 
     # When: старые результаты без поля user восстанавливаются из meta.json.
@@ -125,6 +287,11 @@ def test_legacy_meta_restore_uses_configured_single_user(web_state):
     assert restored is True
     assert web_app.tasks_storage["legacy-task"]["user"] == web_app.WEB_USERNAME
     assert web_app.tasks_storage["legacy-task"]["status"] == "completed"
+    assert web_app.tasks_storage["legacy-task"]["subtitle_options"] == {
+        "sentence_split": False,
+        "max_line_count": 3,
+        "max_line_width": 72,
+    }
 
 
 def test_restore_merges_index_and_result_metadata(web_state):

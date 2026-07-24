@@ -15,6 +15,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from src.core.subtitles import SubtitleOptions
+
 
 class TuiWorker:
     """Runs one transcription batch at a time and exposes it over JSONL."""
@@ -63,10 +65,36 @@ class TuiWorker:
         if not isinstance(formats, list) or not all(isinstance(item, str) for item in formats):
             self.emit("error", message="formats must be an array of strings")
             return
+        sentence_split = command.get("subtitle_sentence_split", True)
+        if not isinstance(sentence_split, bool):
+            self.emit("error", message="subtitle_sentence_split must be a boolean")
+            return
+        try:
+            subtitle_options = SubtitleOptions(
+                sentence_split=sentence_split,
+                max_line_count=command.get("subtitle_max_lines", 2),
+                max_line_width=command.get("subtitle_max_width", 64),
+            )
+        except (TypeError, ValueError) as exc:
+            self.emit("error", message=str(exc))
+            return
         self._cancel_requested.clear()
         self._task = threading.Thread(
             target=self._run_batch,
-            args=(files, str(command.get("output_dir") or ""), formats, bool(command.get("diarization", False)), command.get("diarization_backend") or "pyannote", command.get("num_speakers"), command.get("backend") or "auto", command.get("model") or "v3_e2e_rnnt", command.get("onnx_provider") or "auto"),
+            args=(
+                files,
+                str(command.get("output_dir") or ""),
+                formats,
+                bool(command.get("diarization", False)),
+                command.get("diarization_backend") or "pyannote",
+                command.get("num_speakers"),
+                command.get("backend") or "auto",
+                command.get("model") or "v3_e2e_rnnt",
+                command.get("onnx_provider") or "auto",
+                subtitle_options.sentence_split,
+                subtitle_options.max_line_count,
+                subtitle_options.max_line_width,
+            ),
             daemon=True,
         )
         self._task.start()
@@ -133,7 +161,21 @@ class TuiWorker:
         # matches the GUI: finish the current file, then stop the remaining queue.
         self.emit("cancelling", message="Cancellation requested; stopping after the current file")
 
-    def _run_batch(self, files, output_dir, formats, diarization, diarization_backend, num_speakers, backend, model, onnx_provider) -> None:
+    def _run_batch(
+        self,
+        files,
+        output_dir,
+        formats,
+        diarization,
+        diarization_backend,
+        num_speakers,
+        backend,
+        model,
+        onnx_provider,
+        subtitle_sentence_split,
+        subtitle_max_lines,
+        subtitle_max_width,
+    ) -> None:
         started_at = time.monotonic()
         results: list[dict[str, Any]] = []
         try:
@@ -194,6 +236,11 @@ class TuiWorker:
                         audio_preprocessing_mode=AUDIO_PREPROCESSING_MODE,
                         num_speakers=num_speakers if isinstance(num_speakers, int) and num_speakers > 0 else None,
                         output_formats=formats,
+                        subtitle_options=SubtitleOptions(
+                            sentence_split=subtitle_sentence_split,
+                            max_line_count=subtitle_max_lines,
+                            max_line_width=subtitle_max_width,
+                        ),
                     )
                 except Exception as exc:
                     self._log(f"Error while processing {os.path.basename(filepath)}: {exc}")

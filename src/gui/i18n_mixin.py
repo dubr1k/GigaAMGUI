@@ -127,6 +127,15 @@ class I18nMixin:
             for fmt, cb in self.format_checkboxes.items():
                 ru_label, en_label = format_labels.get(fmt, (cb.text(), cb.text()))
                 cb.setText(ru_label if is_ru else en_label)
+            self.cb_subtitle_sentence_split.setText(
+                "Разбивать по предложениям" if is_ru else "Split by sentences"
+            )
+            self.lbl_subtitle_max_lines.setText(
+                "Строк:" if is_ru else "Lines:"
+            )
+            self.lbl_subtitle_max_width.setText(
+                "Символов:" if is_ru else "Characters:"
+            )
         if hasattr(self, "grp_llm_source"):
             self.grp_llm_source.setTitle("1. Источник транскрипта" if is_ru else "1. Transcript source")
             self.grp_llm_output.setTitle("2. Куда сохранить" if is_ru else "2. Save location")

@@ -90,10 +90,50 @@ def test_map_speakers_splits_word_timed_segment_at_speaker_changes():
     mapped = mgr.map_speakers_to_transcription(trans, speaker_segs)
 
     assert mapped == [
-        {"transcription": "Алло.", "boundaries": (0.2, 1.0), "speaker": "A"},
-        {"transcription": "Здравствуйте!", "boundaries": (2.0, 3.4), "speaker": "B"},
-        {"transcription": "Да, слушаю.", "boundaries": (4.2, 5.5), "speaker": "A"},
+        {
+            "transcription": "Алло.",
+            "boundaries": (0.2, 1.0),
+            "speaker": "A",
+            "words": [{"text": "Алло.", "start": 0.2, "end": 1.0}],
+        },
+        {
+            "transcription": "Здравствуйте!",
+            "boundaries": (2.0, 3.4),
+            "speaker": "B",
+            "words": [{"text": "Здравствуйте!", "start": 2.0, "end": 3.4}],
+        },
+        {
+            "transcription": "Да, слушаю.",
+            "boundaries": (4.2, 5.5),
+            "speaker": "A",
+            "words": [
+                {"text": "Да,", "start": 4.2, "end": 4.6},
+                {"text": "слушаю.", "start": 4.7, "end": 5.5},
+            ],
+        },
     ]
+
+
+@_MANAGER_FACTORIES
+def test_malformed_word_text_preserves_original_segment_for_fallback(make_manager):
+    mgr = make_manager()
+    speaker_segs = [SpeakerSegment(0.0, 2.0, "A")]
+    trans = [{
+        "transcription": "Правильный текст.",
+        "boundaries": (0.0, 2.0),
+        "words": [
+            {"text": None, "start": 0.0, "end": 1.0},
+            {"text": "текст.", "start": 1.0, "end": 2.0},
+        ],
+    }]
+
+    mapped = mgr.map_speakers_to_transcription(trans, speaker_segs)
+
+    assert mapped == [{
+        "transcription": "Правильный текст.",
+        "boundaries": (0.0, 2.0),
+        "speaker": "A",
+    }]
 
 
 @_MANAGER_FACTORIES
@@ -125,11 +165,16 @@ def test_adjacent_same_speaker_chunks_merge_only_when_they_touch(make_manager):
             "transcription": "первый второй",
             "boundaries": (0.0, 2.0),
             "speaker": "A",
+            "words": [
+                {"text": "первый", "start": 0.0, "end": 1.0},
+                {"text": "второй", "start": 1.0, "end": 2.0},
+            ],
         },
         {
             "transcription": "после паузы",
             "boundaries": (2.2, 3.0),
             "speaker": "A",
+            "words": [{"text": "после паузы", "start": 2.2, "end": 3.0}],
         },
     ]
 
@@ -184,6 +229,11 @@ def test_word_in_speaker_pause_snaps_to_nearest_speaker(make_manager):
         "transcription": "Но фестиваль был",
         "boundaries": (248.15, 249.2),
         "speaker": "Спикер №4",
+        "words": [
+            {"text": "Но", "start": 248.15, "end": 248.23},
+            {"text": "фестиваль", "start": 248.4, "end": 248.9},
+            {"text": "был", "start": 249.0, "end": 249.2},
+        ],
     }]
 
 
@@ -233,6 +283,12 @@ def test_single_short_word_does_not_flip_speaker_between_same_neighbours(make_ma
         "transcription": "мы говорим и показываем",
         "boundaries": (0.5, 4.0),
         "speaker": "A",
+        "words": [
+            {"text": "мы", "start": 0.5, "end": 1.0},
+            {"text": "говорим", "start": 1.2, "end": 1.9},
+            {"text": "и", "start": 2.02, "end": 2.08},
+            {"text": "показываем", "start": 3.0, "end": 4.0},
+        ],
     }]
 
 

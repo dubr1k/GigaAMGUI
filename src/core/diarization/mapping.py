@@ -2,12 +2,45 @@
 
 from __future__ import annotations
 
+import math
+
 from .base import SpeakerSegment
 
 UNKNOWN_SPEAKER = "Неизвестный спикер"
 MAX_SPEAKER_SNAP_DISTANCE_SEC = 2.0
 MIN_SPEAKER_TURN_SEC = 0.4
 TIMELINE_EPSILON_SEC = 1e-6
+
+
+def _validated_timed_words(trans_seg: dict) -> list[dict]:
+    """Return a complete valid word timeline or an empty list for segment fallback."""
+
+    raw_words = trans_seg.get("words")
+    if not isinstance(raw_words, list) or not raw_words:
+        return []
+    validated: list[dict] = []
+    previous_end = -math.inf
+    for word in raw_words:
+        if not isinstance(word, dict):
+            return []
+        raw_text = word.get("text")
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            return []
+        try:
+            start = float(word["start"])
+            end = float(word["end"])
+        except (KeyError, TypeError, ValueError):
+            return []
+        if (
+            not math.isfinite(start)
+            or not math.isfinite(end)
+            or end <= start
+            or start < previous_end
+        ):
+            return []
+        validated.append({"text": raw_text.strip(), "start": start, "end": end})
+        previous_end = end
+    return validated
 
 
 class SpeakerMappingMixin:
@@ -59,6 +92,12 @@ class SpeakerMappingMixin:
                         float(previous_start),
                         max(previous_end, end),
                     )
+                    previous_words = mapped[-1].get("words")
+                    turn_words = turn.get("words")
+                    if previous_words is not None and turn_words is not None:
+                        previous_words.extend(turn_words)
+                    else:
+                        mapped[-1].pop("words", None)
                     continue
 
             mapped.append(turn)
@@ -75,12 +114,10 @@ class SpeakerMappingMixin:
 
     def _resolve_word_speakers(self, trans_seg, speaker_segments):
         resolved = []
-        for word in trans_seg.get("words") or []:
-            text = str(word.get("text", "")).strip()
-            if not text:
-                continue
-            start = float(word.get("start", 0.0))
-            end = max(start, float(word.get("end", start)))
+        for word in _validated_timed_words(trans_seg):
+            text = word["text"]
+            start = word["start"]
+            end = word["end"]
             resolved.append({
                 "text": text,
                 "start": start,
@@ -113,14 +150,21 @@ class SpeakerMappingMixin:
     def _group_words_into_turns(words):
         turns = []
         for word in words:
+            timed_word = {
+                "text": word["text"],
+                "start": word["start"],
+                "end": word["end"],
+            }
             if turns and turns[-1]["speaker"] == word["speaker"]:
                 turns[-1]["transcription"] += f' {word["text"]}'
                 turns[-1]["boundaries"] = (turns[-1]["boundaries"][0], word["end"])
+                turns[-1]["words"].append(timed_word)
             else:
                 turns.append({
                     "transcription": word["text"],
                     "boundaries": (word["start"], word["end"]),
                     "speaker": word["speaker"],
+                    "words": [timed_word],
                 })
         return turns
 

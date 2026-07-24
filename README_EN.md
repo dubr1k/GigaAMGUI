@@ -29,6 +29,8 @@ Russian speech-to-text transcription for audio and video powered by **GigaAM-v3*
 
 - Batch processing, recursive folder scans, drag & drop, and media downloads through `yt-dlp`.
 - Export to `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, and `vtt`.
+- SRT/VTT are split into short phrases using punctuation and word timestamps;
+  line count and line width are configurable without changing TXT/MD output.
 - Selectable diarization through `pyannote`, ONNX PyAnnote + WeSpeaker, or NVIDIA Streaming Sortformer v2.1.
 - Automatic quality diagnostics, conservative cleanup, and timeline-safe fallback.
 - MLX RNN-T on Apple Silicon; CPU, CUDA, Intel XPU, and MPS support.
@@ -100,6 +102,24 @@ For the Web UI, build the extended image with
 curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/install_tui.sh | bash
 gigaam
 ```
+
+### Subtitle settings
+
+Desktop GUI and Web UI expose subtitle controls next to the SRT/VTT formats.
+The CLI accepts `--subtitle-sentence-split/--no-subtitle-sentence-split`,
+`--subtitle-max-lines`, and `--subtitle-max-width`:
+
+```bash
+python cli.py -f audio.wav --format srt --format vtt \
+  --subtitle-sentence-split --subtitle-max-lines 2 --subtitle-max-width 64
+```
+
+The TUI provides `/subtitle-split on|off`, `/subtitle-lines 1..4`, and
+`/subtitle-width 20..100`; these values persist between runs. Cue boundaries use
+word timestamps when available, with deterministic timing inside the original
+ASR segment as the fallback. The width limit also includes speaker markup; at
+extremely narrow widths, long speaker labels are compacted while preserving
+their identifying suffix.
 
 ## Configuration
 

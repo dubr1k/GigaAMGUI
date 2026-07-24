@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.core.processor import TranscriptionProcessor
 from src.core.progress import ProgressEvent
+from src.core.subtitles import SubtitleOptions
 
 
 class DummyStats:
@@ -172,6 +173,41 @@ def test_processor_passes_probed_duration_to_converter(monkeypatch, tmp_path):
 
     assert result["success"]
     assert captured["media_duration"] == 42.0
+
+
+def test_processor_passes_subtitle_options_to_srt_export(monkeypatch, tmp_path):
+    path = _prepare_inputs(tmp_path)
+    processor = TranscriptionProcessor(DummyLoader([1.0]), DummyStats())
+    captured = {}
+    options = SubtitleOptions(max_line_count=1, max_line_width=40)
+
+    monkeypatch.setattr(
+        processor.audio_converter,
+        "convert_to_wav",
+        lambda *args, **kwargs: str(path),
+    )
+    monkeypatch.setattr(
+        "src.core.processor.AudioConverter.get_media_duration",
+        lambda _path: 1.0,
+    )
+
+    def generate_srt(utterances, subtitle_options=None):
+        captured["options"] = subtitle_options
+        return "subtitle"
+
+    monkeypatch.setattr(processor, "_generate_srt", generate_srt)
+
+    result = processor.process_file(
+        filepath=str(path),
+        output_dir=str(tmp_path),
+        file_index=0,
+        total_files=1,
+        output_formats=["srt"],
+        subtitle_options=options,
+    )
+
+    assert result["success"]
+    assert captured["options"] is options
 
 
 def test_processor_progress_with_diarization(monkeypatch, tmp_path):

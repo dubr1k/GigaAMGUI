@@ -45,6 +45,9 @@ const I18N = {
         speakersAutoPlaceholder: 'Пусто = авто',
         diarizationHint: 'Автоматическое определение спикеров (требуется HF_TOKEN)',
         cardFormats: '4. Форматы вывода',
+        subtitleSentenceSplit: 'Разбивать по предложениям',
+        subtitleMaxLines: 'Строк в блоке:',
+        subtitleMaxWidth: 'Символов в строке:',
         overallProgress: 'Общий прогресс',
         llmChooseFiles: 'Выбрать транскрипты',
         llmProcess: 'ОБРАБОТАТЬ',
@@ -123,6 +126,9 @@ const I18N = {
         speakersAutoPlaceholder: 'Empty = auto',
         diarizationHint: 'Automatic speaker detection (HF_TOKEN required)',
         cardFormats: '4. Output formats',
+        subtitleSentenceSplit: 'Split by sentences',
+        subtitleMaxLines: 'Lines per cue:',
+        subtitleMaxWidth: 'Characters per line:',
         overallProgress: 'Overall progress',
         llmChooseFiles: 'Choose transcripts',
         llmProcess: 'PROCESS',
@@ -534,6 +540,14 @@ function setupDiarization() {
 // ===== FORMATS =====
 
 function setupFormats() {
+    const updateSubtitleControls = () => {
+        const subtitleEnabled = Array.from(
+            document.querySelectorAll('.fmt-cb[data-fmt="srt"], .fmt-cb[data-fmt="vtt"]')
+        ).some(cb => cb.checked);
+        document.querySelectorAll('#subtitle-options input').forEach(input => {
+            input.disabled = !subtitleEnabled;
+        });
+    };
     document.querySelectorAll('.fmt-cb').forEach(cb => {
         cb.addEventListener('change', () => {
             const anyChecked = Array.from(document.querySelectorAll('.fmt-cb')).some(c => c.checked);
@@ -541,8 +555,10 @@ function setupFormats() {
                 document.querySelector('.fmt-cb[data-fmt="txt"]').checked = true;
                 addLog(currentLang === 'ru' ? 'Предупреждение: автоматически оставлен формат txt' : 'Warning: txt format was kept automatically');
             }
+            updateSubtitleControls();
         });
     });
+    updateSubtitleControls();
 }
 
 function getSelectedFormats() {
@@ -567,6 +583,9 @@ function setupUrlDownload() {
         const asrBackend = document.getElementById('asrBackend').value;
         const asrModel = document.getElementById('asrModel').value;
         const onnxProvider = document.getElementById('onnxProvider').value;
+        const subtitleSentenceSplit = document.getElementById('subtitle-sentence-split').checked;
+        const subtitleMaxLines = document.getElementById('subtitle-max-lines').value;
+        const subtitleMaxWidth = document.getElementById('subtitle-max-width').value;
 
         const formData = new FormData();
         formData.append('url', url);
@@ -577,6 +596,9 @@ function setupUrlDownload() {
         formData.append('asr_backend', asrBackend);
         formData.append('asr_model', asrModel);
         formData.append('onnx_provider', onnxProvider);
+        formData.append('subtitle_sentence_split', subtitleSentenceSplit);
+        formData.append('subtitle_max_lines', subtitleMaxLines);
+        formData.append('subtitle_max_width', subtitleMaxWidth);
 
         document.getElementById('btn-download-url').disabled = true;
         document.getElementById('download-progress').classList.remove('hidden');
@@ -619,6 +641,9 @@ function setupStartButton() {
         const asrBackend = document.getElementById('asrBackend').value;
         const asrModel = document.getElementById('asrModel').value;
         const onnxProvider = document.getElementById('onnxProvider').value;
+        const subtitleSentenceSplit = document.getElementById('subtitle-sentence-split').checked;
+        const subtitleMaxLines = document.getElementById('subtitle-max-lines').value;
+        const subtitleMaxWidth = document.getElementById('subtitle-max-width').value;
 
         const formData = new FormData();
         selectedFiles.forEach(f => formData.append('files', f));
@@ -629,6 +654,9 @@ function setupStartButton() {
         formData.append('asr_backend', asrBackend);
         formData.append('asr_model', asrModel);
         formData.append('onnx_provider', onnxProvider);
+        formData.append('subtitle_sentence_split', subtitleSentenceSplit);
+        formData.append('subtitle_max_lines', subtitleMaxLines);
+        formData.append('subtitle_max_width', subtitleMaxWidth);
 
         document.getElementById('btn-start').disabled = true;
         document.getElementById('btn-start').textContent = t('uploadInProgress');
@@ -677,6 +705,12 @@ function setupClearButton() {
             cb.checked = cb.dataset.fmt === 'txt' || cb.dataset.fmt === 'txt_timecodes';
             cb.disabled = cb.dataset.fmt === 'txt_diarize' || cb.dataset.fmt === 'txt_diarize_timecodes';
         });
+        document.getElementById('subtitle-sentence-split').checked = true;
+        document.getElementById('subtitle-sentence-split').disabled = true;
+        document.getElementById('subtitle-max-lines').value = '2';
+        document.getElementById('subtitle-max-lines').disabled = true;
+        document.getElementById('subtitle-max-width').value = '64';
+        document.getElementById('subtitle-max-width').disabled = true;
         document.getElementById('progress-section').classList.add('hidden');
         document.getElementById('log-panel').innerHTML = '';
         currentLogs = [];

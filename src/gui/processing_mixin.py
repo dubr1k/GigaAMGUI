@@ -25,6 +25,7 @@ from ..core.model_preparation import (
     PreparationState,
 )
 from ..core.progress import ProgressEvent
+from ..core.subtitles import SubtitleOptions
 from ..services import transcription_service
 
 
@@ -145,6 +146,11 @@ class ProcessingMixin:
             "diarization_backend": self.diarization_backend,
             "audio_preprocessing_mode": self._selected_audio_preprocessing_mode(),
             "selected_formats": self._get_selected_formats(),
+            "subtitle_options": SubtitleOptions(
+                sentence_split=self.cb_subtitle_sentence_split.isChecked(),
+                max_line_count=self.spin_subtitle_max_lines.value(),
+                max_line_width=self.spin_subtitle_max_width.value(),
+            ),
             "output_dir": self.output_dir,
             "files": list(self.files_to_process),
             "start_time": self.start_time,
@@ -163,6 +169,7 @@ class ProcessingMixin:
         self._update_files_controls()
         for cb in self.format_checkboxes.values():
             cb.setEnabled(enabled)
+        self._update_subtitle_controls_enabled()
         if enabled:
             for fmt in ('txt_diarize', 'txt_diarize_timecodes'):
                 cb = self.format_checkboxes.get(fmt)
@@ -175,6 +182,7 @@ class ProcessingMixin:
         diarization_backend = snapshot["diarization_backend"]
         audio_preprocessing_mode = snapshot["audio_preprocessing_mode"]
         selected_formats = snapshot["selected_formats"]
+        subtitle_options = snapshot.get("subtitle_options", SubtitleOptions())
         output_dir = snapshot["output_dir"]
         files = snapshot["files"]
         start_time = snapshot["start_time"]
@@ -220,7 +228,8 @@ class ProcessingMixin:
                         diarization_backend=diarization_backend,
                         audio_preprocessing_mode=audio_preprocessing_mode,
                         num_speakers=num_speakers,
-                        output_formats=selected_formats
+                        output_formats=selected_formats,
+                        subtitle_options=subtitle_options,
                     )
                     self.stats.add_processing_record(
                         file_path=result['file_path'],

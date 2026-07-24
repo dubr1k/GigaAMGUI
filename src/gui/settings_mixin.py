@@ -138,6 +138,17 @@ class SettingsMixin:
             cb.blockSignals(False)
             self.output_formats[fmt] = cb.isChecked()
 
+        self.cb_subtitle_sentence_split.setChecked(bool(
+            self.user_settings.get_value("subtitle_sentence_split", True)
+        ))
+        self.spin_subtitle_max_lines.setValue(int(
+            self.user_settings.get_value("subtitle_max_line_count", 2) or 2
+        ))
+        self.spin_subtitle_max_width.setValue(int(
+            self.user_settings.get_value("subtitle_max_line_width", 64) or 64
+        ))
+        self._update_subtitle_controls_enabled()
+
         diarization_enabled = bool(self.user_settings.get_value("enable_diarization", False))
         diarization_backend = self.user_settings.get_value("diarization_backend", "pyannote")
         num_speakers = int(self.user_settings.get_value("num_speakers", 0) or 0)
@@ -234,6 +245,15 @@ class SettingsMixin:
 
     def _save_ui_settings(self):
         self.user_settings.set_value("output_formats", self.output_formats)
+        self.user_settings.set_value(
+            "subtitle_sentence_split", self.cb_subtitle_sentence_split.isChecked()
+        )
+        self.user_settings.set_value(
+            "subtitle_max_line_count", self.spin_subtitle_max_lines.value()
+        )
+        self.user_settings.set_value(
+            "subtitle_max_line_width", self.spin_subtitle_max_width.value()
+        )
         self.user_settings.set_value("enable_diarization", self.cb_diarization.isChecked())
         self.user_settings.set_value("diarization_backend", self.combo_diarization_backend.currentData())
         self.user_settings.set_value("num_speakers", self.entry_num_speakers.value())

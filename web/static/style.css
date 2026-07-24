@@ -254,6 +254,18 @@ body {
 .input:focus { border-color: var(--accent); }
 .input:disabled { opacity: 0.5; }
 .input-small { max-width: 250px; flex: 0 0 250px; }
+.subtitle-setting {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+.subtitle-number {
+    width: 76px;
+    min-width: 76px;
+    max-width: 76px;
+    flex: 0 0 76px;
+}
 .llm-textarea {
     display: block;
     width: 100%;

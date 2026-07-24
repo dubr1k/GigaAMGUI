@@ -376,6 +376,28 @@ def test_desktop_gui_selects_and_persists_large_ctc(monkeypatch):
     window.close()
 
 
+def test_subtitle_settings_persist_and_follow_format_selection():
+    window = _new_window()
+    assert window.cb_subtitle_sentence_split.isChecked()
+    assert window.spin_subtitle_max_lines.value() == 2
+    assert window.spin_subtitle_max_width.value() == 64
+    assert not window.spin_subtitle_max_lines.isEnabled()
+
+    window.format_checkboxes["srt"].setChecked(True)
+    assert window.spin_subtitle_max_lines.isEnabled()
+    window.cb_subtitle_sentence_split.setChecked(False)
+    window.spin_subtitle_max_lines.setValue(3)
+    window.spin_subtitle_max_width.setValue(72)
+    window._save_ui_settings()
+    window.close()
+
+    restored = GigaTranscriberQtApp()
+    assert not restored.cb_subtitle_sentence_split.isChecked()
+    assert restored.spin_subtitle_max_lines.value() == 3
+    assert restored.spin_subtitle_max_width.value() == 72
+    restored.close()
+
+
 def test_audio_preprocessing_mode_defaults_translates_and_persists():
     window = _new_window()
     assert window.combo_audio_preprocessing.currentData() == AUDIO_PREPROCESSING_MODE
@@ -411,10 +433,17 @@ def test_audio_preprocessing_mode_is_snapshotted_and_locked(monkeypatch):
     window.combo_audio_preprocessing.setCurrentIndex(
         window.combo_audio_preprocessing.findData("light")
     )
+    window.cb_subtitle_sentence_split.setChecked(False)
+    window.spin_subtitle_max_lines.setValue(3)
+    window.spin_subtitle_max_width.setValue(72)
 
     window._start_processing_thread()
 
     assert captured["kwargs"]["snapshot"]["audio_preprocessing_mode"] == "light"
+    subtitle_options = captured["kwargs"]["snapshot"]["subtitle_options"]
+    assert not subtitle_options.sentence_split
+    assert subtitle_options.max_line_count == 3
+    assert subtitle_options.max_line_width == 72
     assert captured["started"] is True
     assert window.combo_audio_preprocessing.isEnabled() is False
     window.is_processing = False

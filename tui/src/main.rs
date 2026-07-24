@@ -37,6 +37,9 @@ struct TuiSettings {
     onnx_provider: String,
     diarization_backend: String,
     model: String,
+    subtitle_sentence_split: bool,
+    subtitle_max_lines: u8,
+    subtitle_max_width: u16,
     llm_provider: String,
     llm_api_url: String,
     llm_api_key: String,
@@ -52,6 +55,9 @@ impl Default for TuiSettings {
             onnx_provider: "auto".into(),
             diarization_backend: "pyannote".into(),
             model: "v3_e2e_rnnt".into(),
+            subtitle_sentence_split: true,
+            subtitle_max_lines: 2,
+            subtitle_max_width: 64,
             llm_provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "API".into()),
             llm_api_url: std::env::var("LLM_API_URL").unwrap_or_default(),
             llm_api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
@@ -86,6 +92,9 @@ struct App {
     backend: String,
     onnx_provider: String,
     model: String,
+    subtitle_sentence_split: bool,
+    subtitle_max_lines: u8,
+    subtitle_max_width: u16,
     show_logs: bool,
     result_files: Vec<String>,
     selected_file: Option<usize>,
@@ -133,6 +142,9 @@ impl Default for App {
             backend: "auto".into(),
             onnx_provider: "auto".into(),
             model: "v3_e2e_rnnt".into(),
+            subtitle_sentence_split: true,
+            subtitle_max_lines: 2,
+            subtitle_max_width: 64,
             show_logs: true,
             result_files: Vec::new(),
             selected_file: None,
@@ -436,6 +448,9 @@ fn save_app_settings(app: &mut App) {
         onnx_provider: app.onnx_provider.clone(),
         diarization_backend: app.diarization_backend.clone(),
         model: app.model.clone(),
+        subtitle_sentence_split: app.subtitle_sentence_split,
+        subtitle_max_lines: app.subtitle_max_lines,
+        subtitle_max_width: app.subtitle_max_width,
         llm_provider: app.llm_provider.clone(),
         llm_api_url: app.llm_api_url.clone(),
         llm_api_key: app.llm_api_key.clone(),
@@ -621,12 +636,15 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 20] = [
+const COMMANDS: [(&str, &str); 23] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
     ("/model", "select the GigaAM recognition model"),
     ("/formats", "output formats, e.g. txt,srt"),
+    ("/subtitle-split", "turn sentence splitting on or off"),
+    ("/subtitle-lines", "set 1-4 lines per subtitle cue"),
+    ("/subtitle-width", "set 20-100 characters per subtitle line"),
     ("/diarize", "turn speaker diarization on or off"),
     (
         "/diarization-backend",
@@ -1172,6 +1190,28 @@ fn run_command(app: &mut App) {
                 app.status = format!("Formats: {}", app.formats.join(", "));
             }
         }
+        "/subtitle-split" if matches!(argument, "on" | "off") => {
+            app.subtitle_sentence_split = argument == "on";
+            app.status = format!("Subtitle sentence splitting: {argument}");
+            save_app_settings(app);
+        }
+        "/subtitle-split" => app.status = "Usage: /subtitle-split on|off".into(),
+        "/subtitle-lines" => match argument.parse::<u8>() {
+            Ok(value) if (1..=4).contains(&value) => {
+                app.subtitle_max_lines = value;
+                app.status = format!("Subtitle lines per cue: {value}");
+                save_app_settings(app);
+            }
+            _ => app.status = "Subtitle lines must be between 1 and 4".into(),
+        },
+        "/subtitle-width" => match argument.parse::<u16>() {
+            Ok(value) if (20..=100).contains(&value) => {
+                app.subtitle_max_width = value;
+                app.status = format!("Subtitle characters per line: {value}");
+                save_app_settings(app);
+            }
+            _ => app.status = "Subtitle width must be between 20 and 100".into(),
+        },
         "/diarize" if matches!(argument, "on" | "off") => {
             app.diarization = argument == "on";
             app.status = format!("Diarization {}", argument);
@@ -1667,6 +1707,9 @@ fn main() -> io::Result<()> {
     app.llm_api_key = settings.llm_api_key;
     app.llm_model = settings.llm_model;
     app.llm_temperature = settings.llm_temperature;
+    app.subtitle_sentence_split = settings.subtitle_sentence_split;
+    app.subtitle_max_lines = settings.subtitle_max_lines.clamp(1, 4);
+    app.subtitle_max_width = settings.subtitle_max_width.clamp(20, 100);
     app.pet_picker = Picker::from_query_stdio()
         .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
@@ -1794,7 +1837,7 @@ fn main() -> io::Result<()> {
                         {
                             if let Err(error) = send(
                                 &mut worker,
-                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model, "onnx_provider":app.onnx_provider}),
+                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model, "onnx_provider":app.onnx_provider, "subtitle_sentence_split":app.subtitle_sentence_split, "subtitle_max_lines":app.subtitle_max_lines, "subtitle_max_width":app.subtitle_max_width}),
                             ) {
                                 app.log(format!("Worker unavailable: {error}"));
                             }
@@ -1993,6 +2036,9 @@ mod tests {
             backend: "mlx".into(),
             diarization_backend: "sortformer".into(),
             model: "multilingual_ctc".into(),
+            subtitle_sentence_split: false,
+            subtitle_max_lines: 3,
+            subtitle_max_width: 72,
             ..TuiSettings::default()
         };
         let restored: TuiSettings =
@@ -2003,6 +2049,29 @@ mod tests {
         assert_eq!(restored.backend, "mlx");
         assert_eq!(restored.diarization_backend, "sortformer");
         assert_eq!(restored.model, "multilingual_ctc");
+        assert!(!restored.subtitle_sentence_split);
+        assert_eq!(restored.subtitle_max_lines, 3);
+        assert_eq!(restored.subtitle_max_width, 72);
+    }
+
+    #[test]
+    fn subtitle_commands_validate_and_update_limits() {
+        let mut app = App::default();
+        app.input = "/subtitle-split off".into();
+        run_command(&mut app);
+        app.input = "/subtitle-lines 3".into();
+        run_command(&mut app);
+        app.input = "/subtitle-width 72".into();
+        run_command(&mut app);
+
+        assert!(!app.subtitle_sentence_split);
+        assert_eq!(app.subtitle_max_lines, 3);
+        assert_eq!(app.subtitle_max_width, 72);
+
+        app.input = "/subtitle-width 5".into();
+        run_command(&mut app);
+        assert_eq!(app.subtitle_max_width, 72);
+        assert_eq!(app.status, "Subtitle width must be between 20 and 100");
     }
 
     #[test]

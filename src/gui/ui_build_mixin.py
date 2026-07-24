@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -576,8 +577,26 @@ class UiBuildMixin:
             cb.stateChanged.connect(lambda state, f=fmt: self._toggle_format(f))
             row2.addWidget(cb)
             self.format_checkboxes[fmt] = cb
+        self.cb_subtitle_sentence_split = QCheckBox("Разбивать по предложениям")
+        self.cb_subtitle_sentence_split.setChecked(True)
+        row2.addWidget(self.cb_subtitle_sentence_split)
+        self.lbl_subtitle_max_lines = QLabel("Строк:")
+        row2.addWidget(self.lbl_subtitle_max_lines)
+        self.spin_subtitle_max_lines = QSpinBox()
+        self.spin_subtitle_max_lines.setRange(1, 4)
+        self.spin_subtitle_max_lines.setValue(2)
+        self.spin_subtitle_max_lines.setFixedWidth(self._px(64))
+        row2.addWidget(self.spin_subtitle_max_lines)
+        self.lbl_subtitle_max_width = QLabel("Символов:")
+        row2.addWidget(self.lbl_subtitle_max_width)
+        self.spin_subtitle_max_width = QSpinBox()
+        self.spin_subtitle_max_width.setRange(20, 100)
+        self.spin_subtitle_max_width.setValue(64)
+        self.spin_subtitle_max_width.setFixedWidth(self._px(76))
+        row2.addWidget(self.spin_subtitle_max_width)
         row2.addStretch()
         layout.addLayout(row2)
+        self._update_subtitle_controls_enabled()
 
         group.setLayout(layout)
         return group

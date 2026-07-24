@@ -63,6 +63,7 @@ from src.config import (
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.core.progress import ProgressEvent
+from src.core.subtitles import SubtitleOptions
 from src.services import transcription_service
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
@@ -158,6 +159,7 @@ def process_files_with_progress(
     num_speakers: int | None = None,
     diarization_backend: str = "pyannote",
     audio_preprocessing_mode: str = AUDIO_PREPROCESSING_MODE,
+    subtitle_options: SubtitleOptions | None = None,
 ) -> list[dict]:
     """
     Обрабатывает файлы с отображением прогресса
@@ -268,17 +270,20 @@ def process_files_with_progress(
             )
 
             # Обработка
-            result = processor.process_file(
-                filepath=filepath,
-                output_dir=output_dir,
-                file_index=len(results),
-                total_files=len(files),
-                enable_diarization=enable_diarization,
-                diarization_backend=diarization_backend,
-                audio_preprocessing_mode=audio_preprocessing_mode,
-                num_speakers=num_speakers,
-                output_formats=output_formats,
-            )
+            process_kwargs = {
+                "filepath": filepath,
+                "output_dir": output_dir,
+                "file_index": len(results),
+                "total_files": len(files),
+                "enable_diarization": enable_diarization,
+                "diarization_backend": diarization_backend,
+                "audio_preprocessing_mode": audio_preprocessing_mode,
+                "num_speakers": num_speakers,
+                "output_formats": output_formats,
+            }
+            if subtitle_options is not None:
+                process_kwargs["subtitle_options"] = subtitle_options
+            result = processor.process_file(**process_kwargs)
 
             results.append(result)
             batch_state["completed"] += 1.0 if result['success'] else current_file_progress
@@ -444,9 +449,30 @@ def display_results(results: list[dict]):
     show_default=True,
     help='Интеллектуальная подготовка аудио перед распознаванием',
 )
+@click.option(
+    '--subtitle-sentence-split/--no-subtitle-sentence-split',
+    default=True,
+    show_default=True,
+    help='Разбивать SRT/VTT по границам предложений',
+)
+@click.option(
+    '--subtitle-max-lines', '--max-line-count', '--max_line_count',
+    type=click.IntRange(min=1, max=4),
+    default=2,
+    show_default=True,
+    help='Максимум строк в одном блоке SRT/VTT',
+)
+@click.option(
+    '--subtitle-max-width', '--max-line-width', '--max_line_width',
+    type=click.IntRange(min=20, max=100),
+    default=64,
+    show_default=True,
+    help='Максимум символов в строке SRT/VTT',
+)
 def main(
     data_dir, files, directory, output, interactive, verbose, formats, backend, model, onnx_provider,
     diarize, diarization_backend, speakers, audio_preprocessing,
+    subtitle_sentence_split, subtitle_max_lines, subtitle_max_width,
 ):
     """
     🎙️ GigaAM v3 Transcriber - CLI
@@ -592,6 +618,11 @@ def main(
         diarization_backend=diarization_backend,
         audio_preprocessing_mode=audio_preprocessing,
         num_speakers=speakers,
+        subtitle_options=SubtitleOptions(
+            sentence_split=subtitle_sentence_split,
+            max_line_count=subtitle_max_lines,
+            max_line_width=subtitle_max_width,
+        ),
     )
     total_time = time.time() - start_time
 

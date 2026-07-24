@@ -126,6 +126,24 @@ def test_cli_forwards_audio_preprocessing_mode(tmp_path, monkeypatch):
     assert capture["process_kwargs"]["audio_preprocessing_mode"] == "off"
 
 
+def test_cli_forwards_subtitle_options(tmp_path, monkeypatch):
+    result, capture, _ = _run_cli_with_fake_loader(
+        tmp_path,
+        monkeypatch,
+        [
+            "--no-subtitle-sentence-split",
+            "--subtitle-max-lines", "3",
+            "--subtitle-max-width", "72",
+        ],
+    )
+
+    assert result.exit_code == 0
+    options = capture["process_kwargs"]["subtitle_options"]
+    assert not options.sentence_split
+    assert options.max_line_count == 3
+    assert options.max_line_width == 72
+
+
 def test_cli_sortformer_rejects_fixed_speaker_count(tmp_path, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     result, _capture, _ = _run_cli_with_fake_loader(

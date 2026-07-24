@@ -19,8 +19,8 @@ def test_spec_includes_mlx_packages():
     text = SPEC_PATH.read_text(encoding="utf-8")
     assert "\"mlx\"" in text
     assert "\"gigaam_mlx\"" in text
-    assert '"CFBundleShortVersionString": "1.3.6"' in text
-    assert '"CFBundleVersion": "1.3.6"' in text
+    assert '"CFBundleShortVersionString": "1.3.7"' in text
+    assert '"CFBundleVersion": "1.3.7"' in text
 
 
 def test_spec_can_bundle_sortformer_runtime():

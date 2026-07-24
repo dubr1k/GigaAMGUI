@@ -1,5 +1,6 @@
-"""Характеризующие тесты форматтеров — фиксируют вывод SRT/VTT/MD 1:1."""
+"""Характеризующие тесты форматтеров SRT/VTT/Markdown."""
 from src.core import formatters
+from src.core.subtitles import SubtitleOptions
 
 
 class _TF:
@@ -33,12 +34,8 @@ def test_generate_srt():
         "привет мир\n"
         "\n"
         "2\n"
-        "00:01:05,250 --> 00:01:10,000\n"
-        "<SPEAKER_00> второй\n"
-        "\n"
-        "3\n"
-        "00:01:10,000 --> 00:01:12,000\n"
-        "<SPEAKER_00> третий\n"
+        "00:01:05,250 --> 00:01:12,000\n"
+        "<SPEAKER_00> второй третий\n"
     )
 
 
@@ -48,7 +45,69 @@ def test_generate_vtt():
     assert "00:00:00.000 --> 00:00:01.500" in vtt
     assert "<v SPEAKER_00>второй" in vtt
     # пустой сегмент пропущен
-    assert vtt.count("-->") == 3
+    assert vtt.count("-->") == 2
+
+
+def test_srt_and_vtt_share_phrase_cues_and_line_wrapping():
+    utterances = [{
+        "transcription": "Первая короткая фраза. Вторая короткая фраза.",
+        "boundaries": (1.0, 5.0),
+        "speaker": "Спикер №1",
+        "words": [
+            {"text": "Первая", "start": 1.0, "end": 1.4},
+            {"text": "короткая", "start": 1.5, "end": 1.9},
+            {"text": "фраза.", "start": 2.0, "end": 2.4},
+            {"text": "Вторая", "start": 3.0, "end": 3.4},
+            {"text": "короткая", "start": 3.5, "end": 3.9},
+            {"text": "фраза.", "start": 4.0, "end": 4.4},
+        ],
+    }]
+    options = SubtitleOptions(max_line_count=2, max_line_width=20)
+
+    srt = formatters.generate_srt(utterances, options)
+    vtt = formatters.generate_vtt(utterances, options)
+
+    assert srt.count("-->") == 2
+    assert vtt.count("-->") == 2
+    assert "00:00:01,000 --> 00:00:02,400" in srt
+    assert "00:00:03.000 --> 00:00:04.400" in vtt
+    assert "<1> Первая короткая\nфраза." in srt
+    assert "<v 1>Первая короткая\nфраза." in vtt
+
+
+def test_diarized_subtitle_prefix_respects_max_line_width():
+    utterances = [
+        {
+            "transcription": "Коротко.",
+            "boundaries": (0.0, 1.0),
+            "speaker": "Спикер №1",
+            "words": [{"text": "Коротко.", "start": 0.0, "end": 1.0}],
+        },
+        {
+            "transcription": "12345678901234567890",
+            "boundaries": (1.0, 2.0),
+            "speaker": "Спикер №1",
+            "words": [{
+                "text": "12345678901234567890",
+                "start": 1.0,
+                "end": 2.0,
+            }],
+        },
+    ]
+    options = SubtitleOptions(max_line_count=2, max_line_width=20)
+
+    srt = formatters.generate_srt(utterances, options)
+    vtt = formatters.generate_vtt(utterances, options)
+
+    srt_payload = [
+        line for line in srt.splitlines()
+        if line and not line.isdigit() and "-->" not in line
+    ]
+    vtt_payload = [
+        line for line in vtt.splitlines()
+        if line and line != "WEBVTT" and "-->" not in line
+    ]
+    assert all(len(line) <= 20 for line in [*srt_payload, *vtt_payload])
 
 
 def test_generate_markdown_speaker_header_once():

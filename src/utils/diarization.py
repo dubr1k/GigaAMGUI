@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ..core.diarization.base import SpeakerSegment
 from ..core.diarization.factory import should_use_sortformer_onnx
-from ..core.diarization.mapping import SpeakerMappingMixin
+from ..core.diarization.mapping import SpeakerMappingMixin, _validated_timed_words
 from ..core.model_preparation import PreparationCancelled, PreparationState
 from .model_cache import hf_repo_is_cached
 
@@ -493,12 +493,10 @@ class DiarizationManager(SpeakerMappingMixin):
     ) -> list[dict]:
         """Определить говорящего для каждого слова ASR-сегмента."""
         resolved: list[dict] = []
-        for word in trans_seg.get("words") or []:
-            text = str(word.get("text", "")).strip()
-            if not text:
-                continue
-            start = float(word.get("start", 0.0))
-            end = max(start, float(word.get("end", start)))
+        for word in _validated_timed_words(trans_seg):
+            text = word["text"]
+            start = word["start"]
+            end = word["end"]
             resolved.append({
                 "text": text,
                 "start": start,
@@ -547,15 +545,22 @@ class DiarizationManager(SpeakerMappingMixin):
         """Слить подряд идущие слова одного говорящего в реплику."""
         turns: list[dict] = []
         for word in words:
+            timed_word = {
+                "text": word["text"],
+                "start": word["start"],
+                "end": word["end"],
+            }
             if turns and turns[-1]["speaker"] == word["speaker"]:
                 turn = turns[-1]
                 turn["transcription"] = f'{turn["transcription"]} {word["text"]}'
                 turn["boundaries"] = (turn["boundaries"][0], word["end"])
+                turn["words"].append(timed_word)
                 continue
             turns.append({
                 "transcription": word["text"],
                 "boundaries": (word["start"], word["end"]),
                 "speaker": word["speaker"],
+                "words": [timed_word],
             })
         return turns
 
