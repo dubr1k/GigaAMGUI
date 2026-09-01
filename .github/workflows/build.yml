@@ -487,6 +487,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          name: GigaAM Transcriber ${{ steps.notes.outputs.version }}
+          # Только номер версии: имя продукта в заголовке релиза не дублируем.
+          name: ${{ steps.notes.outputs.version }}
           body_path: ${{ steps.notes.outputs.path }}
           files: release-assets/*
