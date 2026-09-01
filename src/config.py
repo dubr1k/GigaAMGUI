@@ -179,9 +179,17 @@ ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
 ASR_SEGMENTATION_MODE = os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
 if ASR_SEGMENTATION_MODE not in {"vad", "overlap_chunks", "fixed_chunks"}:
     ASR_SEGMENTATION_MODE = "vad"
-# Keep the additional segmentation model off the ASR accelerator by default:
-# pyannote VAD next to GigaAM on the same GPU/MPS is a real OOM source.
-ASR_VAD_DEVICE = os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu"
+# Keep the additional segmentation model off the ASR accelerator where that
+# accelerator has its own limited budget: pyannote VAD next to GigaAM on one
+# CUDA card is a real OOM source. Apple Silicon shares memory with the CPU, so
+# there is no separate budget to blow: measured on a 117-minute file, VAD on MPS
+# peaked *lower* than on CPU (4.52 GB vs 4.88 GB) and ran 4x faster (73s vs
+# 296s). Falling back is safe either way — _resolve_chunks catches a failing VAD
+# and switches to overlap chunking.
+_DEFAULT_VAD_DEVICE = "auto" if sys.platform == "darwin" else "cpu"
+ASR_VAD_DEVICE = (
+    os.getenv("ASR_VAD_DEVICE", _DEFAULT_VAD_DEVICE).strip().lower() or _DEFAULT_VAD_DEVICE
+)
 MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
 ONNX_PROVIDER = _validate_onnx_provider(os.getenv("ONNX_PROVIDER"))
 ONNX_QUANTIZATION = _validate_onnx_quantization(os.getenv("ONNX_QUANTIZATION"))
