@@ -696,6 +696,34 @@ class SortformerDiarizationManager(DiarizationManager):
             self.device = "cpu"
         _ = self.pipeline
 
+    def unload(self) -> None:
+        """Выгрузить модель NeMo, включая общий для класса кэш.
+
+        Базовый ``unload`` обнуляет только ``self._pipeline``, а модель живёт в
+        ``cls._shared_pipelines`` и переживала выгрузку до конца процесса. На
+        CUDA это удержанная VRAM на карте фиксированного объёма, поэтому кэш
+        нужно чистить именно по ключу устройства.
+        """
+        cls = type(self)
+        with self._shared_load_lock:
+            cls._shared_pipelines.pop(self.device, None)
+            cls._shared_inference_contexts.pop(self.device, None)
+            self._pipeline = None
+            self._inference_context = nullcontext
+        self._empty_accelerator_cache()
+
+    def _empty_accelerator_cache(self) -> None:
+        """Вернуть драйверу VRAM/unified memory, освободившуюся после выгрузки."""
+        try:
+            import torch
+
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif self.device == "mps" and hasattr(torch, "mps"):
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+
     def _run_sortformer(self, audio_path: Path):
         with self._inference_lock:
             pipeline = self.pipeline
