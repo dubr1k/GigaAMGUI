@@ -403,6 +403,27 @@ class MLXBackend:
             for word in relative_words
         ]
 
+    @staticmethod
+    def _read_prepared_wav(audio_path: str, sample_rate: int):
+        """Прочитать уже готовый 16 кГц моно WAV, не поднимая ffmpeg повторно.
+
+        ``gigaam_mlx.load_audio`` всегда запускает ffmpeg, хотя ``processor``
+        заранее конвертирует вход в 16 кГц моно WAV. Повторный декод — это ещё
+        один полный проход по файлу и одновременно живущие ``stdout``-байты и
+        float32-массив. Возвращает ``None``, если формат не совпал: тогда
+        вызывающий код падает обратно на ffmpeg.
+        """
+        try:
+            import soundfile as sf
+
+            info = sf.info(audio_path)
+            if info.samplerate != sample_rate or info.channels != 1:
+                return None
+            audio, _ = sf.read(audio_path, dtype="float32")
+            return np.asarray(audio, dtype=np.float32).reshape(-1)
+        except Exception:
+            return None
+
     def _transcribe_in_chunks(
         self,
         audio_path: str,
@@ -412,9 +433,11 @@ class MLXBackend:
         if gm is None:
             raise RuntimeError("MLX backend is not initialized")
 
-        audio = gm.load_audio(audio_path)
-        total_samples = len(audio)
         sample_rate = gm.audio.SAMPLE_RATE
+        audio = self._read_prepared_wav(audio_path, sample_rate)
+        if audio is None:
+            audio = gm.load_audio(audio_path)
+        total_samples = len(audio)
         total_seconds = float(total_samples) / sample_rate if total_samples else 0.0
         chunks = self._resolve_chunks(
             audio_path,

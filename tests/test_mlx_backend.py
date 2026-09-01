@@ -683,3 +683,29 @@ def test_chunk_loop_trims_cache_periodically_on_long_audio(monkeypatch):
 
     # Три подрезки внутри цикла плюс финальная в transcribe_longform.
     assert calls["clear_cache"] >= 3
+
+
+def test_prepared_wav_is_read_without_running_ffmpeg(tmp_path):
+    import soundfile as sf
+
+    path = tmp_path / "prepared.wav"
+    samples = np.linspace(-0.5, 0.5, 16000, dtype=np.float32)
+    sf.write(path, samples, 16000, subtype="PCM_16")
+
+    audio = MLXBackend._read_prepared_wav(str(path), 16000)
+
+    assert audio is not None
+    assert audio.dtype == np.float32
+    assert audio.ndim == 1
+    assert len(audio) == 16000
+
+
+def test_prepared_wav_reader_declines_mismatched_format(tmp_path):
+    import soundfile as sf
+
+    path = tmp_path / "wrong_rate.wav"
+    sf.write(path, np.zeros(8000, dtype=np.float32), 8000, subtype="PCM_16")
+
+    # Несовпадение частоты обязано вернуть None, чтобы вызывающий код ушёл в ffmpeg.
+    assert MLXBackend._read_prepared_wav(str(path), 16000) is None
+    assert MLXBackend._read_prepared_wav("/nonexistent/audio.wav", 16000) is None
