@@ -30,6 +30,8 @@ class MLXBackend:
     """ASR backend implemented via ``gigaam_mlx``."""
 
     name = "mlx"
+    # Как часто подрезать буферный пул MLX внутри цикла по окнам декодера.
+    _CACHE_TRIM_INTERVAL = 32
 
     def __init__(
         self,
@@ -109,6 +111,10 @@ class MLXBackend:
                 raise RuntimeError(
                     f"MLX transcription failed: backend={self.name}, model={self.model_name}, repo={self.repo_id}: {type(exc).__name__}: {exc}"
                 ) from exc
+            finally:
+                # Иначе буферы одного файла остаются в пуле MLX и суммируются
+                # с буферами следующего файла пачки.
+                self._empty_cache()
 
         segments: list[TranscriptionSegment] = []
         for item in raw_segments or []:
@@ -420,7 +426,7 @@ class MLXBackend:
         previous_result_index: int | None = None
         previous_group: int | None = None
         reported = 0.0
-        for chunk in chunks:
+        for chunk_index, chunk in enumerate(chunks):
             start_sample = chunk.decode_start_sample
             end_sample = chunk.decode_end_sample
             chunk_audio = audio[start_sample:end_sample]
@@ -499,10 +505,32 @@ class MLXBackend:
                     )
                     reported = processed
 
+            # Окна разной длины дают буферы разного размера, и MLX кэширует
+            # каждый размер отдельно. На часовой записи это сотни окон, поэтому
+            # пул нужно подрезать по ходу, а не только в конце файла.
+            if (chunk_index + 1) % self._CACHE_TRIM_INTERVAL == 0:
+                self._empty_cache()
+
         if progress_callback is not None and total_samples > 0 and reported < 1.0:
             progress_callback(1.0, total_seconds, total_seconds)
 
         return result_segments
+
+    def _empty_cache(self) -> None:
+        """Вернуть системе буферный пул MLX.
+
+        ``clear_cache`` живёт в ``mlx.core``: у пакета верхнего уровня ``mlx``
+        такого атрибута нет. Прежний ``getattr(mlx, "clear_cache", None)``
+        всегда возвращал ``None``, промах глушился ``except`` — и пул рос до
+        десятков гигабайт при пиковой потребности ~1.5 ГБ. На Apple Silicon это
+        unified memory, поэтому съедалась именно системная память, а не только
+        видеопамять, и в RSS процесса рост не был виден.
+        """
+        try:
+            mx = __import__("mlx.core", fromlist=["clear_cache"])
+            mx.clear_cache()
+        except Exception:
+            pass
 
     def unload(self) -> None:
         with self._lock:
@@ -513,14 +541,7 @@ class MLXBackend:
             self._vad_failure_key = None
             self.segmentation_mode = "not_run"
             self.segmentation_fallback_reason = None
-            try:
-                import mlx
-
-                clear_cache = getattr(mlx, "clear_cache", None)
-                if callable(clear_cache):
-                    clear_cache()
-            except Exception:
-                pass
+            self._empty_cache()
 
     def is_loaded(self) -> bool:
         return self.model is not None and self.tokenizer is not None

@@ -598,3 +598,88 @@ def test_word_timestamps_are_trimmed_by_overlap_stitching(monkeypatch):
             start <= word["start"] < word["end"] <= end
             for word in segment["words"]
         )
+
+
+def _mlx_backend_with_realistic_package(monkeypatch, *, chunk_count=2):
+    """Собрать MLXBackend на моках, повторяя реальную структуру пакета ``mlx``.
+
+    У настоящего ``mlx`` верхнего уровня есть только ``core`` — ``clear_cache``
+    живёт в ``mlx.core``. Старые тесты подменяли ``mlx`` и ``mlx.core`` одним и
+    тем же объектом с ``clear_cache``, поэтому промах ``getattr(mlx,
+    "clear_cache", None)`` в проде оставался незамеченным.
+    """
+    calls = {"clear_cache": 0}
+    chunks = [
+        {
+            "start_sample": index * 16000,
+            "end_sample": (index + 1) * 16000,
+            "start_sec": float(index),
+            "end_sec": float(index + 1),
+        }
+        for index in range(chunk_count)
+    ]
+    fake_audio = types.SimpleNamespace(
+        SAMPLE_RATE=16000,
+        load_audio=lambda path: np.zeros(16000 * chunk_count, dtype=np.float32),
+        split_audio=lambda audio: chunks,
+        compute_mel=lambda chunk: np.zeros((10, 64), dtype=np.float32),
+    )
+    fake_gigaam = types.SimpleNamespace(
+        load_model=lambda model_type, repo_id: ("fake-model", "fake-tokenizer"),
+        audio=fake_audio,
+        load_audio=fake_audio.load_audio,
+        compute_mel=fake_audio.compute_mel,
+    )
+
+    def _clear_cache():
+        calls["clear_cache"] += 1
+
+    fake_core = types.SimpleNamespace(
+        array=lambda value: value,
+        eval=lambda value: None,
+        clear_cache=_clear_cache,
+    )
+    fake_top_level = types.SimpleNamespace(core=fake_core)
+
+    monkeypatch.setitem(sys.modules, "gigaam_mlx", fake_gigaam)
+    monkeypatch.setitem(sys.modules, "mlx", fake_top_level)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+
+    backend = MLXBackend(repo="repo/test", segmentation_mode="fixed_chunks")
+    assert backend.load(lambda message: None) is True
+    backend.model = types.SimpleNamespace(
+        encode=lambda mel: (mel, mel.shape[1]),
+        decode=lambda _encoded, _seq_len: "word",
+    )
+    backend.tokenizer = types.SimpleNamespace(decode=lambda text: text.strip())
+    return backend, calls
+
+
+def test_unload_clears_cache_through_mlx_core_not_top_level(monkeypatch):
+    backend, calls = _mlx_backend_with_realistic_package(monkeypatch)
+    calls["clear_cache"] = 0
+
+    backend.unload()
+
+    assert backend.model is None
+    assert calls["clear_cache"] >= 1, "буферный пул MLX должен освобождаться через mlx.core"
+
+
+def test_transcribe_longform_releases_cache_for_the_next_file(monkeypatch):
+    backend, calls = _mlx_backend_with_realistic_package(monkeypatch)
+    calls["clear_cache"] = 0
+
+    backend.transcribe_longform("/tmp/audio.wav")
+
+    assert calls["clear_cache"] >= 1, "иначе буферы файла суммируются со следующим файлом пачки"
+
+
+def test_chunk_loop_trims_cache_periodically_on_long_audio(monkeypatch):
+    interval = MLXBackend._CACHE_TRIM_INTERVAL
+    backend, calls = _mlx_backend_with_realistic_package(monkeypatch, chunk_count=interval * 3)
+    calls["clear_cache"] = 0
+
+    backend.transcribe_longform("/tmp/audio.wav")
+
+    # Три подрезки внутри цикла плюс финальная в transcribe_longform.
+    assert calls["clear_cache"] >= 3
