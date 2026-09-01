@@ -284,6 +284,36 @@ class ProcessingMixin:
         except Exception as e:
             self.log(self._t(f"Критическая ошибка: {str(e)}", f"Critical error: {str(e)}"))
             self.signals.processing_finished.emit(False, self._t(f"Ошибка: {str(e)}", f"Error: {str(e)}"))
+        finally:
+            self._release_accelerator_caches()
+
+    def _release_accelerator_caches(self) -> None:
+        """Вернуть системе кэши ускорителя, не выгружая сами модели.
+
+        Модели остаются тёплыми для следующей пачки — перезагрузка занимает
+        секунды. Освобождаются только буферные пулы, которые иначе держат
+        десятки гигабайт unified memory до выхода из приложения.
+        """
+        loader = getattr(self, "model_loader", None)
+        if loader is not None:
+            try:
+                loader._empty_cache()  # noqa: SLF001
+            except Exception:
+                pass
+
+        # Пул ASR-бэкенда — не единственный: диаризация считает через torch, и
+        # её кэш живёт отдельно от MLX. Без этой чистки после пачки оставалось
+        # ~8 ГБ, выделенных драйверу под Sortformer.
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            mps = getattr(torch, "mps", None)
+            if mps is not None and torch.backends.mps.is_available():
+                mps.empty_cache()
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────────────────────
     # Прогресс
