@@ -135,3 +135,48 @@ def test_clearing_llm_files_list_forgets_transcript_dir_so_restart_stays_empty(t
 
     window._rebuild_pending_llm_transcripts()
     assert window.transcript_files_for_llm == []
+
+
+def test_clearing_forgets_input_dir_even_when_the_queue_is_already_empty(tmp_path, window):
+    """Состояние сразу после перезапуска: очередь пуста, папка запомнена.
+
+    Прежний guard выходил на `not self.files_to_process`, поэтому «Очистить»
+    в этом состоянии не делал ничего, и папка подставлялась при каждом старте
+    без возможности её сбросить.
+    """
+    input_dir = tmp_path / "audio"
+    input_dir.mkdir()
+
+    window.input_dir = str(input_dir)
+    window.files_to_process = []
+
+    window._clear_files_list()
+
+    assert window.input_dir == ""
+    assert window.user_settings.get_last_files_dir() is None
+
+
+def test_clearing_forgets_transcript_dir_even_when_the_list_is_already_empty(tmp_path, window):
+    transcript_dir = tmp_path / "transcripts"
+    transcript_dir.mkdir()
+
+    window.llm_transcript_dir = str(transcript_dir)
+    window.transcript_files_for_llm = []
+
+    window._clear_llm_files_list()
+
+    assert window.llm_transcript_dir == ""
+    assert window.user_settings.get_value("llm_transcript_dir", "") == ""
+
+
+def test_clearing_with_nothing_remembered_stays_a_noop(window):
+    window.input_dir = ""
+    window.files_to_process = []
+    window.llm_transcript_dir = ""
+    window.transcript_files_for_llm = []
+
+    window._clear_files_list()
+    window._clear_llm_files_list()
+
+    assert window.files_to_process == []
+    assert window.transcript_files_for_llm == []

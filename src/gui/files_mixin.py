@@ -71,7 +71,13 @@ class FilesMixin:
         self.log(f"Убрано из очереди: {removed} файлов")
 
     def _clear_files_list(self):
-        if self.is_processing or not self.files_to_process:
+        if self.is_processing:
+            return
+        # Папку нужно забывать и тогда, когда очередь уже пуста. Прежний guard
+        # выходил здесь же, поэтому запомненная папка оставалась навсегда:
+        # очередь после перезапуска пустая, «Очистить» ничего не делает, а
+        # папка продолжает подставляться при каждом старте.
+        if not self.files_to_process and not self.input_dir:
             return
         self.files_to_process = []
         self._forget_input_dir()

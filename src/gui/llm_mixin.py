@@ -359,7 +359,11 @@ class LlmMixin:
         self._refresh_llm_files_list()
 
     def _clear_llm_files_list(self):
-        if self.is_llm_processing or not self.transcript_files_for_llm:
+        if self.is_llm_processing:
+            return
+        # См. _clear_files_list: папку транскриптов тоже нужно забывать при
+        # уже пустом списке, иначе она остаётся запомненной навсегда.
+        if not self.transcript_files_for_llm and not self.llm_transcript_dir:
             return
         self.transcript_files_for_llm = []
         self._forget_llm_transcript_dir()
