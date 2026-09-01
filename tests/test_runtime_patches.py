@@ -121,3 +121,18 @@ def test_torch_load_patch_is_reapplied_after_runtime_switch(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", second)
     assert torch_patch.apply_torch_load_patch() is True
     assert second.load("model.pt")[2]["weights_only"] is False
+
+
+def test_pyannote_adapter_reads_audio_as_float32():
+    """soundfile по умолчанию отдаёт float64.
+
+    pyannote всё равно приводит вход к float32, поэтому дефолт создавал вторую
+    копию всей записи: на 117-минутном файле это 0.84 ГБ float64 плюс 0.42 ГБ
+    float32 одновременно. Тот же приём уже применён в core/asr/onnx_vad.py.
+    """
+    import inspect
+
+    source = inspect.getsource(pyannote_patch.apply_pyannote_patch)
+
+    assert 'sf.read(file_path, dtype="float32")' in source
+    assert "sf.read(file_path)" not in source
