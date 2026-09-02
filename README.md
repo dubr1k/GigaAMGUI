@@ -69,8 +69,12 @@ HF_TOKEN=your_huggingface_token_here
 python -m pip install -r requirements-live-macos.txt
 
 # Linux: sounddevice; системный звук доступен только как monitor source PipeWire/PulseAudio
+sudo apt install libportaudio2   # колесо sounddevice под Linux не содержит PortAudio
 python -m pip install -r requirements-live-linux.txt
 ```
+
+Портативные и офлайн-сборки уже содержат live-захват (включая PortAudio на Linux) —
+доставлять что-либо вручную не нужно; команды выше нужны только при запуске из исходников.
 
 macOS требует разрешения **Microphone** для микрофона и **Screen Recording** для
 системного звука. ScreenCaptureKit доступен с macOS 13. На Linux приложение не
@@ -99,8 +103,9 @@ Live-захват поддерживается на Windows, macOS и Linux. В 
 `requirements-live-windows.txt` (PyAudioWPatch). В macOS 13+ для микрофона нужны
 `requirements-live-macos.txt` и разрешение Microphone; системный звук дополнительно
 требует разрешение Screen Recording и ScreenCaptureKit. В Linux установите
-`requirements-live-linux.txt`; системный звук доступен только через существующий
-monitor source PipeWire/PulseAudio, который приложение не создаёт.
+`requirements-live-linux.txt` и системный `libportaudio2`; системный звук доступен
+только через существующий monitor source PipeWire/PulseAudio, который приложение
+не создаёт. В готовых сборках всё это уже вшито.
 
 ### Опционально: NVIDIA Sortformer
 

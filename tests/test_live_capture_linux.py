@@ -1,3 +1,4 @@
+import sys
 import time
 
 import numpy as np
@@ -50,12 +51,16 @@ def test_linux_removed_device_emits_source_local_event():
     assert events[-1].source is CaptureSource.SYSTEM
 
 
-def test_linux_missing_gstreamer_has_monitor_setup_instructions():
+def test_linux_missing_runtime_has_monitor_setup_instructions(monkeypatch):
+    # Раньше тест подменял api_loader и проверял ImportError, минуя _load_linux_api,
+    # то есть сообщение с инструкцией не проверялось вообще.
     from src.live.capture.factory import CaptureUnavailable
     from src.live.capture.linux import LinuxSystemAudioAdapter
 
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
+
     with pytest.raises(CaptureUnavailable, match="PipeWire|PulseAudio"):
-        LinuxSystemAudioAdapter(api_loader=lambda: (_ for _ in ()).throw(ImportError("missing"))).devices()
+        LinuxSystemAudioAdapter().devices()
 
 
 class FakeSoundDevice:
@@ -110,3 +115,48 @@ def test_linux_system_capture_rejects_missing_monitor_source():
 
     with pytest.raises(CaptureUnavailable, match="monitor source"):
         native.start(CaptureSource.SYSTEM, None, lambda *_: None)
+
+
+def test_linux_bundled_portaudio_is_resolved_only_inside_a_frozen_bundle(monkeypatch, tmp_path):
+    """Вне бандла подмена ctypes не нужна и не должна происходить (issue #47)."""
+    import ctypes.util
+
+    from src.live.capture import linux
+
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    original = ctypes.util.find_library
+
+    with linux.bundled_portaudio_resolution():
+        assert ctypes.util.find_library is original
+
+
+def test_linux_bundled_portaudio_is_offered_to_sounddevice_and_restored(monkeypatch, tmp_path):
+    """Внутри бандла ldconfig не видит вшитую копию — подставляем путь сами (issue #47)."""
+    import ctypes.util
+
+    from src.live.capture import linux
+
+    library = tmp_path / linux._BUNDLED_PORTAUDIO_RELPATH
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+
+    with linux.bundled_portaudio_resolution():
+        assert ctypes.util.find_library("portaudio") == str(library)
+        assert ctypes.util.find_library("ssl") is None
+
+    assert ctypes.util.find_library("portaudio") is None
+
+
+def test_linux_missing_portaudio_names_both_the_wheel_and_the_system_package(monkeypatch):
+    """Сообщение из issue #47 советовало только несуществующий файл требований."""
+    from src.live.capture.factory import CaptureUnavailable
+    from src.live.capture.linux import _load_linux_api
+
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
+
+    with pytest.raises(CaptureUnavailable, match="requirements-live-linux.txt"):
+        _load_linux_api()
+    with pytest.raises(CaptureUnavailable, match="libportaudio2"):
+        _load_linux_api()

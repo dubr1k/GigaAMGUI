@@ -9,6 +9,7 @@ pyannote.audio, torchmetrics, docx). Возвращает 0, если всё и�
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import sys
@@ -41,6 +42,16 @@ _CHAIN = [
     "pyannote.audio.pipelines.speaker_diarization",
     "docx",
 ]
+
+
+#: Модули live-захвата, которые обязана содержать сборка под данной ОС.
+#: Проверяем именно импорт, а не открытие устройства: на CI-раннере звуковых
+#: устройств нет, а отсутствовал в сборке (issue #47) именно модуль.
+_LIVE_CAPTURE_MODULES = {
+    "win32": ["pyaudiowpatch"],
+    "darwin": ["sounddevice", "AVFoundation", "CoreMedia", "ScreenCaptureKit"],
+    "linux": ["sounddevice"],
+}
 
 
 def _log_path() -> Path:
@@ -111,6 +122,46 @@ def _ensure_torch() -> None:
     runtime_manager.activate(variant)
 
 
+def run_live_capture_check() -> int:
+    """Проверяет, что live-захват реально попал в сборку.
+
+    До 1.5.1 CI ставил live-runtime только под Windows, поэтому
+    ``collect_live_capture_deps()`` печатал `[skip]`, сборка проходила зелёной,
+    а вкладка Live на Linux/macOS падала у пользователя (issue #47). Здесь
+    закрываем эту дыру тем же способом, что и #19: гейтом на собранном бинаре.
+    """
+    if sys.platform.startswith("win"):
+        platform_key = "win32"
+    elif sys.platform.startswith("linux"):
+        platform_key = "linux"
+    else:
+        platform_key = sys.platform
+
+    modules = _LIVE_CAPTURE_MODULES.get(platform_key)
+    if modules is None:
+        _emit(f"SELFCHECK skip: live capture is unsupported on {platform_key}")
+        return 0
+
+    if platform_key == "linux":
+        # Тот же контекст, что и в рантайме: с подстановкой вшитого PortAudio.
+        from src.live.capture.linux import bundled_portaudio_resolution
+
+        resolution = bundled_portaudio_resolution()
+    else:
+        resolution = contextlib.nullcontext()
+
+    with resolution:
+        for name in modules:
+            try:
+                _import_module(name)
+                _emit(f"SELFCHECK ok: live capture {name}")
+            except Exception as e:
+                _emit(f"SELFCHECK FAIL: live capture {name}: {type(e).__name__}: {e}")
+                _emit(traceback.format_exc())
+                return 1
+    return 0
+
+
 def run_selfcheck(check_torch: bool = True) -> int:
     if check_torch:
         try:
@@ -133,5 +184,7 @@ def run_selfcheck(check_torch: bool = True) -> int:
             _emit(f"SELFCHECK FAIL: {name}: {type(e).__name__}: {e}")
             _emit(traceback.format_exc())
             return 1
+    if run_live_capture_check():
+        return 1
     _emit("SELFCHECK PASS")
     return 0

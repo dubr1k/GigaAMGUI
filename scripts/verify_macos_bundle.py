@@ -83,6 +83,23 @@ def verify_bundle(bundle_path: str) -> int:
         print(f"Frozen MLX runtime smoke failed ({smoke.returncode}): {smoke_output[-2000:]}")
         return 1
 
+    # Без этого гейта полная .app уезжала в релиз без sounddevice/ScreenCaptureKit,
+    # а вкладка Live падала уже у пользователя (issue #47).
+    try:
+        live_smoke = subprocess.run(
+            [str(candidates[0]), "--live-capture-smoke"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        print("Frozen live capture smoke timed out")
+        return 1
+    if live_smoke.returncode != 0:
+        live_output = (live_smoke.stdout or "") + (live_smoke.stderr or "")
+        print(f"Frozen live capture smoke failed ({live_smoke.returncode}): {live_output[-4000:]}")
+        return 1
+
     bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
         "1", "true", "yes", "on",
     }

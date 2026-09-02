@@ -16,6 +16,31 @@
 - Настройки в GUI
 - История обработанных файлов
 
+## [1.5.1] - 2026-09-02
+
+### Исправлено
+
+- Live-захват теперь есть в сборках под Linux и macOS. Шаг установки
+  live-runtime в CI был только для Windows, поэтому `collect_live_capture_deps()`
+  печатал `[skip] optional live capture package sounddevice`, а бинарник уезжал
+  в релиз без модуля вообще (issue #47).
+- Появились `requirements-live-linux.txt` и `requirements-live-macos.txt`, на которые
+  уже ссылались README и тексты ошибок в рантайме.
+- Linux-сборка вшивает `libportaudio.so.2`: чистопитоновое колесо sounddevice
+  его не содержит, а `ctypes.util.find_library` внутри бандла смотрит в кэш
+  `ldconfig`, а не в `sys._MEIPASS`. Системный `libportaudio2` для готовых сборок
+  больше не нужен.
+- Спеки собирают `_sounddevice` и `_sounddevice_data` — отдельный top-level пакет
+  с `libportaudio.dylib`, который `collect_all('sounddevice')` не видел.
+
+### Изменено
+
+- `--selfcheck` на собранном бинарнике проверяет модули live-захвата; для полной
+  macOS `.app` добавлен флаг `--live-capture-smoke`, который вызывает
+  `scripts/verify_macos_bundle.py`. Молчаливый `[skip]` больше не доезжает до релиза.
+- Сообщение об ошибке на Linux называет и `sounddevice`, и системный `libportaudio2`.
+- `packaging/build_exe_mac.sh` падает заранее, если live-зависимости не установлены.
+
 ## [1.5.0] - 2026-09-01
 
 ### Исправлено

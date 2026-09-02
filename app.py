@@ -36,6 +36,14 @@ if "--selfcheck" in sys.argv:
     raise SystemExit(run_selfcheck())
 
 
+# Отдельный гейт для полной macOS .app, которая не гоняет --selfcheck: проверяет,
+# что модули live-захвата действительно попали в бандл (issue #47).
+if "--live-capture-smoke" in sys.argv:
+    from src.selfcheck import run_live_capture_check
+
+    raise SystemExit(run_live_capture_check())
+
+
 from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER
 
 

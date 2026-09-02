@@ -1,0 +1,11 @@
+# macOS live capture only. Microphone capture requires the Microphone
+# permission; system audio needs macOS 13+ and the Screen Recording permission.
+#
+# The macOS wheel ships libportaudio.dylib inside _sounddevice_data, so no
+# extra system package is needed.
+sounddevice==0.5.6
+
+# _load_macos_system_api() imports AVFoundation, CoreMedia, Foundation and
+# ScreenCaptureKit. CoreMedia/Foundation arrive with the two frameworks below.
+pyobjc-framework-AVFoundation==11.1
+pyobjc-framework-ScreenCaptureKit==11.1

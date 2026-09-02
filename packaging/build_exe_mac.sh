@@ -65,6 +65,15 @@ if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6; i
 fi
 echo "[OK] зависимости GUI найдены"
 
+# Без этих пакетов collect_live_capture_deps() молча собирал бандл без
+# live-захвата, и вкладка Live падала уже у пользователя (issue #47).
+if ! $PYTHON -c "import sounddevice; import AVFoundation; import ScreenCaptureKit" 2>/dev/null; then
+    echo "[ERROR] Зависимости live-захвата не найдены:"
+    echo "  $PYTHON -m pip install -r requirements-live-macos.txt"
+    exit 1
+fi
+echo "[OK] зависимости live-захвата найдены"
+
 if [[ "$GIGAAM_BUNDLE_SORTFORMER" =~ ^(1|true|yes|on)$ ]]; then
     if ! $PYTHON -c "from nemo.collections.asr.models import SortformerEncLabelModel" 2>/dev/null; then
         echo "[ERROR] GIGAAM_BUNDLE_SORTFORMER включён, но NeMo ASR не установлен."

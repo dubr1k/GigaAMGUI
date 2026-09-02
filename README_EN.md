@@ -70,8 +70,12 @@ For diarization, accept the terms for `pyannote/speaker-diarization-3.1` and `py
 python -m pip install -r requirements-live-macos.txt
 
 # Linux: sounddevice; system audio is available only from a PipeWire/PulseAudio monitor source
+sudo apt install libportaudio2   # the Linux sounddevice wheel does not ship PortAudio
 python -m pip install -r requirements-live-linux.txt
 ```
+
+Portable and offline builds already bundle live capture (including PortAudio on
+Linux); the commands above are only needed when running from source.
 
 macOS requires **Microphone** permission for microphone capture and **Screen
 Recording** permission for system audio. ScreenCaptureKit requires macOS 13 or
@@ -100,8 +104,9 @@ Live capture is supported on Windows, macOS, and Linux. On Windows, install
 `requirements-live-windows.txt` (PyAudioWPatch). On macOS 13+, microphone capture
 requires `requirements-live-macos.txt` and Microphone permission; system audio also
 requires Screen Recording permission and ScreenCaptureKit. On Linux, install
-`requirements-live-linux.txt`; system audio is available only through an existing
-PipeWire/PulseAudio monitor source, which the application does not create.
+`requirements-live-linux.txt` and the system `libportaudio2`; system audio is
+available only through an existing PipeWire/PulseAudio monitor source, which the
+application does not create. Released builds already bundle all of this.
 
 ### Optional: NVIDIA Sortformer
 

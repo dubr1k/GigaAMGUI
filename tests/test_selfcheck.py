@@ -81,3 +81,24 @@ def test_selfcheck_survives_none_streams(monkeypatch, tmp_path):
     assert selfcheck.run_selfcheck(check_torch=False) == 0
     # Диагностика должна была записаться в файл, несмотря на None-потоки.
     assert (tmp_path / "selfcheck.log").exists()
+
+
+def test_selfcheck_gates_on_live_capture_modules(monkeypatch):
+    # Молчаливый `[skip]` в collect_live_capture_deps() уезжал в релиз, потому что
+    # selfcheck не смотрел на live-захват вообще (issue #47).
+    def fake_import(name):
+        if name in set(sum(selfcheck._LIVE_CAPTURE_MODULES.values(), [])):
+            raise ImportError("No module named 'sounddevice'")
+    monkeypatch.setattr(selfcheck, "_import_module", fake_import)
+
+    assert selfcheck.run_live_capture_check() == 1
+    assert selfcheck.run_selfcheck(check_torch=False) == 1
+
+
+def test_selfcheck_live_capture_covers_every_supported_platform():
+    # Список должен покрывать ровно те платформы, на которых capture_capabilities()
+    # обещает захват, иначе гейт снова пропустит недостающий модуль.
+    assert set(selfcheck._LIVE_CAPTURE_MODULES) == {"win32", "darwin", "linux"}
+    assert "sounddevice" in selfcheck._LIVE_CAPTURE_MODULES["linux"]
+    assert {"sounddevice", "ScreenCaptureKit"} <= set(selfcheck._LIVE_CAPTURE_MODULES["darwin"])
+    assert selfcheck._LIVE_CAPTURE_MODULES["win32"] == ["pyaudiowpatch"]

@@ -163,6 +163,70 @@ def test_windows_portable_build_installs_live_capture_runtime():
     assert "runner.os == 'Windows'" in workflow
 
 
+def test_every_platform_has_a_live_capture_requirements_file():
+    """Тексты ошибок и README ссылаются на все три файла — их нельзя не иметь (issue #47)."""
+    assert "pyaudiowpatch" in Path("requirements-live-windows.txt").read_text(encoding="utf-8").casefold()
+
+    for path in ("requirements-live-linux.txt", "requirements-live-macos.txt"):
+        assert any(line.startswith("sounddevice==") for line in _requirement_lines(path)), path
+
+    macos = _requirement_lines("requirements-live-macos.txt")
+    # _load_macos_system_api() импортирует AVFoundation и ScreenCaptureKit;
+    # CoreMedia/Foundation приезжают зависимостями AVFoundation.
+    assert any(line.startswith("pyobjc-framework-AVFoundation==") for line in macos)
+    assert any(line.startswith("pyobjc-framework-ScreenCaptureKit==") for line in macos)
+
+
+def test_portable_build_installs_live_capture_runtime_on_every_platform():
+    """CI ставил live-runtime только под Windows — Linux/macOS уезжали без захвата (issue #47)."""
+    workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+
+    for name, requirements, condition in (
+        ("Install Windows live capture runtime", "requirements-live-windows.txt", "runner.os == 'Windows'"),
+        ("Install macOS live capture runtime", "requirements-live-macos.txt", "runner.os == 'macOS'"),
+        ("Install Linux live capture runtime", "requirements-live-linux.txt", "runner.os == 'Linux'"),
+    ):
+        step_at = workflow.find(name)
+        assert step_at != -1, name
+        step = workflow[step_at : step_at + 240]
+        assert condition in step, name
+        assert requirements in step, name
+
+    # Полная macOS .app собирается отдельным job'ом со своим списком установки.
+    full_app_at = workflow.find("build-macos-full:")
+    assert "requirements-live-macos.txt" in workflow[full_app_at:]
+
+
+def test_linux_portable_build_bundles_portaudio_for_sounddevice():
+    """Linux-колесо sounddevice не содержит PortAudio: библиотеку вшиваем сами (issue #47)."""
+    workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+    common = COMMON_SPEC.read_text(encoding="utf-8")
+    runtime = Path("src/live/capture/linux.py").read_text(encoding="utf-8")
+
+    assert "libportaudio2" in workflow
+    assert "collect_linux_portaudio" in common
+    # Путь вшитой копии обязан совпадать с тем, что ищет рантайм.
+    assert 'BUNDLED_PORTAUDIO_RELPATH = "_portaudio/libportaudio.so.2"' in common
+    assert '_BUNDLED_PORTAUDIO_RELPATH = "_portaudio/libportaudio.so.2"' in runtime
+
+
+def test_macos_specs_collect_sounddevice_companion_packages():
+    """libportaudio.dylib лежит в _sounddevice_data — collect_all('sounddevice') его не видит."""
+    common = COMMON_SPEC.read_text(encoding="utf-8")
+
+    assert '"_sounddevice"' in common
+    assert '"_sounddevice_data"' in common
+
+
+def test_builds_gate_on_live_capture_actually_being_bundled():
+    """Молчаливый `[skip]` не должен доезжать до релиза — как и в issue #19."""
+    selfcheck = Path("src/selfcheck.py").read_text(encoding="utf-8")
+    verifier = Path("scripts/verify_macos_bundle.py").read_text(encoding="utf-8")
+
+    assert "run_live_capture_check" in selfcheck
+    assert "--live-capture-smoke" in verifier
+
+
 def test_tagged_build_workflow_publishes_matching_release_notes_after_assets():
     workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
 
