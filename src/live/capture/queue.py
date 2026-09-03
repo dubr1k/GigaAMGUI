@@ -10,28 +10,37 @@ from ..types import CaptureEvent, CaptureEventKind, PcmChunk
 
 
 class BoundedChunkQueue:
+    """Bound the backlog by bytes.
+
+    A frame-count bound makes the memory ceiling scale with the channel count:
+    the 32-channel PulseAudio aggregate of issue #48 turned the same limit into
+    a 32x larger buffer, and the queue overflowed instead of holding the amount
+    of audio it was sized for.
+    """
+
     def __init__(
         self,
-        max_frames: int,
+        max_bytes: int,
         on_event: Callable[[CaptureEvent], None] | None = None,
     ) -> None:
-        if max_frames <= 0:
-            raise ValueError("max_frames must be positive")
-        self._max_frames = max_frames
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        self._max_bytes = max_bytes
         self._on_event = on_event
         self._chunks: SimpleQueue[PcmChunk] = SimpleQueue()
         self._lock = Lock()
-        self._queued_frames = 0
+        self._queued_bytes = 0
         self.dropped_frames = 0
 
     def put(self, chunk: PcmChunk) -> bool:
         frame_count = len(chunk.frames)
+        chunk_bytes = int(chunk.frames.nbytes)
         with self._lock:
-            if self._queued_frames + frame_count > self._max_frames:
+            if self._queued_bytes + chunk_bytes > self._max_bytes:
                 self.dropped_frames += frame_count
                 accepted = False
             else:
-                self._queued_frames += frame_count
+                self._queued_bytes += chunk_bytes
                 accepted = True
 
         if not accepted:
@@ -57,5 +66,5 @@ class BoundedChunkQueue:
             return None
 
         with self._lock:
-            self._queued_frames -= len(chunk.frames)
+            self._queued_bytes -= int(chunk.frames.nbytes)
         return chunk

@@ -62,6 +62,9 @@ def test_bundled_download_root_does_not_capture_a_different_selected_model(
     (model_dir / "v3_e2e_rnnt.ckpt").write_bytes(b"0")
     (model_dir / "v3_e2e_rnnt_tokenizer.model").write_bytes(b"0")
     monkeypatch.setattr(__import__("sys"), "_MEIPASS", str(meipass), raising=False)
+    # Иначе тест падает на машине, где пользователь выбрал каталог моделей:
+    # _bundled_download_root() честно вернёт его, а не None.
+    monkeypatch.delenv("GIGAAM_PYTORCH_MODEL_DIR", raising=False)
 
     backend = PyTorchBackend(revision="v3_e2e_ctc")
 

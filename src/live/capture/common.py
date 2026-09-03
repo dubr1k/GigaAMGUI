@@ -110,14 +110,14 @@ class QueuedCaptureAdapter:
         api: NativeCaptureApi | None,
         device_id: str | None = None,
         *,
-        max_queue_frames: int = 480_000,
+        max_queue_bytes: int = 480_000 * 2 * 4,
         api_loader: Callable[[], NativeCaptureApi] | None = None,
     ) -> None:
         self.source = source
         self._api = api
         self._api_loader = api_loader
         self._device_id = device_id
-        self._queue = BoundedChunkQueue(max_queue_frames)
+        self._queue = BoundedChunkQueue(max_queue_bytes)
         self._events: SimpleQueue[CaptureEvent] = SimpleQueue()
         self._stopped = Event()
         self._paused = Event()

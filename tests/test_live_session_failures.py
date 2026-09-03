@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.live.session import MAX_PENDING_MIX_CHUNKS, LiveSession
+from src.live.session import MAX_PENDING_MIX_CHUNKS, MAX_RECORDING_FAILURES, LiveSession
 from src.live.types import CaptureEvent, CaptureEventKind, CaptureSource, CaptureState, LiveSettings, PcmChunk
 
 
@@ -409,3 +409,97 @@ def test_missing_peer_cannot_grow_mix_queue_or_mix_recording_without_bound(tmp_p
     assert len(recorders[0].written) == MAX_PENDING_MIX_CHUNKS + 5
     assert len(recorders[0].mixes) == MAX_PENDING_MIX_CHUNKS + 5
     assert len(schedulers[CaptureSource.MIC].submitted) == MAX_PENDING_MIX_CHUNKS + 5
+
+
+def test_repeatedly_failing_source_recording_is_disabled_instead_of_retried(tmp_path):
+    """A writer that cannot open its file will not start working on chunk 5000.
+
+    Issue #48 produced 15 255 identical "recording write failed" lines in one
+    session because every chunk re-attempted the doomed segment open.
+    """
+    class AlwaysFailingRecorder:
+        def __init__(self, *args):
+            self.attempts = 0
+
+        def write(self, chunk):
+            self.attempts += 1
+            raise RuntimeError("Format not recognised")
+
+        def write_mix(self, chunk):
+            return None
+
+        def close(self):
+            return {}
+
+    mic = FakeAdapter()
+    recorders = []
+    updates = []
+
+    def recorder_factory(*args):
+        recorder = AlwaysFailingRecorder(*args)
+        recorders.append(recorder)
+        return recorder
+
+    session = LiveSession(
+        tmp_path,
+        LiveSettings(record_mix_audio=False),
+        {CaptureSource.MIC: mic},
+        scheduler_factory=lambda source, on_final, on_partial, on_error: FakeScheduler(),
+        recorder_factory=recorder_factory,
+    )
+    session.subscribe(updates.append)
+    session.start()
+    for index in range(MAX_RECORDING_FAILURES + 20):
+        mic.emit(source_chunk(CaptureSource.MIC, offset=index * 4_800, timestamp_ns=index + 1))
+
+    assert recorders[0].attempts == MAX_RECORDING_FAILURES
+    assert session.status().active_sources == {CaptureSource.MIC}
+    assert session.status().state is CaptureState.RECORDING
+    disabled = [
+        event for event in updates
+        if isinstance(event, CaptureEvent) and "recording disabled" in event.detail.casefold()
+    ]
+    assert len(disabled) == 1
+    assert disabled[0].source is CaptureSource.MIC
+
+
+def test_a_recovering_source_recording_is_not_disabled(tmp_path):
+    """Only consecutive failures count; a transient write error must not kill the track."""
+    class FlakyRecorder:
+        def __init__(self, *args):
+            self.written = []
+            self.fail_at = {0, 3}
+
+        def write(self, chunk):
+            index = len(self.written)
+            if index in self.fail_at:
+                self.written.append(None)
+                raise RuntimeError("temporary disk hiccup")
+            self.written.append(chunk)
+
+        def write_mix(self, chunk):
+            return None
+
+        def close(self):
+            return {}
+
+    mic = FakeAdapter()
+    recorders = []
+
+    def recorder_factory(*args):
+        recorder = FlakyRecorder(*args)
+        recorders.append(recorder)
+        return recorder
+
+    session = LiveSession(
+        tmp_path,
+        LiveSettings(record_mix_audio=False),
+        {CaptureSource.MIC: mic},
+        scheduler_factory=lambda source, on_final, on_partial, on_error: FakeScheduler(),
+        recorder_factory=recorder_factory,
+    )
+    session.start()
+    for index in range(MAX_RECORDING_FAILURES + 10):
+        mic.emit(source_chunk(CaptureSource.MIC, offset=index * 4_800, timestamp_ns=index + 1))
+
+    assert len(recorders[0].written) == MAX_RECORDING_FAILURES + 10

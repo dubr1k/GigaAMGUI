@@ -108,8 +108,13 @@ def test_ci_publishes_offline_variant_for_every_platform():
         assert asset in text
 
     assert "scripts/build_offline_models.py --output offline/models/hf" in text
-    assert "Attach offline bundle to release" in text
-    assert "Attach offline full app to release" in text
+    # Офлайн-архивы уезжают в релиз как artifacts, которые релизная джоба
+    # выкачивает по маске и публикует целиком — отдельных "Attach ..." шагов
+    # больше нет, но контракт обязан оставаться проверяемым.
+    assert "name: ${{ matrix.offline_asset }}" in text
+    assert "name: ${{ steps.archive_offline.outputs.name }}" in text
+    assert "pattern: GigaAMTranscriber-*" in text
+    assert "files: release-assets/*" in text
 
 
 def test_ci_proves_offline_bundle_needs_no_network():

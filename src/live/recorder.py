@@ -6,9 +6,19 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import soundfile as sf
 
 from .types import CaptureSource, PcmChunk
+
+FLAC_MAX_CHANNELS = 8
+"""libsndfile's ceiling for FLAC.
+
+Above it the writer fails with a bare "Format not recognised" that names the
+format rather than the channel count, so a backend reporting an implausible
+channel count (PulseAudio aggregates advertise 32 — issue #48) costs the whole
+recording and misdirects the diagnosis. Extra channels are dropped instead.
+"""
 
 
 class SessionRecorder:
@@ -78,6 +88,7 @@ class SessionRecorder:
     def _write(self, track: CaptureSource | str, chunk: PcmChunk) -> None:
         if len(chunk.frames) > self._max_block_frames:
             raise ValueError("recording block exceeds frame limit")
+        chunk = self._clamp_channels(chunk)
         format_info = self._formats.get(track)
         if format_info is not None and format_info != (chunk.sample_rate, chunk.channels):
             raise ValueError("recording track format changed")
@@ -101,6 +112,19 @@ class SessionRecorder:
             self._segments[track][-1]["bytes"] += writable * frame_bytes
             start += writable
             remaining -= writable
+
+    @staticmethod
+    def _clamp_channels(chunk: PcmChunk) -> PcmChunk:
+        if chunk.channels <= FLAC_MAX_CHANNELS:
+            return chunk
+        return PcmChunk(
+            chunk.source,
+            chunk.sample_rate,
+            FLAC_MAX_CHANNELS,
+            chunk.sample_offset,
+            np.ascontiguousarray(chunk.frames[:, :FLAC_MAX_CHANNELS]),
+            chunk.timestamp_ns,
+        )
 
     def _open_segment(self, track: CaptureSource | str, chunk: PcmChunk) -> None:
         self._session_dir.mkdir(parents=True, exist_ok=True)

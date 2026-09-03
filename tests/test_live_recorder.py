@@ -78,3 +78,30 @@ def test_recorder_rejects_oversized_blocks_and_rolls_flac_segments(tmp_path):
     assert artifact["frames"] == 5
     assert artifact["bytes"] == 30
     assert len(artifact["segments"]) == 2
+
+
+def test_recorder_clamps_channels_to_the_flac_ceiling(tmp_path):
+    """libsndfile answers a 32-channel FLAC with a bare "Format not recognised".
+
+    Capture is stereo-capped upstream, but the write side must not depend on
+    that: any backend handing us more than eight channels has to degrade to a
+    usable recording instead of failing every chunk (issue #48).
+    """
+    writers = []
+
+    def factory(path, **kwargs):
+        writer = Writer(path, **kwargs)
+        writers.append(writer)
+        return writer
+
+    recorder = SessionRecorder(tmp_path, record_mix=False, writer_factory=factory)
+    recorder.write(PcmChunk(CaptureSource.MIC, 48_000, 32, 0, np.ones((3, 32), np.float32), 1))
+    recorder.write(PcmChunk(CaptureSource.MIC, 48_000, 32, 3, np.ones((2, 32), np.float32), 2))
+    recorder.close()
+
+    assert [writer.kwargs["channels"] for writer in writers] == [8]
+    assert all(block.shape[1] == 8 for block in writers[0].blocks)
+    artifact = recorder.artifacts()["mic"]
+    assert artifact["channels"] == 8
+    assert artifact["frames"] == 5
+    assert artifact["bytes"] == 5 * 8 * 3

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import platform
+from collections.abc import Callable
 from threading import Event
 from typing import Any
 
@@ -12,7 +12,6 @@ import numpy as np
 from ..types import CaptureSource
 from .common import NativeCaptureApi, QueuedCaptureAdapter, SoundDeviceCapture
 from .factory import CaptureUnavailable
-
 
 _SCREEN_CAPTURE_OUTPUT_CLASS: type[Any] | None = None
 

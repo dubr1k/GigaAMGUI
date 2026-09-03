@@ -19,7 +19,16 @@ from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .recorder import SessionRecorder
 from .timeline import AlignedMixer, SourceTimeline
-from .types import CaptureEvent, CaptureEventKind, CaptureSource, CaptureState, DiarizationMode, LiveSettings, PcmChunk, TranscriptEvent
+from .types import (
+    CaptureEvent,
+    CaptureEventKind,
+    CaptureSource,
+    CaptureState,
+    DiarizationMode,
+    LiveSettings,
+    PcmChunk,
+    TranscriptEvent,
+)
 
 
 class AsrScheduler(Protocol):
@@ -58,6 +67,12 @@ SchedulerFactory = Callable[
 
 MAX_MIX_SKEW_NS = 1_000_000_000
 MAX_PENDING_MIX_CHUNKS = 100
+MAX_RECORDING_FAILURES = 5
+"""Consecutive write failures before a source's recording is given up on.
+
+A writer that cannot open its file does not start working later, and retrying
+per chunk turns one fault into thousands of identical log lines — issue #48
+produced 15 255 of them in a single session."""
 CHECKPOINT_INTERVAL_SECONDS = 2.0
 # How long a source that has already produced audio may stay quiet before the
 # mixer stops waiting for it, and how long to wait for a source that has never
@@ -133,6 +148,8 @@ class LiveSession:
         self._conversation_frozen = False
         self._subscribers: list[Callable[[TranscriptEvent | CaptureEvent | LiveStatus], None]] = []
         self._reported_recording_failures: set[str] = set()
+        self._recording_failures: dict[CaptureSource, int] = {}
+        self._recording_disabled: set[CaptureSource] = set()
         self._last_checkpoint_at = float("-inf")
         self._lock = RLock()
 
@@ -296,10 +313,13 @@ class LiveSession:
             for aligned in timeline.ingest(chunk):
                 # Recording is best-effort: losing the FLAC track must not cost
                 # us the recognition stream that the user actually came for.
-                try:
-                    self._recorder.write(aligned)
-                except Exception as exc:
-                    self._report_recording_failure(aligned, exc)
+                if aligned.source not in self._recording_disabled:
+                    try:
+                        self._recorder.write(aligned)
+                    except Exception as exc:
+                        self._report_recording_failure(aligned, exc)
+                    else:
+                        self._recording_failures.pop(aligned.source, None)
                 if self._mix_recording_enabled:
                     pending = self._mix_inputs.setdefault(aligned.source, [])
                     pending.append(self._normalize_mix_timestamp(aligned))
@@ -452,6 +472,11 @@ class LiveSession:
     def _report_recording_failure(self, chunk: PcmChunk, exc: Exception) -> None:
         detail = f"{type(exc).__name__}: {exc}"
         self.log(f"recording write failed [{chunk.source.value}]: {detail}")
+        failures = self._recording_failures.get(chunk.source, 0) + 1
+        self._recording_failures[chunk.source] = failures
+        if failures >= MAX_RECORDING_FAILURES:
+            self._disable_source_recording(chunk, detail)
+            return
         if detail in self._reported_recording_failures:
             return
         self._reported_recording_failures.add(detail)
@@ -463,6 +488,27 @@ class LiveSession:
             self._translate(
                 f"Запись аудио источника прервана: {detail}. Распознавание продолжается.",
                 f"Source audio recording failed: {detail}. Recognition continues.",
+            ),
+        ))
+
+    def _disable_source_recording(self, chunk: PcmChunk, reason: str) -> None:
+        if chunk.source in self._recording_disabled:
+            return
+        self._recording_disabled.add(chunk.source)
+        self.log(
+            f"source recording disabled [{chunk.source.value}] after "
+            f"{MAX_RECORDING_FAILURES} consecutive failures: {reason}"
+        )
+        self._notify(CaptureEvent(
+            CaptureEventKind.STATUS,
+            chunk.source,
+            chunk.sample_offset,
+            chunk.timestamp_ns,
+            self._translate(
+                f"Запись аудио источника отключена для этой сессии: {reason}. "
+                "Распознавание продолжается.",
+                f"Source audio recording disabled for this session: {reason}. "
+                "Recognition continues.",
             ),
         ))
 

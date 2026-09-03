@@ -11,6 +11,18 @@ import src.config as config
 
 def test_config_env_defaults(monkeypatch):
     with monkeypatch.context() as env:
+        # Reload заново прогоняет load_env() и bootstrap_data_dir(), а те читают
+        # user/project .env и сохранённый GUI-выбор каталога данных. Без изоляции
+        # тест проверяет не дефолты, а личную конфигурацию машины, и зеленеет
+        # только на чистом CI-раннере.
+        import dotenv
+
+        from src import data_paths
+
+        env.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+        env.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+        env.delenv("GIGAAM_DATA_DIR", raising=False)
+        env.delenv("GIGAAM_PYTORCH_MODEL_DIR", raising=False)
         env.delenv("ASR_BACKEND", raising=False)
         env.delenv("ASR_ALLOW_FALLBACK", raising=False)
         env.delenv("ASR_SEGMENTATION_MODE", raising=False)

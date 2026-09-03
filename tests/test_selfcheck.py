@@ -102,3 +102,27 @@ def test_selfcheck_live_capture_covers_every_supported_platform():
     assert "sounddevice" in selfcheck._LIVE_CAPTURE_MODULES["linux"]
     assert {"sounddevice", "ScreenCaptureKit"} <= set(selfcheck._LIVE_CAPTURE_MODULES["darwin"])
     assert selfcheck._LIVE_CAPTURE_MODULES["win32"] == ["pyaudiowpatch"]
+
+
+def test_selfcheck_records_a_real_flac_round_trip(tmp_path, monkeypatch):
+    # Импорта модулей мало: в 1.5.1 живой захват стартовал, а запись сессии
+    # падала на каждом чанке (issue #48). Гейт пишет настоящий FLAC и читает его
+    # обратно — той же библиотекой и тем же subtype, что и SessionRecorder.
+    monkeypatch.setattr(selfcheck, "_import_module", lambda name: None)
+
+    assert selfcheck.run_recording_writer_check() == 0
+    assert selfcheck.run_live_capture_check() == 0
+
+
+def test_selfcheck_fails_when_the_flac_writer_rejects_the_session_format(monkeypatch, capsys):
+    import soundfile
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Format not recognised")
+
+    monkeypatch.setattr(selfcheck, "_import_module", lambda name: None)
+    monkeypatch.setattr(soundfile, "SoundFile", boom)
+
+    assert selfcheck.run_recording_writer_check() == 1
+    assert selfcheck.run_live_capture_check() == 1
+    assert "recording writer" in capsys.readouterr().out

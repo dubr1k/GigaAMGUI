@@ -305,7 +305,7 @@ class LiveAsrScheduler:
     @staticmethod
     def _common_prefix_length(left: list[str], right: list[str]) -> int:
         length = 0
-        for previous, current in zip(left, right):
+        for previous, current in zip(left, right, strict=False):
             if previous.casefold() != current.casefold():
                 break
             length += 1

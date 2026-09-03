@@ -122,6 +122,47 @@ def _ensure_torch() -> None:
     runtime_manager.activate(variant)
 
 
+def run_recording_writer_check() -> int:
+    """Пишет короткий FLAC и читает его обратно — так же, как ``SessionRecorder``.
+
+    Импорта модулей захвата мало: в 1.5.1 live-сессия стартовала и распознавала
+    речь, но запись падала на каждом чанке, потому что libsndfile не открывает
+    FLAC на 32 канала (issue #48). Гейт проверяет реальную запись тем же
+    ``soundfile``/``PCM_24``, а не только importability.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    from src.live.recorder import FLAC_MAX_CHANNELS
+
+    sample_rate = 48_000
+    channels = 2
+    frames = np.zeros((sample_rate // 10, channels), dtype=np.float32)
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "selfcheck.flac"
+            with sf.SoundFile(
+                path,
+                mode="w",
+                samplerate=sample_rate,
+                channels=channels,
+                format="FLAC",
+                subtype="PCM_24",
+            ) as writer:
+                writer.write(frames)
+            written, rate = sf.read(path, dtype="float32", always_2d=True)
+        if rate != sample_rate or written.shape != frames.shape:
+            raise RuntimeError(f"FLAC round-trip mismatch: {rate} Hz, shape {written.shape}")
+        if channels > FLAC_MAX_CHANNELS:
+            raise RuntimeError("session recording exceeds the FLAC channel ceiling")
+    except Exception as e:
+        _emit(f"SELFCHECK FAIL: recording writer: {type(e).__name__}: {e}")
+        _emit(traceback.format_exc())
+        return 1
+    _emit(f"SELFCHECK ok: recording writer FLAC PCM_24 {channels}ch")
+    return 0
+
+
 def run_live_capture_check() -> int:
     """Проверяет, что live-захват реально попал в сборку.
 
@@ -130,6 +171,9 @@ def run_live_capture_check() -> int:
     а вкладка Live на Linux/macOS падала у пользователя (issue #47). Здесь
     закрываем эту дыру тем же способом, что и #19: гейтом на собранном бинаре.
     """
+    if run_recording_writer_check():
+        return 1
+
     if sys.platform.startswith("win"):
         platform_key = "win32"
     elif sys.platform.startswith("linux"):

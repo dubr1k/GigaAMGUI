@@ -11,8 +11,8 @@ OpenCode/Pi/Other всегда строги к пустому ответу (об
 """
 from __future__ import annotations
 
-import os
 import json
+import os
 import shlex
 import subprocess
 import tempfile

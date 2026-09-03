@@ -7,7 +7,15 @@ import pytest
 from src.core.diarization.base import SpeakerSegment
 from src.live.exports import ExportSelection
 from src.live.session import LiveSession
-from src.live.types import CaptureEvent, CaptureSource, CaptureState, DiarizationMode, LiveSettings, PcmChunk, TranscriptEvent
+from src.live.types import (
+    CaptureEvent,
+    CaptureSource,
+    CaptureState,
+    DiarizationMode,
+    LiveSettings,
+    PcmChunk,
+    TranscriptEvent,
+)
 
 
 class FakeAdapter:
