@@ -29,6 +29,12 @@ class NativeCaptureApi(Protocol):
     def set_error_handler(self, handler: Callable[[Exception], None]) -> None: ...
 
 
+MAX_CAPTURE_CHANNELS = 2
+"""Pulse/PipeWire aggregates advertise 32 input channels; FLAC tops out at 8 and
+recognition needs mono, so opening a stream that wide only breaks the session
+recording and floods the capture queue."""
+
+
 class SoundDeviceCapture:
     """Optional sounddevice bridge for microphones and Pulse/PipeWire monitors."""
 
@@ -70,10 +76,11 @@ class SoundDeviceCapture:
         def on_audio(indata: Any, _frames: int, _time_info: Any, _status: Any) -> None:
             callback(indata, None, selected["sample_rate"])
 
+        channels = max(1, min(int(selected["channels"]), MAX_CAPTURE_CHANNELS))
         self._stream = self._sounddevice.InputStream(
             device=int(selected["id"]),
             samplerate=selected["sample_rate"],
-            channels=selected["channels"],
+            channels=channels,
             dtype="float32",
             callback=on_audio,
         )

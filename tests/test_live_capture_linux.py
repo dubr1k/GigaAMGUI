@@ -106,6 +106,25 @@ def test_linux_sounddevice_selects_monitor_and_delivers_float32_frames():
     assert frames[0][2] == 48_000
 
 
+def test_linux_sounddevice_caps_capture_channels_for_pulse_aggregate():
+    """Pulse/PipeWire aggregates report 32 input channels; FLAC accepts at most 8."""
+    from src.live.capture.linux import SoundDeviceCapture
+
+    sounddevice = FakeSoundDevice()
+    sounddevice.query_devices = lambda: [
+        {"name": "pulse", "max_input_channels": 32, "default_samplerate": 48_000},
+        {"name": "Monitor of pulse aggregate", "max_input_channels": 32, "default_samplerate": 48_000},
+    ]
+    native = SoundDeviceCapture(sounddevice)
+    frames = []
+
+    native.start(CaptureSource.MIC, None, lambda data, timestamp_ns, rate: frames.append(data))
+    native.start(CaptureSource.SYSTEM, None, lambda data, timestamp_ns, rate: frames.append(data))
+
+    assert [kwargs["channels"] for kwargs in sounddevice.started] == [2, 2]
+    assert [chunk.shape[1] for chunk in frames] == [2, 2]
+
+
 def test_linux_system_capture_rejects_missing_monitor_source():
     from src.live.capture.factory import CaptureUnavailable
     from src.live.capture.linux import SoundDeviceCapture
