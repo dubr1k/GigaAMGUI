@@ -69,7 +69,7 @@ HF_TOKEN=your_huggingface_token_here
 python -m pip install -r requirements-live-macos.txt
 
 # Linux: sounddevice; системный звук доступен только как monitor source PipeWire/PulseAudio
-sudo apt install libportaudio2   # колесо sounddevice под Linux не содержит PortAudio
+sudo apt install libportaudio2 pulseaudio-utils   # PortAudio + pactl для перечисления мониторов
 python -m pip install -r requirements-live-linux.txt
 ```
 
@@ -78,9 +78,15 @@ python -m pip install -r requirements-live-linux.txt
 
 macOS требует разрешения **Microphone** для микрофона и **Screen Recording** для
 системного звука. ScreenCaptureKit доступен с macOS 13. На Linux приложение не
-создаёт monitor source: включите совместимость PipeWire-Pulse или PulseAudio и
-проверьте, что входное устройство с `Monitor` в названии доступно. При отсутствии
-пакета, разрешения или monitor source захват сообщает ошибку и не создаёт дорожку.
+создаёт monitor source, а только находит существующие: список системных источников
+собирается через `pactl` (пакет `pulseaudio-utils`), потому что мониторы —
+виртуальные источники звукового сервера, и в перечислении PortAudio их нет. Поток
+для такого источника открывается на ALSA-агрегате `pulse` (пакет
+`libasound2-plugins`) и сразу перецепляется на выбранный монитор через
+`move-source-output`; если перецепить не удалось, сессия завершается ошибкой, а не
+пишет вместо системного звука микрофон. Устройства с `monitor` в имени, объявленные
+в `~/.asoundrc`, по-прежнему видны и работают. При отсутствии пакета, разрешения
+или monitor source захват сообщает ошибку и не создаёт дорожку.
 
 ## Live desktop
 
@@ -103,9 +109,10 @@ Live-захват поддерживается на Windows, macOS и Linux. В 
 `requirements-live-windows.txt` (PyAudioWPatch). В macOS 13+ для микрофона нужны
 `requirements-live-macos.txt` и разрешение Microphone; системный звук дополнительно
 требует разрешение Screen Recording и ScreenCaptureKit. В Linux установите
-`requirements-live-linux.txt` и системный `libportaudio2`; системный звук доступен
-только через существующий monitor source PipeWire/PulseAudio, который приложение
-не создаёт. В готовых сборках всё это уже вшито.
+`requirements-live-linux.txt` и системные `libportaudio2`, `pulseaudio-utils` и
+`libasound2-plugins`; системный звук доступен только через существующий monitor
+source PipeWire/PulseAudio, который приложение не создаёт. Вшить в сборку можно
+только PortAudio: `pactl` и ALSA-плагин pulse остаются системными пакетами.
 
 ### Опционально: NVIDIA Sortformer
 

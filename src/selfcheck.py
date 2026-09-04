@@ -203,7 +203,30 @@ def run_live_capture_check() -> int:
                 _emit(f"SELFCHECK FAIL: live capture {name}: {type(e).__name__}: {e}")
                 _emit(traceback.format_exc())
                 return 1
+
+    if platform_key == "linux":
+        _emit_monitor_source_probe()
     return 0
+
+
+def _emit_monitor_source_probe() -> None:
+    """Сообщить, видит ли сборка мониторы звукового сервера (issue #49).
+
+    Гейтом это быть не может — на CI-раннере звукового сервера нет, — но в
+    логе пользователя строка отвечает на первый вопрос поддержки: пустой
+    список системных источников это отсутствие pactl или отсутствие мониторов.
+    """
+    try:
+        from src.live.capture import pulse
+
+        names = [monitor.name for monitor in pulse.monitors()]
+    except Exception as e:
+        _emit(f"SELFCHECK info: monitor sources unavailable: {type(e).__name__}: {e}")
+        return
+    if not names:
+        _emit("SELFCHECK info: no PipeWire/PulseAudio monitor sources (pactl missing or no sound server)")
+        return
+    _emit(f"SELFCHECK info: monitor sources {len(names)}: {', '.join(names)}")
 
 
 def run_selfcheck(check_torch: bool = True) -> int:

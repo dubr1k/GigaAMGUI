@@ -62,29 +62,54 @@ class SoundDeviceCapture:
         return devices
 
     def start(self, source: CaptureSource, device_id: str | None, callback: Callable[..., None]) -> None:
-        devices = self.devices(source)
-        selected = next((item for item in devices if item["id"] == device_id), None) if device_id else next(
-            (item for item in devices if item["is_default"]), devices[0] if devices else None
-        )
-        if selected is None:
-            if source is CaptureSource.SYSTEM:
-                raise CaptureUnavailable(
-                    "No PipeWire/PulseAudio monitor source is available. Enable a Pulse monitor source and select it."
-                )
-            raise OSError("No microphone input device is available")
+        selected = self._select(source, device_id)
+        self._before_start(selected)
 
         def on_audio(indata: Any, _frames: int, _time_info: Any, _status: Any) -> None:
             callback(indata, None, selected["sample_rate"])
 
         channels = max(1, min(int(selected["channels"]), MAX_CAPTURE_CHANNELS))
         self._stream = self._sounddevice.InputStream(
-            device=int(selected["id"]),
+            device=self._stream_device(selected),
             samplerate=selected["sample_rate"],
             channels=channels,
             dtype="float32",
             callback=on_audio,
         )
         self._stream.start()
+        try:
+            self._after_start(selected)
+        except Exception:
+            # Половина захвата хуже отсутствующего: поток, который не удалось
+            # довести до нужного источника, пишет что-то другое.
+            self.stop()
+            raise
+
+    def _select(self, source: CaptureSource, device_id: str | None) -> dict[str, Any]:
+        devices = self.devices(source)
+        selected = next((item for item in devices if item["id"] == device_id), None) if device_id else next(
+            (item for item in devices if item["is_default"]), devices[0] if devices else None
+        )
+        if selected is None:
+            if source is CaptureSource.SYSTEM:
+                raise CaptureUnavailable(self.no_system_source_message())
+            raise OSError("No microphone input device is available")
+        return selected
+
+    def no_system_source_message(self) -> str:
+        return "No PipeWire/PulseAudio monitor source is available. Enable a Pulse monitor source and select it."
+
+    def _stream_device(self, selected: dict[str, Any]) -> Any:
+        """Устройство PortAudio, на котором открывается поток."""
+        return int(selected["id"])
+
+    def _before_start(self, selected: dict[str, Any]) -> None:
+        """Подготовка до открытия потока — точка расширения для платформ."""
+        return None
+
+    def _after_start(self, selected: dict[str, Any]) -> None:
+        """Доводка уже открытого потока — точка расширения для платформ."""
+        return None
 
     def pause(self) -> None:
         if self._stream is not None:
