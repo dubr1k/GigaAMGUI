@@ -226,8 +226,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "GigaAM Transcriber",
         "CFBundleDisplayName": "GigaAM Transcriber",
-        "CFBundleShortVersionString": "1.5.2",
-        "CFBundleVersion": "1.5.2",
+        "CFBundleShortVersionString": "1.5.3",
+        "CFBundleVersion": "1.5.3",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
         "CFBundleDocumentTypes": [
