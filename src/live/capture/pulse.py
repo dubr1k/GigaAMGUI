@@ -13,6 +13,7 @@ PortAudio ходит в ALSA напрямую и видит только физ�
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -26,6 +27,14 @@ PULSE_DEVICE_PREFIX = "pulse:"
 #: pactl отвечает мгновенно; если сервер не отвечает — молча идём дальше по
 #: PortAudio-пути, а не вешаем старт сессии.
 _PACTL_TIMEOUT = 4.0
+
+#: pactl переводит и заголовки, и sample-spec: в ru_RU вместо
+#: ``Source Output #101`` приходит ``Выход источника №101``, а вместо
+#: ``s32le 2ch 48000Hz`` — ``s32le 2-канальный 4800``. Регулярки ниже написаны
+#: под вывод в C-локали, поэтому локаль задаём мы, а не окружение пользователя
+#: (issue #49). ``LANGUAGE`` gettext игнорирует при ``LC_ALL=C``, но пустая
+#: строка дешевле, чем зависимость от этой тонкости.
+_C_LOCALE = {"LC_ALL": "C", "LANGUAGE": ""}
 
 _SAMPLE_SPEC = re.compile(r"(?P<channels>\d+)ch\s+(?P<rate>\d+)Hz")
 _SOURCE_OUTPUT_HEADER = re.compile(r"^Source Output #(?P<index>\d+)")
@@ -57,6 +66,7 @@ def _pactl(*args: str) -> str | None:
             errors="replace",
             timeout=_PACTL_TIMEOUT,
             check=False,
+            env={**os.environ, **_C_LOCALE},
         )
     except (OSError, subprocess.SubprocessError):
         return None

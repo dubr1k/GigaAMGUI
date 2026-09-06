@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 import time
@@ -314,6 +315,90 @@ def test_linux_pulse_monitor_start_fails_instead_of_recording_the_microphone(pac
         native.start(CaptureSource.SYSTEM, None, lambda *_: None)
 
     assert native._stream is None
+
+
+class LocalizedPactl(FakePactl):
+    """pactl переводит вывод по локали окружения (issue #49).
+
+    На ru_RU заголовок записи — «Выход источника №101», а sample-spec —
+    «s32le 2-канальный 4800»: обе регулярки парсера рассчитаны на C-локаль и
+    не находят ничего. Здесь перевод применяется ко всему, что не запрошено с
+    ``LC_ALL=C`` — то есть тест ловит именно отсутствие фиксации локали.
+    """
+
+    def __call__(self, args, **kwargs):
+        completed = super().__call__(args, **kwargs)
+        if (kwargs.get("env") or {}).get("LC_ALL") == "C":
+            return completed
+        return subprocess.CompletedProcess(
+            completed.args, completed.returncode, self._localize(completed.stdout), completed.stderr
+        )
+
+    @staticmethod
+    def _localize(stdout):
+        stdout = re.sub(r"^Source Output #(\d+)", r"Выход источника №\1", stdout, flags=re.M)
+        return re.sub(r"(\d+)ch (\d+)Hz", lambda match: f"{match.group(1)}-канальный {match.group(2)[:-1]}", stdout)
+
+
+@pytest.fixture
+def localized_pactl(monkeypatch):
+    from src.live.capture import pulse
+
+    fake = LocalizedPactl()
+    monkeypatch.setattr(pulse.subprocess, "run", fake)
+    monkeypatch.setattr("src.live.capture.linux.os.getpid", lambda: fake.pid)
+    return fake
+
+
+def test_linux_monitors_are_enumerated_under_a_localized_pactl(localized_pactl):
+    """Локализованный sample-spec отдавал частоту 4800 вместо 48000 (issue #49)."""
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    native = LinuxSoundDeviceCapture(PulseOnlySoundDevice(localized_pactl))
+
+    devices = native.devices(CaptureSource.SYSTEM)
+
+    assert [device["sample_rate"] for device in devices] == [48_000, 44_100]
+    assert [device["is_default"] for device in devices] == [False, True]
+
+
+def test_linux_localized_pactl_still_moves_the_capture_stream(localized_pactl):
+    """Заголовок «Выход источника №N» ронял перецепку: своя запись не находилась.
+
+    Именно это ломало каждую сессию из issue #49 — таймаут 2 c, отказ старта,
+    и system.flac с двумя секундами микрофона.
+    """
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    sounddevice = PulseOnlySoundDevice(localized_pactl)
+    native = LinuxSoundDeviceCapture(sounddevice)
+
+    native.start(CaptureSource.SYSTEM, None, lambda *_: None)
+
+    assert localized_pactl.calls[-1] == [
+        "pactl",
+        "move-source-output",
+        "11",
+        "alsa_output.usb-Logi_USB_Headset.analog-stereo.monitor",
+    ]
+
+
+def test_linux_pactl_is_always_asked_in_the_c_locale(pactl, monkeypatch):
+    """Локаль задаём мы, а не окружение пользователя."""
+    from src.live.capture import pulse
+
+    monkeypatch.setenv("LC_ALL", "ru_RU.UTF-8")
+    monkeypatch.setenv("LANGUAGE", "ru")
+    environments = []
+    run = pulse.subprocess.run
+    monkeypatch.setattr(
+        pulse.subprocess, "run", lambda args, **kwargs: (environments.append(kwargs.get("env")), run(args, **kwargs))[1]
+    )
+
+    pulse.monitors()
+
+    assert environments[0]["LC_ALL"] == "C"
+    assert environments[0]["LANGUAGE"] == ""
 
 
 def test_linux_without_pactl_reports_how_to_enumerate_monitors(monkeypatch):
