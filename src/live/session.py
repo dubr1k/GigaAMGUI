@@ -129,7 +129,7 @@ class LiveSession:
         self._failed_sources: set[CaptureSource] = set()
         self._timelines: dict[CaptureSource, SourceTimeline] = {}
         self._mix_inputs: dict[CaptureSource, list[PcmChunk]] = {}
-        self._mix_timestamp_origins: dict[CaptureSource, int] = {}
+        self._mix_offset_origins: dict[CaptureSource, int] = {}
         self._mix_last_input_at: dict[CaptureSource, float] = {}
         self._mix_stalled_sources: set[CaptureSource] = set()
         self._reported_mix_stalls: set[CaptureSource] = set()
@@ -357,13 +357,25 @@ class LiveSession:
             self.log(f"checkpoint write failed: {type(exc).__name__}: {exc}")
 
     def _normalize_mix_timestamp(self, chunk: PcmChunk) -> PcmChunk:
+        """Position a chunk on the mix timeline by its audio, not by wall clock.
+
+        Capture timestamps are arrival times, so they jitter by tens of
+        milliseconds even when both streams are perfectly continuous. The
+        mixer takes the difference between the two sources at face value, and
+        jitter has no sign there — every pair contributed ``abs(jitter)``, so
+        even zero-mean jitter inflated the track (issue #50).
+
+        Sample offsets come from ``SourceTimeline``, which has already filled
+        gaps and trimmed overlaps, so they advance exactly with the audio. The
+        one thing wall clock is still needed for — where each source starts —
+        stays where it was: both sources are rebased onto the session origin at
+        their first chunk.
+        """
         if self._mix_session_origin_ns is None:
             self._mix_session_origin_ns = chunk.timestamp_ns
-        source_origin_ns = self._mix_timestamp_origins.setdefault(chunk.source, chunk.timestamp_ns)
-        return replace(
-            chunk,
-            timestamp_ns=self._mix_session_origin_ns + chunk.timestamp_ns - source_origin_ns,
-        )
+        origin_offset = self._mix_offset_origins.setdefault(chunk.source, chunk.sample_offset)
+        elapsed_ns = round((chunk.sample_offset - origin_offset) * 1_000_000_000 / chunk.sample_rate)
+        return replace(chunk, timestamp_ns=self._mix_session_origin_ns + elapsed_ns)
 
     def _mix_participants(self) -> set[CaptureSource]:
         """Sources the mixer should still wait for before writing a block.
@@ -440,6 +452,19 @@ class LiveSession:
         self._mix_inputs.clear()
         for chunk in sorted(pending, key=lambda item: item.timestamp_ns):
             self._write_mix({chunk.source: chunk})
+        # The mixer holds back audio whose peer has not caught up yet; at stop
+        # there is no peer left to wait for, and dropping it would truncate the
+        # tail of the mix track.
+        try:
+            tail = self._mixer.flush()
+        except Exception as exc:
+            self.log(f"mix flush failed: {type(exc).__name__}: {exc}")
+            return
+        if tail is not None and len(tail.frames):
+            try:
+                self._recorder.write_mix(tail)
+            except Exception as exc:
+                self.log(f"mix flush failed: {type(exc).__name__}: {exc}")
 
     def _write_mix(self, chunks: Mapping[CaptureSource, PcmChunk]) -> None:
         try:

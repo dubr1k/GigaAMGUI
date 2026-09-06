@@ -85,6 +85,24 @@ class SourceTimeline:
 
 
 class AlignedMixer:
+    """Mixes paired source chunks onto one continuous output timeline.
+
+    Each chunk is placed at its absolute position on that timeline, but the
+    output only ever advances by the audio it actually emits: a source that
+    runs a constant offset behind its peer costs one block of leading silence
+    at the start of the session, not a block of padding per pair.
+
+    Sizing every block as ``offset + length`` instead is what produced issue
+    #50 — a 98.6 s session written as a 480.6 s ``mix.flac`` (x4.87) in which
+    the microphone, spread across ever-growing runs of silence, was inaudible.
+    The offset there was only ~90 ms per pair; paid once per pair for 5 300
+    pairs it became almost the whole file.
+
+    Audio that arrives while its peer is still behind is held in ``_pending``
+    and emitted once the peer catches up, so nothing is dropped and nothing is
+    written twice.
+    """
+
     def __init__(
         self,
         mic_gain: float = 1.0,
@@ -101,51 +119,95 @@ class AlignedMixer:
         self._system_gain = system_gain
         self._max_skew_seconds = max_skew_seconds
         self._max_output_frames = max_output_frames
+        self._origin_ns: int | None = None
+        self._sample_rate: int | None = None
+        self._channels: int | None = None
+        self._written_frames = 0
+        self._pending = np.zeros((0, 1), dtype=np.float32)
 
     def mix(self, chunks: Mapping[CaptureSource, PcmChunk]) -> PcmChunk:
         if not chunks:
             raise ValueError("at least one chunk is required")
-        reference = chunks.get(CaptureSource.MIC) or chunks.get(CaptureSource.SYSTEM) or next(iter(chunks.values()))
         start_ns = min(chunk.timestamp_ns for chunk in chunks.values())
         skew_seconds = (max(chunk.timestamp_ns for chunk in chunks.values()) - start_ns) / 1_000_000_000
         if skew_seconds > self._max_skew_seconds:
             raise ValueError(f"timestamp skew {skew_seconds:.3f}s exceeds mix limit")
-        expected_frames = {
-            source: round(len(chunk.frames) * reference.sample_rate / chunk.sample_rate)
-            for source, chunk in chunks.items()
-        }
-        if any(frame_count > self._max_output_frames for frame_count in expected_frames.values()):
+        rate, channels = self._output_format(chunks)
+        if self._origin_ns is None:
+            self._origin_ns = start_ns
+        expected_frames = (
+            round(len(chunk.frames) * rate / chunk.sample_rate) for chunk in chunks.values()
+        )
+        if any(frame_count > self._max_output_frames for frame_count in expected_frames):
             raise ValueError("mix input exceeds output frame limit")
-        normalized = {
-            source: self._normalize(chunk, reference.sample_rate, reference.channels)
-            for source, chunk in chunks.items()
-        }
-        starts = {
-            source: round((chunk.timestamp_ns - start_ns) * reference.sample_rate / 1_000_000_000)
-            for source, chunk in chunks.items()
-        }
-        frame_count = max(starts[source] + len(frames) for source, frames in normalized.items())
-        if frame_count > self._max_output_frames:
+        gains = {CaptureSource.MIC: self._mic_gain, CaptureSource.SYSTEM: self._system_gain}
+        placed: list[tuple[int, np.ndarray, float]] = []
+        for source, chunk in chunks.items():
+            frames = self._normalize(chunk, rate, channels)
+            start = round((chunk.timestamp_ns - self._origin_ns) * rate / 1_000_000_000) - self._written_frames
+            if start < 0:
+                # Only reachable if a source jumps backwards past audio already
+                # written; the overlap cannot be un-written, so drop it.
+                frames = frames[-start:]
+                start = 0
+            placed.append((start, frames, gains.get(source, 1.0)))
+        required = max(start + len(frames) for start, frames, _ in placed)
+        if required > self._max_output_frames:
             raise ValueError("mix output exceeds frame limit")
-        mixed = np.zeros((frame_count, reference.channels), dtype=np.float32)
-        mic = chunks.get(CaptureSource.MIC)
-        system = chunks.get(CaptureSource.SYSTEM)
-        if mic is not None:
-            start = starts[CaptureSource.MIC]
-            frames = normalized[CaptureSource.MIC]
-            mixed[start:start + len(frames)] += self._mic_gain * frames
-        if system is not None:
-            start = starts[CaptureSource.SYSTEM]
-            frames = normalized[CaptureSource.SYSTEM]
-            mixed[start:start + len(frames)] += self._system_gain * frames
-        np.clip(mixed, -1.0, 1.0, out=mixed)
+        self._grow_pending(required, channels)
+        for start, frames, gain in placed:
+            if len(frames):
+                self._pending[start:start + len(frames)] += gain * frames
+        # Emitting only as far as the *shortest* placed chunk reaches keeps
+        # every later chunk writable: nothing lands in an already-written span.
+        return self._emit(min(start + len(frames) for start, frames, _ in placed))
+
+    def flush(self) -> PcmChunk | None:
+        """Audio held back waiting for a peer that will not arrive."""
+        if self._sample_rate is None or not len(self._pending):
+            return None
+        return self._emit(len(self._pending))
+
+    def _output_format(self, chunks: Mapping[CaptureSource, PcmChunk]) -> tuple[int, int]:
+        """The mix track's format, fixed by the first block.
+
+        A FLAC track cannot change rate mid-file, so the format must not follow
+        whichever source happens to be present in a block: a quiet microphone
+        would otherwise hand the mix over to the 48 kHz system source and cost
+        the whole track.
+        """
+        if self._sample_rate is None:
+            reference = (
+                chunks.get(CaptureSource.MIC)
+                or chunks.get(CaptureSource.SYSTEM)
+                or next(iter(chunks.values()))
+            )
+            self._sample_rate = reference.sample_rate
+            self._channels = reference.channels
+            self._pending = np.zeros((0, self._channels), dtype=np.float32)
+        return self._sample_rate, self._channels  # type: ignore[return-value]
+
+    def _grow_pending(self, frame_count: int, channels: int) -> None:
+        if frame_count > len(self._pending):
+            self._pending = np.concatenate(
+                (self._pending, np.zeros((frame_count - len(self._pending), channels), dtype=np.float32))
+            )
+
+    def _emit(self, frame_count: int) -> PcmChunk:
+        frame_count = max(0, min(frame_count, len(self._pending)))
+        frames = self._pending[:frame_count].copy()
+        np.clip(frames, -1.0, 1.0, out=frames)
+        self._pending = self._pending[frame_count:].copy()
+        offset = self._written_frames
+        self._written_frames += frame_count
+        sample_rate = self._sample_rate or 1
         return PcmChunk(
             CaptureSource.MIC,
-            reference.sample_rate,
-            reference.channels,
-            max(0, reference.sample_offset - starts[reference.source]),
-            mixed,
-            start_ns,
+            sample_rate,
+            self._channels or 1,
+            offset,
+            frames,
+            (self._origin_ns or 0) + round(offset * 1_000_000_000 / sample_rate),
         )
 
     @staticmethod
