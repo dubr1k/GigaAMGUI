@@ -28,7 +28,7 @@ from PyInstaller.utils.hooks import (
 #: Версия для Info.plist macOS-бандлов. Один источник правды на все .app-спеки:
 #: CI сверяет CFBundleShortVersionString с тегом, и разъехавшийся второй спек
 #: валил бы релиз уже после сборки.
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.6.0"
 
 
 # Пакеты, которые импортирует рантайм-torchvision/pyannote, но не видит
