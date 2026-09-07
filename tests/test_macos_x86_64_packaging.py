@@ -66,6 +66,10 @@ def test_ci_refuses_to_build_intel_dependencies_from_source():
 
     assert "--only-binary=:all: -r requirements-macos-x86_64.txt" in job
     assert "--only-binary=:all: -r requirements-live-macos.txt" in job
+    # Набор для бандла намеренно не везёт pytest (в спеке он в excludes), но шаг
+    # с тестами упаковки без него не запускается — ставим явно.
+    assert '"pytest==9.0.1"' in job
+    assert job.index('pip install --only-binary=:all: "pytest') < job.index("python -m pytest")
 
 
 def test_spec_targets_x86_64_and_excludes_torch_chain():
