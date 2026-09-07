@@ -81,6 +81,9 @@ def plan_audio_chunks(
     делятся около локальных минимумов энергии. Окна декодирования перекрываются,
     а ``start_sec/end_sec`` остаются смежными и не перекрываются — это сохраняет
     корректные таймкоды и даёт контекст по обе стороны вынужденного разреза.
+
+    Номинальный таймлайн монотонен независимо от того, что вернул VAD: область,
+    начинающаяся раньше конца уже спланированной, поджимается к этому концу.
     """
 
     if sample_rate <= 0:
@@ -100,15 +103,17 @@ def plan_audio_chunks(
     energy_window_samples = max(1, int(energy_window_seconds * sample_rate))
     configured_min_samples = max(1, int(min_chunk_seconds * sample_rate))
     chunks: list[AudioChunk] = []
+    timeline_end = 0.0
 
     for group, (raw_start, raw_end) in enumerate(regions):
-        boundary_start = max(0.0, float(raw_start))
+        boundary_start = max(0.0, float(raw_start), timeline_end)
         boundary_end = min(float(total_samples) / sample_rate, float(raw_end))
         region_start = max(0, int(boundary_start * sample_rate))
         region_end = min(total_samples, int(boundary_end * sample_rate))
         duration = region_end - region_start
         if duration <= 0:
             continue
+        timeline_end = boundary_end
 
         if duration <= max_samples:
             chunks.append(

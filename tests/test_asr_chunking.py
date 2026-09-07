@@ -197,3 +197,23 @@ def test_normalize_chunk_words_drops_zero_duration_after_clipping():
     )
 
     assert words == [{"text": "после", "start": 19.9, "end": 20.0}]
+
+
+def test_overlapping_vad_regions_do_not_produce_overlapping_nominal_spans():
+    # Планировщик — единственная точка, где рождается таймлайн ASR: даже если
+    # VAD вернул перекрытые области, номинальные окна обязаны идти встык.
+    sample_rate = 100
+    audio = np.zeros(60 * sample_rate, dtype=np.float32)
+
+    chunks = plan_audio_chunks(
+        audio,
+        [(0.0, 19.97), (19.91, 39.91), (39.85, 59.85)],
+        sample_rate=sample_rate,
+        max_chunk_seconds=20.0,
+    )
+
+    previous_end = 0.0
+    for chunk in chunks:
+        assert chunk.start_sec >= previous_end
+        previous_end = chunk.end_sec
+    assert previous_end == pytest.approx(59.85)
