@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="GigaAMGUI — GigaAM v3 Transcriber: быстрая и точная транскрибация русской речи из аудио и видео" width="900">
+</p>
+
 # GigaAM v3 Transcriber
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
