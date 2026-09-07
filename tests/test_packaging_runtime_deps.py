@@ -231,7 +231,7 @@ def test_tagged_build_workflow_publishes_matching_release_notes_after_assets():
     workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
 
     assert "publish-release:" in workflow
-    assert "needs: [build, build-macos-full]" in workflow
+    assert "needs: [build, build-macos-full, build-macos-intel]" in workflow
     assert "RELEASE_NOTES_${VERSION}.md" in workflow
     assert "body_path:" in workflow
 

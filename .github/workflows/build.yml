@@ -453,6 +453,120 @@ jobs:
           compression-level: 0
 
 
+  build-macos-intel:
+    name: macOS x86_64 (Intel) ONNX app bundle
+    runs-on: macos-15-intel
+    needs: test-tui
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          architecture: x64
+          cache: pip
+
+      - name: Verify bundled ffmpeg
+        shell: bash
+        run: |
+          test -f bin/ffmpeg || { echo "bin/ffmpeg отсутствует в репозитории"; exit 1; }
+          chmod +x bin/ffmpeg
+          ./bin/ffmpeg -version
+
+      - name: Upgrade pip toolchain
+        run: python -m pip install --upgrade pip wheel "setuptools==81.0.0"
+
+      # Никакого torch и никакого mlx: под macOS x86_64 их колёс нет, и вся
+      # цепочка (ASR, VAD, диаризация) идёт через onnx-asr + ONNX Runtime.
+      - name: Install ONNX-only runtime dependencies
+        run: |
+          python -m pip install -r requirements-macos-x86_64.txt
+          python -m pip install -r requirements-live-macos.txt
+          python -m pip install --upgrade pyinstaller
+
+      - name: Assert the build environment stays torch-free
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+
+          leaked = [name for name in ("torch", "mlx", "gigaam", "pyannote")
+                    if importlib.util.find_spec(name) is not None]
+          if leaked:
+              sys.exit(f"Intel-сборка не должна видеть эти пакеты: {leaked}")
+          print("build environment is torch-free")
+          PY
+
+      - name: Test macOS packaging configuration
+        run: python -m pytest tests/test_macos_x86_64_packaging.py tests/test_packaging_runtime_deps.py -q
+
+      - name: Build and verify Intel app bundle
+        run: bash packaging/build_exe_mac_x86_64.sh
+
+      - name: Verify release version and architecture
+        shell: bash
+        run: |
+          BUNDLE="dist/GigaAMTranscriber.app"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+            ACTUAL_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE/Contents/Info.plist")
+            test "$ACTUAL_VERSION" = "$EXPECTED_VERSION" || {
+              echo "Версия .app ($ACTUAL_VERSION) не совпадает с тегом ($EXPECTED_VERSION)"
+              exit 1
+            }
+          fi
+          ARCHS=$(lipo -archs "$BUNDLE/Contents/MacOS/GigaAMTranscriber")
+          test "$ARCHS" = "x86_64" || {
+            echo "Ожидался x86_64, собрано: $ARCHS"
+            exit 1
+          }
+
+      # Публикуем только офлайн-вариант: без torch модели обязаны лежать рядом
+      # с .app, иначе на Intel-маке приложению нечем распознавать.
+      - name: Archive offline Intel app
+        id: archive_offline
+        shell: bash
+        run: |
+          python scripts/build_offline_models.py --output offline/models/hf
+          ditto dist/GigaAMTranscriber.app offline/GigaAMTranscriber.app
+
+          # Тот же гейт, что и для остальных офлайн-сборок: модели обязаны
+          # найтись рядом с .app, без обращения к сети. Он же проверяет, что
+          # дефолтные бэкенды в замороженной Intel-сборке — onnx.
+          env GIGAAM_DATA_DIR="${RUNNER_TEMP}/gigaam_offline/data" \
+              GIGAAM_RUNTIME_DIR="${RUNNER_TEMP}/gigaam_offline" \
+              HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+              offline/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber \
+              --offline-models-smoke
+
+          SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
+          ARCHIVE="out/GigaAMTranscriber-macos-x86_64-app-offline-${SAFE_REF_NAME}.zip"
+          mkdir -p out
+          ditto -c -k --sequesterRsrc offline "$ARCHIVE"
+          unzip -tq "$ARCHIVE"
+          ARCHIVE_BYTES=$(stat -f%z "$ARCHIVE")
+          MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+          test "$ARCHIVE_BYTES" -lt "$MAX_RELEASE_ASSET_BYTES" || {
+            echo "Офлайн-архив слишком велик для GitHub Release: $ARCHIVE_BYTES байт"
+            exit 1
+          }
+          echo "path=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload offline Intel app artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive_offline.outputs.name }}
+          path: ${{ steps.archive_offline.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+
+
   test-tui:
     name: TUI tests
     runs-on: ubuntu-latest
@@ -468,7 +582,7 @@ jobs:
   publish-release:
     name: Publish release after all artifacts complete
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, build-macos-full]
+    needs: [build, build-macos-full, build-macos-intel]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -305,7 +305,24 @@ python cli.py --audio-preprocessing off -f studio.wav
 
 ## ASR backend
 
-`auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. На остальных платформах `auto` пока сохраняет PyTorch как проверенный default. Новый backend `onnx` использует `onnx-asr==0.12.0`, не импортирует PyTorch и поддерживает CPU, CUDA, TensorRT, CoreML и DirectML.
+`auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. На macOS x86_64 (Intel) `auto` выбирает `onnx`: колёс torch>=2.6 под эту платформу не существует, последнее — 2.2.2. На остальных платформах `auto` пока сохраняет PyTorch как проверенный default. Новый backend `onnx` использует `onnx-asr==0.12.0`, не импортирует PyTorch и поддерживает CPU, CUDA, TensorRT, CoreML и DirectML.
+
+### macOS Intel (x86_64)
+
+Для Intel-маков публикуется отдельный ассет
+`GigaAMTranscriber-macos-x86_64-app-offline-<тег>.zip`: `.app` плюс папка
+`models` рядом с ним. Сборка идёт без torch и без mlx — распознавание, VAD и
+диаризация целиком работают через ONNX Runtime (CoreML и CPU). arm64-ассеты на
+Intel не запускаются в принципе: Rosetta переводит в обратную сторону.
+
+**Требуется macOS 13 и новее** — ограничение колёс `onnxruntime` под x86_64.
+
+Локальная сборка:
+
+```bash
+python -m pip install -r requirements-macos-x86_64.txt -r requirements-live-macos.txt
+bash packaging/build_exe_mac_x86_64.sh
+```
 
 В portable-сборках 1.3.1 ускорение ONNX согласовано с выбранным устройством:
 

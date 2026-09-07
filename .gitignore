@@ -114,6 +114,7 @@ checkpoints/
 !requirements-dev.txt
 !requirements-sortformer.txt
 !requirements-macos-mlx.txt
+!requirements-macos-x86_64.txt
 !requirements-onnx-gpu.txt
 !requirements-legacy-pytorch.txt
 !requirements-live-windows.txt

@@ -112,3 +112,54 @@ def test_invalid_onnx_runtime_setting_is_rejected(monkeypatch, name, value, mess
         with pytest.raises(ValueError, match=message):
             importlib.reload(config)
     importlib.reload(config)
+
+
+def test_frozen_macos_x86_64_defaults_to_onnx_backends(monkeypatch):
+    """Замороженная Intel-сборка обязана выбирать onnx сама (issue #45).
+
+    auto на не-arm64 macOS ушёл бы в PyTorch-ветку, которой там неоткуда взяться:
+    колёса torch под x86_64 закончились на 2.2.2 при требовании >=2.6.0.
+    """
+    import platform as platform_module
+
+    with monkeypatch.context() as env:
+        import dotenv
+
+        from src import data_paths
+
+        env.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+        env.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+        env.delenv("ASR_BACKEND", raising=False)
+        env.delenv("DIARIZATION_BACKEND", raising=False)
+        env.setattr(sys, "frozen", True, raising=False)
+        env.setattr(sys, "platform", "darwin")
+        env.setattr(platform_module, "machine", lambda: "x86_64")
+        importlib.reload(config)
+
+        assert config.ONNX_ONLY_BUILD is True
+        assert config.ASR_BACKEND == "onnx"
+        assert config.DIARIZATION_BACKEND == "onnx"
+    importlib.reload(config)
+
+
+def test_unfrozen_checkout_keeps_auto_backend_defaults(monkeypatch):
+    import platform as platform_module
+
+    with monkeypatch.context() as env:
+        import dotenv
+
+        from src import data_paths
+
+        env.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+        env.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+        env.delenv("ASR_BACKEND", raising=False)
+        env.delenv("DIARIZATION_BACKEND", raising=False)
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        env.setattr(sys, "platform", "darwin")
+        env.setattr(platform_module, "machine", lambda: "x86_64")
+        importlib.reload(config)
+
+        assert config.ONNX_ONLY_BUILD is False
+        assert config.ASR_BACKEND == "auto"
+        assert config.DIARIZATION_BACKEND == "pyannote"
+    importlib.reload(config)

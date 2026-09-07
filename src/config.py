@@ -4,6 +4,7 @@
 """
 
 import os
+import platform
 import re
 import sys
 from pathlib import Path
@@ -161,15 +162,27 @@ if HF_TOKEN and HF_TOKEN.startswith("hf_"):
 MODEL_NAME = os.getenv("MODEL_NAME", "ai-sage/GigaAM-v3")
 MODEL_REVISION = os.getenv("MODEL_REVISION", "e2e_rnnt")
 
+# Замороженная сборка под macOS x86_64 везёт только ONNX-цепочку: колёс
+# torch>=2.6 под Intel-макax не существует (последнее — 2.2.2), а mlx есть лишь
+# под Apple Silicon. auto на не-arm64 macOS ушёл бы в PyTorch-ветку и упал бы с
+# «No module named 'gigaam'» — для пользователя это выглядит необъяснимо
+# (issue #45).
+ONNX_ONLY_BUILD = bool(
+    getattr(sys, "frozen", False)
+    and sys.platform == "darwin"
+    and platform.machine() != "arm64"
+)
+
 # ASR backend strategy. Офлайн-сборка везёт только ONNX-цепочку, а auto выбрал
 # бы MLX или PyTorch и полез бы за ними в сеть — ровно то, ради чего затевался
 # офлайн-вариант. Явная настройка пользователя по-прежнему главнее.
-_DEFAULT_ASR_BACKEND = "onnx" if BUNDLED_MODELS_DIR else "auto"
+_DEFAULT_ASR_BACKEND = "onnx" if (BUNDLED_MODELS_DIR or ONNX_ONLY_BUILD) else "auto"
 ASR_BACKEND = _validate_backend_name(os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND))
 # По той же причине диаризация по умолчанию тоже ONNX: pyannote требует torch
 # и токен HuggingFace, которых в офлайн-наборе нет.
+_DEFAULT_DIARIZATION_BACKEND = "onnx" if (BUNDLED_MODELS_DIR or ONNX_ONLY_BUILD) else "pyannote"
 DIARIZATION_BACKEND = (
-    os.getenv("DIARIZATION_BACKEND", "onnx" if BUNDLED_MODELS_DIR else "pyannote")
+    os.getenv("DIARIZATION_BACKEND", _DEFAULT_DIARIZATION_BACKEND)
     .strip()
     .lower()
     or "pyannote"

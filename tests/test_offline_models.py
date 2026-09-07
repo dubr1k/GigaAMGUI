@@ -197,13 +197,33 @@ def test_config_keeps_huggingface_writable_and_tracks_bundled_cache(tmp_path, mo
     assert config.BUNDLED_MODELS_DIR == cache
 
 
-def test_offline_bundle_switches_default_backends_to_onnx():
+def test_offline_bundle_switches_default_backends_to_onnx(tmp_path, monkeypatch):
     """auto выбрал бы MLX или PyTorch, которых в офлайн-наборе нет."""
-    text = Path("src/config.py").read_text(encoding="utf-8")
+    import importlib
 
-    assert '_DEFAULT_ASR_BACKEND = "onnx" if BUNDLED_MODELS_DIR else "auto"' in text
-    assert 'os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND)' in text
-    assert '"onnx" if BUNDLED_MODELS_DIR else "pyannote"' in text
+    import dotenv
+
+    import src.config as config
+    from src import data_paths
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+    monkeypatch.delenv("ASR_BACKEND", raising=False)
+    monkeypatch.delenv("DIARIZATION_BACKEND", raising=False)
+    cache = _make_cache(tmp_path)
+    monkeypatch.setattr(
+        "src.utils.runtime_manager.bundled_hf_cache_dir",
+        lambda frozen=None: cache,
+    )
+    try:
+        importlib.reload(config)
+
+        assert config.BUNDLED_MODELS_DIR is not None
+        assert config.ASR_BACKEND == "onnx"
+        assert config.DIARIZATION_BACKEND == "onnx"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
 
 
 def test_explicit_huggingface_home_still_wins(tmp_path, monkeypatch):

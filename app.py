@@ -276,6 +276,33 @@ def run_asr_runtime_smoke() -> dict[str, str]:
     }
 
 
+def run_onnx_runtime_smoke() -> dict[str, object]:
+    """Прогнать нативный ONNX Runtime бандла, не скачивая веса.
+
+    Аналог MLX-смока для сборок без torch (macOS x86_64, issue #45): проверяет,
+    что onnxruntime и onnx_asr действительно попали в бандл, что нативная
+    библиотека грузится и что нужный execution provider доступен. Гейт нужен
+    отдельно от ``--offline-models-smoke``: тот требует привезённые модели, а
+    этот проверяет саму сборку до того, как рядом положили папку моделей.
+    """
+    import onnx_asr
+    import onnxruntime
+
+    from src.config import ONNX_PROVIDER
+    from src.core.asr.onnx_provider import available_onnx_providers, resolve_onnx_providers
+
+    available = available_onnx_providers(ONNX_PROVIDER)
+    selection = resolve_onnx_providers(ONNX_PROVIDER, available=available)
+    return {
+        "backend": "onnx",
+        "onnxruntime": onnxruntime.__version__,
+        "onnx_asr": getattr(onnx_asr, "__version__", "unknown"),
+        "available_providers": list(available),
+        "active_provider": selection.active,
+        "providers": list(selection.providers),
+    }
+
+
 def run_sortformer_runtime_smoke() -> dict[str, str]:
     """Verify that the frozen full app contains the optional NeMo backend."""
     import importlib
@@ -427,6 +454,9 @@ def main():
     """Главная функция запуска приложения."""
     if "--asr-runtime-smoke" in sys.argv:
         print(json.dumps(run_asr_runtime_smoke(), ensure_ascii=False, sort_keys=True))
+        return
+    if "--onnx-runtime-smoke" in sys.argv:
+        print(json.dumps(run_onnx_runtime_smoke(), ensure_ascii=False, sort_keys=True))
         return
     if "--sortformer-runtime-smoke" in sys.argv:
         print(json.dumps(run_sortformer_runtime_smoke(), ensure_ascii=False, sort_keys=True))

@@ -77,6 +77,18 @@ def create_backend(
         return MLXBackend(model=model_name, repo=mlx_repo), None
 
     # requested == "auto"
+    if platform_name == "darwin" and machine_name != "arm64":
+        # Под macOS x86_64 нет ни колёс torch>=2.6, ни mlx, поэтому PyTorch-ветка
+        # тут не «медленнее», а мертва: она падает с «No module named 'gigaam'»
+        # (issue #45). ONNX — единственная работающая цепочка на Intel-маке.
+        return OnnxBackend(
+            model=model_revision,
+            provider=onnx_provider,
+            quantization=onnx_quantization,
+            model_dir=onnx_model_dir,
+            vad_model=onnx_vad_model,
+        ), "PyTorch недоступен на macOS x86_64, использован ONNX backend"
+
     if not _is_macos_arm64(platform_name, machine_name):
         # ONNX remains opt-in until the local WER/CER release corpus passes.
         return PyTorchBackend(model=model_name, revision=model_revision), None

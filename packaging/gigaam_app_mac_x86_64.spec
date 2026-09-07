@@ -1,9 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for the macOS GUI bundle.
+PyInstaller spec для macOS x86_64 (Intel) — dist/GigaAMTranscriber.app.
 
-Builds dist/GigaAMTranscriber.app for Apple Silicon and bundles the installed
-PyTorch stack so the desktop GUI can use MPS without a first-run torch download.
+Отличие от ``gigaam_app_mac.spec``: сборка идёт БЕЗ torch и без mlx. Под macOS
+x86_64 колёса PyTorch закончились на 2.2.2, а проект требует torch>=2.6.0, так
+что Intel-мак не запускает ни готовый arm64-ассет, ни установку из исходников
+(issue #45). Вместе с torch отпадают pyannote.audio, lightning, speechbrain и
+accelerate: распознавание, VAD и диаризация целиком идут через onnx-asr и ONNX
+Runtime, где на x86_64 доступны провайдеры CoreML и CPU.
+
+Отсюда же жёсткий список excludes: случайно приехавший torch удвоил бы вес
+бандла и притащил бы бинарники не той архитектуры. Гейт на это — в
+``scripts/verify_macos_bundle.py --profile x86_64-onnx``.
+
+Сборка: python -m PyInstaller packaging/gigaam_app_mac_x86_64.spec --noconfirm
 """
 
 import os
@@ -12,15 +22,17 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package
+from _spec_common import APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps
 
-runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
+# collect_pure_runtime_deps() сюда не подмешивается сознательно: PIL и
+# asteroid_filterbanks нужны рантайм-torchvision и pyannote, которых в этой
+# сборке нет, а их отсутствие в окружении уронило бы спек на ровном месте.
 onnx_d, onnx_b, onnx_h = collect_onnx_runtime_deps()
 live_d, live_b, live_h = collect_live_capture_deps()
 
 block_cipher = None
 
-project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в packaging/, корень проекта — на уровень выше
+project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в packaging/
 icon_icns = os.path.join(project_root, "assets", "icon.icns")
 icon_file = icon_icns if os.path.exists(icon_icns) else None
 
@@ -33,74 +45,60 @@ def safe_collect(package):
         return [], [], []
 
 
-bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-
 packages = [
-    "torch",
-    "torchaudio",
-    "torchvision",
-    "transformers",
-    "gigaam",
-    "gigaam_mlx",
     "huggingface_hub",
-    "mlx",
-    "safetensors",
-    "tokenizers",
-    "einops",
-    "omegaconf",
-    "accelerate",
-    "pyannote.audio",
-    "lightning_fabric",
-    "pytorch_lightning",
-    "speechbrain",
     "librosa",
     "soundfile",
+    "soxr",
+    "scipy",
     "onnxruntime",
-    "sentencepiece",
     "yt_dlp",
     "docx",
     "dotenv",
     "requests",
     "certifi",
 ]
-if bundle_sortformer:
-    packages += [
-        "nemo.collections.asr",
-        "nemo.collections.common",
-        "nemo.core",
-        "nemo.utils",
-        "lhotse",
-    ]
 
+# Не «на всякий случай», а гарантия: любой из этих пакетов внутри бандла означает
+# либо неверную архитектуру бинарников, либо лишний гигабайт веса.
 excluded_modules = [
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "torchmetrics",
+    "mlx",
+    "gigaam",
+    "gigaam_mlx",
+    "pyannote",
+    "pyannote.audio",
+    "lightning",
+    "lightning_fabric",
+    "pytorch_lightning",
+    "speechbrain",
+    "accelerate",
+    "transformers",
+    "nemo",
     "tkinter",
     "wx",
     "jupyter",
     "notebook",
+    "IPython",
     "pytest",
     "coverage",
     "tensorboard",
     "tensorboardX",
 ]
-if not bundle_sortformer:
-    excluded_modules.append("IPython")
 
 datas = []
 binaries = []
 hiddenimports = []
 
 for package in packages:
-    collector = collect_static_package if package == "pyannote.audio" else safe_collect
-    package_datas, package_binaries, package_hiddenimports = collector(package)
+    package_datas, package_binaries, package_hiddenimports = safe_collect(package)
     datas += package_datas
     binaries += package_binaries
     hiddenimports += package_hiddenimports
 
-datas += runtime_d
-binaries += runtime_b
-hiddenimports += runtime_h
 datas += live_d
 binaries += live_b
 hiddenimports += live_h
@@ -114,40 +112,20 @@ datas += [
     (os.path.join(project_root, "licenses", "parakeet-rs-MIT.md"), "licenses"),
 ]
 
-bundled_gigaam_dir = os.path.join(project_root, "models", "gigaam")
-bundle_models = os.environ.get("GIGAAM_BUNDLE_MODELS", "").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-if bundle_models and not os.path.isdir(bundled_gigaam_dir):
-    raise RuntimeError(
-        "GIGAAM_BUNDLE_MODELS включён, но локальная папка models/gigaam отсутствует"
-    )
-if bundle_models:
-    datas.append((bundled_gigaam_dir, "models/gigaam"))
-
 bin_dir = os.path.join(project_root, "bin")
 if os.path.isdir(bin_dir):
     datas.append((bin_dir, "bin"))
 
 hiddenimports = sorted(set(hiddenimports + [
-    "gigaam",
-    "gigaam.load",
-    "gigaam_mlx",
-    "gigaam_mlx.__main__",
-    "torch",
-    "torch.backends.mps",
-    "torchaudio",
-    "torchaudio.functional",
-    "torchaudio.transforms",
-    "torchvision",
-    "transformers",
     "huggingface_hub",
+    "onnxruntime",
+    "onnx_asr",
     "soundfile",
+    "soxr",
     "librosa",
     "scipy",
     "scipy.signal",
     "numpy",
-    "PIL",
     "PyQt6",
     "PyQt6.QtCore",
     "PyQt6.QtGui",
@@ -155,12 +133,6 @@ hiddenimports = sorted(set(hiddenimports + [
     "dotenv",
     "dotenv.main",
     "yaml",
-    "omegaconf",
-    "sentencepiece",
-    "mlx",
-    "onnxruntime",
-    "pyannote.audio",
-    "speechbrain",
     "yt_dlp",
     "docx",
     "requests",
@@ -202,7 +174,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch="arm64" if sys.platform == "darwin" else None,
+    target_arch="x86_64",
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_file,
@@ -228,6 +200,8 @@ app = BUNDLE(
         "CFBundleDisplayName": "GigaAM Transcriber",
         "CFBundleShortVersionString": APP_VERSION,
         "CFBundleVersion": APP_VERSION,
+        # Колёса onnxruntime 1.23.2 под macOS x86_64 требуют macOS 13+.
+        "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
         "CFBundleDocumentTypes": [

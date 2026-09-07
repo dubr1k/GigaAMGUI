@@ -133,3 +133,21 @@ def test_explicit_mlx_rejects_multilingual_model():
             machine_name="arm64",
             import_probe=lambda modules: True,
         )
+
+
+def test_auto_selects_onnx_on_macos_x86_64():
+    # Под macOS x86_64 нет ни колёс torch>=2.6, ни mlx: PyTorch-ветка там не
+    # медленнее, а мертва — падает с «No module named 'gigaam'» (issue #45).
+    backend, reason = create_backend_from_config(
+        requested_backend="auto",
+        model_name="e2e_rnnt",
+        model_revision="v3_e2e_rnnt",
+        mlx_model_repo="repo/mlx",
+        allow_fallback=True,
+        platform_name="darwin",
+        machine_name="x86_64",
+        import_probe=lambda modules: False,
+    )
+    assert isinstance(backend, OnnxBackend)
+    assert backend.name == "onnx"
+    assert reason is not None and "x86_64" in reason

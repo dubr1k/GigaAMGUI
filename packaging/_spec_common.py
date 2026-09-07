@@ -25,6 +25,12 @@ from PyInstaller.utils.hooks import (
     get_all_package_paths,
 )
 
+#: Версия для Info.plist macOS-бандлов. Один источник правды на все .app-спеки:
+#: CI сверяет CFBundleShortVersionString с тегом, и разъехавшийся второй спек
+#: валил бы релиз уже после сборки.
+APP_VERSION = "1.5.4"
+
+
 # Пакеты, которые импортирует рантайм-torchvision/pyannote, но не видит
 # замороженный анализ. Собираем целиком.
 PURE_RUNTIME_DEPS = ["PIL", "asteroid_filterbanks"]
