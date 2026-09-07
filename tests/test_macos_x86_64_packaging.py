@@ -54,6 +54,19 @@ def test_requirements_carry_onnx_chain_without_torch():
     for banned in TORCH_CHAIN:
         assert banned not in names, f"{banned} не должен приезжать в Intel-сборку"
 
+    # numba 0.67 и llvmlite 0.49 перестали выпускать колёса под macOS x86_64.
+    # Без пинов pip берёт свежие версии и уходит собирать llvmlite из исходников
+    # под полный LLVM-тулчейн — сборка падает на CMake `Could not find LLVM`.
+    assert "numba" in names and "llvmlite" in names
+
+
+def test_ci_refuses_to_build_intel_dependencies_from_source():
+    job = WORKFLOW_PATH.read_text(encoding="utf-8").split("build-macos-intel:")[1]
+    job = job.split("\n  test-tui:")[0]
+
+    assert "--only-binary=:all: -r requirements-macos-x86_64.txt" in job
+    assert "--only-binary=:all: -r requirements-live-macos.txt" in job
+
 
 def test_spec_targets_x86_64_and_excludes_torch_chain():
     text = SPEC_PATH.read_text(encoding="utf-8")
