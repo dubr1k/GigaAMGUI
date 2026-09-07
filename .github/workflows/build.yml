@@ -470,12 +470,28 @@ jobs:
           architecture: x64
           cache: pip
 
-      - name: Verify bundled ffmpeg
+      # Закоммиченный bin/ffmpeg собран под arm64: на Intel он просто не
+      # запускается, а внутри бандла уронил бы гейт «все Mach-O — x86_64».
+      # Кладём статическую x86_64-сборку поверх, как это делают Windows- и
+      # Linux-джобы, и проверяем архитектуру сразу — молча приехавший arm64
+      # означал бы неработающую конвертацию уже у пользователя.
+      - name: Provision bundled ffmpeg (macOS x86_64)
         shell: bash
         run: |
-          test -f bin/ffmpeg || { echo "bin/ffmpeg отсутствует в репозитории"; exit 1; }
-          chmod +x bin/ffmpeg
+          mkdir -p bin ffmpeg_extract
+          for tool in ffmpeg ffprobe; do
+            curl -fL "https://evermeet.cx/ffmpeg/getrelease/$tool/zip" -o "ffmpeg_extract/$tool.zip"
+            unzip -o -q "ffmpeg_extract/$tool.zip" -d ffmpeg_extract
+            mv "ffmpeg_extract/$tool" "bin/$tool"
+            chmod +x "bin/$tool"
+            TOOL_ARCH=$(lipo -archs "bin/$tool")
+            test "$TOOL_ARCH" = "x86_64" || {
+              echo "$tool собран под $TOOL_ARCH, нужен x86_64"
+              exit 1
+            }
+          done
           ./bin/ffmpeg -version
+          ./bin/ffprobe -version
 
       - name: Upgrade pip toolchain
         run: python -m pip install --upgrade pip wheel "setuptools==81.0.0"

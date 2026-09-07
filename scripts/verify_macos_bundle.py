@@ -51,8 +51,9 @@ PROFILES = {
         # либо лишний гигабайт веса; и то и другое должно валить сборку.
         forbidden_packages=("torch", "mlx", "gigaam_mlx", "pyannote"),
         runtime_smoke=("--onnx-runtime-smoke", '"backend": "onnx"'),
-        # Диаризация на Intel идёт только через ONNX, поэтому её гейт обязателен.
-        extra_smokes=(("--sortformer-onnx-smoke", None),),
+        # Смока диаризации здесь сознательно нет: он тянет модель из сети, а тот
+        # же путь уже закрыт `--offline-models-smoke` на привезённых моделях —
+        # и в CI, и локально, без стомегабайтной докачки посреди сборки.
     ),
 }
 

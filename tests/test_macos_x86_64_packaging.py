@@ -99,8 +99,28 @@ def test_verifier_profile_forbids_torch_and_checks_onnx_runtime():
     assert 'arch="x86_64"' in text
     assert 'forbidden_packages=("torch", "mlx", "gigaam_mlx", "pyannote")' in text
     assert 'runtime_smoke=("--onnx-runtime-smoke", \'"backend": "onnx"\')' in text
-    assert "--sortformer-onnx-smoke" in text
     assert "--onnx-runtime-smoke" in Path("app.py").read_text(encoding="utf-8")
+    # Диаризацию на Intel закрывает офлайн-смок на привезённых моделях, а не
+    # сетевая догрузка посреди сборки.
+    assert "--offline-models-smoke" in WORKFLOW_PATH.read_text(encoding="utf-8")
+
+
+def test_ci_replaces_the_committed_arm64_ffmpeg_on_intel():
+    """`bin/ffmpeg` в репозитории — arm64, на Intel он не запускается.
+
+    Первый прогон job-а упал именно здесь: шаг arm64-сборки `./bin/ffmpeg
+    -version` на Intel-раннере не выполняется в принципе, а протащенный дальше
+    arm64-бинарь сломал бы конвертацию уже у пользователя.
+    """
+    job = WORKFLOW_PATH.read_text(encoding="utf-8").split("build-macos-intel:")[1]
+    job = job.split("\n  test-tui:")[0]
+
+    assert "Provision bundled ffmpeg (macOS x86_64)" in job
+    assert "for tool in ffmpeg ffprobe" in job
+    # Проверка архитектуры прямо в шаге: иначе подмена всплыла бы только в
+    # verify_macos_bundle.py, уже после двадцати минут сборки.
+    assert 'TOOL_ARCH=$(lipo -archs "bin/$tool")' in job
+    assert 'test "$TOOL_ARCH" = "x86_64"' in job
 
 
 def test_ci_builds_and_publishes_intel_offline_bundle():
