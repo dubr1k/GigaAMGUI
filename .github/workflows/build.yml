@@ -595,7 +595,9 @@ jobs:
 
   build-macos-swift:
     name: Native Swift macOS arm64 app
-    runs-on: macos-14
+    # NSGlassEffectView is provided by the macOS 26 SDK. The executable keeps
+    # a macOS 13 deployment target and guards the glass path with #available.
+    runs-on: macos-26
     needs: test-tui
     timeout-minutes: 20
 
