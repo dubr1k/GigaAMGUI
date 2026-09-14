@@ -80,6 +80,9 @@ docs/
 # Rust build artifacts
 tui/target/
 
+# Swift Package Manager build artifacts
+.build/
+
 # Distribution / packaging
 .Python
 build/

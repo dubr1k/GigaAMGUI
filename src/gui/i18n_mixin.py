@@ -42,10 +42,34 @@ class I18nMixin:
     def _apply_language(self):
         is_ru = self._lang == "ru"
         _install_qt_translator(QApplication.instance(), self._lang)
-        self._btn_lang.setText("EN" if is_ru else "RU")
+        self._btn_lang.setText("МК")
         self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
         if hasattr(self, "_title_label"):
-            self._title_label.setText("GigaAM v3: Транскрибация" if is_ru else "GigaAM v3: Transcription")
+            self._title_label.setText("GigaAMGUI v3")
+        if hasattr(self, "_sidebar_subtitle"):
+            self._sidebar_subtitle.setText(
+                "Транскрибация аудио и видео.\nБыстро. Точно. Удобно."
+                if is_ru else
+                "Audio and video transcription.\nFast. Precise. Convenient."
+            )
+        if hasattr(self, "_sidebar_footer"):
+            self._sidebar_footer.setText(
+                "Быстрая и точная\nтранскрибация"
+                if is_ru else
+                "Fast and accurate\ntranscription"
+            )
+        if hasattr(self, "_hero_title"):
+            self._hero_title.setText("Добро пожаловать!" if is_ru else "Welcome!")
+        if hasattr(self, "_hero_subtitle"):
+            self._hero_subtitle.setText(
+                "Загрузите файлы, настройте параметры и получите готовую транскрипцию."
+                if is_ru else
+                "Add files, choose processing options, and get a ready transcript."
+            )
+        if hasattr(self, "_nav_buttons"):
+            nav_labels = ("Обработка", "Live", "LLM", "Журнал") if is_ru else ("Process", "Live", "LLM", "Log")
+            for nav_button, title in zip(self._nav_buttons, nav_labels):
+                nav_button.setText(title)
         if hasattr(self, "tabs"):
             self.tabs.setTabText(0, "Обработка" if is_ru else "Process")
             self.tabs.setTabText(1, "Live")
@@ -54,11 +78,13 @@ class I18nMixin:
         if hasattr(self, "btn_start"):
             self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ" if is_ru else "START PROCESSING")
         if hasattr(self, "btn_clear"):
-            self.btn_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+            self.btn_clear.setText("Сброс" if is_ru else "Reset")
         if hasattr(self, "btn_llm_process"):
             self.btn_llm_process.setText("ОБРАБОТАТЬ" if is_ru else "PROCESS")
         if hasattr(self, "btn_llm_clear"):
             self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+        if hasattr(self, "_apply_shell_copy"):
+            self._apply_shell_copy()
         if hasattr(self, "status_bar"):
             self.status_bar.showMessage("Готов к работе" if is_ru else "Ready to work")
         if hasattr(self, "lbl_status") and self.lbl_status.text() in {"Готов к работе", "Ready to work"}:
@@ -81,9 +107,9 @@ class I18nMixin:
             if hasattr(self, "lbl_output_folder") and (self.lbl_output_folder.text().startswith("Папка не выбрана") or self.lbl_output_folder.text().startswith("Folder not selected")):
                 self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)" if is_ru else "Folder not selected (default: next to the file)")
             self.btn_cancel.setText("Отменить" if is_ru else "Cancel")
-            self.cb_diarization.setText("Включить диаризацию спикеров" if is_ru else "Enable speaker diarization")
+            self.cb_diarization.setText("Вкл. диаризацию" if is_ru else "Enable diarization")
             self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)" if is_ru else "Detect which speaker is talking (HF_TOKEN required)")
-            self.btn_hf_token.setText("Указать / изменить HF-токен" if is_ru else "Set / change HF token")
+            self.btn_hf_token.setText("HF")
             self.btn_hf_token.setToolTip("Открыть настройку токена HuggingFace для диаризации" if is_ru else "Open the HuggingFace token setting for diarization")
             self.lbl_audio_preprocessing_mode.setText("Режим:" if is_ru else "Mode:")
             preprocessing_labels = (
@@ -100,7 +126,7 @@ class I18nMixin:
                 "Auto analyzes recording quality and applies the minimum necessary processing"
             )
             self.lbl_diarization_backend.setText("Движок:" if is_ru else "Backend:")
-            self.lbl_num_speakers.setText("Кол-во спикеров:" if is_ru else "Speakers count:")
+            self.lbl_num_speakers.setText("Спикеров:" if is_ru else "Speakers:")
             self._update_diarization_backend_controls()
             self.entry_num_speakers.setSpecialValueText("Авто" if is_ru else "Auto")
             self.entry_num_speakers.setToolTip("0 = автоопределение количества спикеров" if is_ru else "0 = auto-detect speaker count")
@@ -117,13 +143,13 @@ class I18nMixin:
                 self.lbl_input_folder.setText("Папка не выбрана" if is_ru else "Folder not selected")
             self.drop_hint.setText("Перетащите сюда файлы или папки  ·  либо нажмите «Выбрать файлы»" if is_ru else "Drop files or folders here  ·  or click 'Choose files'")
             format_labels = {
-                "txt": ("Текст (.txt)", "Text (.txt)"),
-                "txt_timecodes": ("Таймкоды (_timecodes.txt)", "Timecodes (_timecodes.txt)"),
-                "txt_diarize": ("Диаризация (_diarize.txt)", "Diarization (_diarize.txt)"),
-                "txt_diarize_timecodes": ("Диар.+тайм. (_diarize_timecodes.txt)", "Diarization+timecodes (_diarize_timecodes.txt)"),
-                "md": ("Markdown (.md)", "Markdown (.md)"),
-                "srt": ("SRT (.srt)", "SRT (.srt)"),
-                "vtt": ("VTT (.vtt)", "VTT (.vtt)"),
+                "txt": ("Текст", "Text"),
+                "txt_timecodes": ("Таймкоды", "Timecodes"),
+                "txt_diarize": ("Диар.", "Diar."),
+                "txt_diarize_timecodes": ("Диар. + время", "Diar. + time"),
+                "md": ("Markdown", "Markdown"),
+                "srt": ("SRT", "SRT"),
+                "vtt": ("VTT", "VTT"),
             }
             for fmt, cb in self.format_checkboxes.items():
                 ru_label, en_label = format_labels.get(fmt, (cb.text(), cb.text()))
@@ -156,20 +182,18 @@ class I18nMixin:
             self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
             self.lbl_llm_status.setText("Готово к LLM-обработке" if is_ru else "Ready for LLM processing")
             if hasattr(self, "llm_drop_hint"):
-                self.llm_drop_hint.setText("Перетащите сюда транскрипты  ·  либо нажмите «Выбрать транскрипты»" if is_ru else "Drop transcripts here  ·  or click 'Choose transcripts'")
+                self.llm_drop_hint.setText("Перетащите или выберите" if is_ru else "Drop or choose")
             if hasattr(self, "btn_remove_llm_file"):
-                self.btn_remove_llm_file.setText("Убрать выбранное" if is_ru else "Remove selected")
+                self.btn_remove_llm_file.setText("Убрать" if is_ru else "Remove")
             if hasattr(self, "btn_clear_llm_files"):
-                self.btn_clear_llm_files.setText("Очистить список" if is_ru else "Clear list")
+                self.btn_clear_llm_files.setText("Очистить" if is_ru else "Clear")
             if hasattr(self, "llm_files_list"):
                 self.llm_files_list.setToolTip("Список транскриптов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "Transcript list. Select items and press Delete to remove them.")
             self.lbl_llm_files.setText("Файлы не выбраны" if is_ru and not self.transcript_files_for_llm else ("No files selected" if not is_ru and not self.transcript_files_for_llm else self.lbl_llm_files.text()))
             if hasattr(self, "lbl_llm_files_count") and not self.transcript_files_for_llm:
                 self.lbl_llm_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
             self.txt_llm_transcript.setPlaceholderText(
-                "Вставьте сюда транскрипт, если не хотите выбирать файлы"
-                if is_ru else
-                "Paste transcript here if you do not want to choose files"
+                "Вставьте транскрипт" if is_ru else "Paste transcript"
             )
             if hasattr(self, "llm_action_checkboxes"):
                 self.llm_action_checkboxes["summary"].setText("Выжимка" if is_ru else "Summary")
@@ -241,14 +265,14 @@ class I18nMixin:
             self.btn_live_output_select.setText("Выбрать папку" if is_ru else "Choose folder")
             self.cb_live_mic_audio.setText("Записывать дорожку микрофона" if is_ru else "Record microphone track")
             self.cb_live_system_audio.setText("Записывать дорожку системного звука" if is_ru else "Record system audio track")
-            self.cb_live_export_txt.setText("Текст (.txt)" if is_ru else "Text (.txt)")
-            self.cb_live_export_txt_timecodes.setText("Таймкоды (_timecodes.txt)" if is_ru else "Timecodes (_timecodes.txt)")
-            self.cb_live_export_txt_diarize.setText("Диаризация (_diarize.txt)" if is_ru else "Diarization (_diarize.txt)")
-            self.cb_live_export_txt_diarize_timecodes.setText("Диар.+тайм. (_diarize_timecodes.txt)" if is_ru else "Diarization+timecodes (_diarize_timecodes.txt)")
-            self.cb_live_export_md.setText("Markdown (.md)")
-            self.cb_live_export_srt.setText("SRT (.srt)")
-            self.cb_live_export_vtt.setText("VTT (.vtt)")
-            self.cb_live_subtitle_sentence_split.setText("Разбивать по предложениям" if is_ru else "Split by sentences")
+            self.cb_live_export_txt.setText("Текст" if is_ru else "Text")
+            self.cb_live_export_txt_timecodes.setText("Таймкоды" if is_ru else "Timecodes")
+            self.cb_live_export_txt_diarize.setText("Диар." if is_ru else "Diar.")
+            self.cb_live_export_txt_diarize_timecodes.setText("Диар. + время" if is_ru else "Diar. + time")
+            self.cb_live_export_md.setText("Markdown")
+            self.cb_live_export_srt.setText("SRT")
+            self.cb_live_export_vtt.setText("VTT")
+            self.cb_live_subtitle_sentence_split.setText("По предложениям" if is_ru else "By sentences")
             self.lbl_live_subtitle_max_lines.setText("Строк:" if is_ru else "Lines:")
             self.lbl_live_subtitle_max_width.setText("Символов:" if is_ru else "Characters:")
             self.btn_live_pause.setText("Пауза" if is_ru else "Pause")
@@ -266,8 +290,9 @@ class I18nMixin:
                 if is_ru else "Live estimates are anonymous and may change during the most recent 10 seconds."
             )
             self.live_transcript.setPlaceholderText(
-                "Здесь появятся расшифровка и сообщения о состоянии."
-                if is_ru else "Transcript and capture status will appear here."
+                "Расшифровка появится здесь"
+                if is_ru else
+                "Transcript appears here"
             )
             self._update_live_output_folder_label(self.live_output_dir.text())
             self._update_live_export_controls()

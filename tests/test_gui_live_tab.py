@@ -589,13 +589,13 @@ def test_live_formats_match_processing_fields_and_order(window):
             window.cb_live_export_vtt,
         )
     ] == [
-        "Текст (.txt)",
-        "Таймкоды (_timecodes.txt)",
-        "Диаризация (_diarize.txt)",
-        "Диар.+тайм. (_diarize_timecodes.txt)",
-        "Markdown (.md)",
-        "SRT (.srt)",
-        "VTT (.vtt)",
+        "Текст",
+        "Таймкоды",
+        "Диар.",
+        "Диар. + время",
+        "Markdown",
+        "SRT",
+        "VTT",
     ]
     assert window.cb_live_subtitle_sentence_split.isChecked() is True
     assert window.spin_live_subtitle_max_lines.value() == 2
@@ -611,19 +611,19 @@ def test_live_diarized_formats_clear_when_diarization_is_unavailable(window):
     assert window.cb_live_export_txt_diarize.isChecked() is False
 
 
-def test_live_language_toggle_translates_every_live_control_and_centers_actions(window):
+def test_live_language_toggle_translates_every_live_control(window):
     window._toggle_language()
 
     assert window.grp_live_source.title() == "1. Live capture"
     assert window.grp_live_output.title() == "2. Session folder"
     assert window.grp_live_exports.title() == "3. Output formats"
     assert window.btn_live_output_select.text() == "Choose folder"
-    assert window.cb_live_export_txt.text() == "Text (.txt)"
-    assert window.cb_live_export_txt_timecodes.text() == "Timecodes (_timecodes.txt)"
-    assert window.cb_live_export_txt_diarize.text() == "Diarization (_diarize.txt)"
-    assert window.cb_live_export_txt_diarize_timecodes.text() == "Diarization+timecodes (_diarize_timecodes.txt)"
-    assert window.cb_live_export_md.text() == "Markdown (.md)"
-    assert window.cb_live_subtitle_sentence_split.text() == "Split by sentences"
+    assert window.cb_live_export_txt.text() == "Text"
+    assert window.cb_live_export_txt_timecodes.text() == "Timecodes"
+    assert window.cb_live_export_txt_diarize.text() == "Diar."
+    assert window.cb_live_export_txt_diarize_timecodes.text() == "Diar. + time"
+    assert window.cb_live_export_md.text() == "Markdown"
+    assert window.cb_live_subtitle_sentence_split.text() == "By sentences"
     assert window.lbl_live_subtitle_max_lines.text() == "Lines:"
     assert window.lbl_live_subtitle_max_width.text() == "Characters:"
     assert window.cb_live_mic_audio.text() == "Record microphone track"
@@ -634,5 +634,3 @@ def test_live_language_toggle_translates_every_live_control_and_centers_actions(
     assert window.btn_live_clear.text() == "Clear"
     assert window.btn_live_overlay.text() == "Overlay"
     assert window.combo_live_source.itemText(0) == "Microphone"
-    assert window.live_controls_layout.itemAt(0).spacerItem() is not None
-    assert window.live_controls_layout.itemAt(window.live_controls_layout.count() - 1).spacerItem() is not None

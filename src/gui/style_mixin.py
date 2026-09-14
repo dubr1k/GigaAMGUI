@@ -41,6 +41,23 @@ def _mix_colors(color1: str, color2: str, ratio: float) -> str:
 class StyleMixin:
     def _colors(self):
         base = dict(self._DARK if self._theme == "dark" else self._LIGHT)
+        if self._theme == "light":
+            base.update({
+                "bg": "#F6F8FB", "bg_card": "#FFFFFF", "border": "#E5E9EF",
+                "text": "#0D0D0D", "text_sub": "#344054", "text_mute": "#98A2B3",
+                "text_mute2": "#667085", "btn_bg": "#FFFFFF", "btn_border": "#DDE3EA",
+                "btn_text": "#0D0D0D", "btn_hover_bg": "#EAF4FF", "btn_hover_border": "#0A84FF",
+                "btn_hover_text": "#006FD6", "accent": "#0A84FF", "accent2": "#0077ED",
+                "accent3": "#006FD6", "accent_dis": "#EAF4FF", "clear_bg": "#F8FAFC",
+                "clear_text": "#667085", "clear_border": "#E5E9EF", "clear_hover_bg": "#FFF1F2",
+                "clear_hover_border": "#FECACA", "clear_hover_text": "#EF4444", "input_bg": "#FFFFFF",
+                "input_sel": "#CFE8FF", "input_dis": "#F8FAFC", "input_dis_text": "#B8C0CC",
+                "progress_bg": "#E8EEF5", "progress_chunk": "#0A84FF", "progress_chunk2": "#0A84FF",
+                "tab_bg": "#F8FAFC", "tab_text": "#667085", "tab_sel_bg": "#EAF4FF",
+                "tab_sel_text": "#006FD6", "tab_accent": "#0A84FF", "tab_hover": "#F0F7FF",
+                "scroll_bg": "transparent", "scroll_handle": "#CBD5E1", "scroll_handle_hover": "#98A2B3",
+                "status_bg": "#FFFFFF", "status_text": "#667085", "theme_btn": "☀",
+            })
         accent = str(self.user_settings.get_value("accent_color", "") or "").strip()
         if not accent:
             return base

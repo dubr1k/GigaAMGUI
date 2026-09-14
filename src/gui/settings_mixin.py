@@ -5,11 +5,13 @@ Mixin: методы работают со `self` главного окна. По
 from __future__ import annotations
 
 import os
+import re
+from datetime import datetime
 import shutil
 
 from PyQt6.QtCore import QByteArray, QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QTableWidgetItem, QWidget
 
 from ..config import (
     AUDIO_PREPROCESSING_MODE,
@@ -43,6 +45,8 @@ class SettingsMixin:
                 self._t("Не удалось сохранить выбор:\n", "Could not save the selection:\n") + str(exc),
             )
             return
+        if hasattr(self, "settings_data_dir_value"):
+            self.settings_data_dir_value.setText(selected)
         QMessageBox.information(
             self,
             self._t("Папка данных", "Data directory"),
@@ -109,6 +113,8 @@ class SettingsMixin:
 
     def _clear_log(self):
         self.log_text.clear()
+        self._journal_entries = []
+        self._filter_journal_rows()
         self._set_status(self._t("Журнал очищен", "Log cleared"))
 
     def _open_results_folder(self):
@@ -129,6 +135,143 @@ class SettingsMixin:
 
     def _append_log(self, message: str):
         self.log_text.append(f">> {message}")
+        self._ingest_journal_log(message)
+
+    def _journal_text(self, ru: str, en: str) -> str:
+        return ru if self._lang == "ru" else en
+
+    def _refresh_journal_labels(self):
+        if not hasattr(self, "journal_table"):
+            return
+        self.journal_title.setText(self._journal_text("Журнал", "Journal"))
+        self.journal_subtitle.setText(self._journal_text(
+            "Текущие события обработки из журнала приложения.",
+            "Current processing events from the application log.",
+        ))
+        self.journal_technical_title.setText(self._journal_text("Технический журнал", "Technical log"))
+        self.journal_search.setPlaceholderText(self._journal_text("Поиск…", "Search…"))
+        self.journal_table.setHorizontalHeaderLabels((
+            self._journal_text("Файл", "File"),
+            self._journal_text("Длительность", "Duration"),
+            self._journal_text("Статус", "Status"),
+            self._journal_text("Дата", "Date"),
+        ))
+        for key, button in self._journal_filter_buttons.items():
+            button.setText({
+                "all": self._journal_text("Все", "All"),
+                "ready": self._journal_text("Готово", "Ready"),
+                "processing": self._journal_text("В обработке", "Processing"),
+                "error": self._journal_text("Ошибка", "Error"),
+            }[key])
+        self._filter_journal_rows()
+
+    def _journal_status_label(self, status: str) -> str:
+        return {
+            "ready": self._journal_text("Готово", "Ready"),
+            "processing": self._journal_text("В обработке", "Processing"),
+            "error": self._journal_text("Ошибка", "Error"),
+        }[status]
+
+    def _journal_active_entry(self, filename: str | None = None) -> dict | None:
+        for entry in reversed(getattr(self, "_journal_entries", [])):
+            if entry["status"] != "processing":
+                continue
+            if filename is None or entry["file"] == filename:
+                return entry
+        return None
+
+    def _journal_record_error(self, filename: str) -> None:
+        entry = self._journal_active_entry(filename)
+        if entry is None:
+            entry = {
+                "file": filename, "duration": "—", "status": "error",
+                "date": datetime.now().strftime("%d.%m"),
+            }
+            self._journal_entries.append(entry)
+        else:
+            entry["status"] = "error"
+
+    def _ingest_journal_log(self, message: str) -> None:
+        if not hasattr(self, "journal_table"):
+            return
+        text = message.strip()
+        started = re.match(r"^--- (?:Обработка файла|Processing file) \d+/\d+: (.+) ---$", text)
+        duration = re.match(r"^(?:Длительность|Duration): (.+)$", text)
+        skipped = re.match(r"^(?:Пропуск файла|Skipping file) (.+)$", text)
+        failed = re.match(
+            r"^(?:Ошибка при обработке(?: файла)?|Error (?:while )?processing(?: file)?)\s+(.+?)(?::\s|$)",
+            text,
+        )
+        if started:
+            self._journal_entries.append({
+                "file": started.group(1), "duration": "—", "status": "processing",
+                "date": datetime.now().strftime("%d.%m"),
+            })
+        elif duration:
+            entry = self._journal_active_entry()
+            if entry is not None:
+                entry["duration"] = duration.group(1)
+        elif skipped:
+            self._journal_record_error(skipped.group(1))
+        elif failed:
+            self._journal_record_error(failed.group(1))
+        elif text.startswith(("ОШИБКА", "ERROR", "Критическая ошибка", "Critical error")):
+            entry = self._journal_active_entry()
+            if entry is not None:
+                entry["status"] = "error"
+        elif text.startswith(("Время обработки:", "Processing time:")):
+            entry = self._journal_active_entry()
+            if entry is not None:
+                entry["status"] = "ready"
+        self._filter_journal_rows()
+
+    def _filter_journal_rows(self):
+        if not hasattr(self, "journal_table"):
+            return
+        selected_filter = next(
+            (key for key, button in self._journal_filter_buttons.items() if button.isChecked()),
+            "all",
+        )
+        query = self.journal_search.text().strip().casefold()
+        entries = [
+            entry for entry in self._journal_entries
+            if (selected_filter == "all" or entry["status"] == selected_filter)
+            and (not query or query in entry["file"].casefold() or query in self._journal_status_label(entry["status"]).casefold())
+        ]
+        self.journal_table.setUpdatesEnabled(False)
+        self.journal_table.clearContents()
+        self.journal_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            self.journal_table.setItem(row, 0, QTableWidgetItem(entry["file"]))
+            self.journal_table.setItem(row, 1, QTableWidgetItem(entry["duration"]))
+            self.journal_table.setCellWidget(row, 2, self._journal_status_widget(entry["status"]))
+            self.journal_table.setItem(row, 3, QTableWidgetItem(entry["date"]))
+            self.journal_table.setRowHeight(row, self._px(32))
+        self.journal_table.setUpdatesEnabled(True)
+        has_entries = bool(entries)
+        self.journal_table.setVisible(has_entries)
+        self.journal_empty.setVisible(not has_entries)
+        self.journal_empty.setText(
+            self._journal_text("События обработки появятся здесь после запуска.", "Processing events will appear here after a run.")
+            if not self._journal_entries else self._journal_text("Нет событий по текущему фильтру.", "No events match the current filter.")
+        )
+
+    def _journal_status_widget(self, status: str) -> QWidget:
+        colors = {"ready": "#22A06B", "processing": "#0A84FF", "error": "#EF4444"}
+        container = QWidget()
+        container.setObjectName("journal_status_badge")
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(self._px(4), 0, self._px(4), 0)
+        layout.setSpacing(self._px(6))
+        dot = QLabel("●")
+        dot.setObjectName("journal_status_dot")
+        dot.setStyleSheet(f"color: {colors[status]};")
+        layout.addWidget(dot)
+        label = QLabel(self._journal_status_label(status))
+        label.setObjectName("journal_status_text")
+        layout.addWidget(label)
+        layout.addStretch()
+        return container
 
     def _restore_ui_settings(self):
         saved_formats = self.user_settings.get_value("output_formats", {}) or {}
@@ -239,6 +382,8 @@ class SettingsMixin:
         saved_llm_files = self.user_settings.get_value("last_selected_transcript_files", []) or []
         self.transcript_files_for_llm = [path for path in saved_llm_files if os.path.isfile(path)]
         self._refresh_llm_files_list()
+        if hasattr(self, "_restore_support_surface_settings"):
+            self._restore_support_surface_settings()
 
     def _save_ui_settings(self):
         self.user_settings.set_value("output_formats", self.output_formats)
