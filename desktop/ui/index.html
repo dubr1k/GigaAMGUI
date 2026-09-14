@@ -156,12 +156,14 @@
           <section class="page" data-page="api" aria-labelledby="api-title" hidden>
             <div class="page-heading"><h1 id="api-title">API</h1><p>Рабочая документация и примеры запросов внутри приложения.</p></div>
             <div class="api-grid">
-              <article class="card api-examples-card"><h2>Примеры запросов</h2><div class="api-status"><span class="status-dot inactive" aria-hidden="true"></span><div><span class="eyebrow">Статус API</span><strong>Не подключен</strong><p>Проверка локального API появится после подключения worker.</p></div></div><div class="action-row"><button class="button" id="copy-api-url" type="button">Скопировать URL</button><button class="button button-dark" type="button" data-notice="Документация откроется после подключения локального API.">Открыть документацию</button></div><div class="segmented" role="tablist" aria-label="Язык примера"><button class="active" type="button" data-code-language="python">Python</button><button type="button" data-code-language="curl">cURL</button><button type="button" data-code-language="javascript">JavaScript</button></div><pre id="api-code"><code>import requests
+              <article class="card api-examples-card"><h2>Примеры запросов</h2><div class="api-status"><span class="status-dot inactive" aria-hidden="true"></span><div><span class="eyebrow">Статус API</span><strong>Не подключен</strong><p>Проверка локального API появится после подключения worker.</p></div></div><div class="action-row"><button class="button" id="copy-api-url" type="button">Скопировать URL</button><button class="button button-dark" type="button" data-notice="Документация откроется после подключения локального API.">Открыть документацию</button></div><div class="segmented" role="tablist" aria-label="Язык примера"><button class="active" type="button" data-code-language="python">Python</button><button type="button" data-code-language="curl">cURL</button><button type="button" data-code-language="javascript">JavaScript</button></div><pre id="api-code"><code>import os
+import requests
 
-url = "http://127.0.0.1:8000/api/transcribe"
+url = "http://127.0.0.1:8000/api/v1/transcribe"
 files = {"file": open("audio.mp3", "rb")}
-data = {"language": "ru", "diarize": True}
-response = requests.post(url, files=files, data=data)</code></pre><button class="button" id="copy-api-code" type="button">Копировать пример</button></article>
+params = {"asr_backend": "auto", "enable_diarization": "true"}
+headers = {"X-API-Key": os.environ["GIGAAM_API_KEY"]}
+response = requests.post(url, files=files, params=params, headers=headers)</code></pre><button class="button" id="copy-api-code" type="button">Копировать пример</button></article>
               <aside class="card api-docs-card"><h2>Документация</h2><div class="documentation-list"><button type="button">Быстрый старт <span>›</span></button><button type="button">Эндпоинты <span>›</span></button><button type="button">Параметры <span>›</span></button><button type="button">Примеры <span>›</span></button><button type="button">Форматы ответов <span>›</span></button><button type="button">Скачать OpenAPI (JSON) <span>›</span></button></div></aside>
             </div>
           </section>

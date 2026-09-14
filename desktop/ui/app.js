@@ -30,23 +30,29 @@ const pages = new Map([
   ["settings", "Настройки"],
 ]);
 const apiExamples = {
-  python: `import requests
+  python: `import os
+import requests
 
-url = "http://127.0.0.1:8000/api/transcribe"
+url = "http://127.0.0.1:8000/api/v1/transcribe"
 files = {"file": open("audio.mp3", "rb")}
-data = {"language": "ru", "diarize": True}
-response = requests.post(url, files=files, data=data)`,
-  curl: `curl -X POST "http://127.0.0.1:8000/api/transcribe" \\
-  -F "file=@audio.mp3" \\
-  -F "language=ru" \\
-  -F "diarize=true"`,
-  javascript: `const form = new FormData();
-form.append("file", audioFile);
-form.append("language", "ru");
-form.append("diarize", "true");
+params = {"asr_backend": "auto", "enable_diarization": "true"}
+headers = {"X-API-Key": os.environ["GIGAAM_API_KEY"]}
+response = requests.post(url, files=files, params=params, headers=headers)`,
+  curl: `curl -X POST "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=auto&enable_diarization=true" \\
+  -H "X-API-Key: $GIGAAM_API_KEY" \\
+  -F "file=@audio.mp3"`,
+  javascript: `const apiKey = "replace-with-your-api-key";
+const url = new URL("http://127.0.0.1:8000/api/v1/transcribe");
+url.searchParams.set("asr_backend", "auto");
+url.searchParams.set("enable_diarization", "true");
 
-const response = await fetch("http://127.0.0.1:8000/api/transcribe", {
-  method: "POST", body: form,
+const form = new FormData();
+form.append("file", audioFile);
+
+const response = await fetch(url, {
+  method: "POST",
+  headers: { "X-API-Key": apiKey },
+  body: form,
 });`,
 };
 

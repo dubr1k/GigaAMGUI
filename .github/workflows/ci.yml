@@ -1,0 +1,58 @@
+name: Pull request checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python-quality:
+    name: Python and release regression checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install test tools
+        run: python -m pip install "pytest==9.0.1" "ruff==0.13.3"
+      - name: Lint Python
+        run: ruff check .
+      - name: Compile Python
+        run: python -m compileall -q api.py cli.py src tests
+      - name: Run release regression tests
+        run: python -m pytest tests/test_macos_swift_packaging.py tests/test_release_hardening.py
+
+  tauri-locks:
+    name: Tauri dependency and JavaScript checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install locked Node dependencies
+        run: npm ci
+      - name: Validate JavaScript
+        run: node --check ui/app.js
+      - name: Validate locked Rust dependency graph
+        run: cargo metadata --locked --no-deps --manifest-path src-tauri/Cargo.toml >/dev/null
+
+  swift-build:
+    name: Swift client build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build native client
+        run: swift build -c release --package-path macos/GigaAMLiquid
