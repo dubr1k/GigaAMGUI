@@ -640,6 +640,7 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$EXECUTABLE" "$APP/Contents/MacOS/GigaAMLiquid"
           chmod +x "$APP/Contents/MacOS/GigaAMLiquid"
+          cp assets/icon.icns "$APP/Contents/Resources/GigaAMLiquid.icns"
 
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -649,6 +650,7 @@ jobs:
             <key>CFBundleDevelopmentRegion</key><string>ru</string>
             <key>CFBundleExecutable</key><string>GigaAMLiquid</string>
             <key>CFBundleIdentifier</key><string>ru.dubr1k.gigaam-liquid</string>
+            <key>CFBundleIconFile</key><string>GigaAMLiquid.icns</string>
             <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
             <key>CFBundleName</key><string>GigaAMLiquid</string>
             <key>CFBundlePackageType</key><string>APPL</string>
@@ -675,6 +677,8 @@ jobs:
 
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict "$APP"
+          test -s "$APP/Contents/Resources/GigaAMLiquid.icns"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" = "GigaAMLiquid.icns"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
           test "$(lipo -archs "$APP/Contents/MacOS/GigaAMLiquid")" = "arm64"
 

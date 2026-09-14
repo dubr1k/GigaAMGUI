@@ -33,13 +33,20 @@ def test_tauri_api_examples_match_authenticated_v1_contract() -> None:
 def test_all_desktop_version_sources_match_release():
     import json
 
-    expected = "2.0.1"
+    expected = "2.0.2"
     assert f'__version__ = "{expected}"' in Path("src/__init__.py").read_text(encoding="utf-8")
     assert f'APP_VERSION = "{expected}"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
     assert json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))["version"] == expected
     assert json.loads(Path("desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"] == expected
     assert f'version = "{expected}"' in Path("desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8")
     assert f'name = "gigaam-desktop"\nversion = "{expected}"' in Path("desktop/src-tauri/Cargo.lock").read_text(encoding="utf-8")
+
+
+def test_liquid_release_bundle_contains_configured_icon():
+    workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+    assert 'cp assets/icon.icns "$APP/Contents/Resources/GigaAMLiquid.icns"' in workflow
+    assert '<key>CFBundleIconFile</key><string>GigaAMLiquid.icns</string>' in workflow
+    assert 'test -s "$APP/Contents/Resources/GigaAMLiquid.icns"' in workflow
 
 
 def test_pyqt_about_displays_release_version():
