@@ -30,6 +30,7 @@ from ..core.model_preparation import (
 from ..core.progress import ProgressEvent
 from ..core.subtitles import SubtitleOptions
 from ..services import transcription_service
+from ..utils.output_naming import find_output_collisions
 
 
 class ProcessingMixin:
@@ -117,6 +118,18 @@ class ProcessingMixin:
             return
         if not self.output_dir:
             self.log(self._t("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.", "Output folder not selected. Results will be saved next to each source file."))
+        collisions = find_output_collisions(self.files_to_process, self.output_dir or None)
+        if collisions:
+            names = ", ".join(sorted(os.path.basename(path) for group in collisions for path in group))
+            QMessageBox.warning(
+                self,
+                self._t("Коллизия имён", "Output name collision"),
+                self._t(
+                    f"Файлы с одинаковым базовым именем перезапишут результаты друг друга: {names}. Переименуйте файлы или выберите разные папки.",
+                    f"Files with the same base name would overwrite each other's results: {names}. Rename them or use separate folders.",
+                ),
+            )
+            return
         # A failed preparation must not reuse files/results from the previous
         # successful batch when the completion handler decides what to show.
         self._last_generated_transcript_files = []

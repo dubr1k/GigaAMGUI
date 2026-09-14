@@ -41,6 +41,26 @@ def test_tui_worker_rejects_empty_batch():
     assert _messages(output)[0]["message"] == "No input files supplied"
 
 
+def test_tui_worker_rejects_colliding_output_stems(tmp_path):
+    first = tmp_path / "a" / "same.wav"
+    second = tmp_path / "b" / "SAME.mp3"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"wav")
+    second.write_bytes(b"mp3")
+    output = io.StringIO()
+
+    TuiWorker(output=output).handle({
+        "type": "start",
+        "files": [str(first), str(second)],
+        "output_dir": str(tmp_path / "out"),
+    })
+
+    message = _messages(output)[0]
+    assert message["type"] == "error"
+    assert "overwrite" in message["message"]
+
+
 def test_tui_worker_rejects_unknown_command():
     output = io.StringIO()
     worker = TuiWorker(output=output)

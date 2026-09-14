@@ -64,3 +64,30 @@ def test_tauri_prototype_does_not_persist_hf_token() -> None:
     app = Path("desktop/ui/app.js").read_text(encoding="utf-8")
     assert 'restored.hfToken = ""' in app
     assert "const { hfToken: _secret, ...persisted } = settings" in app
+
+
+def test_swift_batch_clears_previous_results_and_preserves_failed_keychain_migration():
+    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    assert "transcriptionResults.removeAll()" in main
+    assert "selectedResultURL = nil" in main
+    migration = main.split('if let legacyToken = defaults.string(forKey: "settings.hfToken")', 1)[1].split("cleanupDownloadedMedia()", 1)[0]
+    assert "try SecureStore.set" in migration
+    assert migration.index("try SecureStore.set") < migration.index('defaults.removeObject(forKey: "settings.hfToken")')
+    assert "catch" in migration
+
+
+def test_dark_theme_overrides_named_light_widgets():
+    theme = Path("src/gui/theme_mixin.py").read_text(encoding="utf-8")
+    dark = theme.split('if self._theme == "dark":', 1)[1].split("self.setStyleSheet", 1)[0]
+    assert "QPlainTextEdit#api_code_editor" in dark
+    assert "QTabWidget#result_tabs::pane" in dark
+    assert "QLineEdit#settings_path_value" in dark
+
+
+def test_downloaded_media_cleanup_retains_failed_roots_for_retry() -> None:
+    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    cleanup = main.split("private func cleanupDownloadedMedia()", 1)[1].split("@objc private func chooseOutputFolder", 1)[0]
+    assert "var failed = Set<URL>()" in cleanup
+    assert "failed.insert(root)" in cleanup
+    assert "downloadedMediaRoots = failed" in cleanup
+    assert "NSLog" in cleanup

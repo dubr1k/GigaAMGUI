@@ -24,7 +24,7 @@ def test_spec_includes_mlx_packages():
     # tests/test_macos_x86_64_packaging.py).
     assert '"CFBundleShortVersionString": APP_VERSION' in text
     assert '"CFBundleVersion": APP_VERSION' in text
-    assert 'APP_VERSION = "2.0"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
+    assert 'APP_VERSION = "2.0.1"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
 
 
 def test_spec_can_bundle_sortformer_runtime():
@@ -94,3 +94,18 @@ def test_bundle_verifier_smokes_sortformer_runtime_when_requested():
     assert "GIGAAM_BUNDLE_SORTFORMER" in verifier
     assert "--sortformer-runtime-smoke" in verifier
     assert "--sortformer-runtime-smoke" in entrypoint
+
+
+def test_macos_bundle_does_not_ship_raw_project_sources():
+    spec = SPEC_PATH.read_text(encoding="utf-8")
+    verifier = Path("scripts/verify_macos_bundle.py").read_text(encoding="utf-8")
+    assert '(os.path.join(project_root, "src"), "src")' not in spec
+    assert 'root / "Contents" / "Resources" / "src"' in verifier
+
+
+def test_bundle_verifier_rejects_raw_project_source_tree(tmp_path):
+    from scripts.verify_macos_bundle import verify_bundle
+
+    bundle = tmp_path / "GigaAMTranscriber.app"
+    (bundle / "Contents" / "Resources" / "src").mkdir(parents=True)
+    assert verify_bundle(str(bundle), "arm64-mlx") == 1

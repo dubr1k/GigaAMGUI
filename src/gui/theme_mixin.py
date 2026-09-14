@@ -66,6 +66,22 @@ class ThemeMixin:
                 QHeaderView::section, QTableCornerButton::section {{
                     background: {c['tab_bg']}; color: {c['tab_text']}; border-color: {c['border']};
                 }}
+                QPlainTextEdit#api_code_editor, QLineEdit#settings_path_value,
+                QTextEdit#llm_source_editor, QTextEdit#llm_result_editor {{
+                    background: {c['input_bg']}; color: {c['text']}; border-color: {c['border']};
+                }}
+                QTabWidget#result_tabs::pane, QTableWidget#journal_table {{
+                    background: {c['bg_card']}; color: {c['text']}; border-color: {c['border']};
+                }}
+                QTabWidget#result_tabs QTabBar::tab:!selected,
+                QTabWidget#settings_category_tabs QTabBar::tab:!selected {{
+                    background: {c['tab_bg']}; color: {c['tab_text']};
+                }}
+                QListWidget#files_list, QTextEdit#result_document, QTextEdit#log_document {{ color: {c['text']}; }}
+                QListWidget#files_list::item {{ border-bottom-color: {c['border']}; }}
+                QListWidget#files_list::item:selected, QTableWidget#journal_table::item:selected {{
+                    background: {c['input_sel']}; color: {c['text']};
+                }}
                 QStatusBar {{ background: {c['status_bg']}; color: {c['status_text']}; border-color: {c['border']}; }}
                 QScrollBar::handle:vertical {{ background: {c['scroll_handle']}; }}
             """

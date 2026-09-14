@@ -109,7 +109,6 @@ binaries += onnx_b
 hiddenimports += onnx_h
 
 datas += [
-    (os.path.join(project_root, "src"), "src"),
     (os.path.join(project_root, "assets", "icon.ico"), "."),
     (os.path.join(project_root, "licenses", "parakeet-rs-MIT.md"), "licenses"),
 ]

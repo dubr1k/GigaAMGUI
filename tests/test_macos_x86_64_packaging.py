@@ -198,3 +198,8 @@ def test_onnx_pipeline_imports_without_the_torch_chain():
         timeout=300,
     )
     assert result.returncode == 0, (result.stdout + result.stderr)[-4000:]
+
+
+def test_intel_bundle_does_not_ship_raw_project_sources():
+    spec = SPEC_PATH.read_text(encoding="utf-8")
+    assert '(os.path.join(project_root, "src"), "src")' not in spec

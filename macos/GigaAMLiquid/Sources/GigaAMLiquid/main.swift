@@ -773,9 +773,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             defaults.removeObject(forKey: old)
         }
         if let legacyToken = defaults.string(forKey: "settings.hfToken"), !legacyToken.isEmpty {
-            try? SecureStore.set(legacyToken, for: "hfToken")
+            do {
+                try SecureStore.set(legacyToken, for: "hfToken")
+                defaults.removeObject(forKey: "settings.hfToken")
+            } catch {
+                NSLog("GigaAMLiquid: HF token migration to Keychain failed: %@", error.localizedDescription)
+            }
+        } else {
+            defaults.removeObject(forKey: "settings.hfToken")
         }
-        defaults.removeObject(forKey: "settings.hfToken")
         cleanupDownloadedMedia()
         buildWindow()
         show(page: .processing)
@@ -2211,6 +2217,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             showNotice("Не удалось начать обработку", error.localizedDescription)
             return
         }
+        transcriptionResults.removeAll()
+        selectedResultURL = nil
         transcriptionFiles = selectedFileURLs.map(\.standardizedFileURL)
         for file in transcriptionFiles { fileStates[file] = "В очереди" }
         cancellationRequested = false
@@ -2481,11 +2489,25 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private func cleanupDownloadedMedia() {
         let manager = FileManager.default
         if let cache = mediaCacheRoot(), downloadedMediaRoots.isEmpty {
-            try? manager.removeItem(at: cache)
-        } else {
-            for root in downloadedMediaRoots { try? manager.removeItem(at: root) }
+            guard manager.fileExists(atPath: cache.path) else { return }
+            do {
+                try manager.removeItem(at: cache)
+            } catch {
+                NSLog("GigaAMLiquid: failed to clean media cache %@: %@", cache.path, error.localizedDescription)
+            }
+            return
         }
-        downloadedMediaRoots.removeAll()
+        var failed = Set<URL>()
+        for root in downloadedMediaRoots {
+            guard manager.fileExists(atPath: root.path) else { continue }
+            do {
+                try manager.removeItem(at: root)
+            } catch {
+                failed.insert(root)
+                NSLog("GigaAMLiquid: failed to remove downloaded media %@: %@", root.path, error.localizedDescription)
+            }
+        }
+        downloadedMediaRoots = failed
     }
 
     @objc private func chooseOutputFolder(_ sender: Any?) {

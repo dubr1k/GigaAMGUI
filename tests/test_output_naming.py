@@ -2,7 +2,13 @@
 
 import pytest
 
-from src.utils.output_naming import find_result_file, output_filename, output_path
+from src.utils.output_naming import (
+    find_output_collisions,
+    find_result_file,
+    normalized_output_stem,
+    output_filename,
+    output_path,
+)
 
 
 @pytest.mark.parametrize("fmt,expected", [
@@ -36,3 +42,17 @@ def test_find_result_file(tmp_path):
 
 def test_output_path_join(tmp_path):
     assert output_path(tmp_path, "x", "srt") == str(tmp_path / "x.srt")
+
+
+def test_normalized_output_stem_matches_case_and_unicode_variants():
+    assert normalized_output_stem("/a/Café.wav") == normalized_output_stem("/b/CAFE\u0301.mp3")
+
+
+def test_shared_output_directory_detects_same_stem_collision(tmp_path):
+    files = [str(tmp_path / "a" / "same.wav"), str(tmp_path / "b" / "SAME.mp3")]
+    assert find_output_collisions(files, tmp_path / "out") == [files]
+
+
+def test_separate_source_directories_do_not_collide_without_shared_output(tmp_path):
+    files = [str(tmp_path / "a" / "same.wav"), str(tmp_path / "b" / "same.mp3")]
+    assert find_output_collisions(files, None) == []

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.subtitles import SubtitleOptions
+from src.utils.output_naming import find_output_collisions
 
 
 class TuiWorker:
@@ -61,6 +62,12 @@ class TuiWorker:
         if missing:
             self.emit("error", message=f"Input file does not exist: {missing[0]}")
             return
+        output_dir = str(command.get("output_dir") or "")
+        collisions = find_output_collisions(files, output_dir or None)
+        if collisions:
+            names = ", ".join(sorted(Path(path).name for group in collisions for path in group))
+            self.emit("error", message=f"Input files would overwrite the same output names: {names}")
+            return
         formats = command.get("formats") or ["txt"]
         if not isinstance(formats, list) or not all(isinstance(item, str) for item in formats):
             self.emit("error", message="formats must be an array of strings")
@@ -87,7 +94,7 @@ class TuiWorker:
             target=self._run_batch,
             args=(
                 files,
-                str(command.get("output_dir") or ""),
+                output_dir,
                 formats,
                 bool(command.get("diarization", False)),
                 command.get("diarization_backend") or "pyannote",

@@ -98,6 +98,11 @@ def verify_bundle(bundle_path: str, profile_name: str | None = None) -> int:
         print(f"Expected .app bundle, got {root.name}")
         return 1
 
+    raw_project_sources = root / "Contents" / "Resources" / "src"
+    if raw_project_sources.exists():
+        print(f"Raw project sources must not be shipped: {raw_project_sources}")
+        return 1
+
     if sys.platform != "darwin":
         print("Verification script is macOS-specific; skipping runtime checks")
         return 0

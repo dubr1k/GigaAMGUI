@@ -68,6 +68,7 @@ from src.core.subtitles import SubtitleOptions
 from src.services import transcription_service
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
+from src.utils.output_naming import find_output_collisions
 from src.utils.processing_stats import ProcessingStats
 from src.utils.pyannote_patch import apply_pyannote_patch
 
@@ -184,6 +185,10 @@ def process_files_with_progress(
         список результатов обработки
     """
     output_formats = output_formats or ['txt']
+    collisions = find_output_collisions(files, output_dir or None)
+    if collisions:
+        names = ", ".join(sorted(os.path.basename(path) for group in collisions for path in group))
+        raise ValueError(f"Input files would overwrite the same output names: {names}")
     results = []
 
     with Progress(
@@ -571,6 +576,12 @@ def main(
         output_dir = os.path.dirname(file_list[0]) if file_list else os.getcwd()
 
     logger.info(f"Результаты будут сохранены в: {output_dir}")
+
+    collisions = find_output_collisions(file_list, output_dir or None)
+    if collisions:
+        names = ", ".join(sorted(os.path.basename(path) for group in collisions for path in group))
+        logger.error(f"Файлы перезапишут одинаковые результаты: {names}")
+        sys.exit(2)
 
     # Настройка логирования в файл
     file_logger = setup_logger()
