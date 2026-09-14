@@ -28,7 +28,7 @@ struct PythonRuntime {
         var childEnvironment = environment
         childEnvironment["PYTHONUNBUFFERED"] = "1"
         childEnvironment["PYTHONIOENCODING"] = "utf-8"
-        if companion != nil {
+        if companion != nil && hasBundledModels(root: root) {
             childEnvironment["HF_HUB_OFFLINE"] = "1"
             childEnvironment["TRANSFORMERS_OFFLINE"] = "1"
         }
@@ -48,30 +48,44 @@ struct PythonRuntime {
         return FileManager.default.isExecutableFile(atPath: candidate.path) ? candidate : nil
     }
 
+    private static func hasBundledModels(root: URL) -> Bool {
+        let models = root.appendingPathComponent("models/hf", isDirectory: true)
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: models,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+        return !contents.isEmpty
+    }
+
     private static func projectRoot(environment: [String: String]) throws -> URL {
         let manager = FileManager.default
-        func isProject(_ url: URL) -> Bool {
-            ["app.py", "src/utils/media_downloader.py"].allSatisfy {
+        func isPreparedRoot(_ url: URL) -> Bool {
+            let hasSourceRuntime = ["app.py", "src/utils/media_downloader.py"].allSatisfy {
                 let file = url.appendingPathComponent($0)
                 return (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
             }
+            let companion = url.appendingPathComponent(
+                "GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+            )
+            return hasSourceRuntime || manager.isExecutableFile(atPath: companion.path)
         }
         if let override = environment["GIGAAM_PROJECT_ROOT"], !override.isEmpty {
             let root = URL(fileURLWithPath: (override as NSString).expandingTildeInPath).standardizedFileURL
-            if isProject(root) { return root }
-            throw Failure(message: L10n.text("GIGAAM_PROJECT_ROOT должен указывать на папку проекта с app.py и src/utils/media_downloader.py."))
+            if isPreparedRoot(root) { return root }
+            throw Failure(message: L10n.text("GIGAAM_PROJECT_ROOT должен указывать на папку с GigaAMTranscriber.app или подготовленным Python-проектом."))
         }
         let starts = [Bundle.main.executableURL?.deletingLastPathComponent(), URL(fileURLWithPath: manager.currentDirectoryPath)].compactMap { $0 }
         for start in starts {
             var candidate = start.resolvingSymlinksInPath().standardizedFileURL
             while true {
-                if isProject(candidate) { return candidate }
+                if isPreparedRoot(candidate) { return candidate }
                 let parent = candidate.deletingLastPathComponent().standardizedFileURL
                 if parent.path == candidate.path { break }
                 candidate = parent
             }
         }
-        throw Failure(message: L10n.text("Не найдены файлы загрузчика. Запустите клиент из папки проекта или задайте GIGAAM_PROJECT_ROOT."))
+        throw Failure(message: L10n.text("Не найден GigaAMTranscriber.app или Python runtime. Не перемещайте приложения из папки релиза либо задайте GIGAAM_PROJECT_ROOT."))
     }
 
     private static func pythonURL(root: URL, environment: [String: String]) throws -> URL {

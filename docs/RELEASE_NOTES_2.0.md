@@ -17,10 +17,12 @@
 - Для полностью автономной работы также публикуется
   `GigaAMLiquid-macos-arm64-offline-v2.0.zip` со встроенным frozen runtime и
   моделями. Установка Python и скачивание моделей для него не требуются.
+- Оба Liquid-архива содержат только готовые приложения и необходимые runtime-
+  файлы; исходный код репозитория в релизные ZIP не включается.
 
-Swift-клиент использует Python worker этого проекта. В архив включён исходный
-код, но Python 3.11 и зависимости требуется установить по инструкции в
-`macos/GigaAMLiquid/README.md`. Приложение подписано ad-hoc и не нотарифицировано.
+Swift-клиент использует готовое frozen companion-приложение для Python worker.
+Обычный архив скачивает модели при первом использовании, offline-архив уже
+содержит их. Приложение подписано ad-hoc и не нотарифицировано.
 
 ### Новый Desktop UI
 
@@ -59,11 +61,12 @@ Swift-клиент использует Python worker этого проекта.
 - A self-contained `GigaAMLiquid-macos-arm64-offline-v2.0.zip` is also
   published with the frozen runtime and model files; it requires neither a
   separate Python installation nor model downloads.
+- Both Liquid archives contain only the built applications and required runtime
+  files; the repository source tree is not included in the release ZIPs.
 
-The Swift client delegates inference to this project's Python worker. The
-archive includes the project sources, but Python 3.11 and its dependencies must
-be installed as described in `macos/GigaAMLiquid/README.md`. The app is ad-hoc
-signed and is not notarized.
+The Swift client delegates inference to a frozen companion application. The
+regular archive downloads models on first use, while the offline archive ships
+them. The app is ad-hoc signed and is not notarized.
 
 ### Redesigned Desktop UI
 

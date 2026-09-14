@@ -605,6 +605,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Download online Python companion
+        uses: actions/download-artifact@v8
+        with:
+          path: companion-online
+          pattern: GigaAMTranscriber-macos-app-v*
+          merge-multiple: true
+
       - name: Download offline Python companion
         uses: actions/download-artifact@v8
         with:
@@ -654,11 +661,17 @@ jobs:
           </plist>
           PLIST
 
-          # The native client delegates model work to the repository's Python
-          # worker. Ship the tracked project beside the .app so runtime discovery
-          # works immediately after extraction; dependencies are installed by
-          # the user according to the included Swift client README.
-          git archive HEAD | tar -x -C "stage/$PRODUCT"
+          # Ship only the frozen companion application. The release must not
+          # expose the repository sources or require a separate Python install.
+          COMPANION_ARCHIVE=$(find companion-online -type f -name 'GigaAMTranscriber-macos-app-v*.zip' -print -quit)
+          test -n "$COMPANION_ARCHIVE"
+          unzip -q "$COMPANION_ARCHIVE" -d "stage/$PRODUCT"
+          COMPANION="stage/$PRODUCT/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+          test -x "$COMPANION"
+          test ! -e "stage/$PRODUCT/app.py"
+          test ! -e "stage/$PRODUCT/src"
+          printf '{"type":"ping"}\n' | "$COMPANION" --native-worker > "${RUNNER_TEMP}/native-worker-online.jsonl"
+          grep -q '"type": "pong"' "${RUNNER_TEMP}/native-worker-online.jsonl"
 
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict "$APP"
@@ -691,7 +704,6 @@ jobs:
           SWIFT_APP="$ROOT/GigaAMLiquid.app"
 
           mkdir -p "$ROOT"
-          git archive HEAD | tar -x -C "$ROOT"
           ditto "stage/$PRODUCT/GigaAMLiquid.app" "$SWIFT_APP"
 
           COMPANION_ARCHIVE=$(find companion-offline -type f -name 'GigaAMTranscriber-macos-app-offline-*.zip' -print -quit)
@@ -702,6 +714,8 @@ jobs:
           test -x "$COMPANION"
           test -d "$ROOT/models/hf"
           test -n "$(find "$ROOT/models/hf" -type f -print -quit)"
+          test ! -e "$ROOT/app.py"
+          test ! -e "$ROOT/src"
           test "$(lipo -archs "$COMPANION")" = "arm64"
           codesign --verify --deep --strict "$SWIFT_APP"
 

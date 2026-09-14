@@ -13,6 +13,12 @@ def test_swift_release_job_builds_and_archives_native_app() -> None:
     assert "GigaAMLiquid-macos-arm64-${SAFE_REF_NAME}" in text
     assert "GigaAMLiquid-macos-arm64-offline-${SAFE_REF_NAME}" in text
     assert "--native-worker" in text
+    assert "git archive HEAD" not in text
+    assert "pattern: GigaAMTranscriber-macos-app-v*" in text
+    assert 'test ! -e "stage/$PRODUCT/app.py"' in text
+    assert 'test ! -e "stage/$PRODUCT/src"' in text
+    assert 'test ! -e "$ROOT/app.py"' in text
+    assert 'test ! -e "$ROOT/src"' in text
 
 
 def test_release_waits_for_and_downloads_swift_artifact() -> None:
@@ -21,11 +27,11 @@ def test_release_waits_for_and_downloads_swift_artifact() -> None:
     assert "pattern: GigaAM*" in text
 
 
-def test_swift_client_documents_python_runtime_requirements() -> None:
+def test_swift_client_documents_bundled_companion_runtime() -> None:
     text = Path("macos/GigaAMLiquid/README.md").read_text(encoding="utf-8")
-    assert "Python 3.11" in text
-    assert "GIGAAM_PROJECT_ROOT" in text
-    assert "GIGAAM_PYTHON" in text
+    assert "GigaAMTranscriber.app" in text
+    assert "do not require a separately installed Python environment" in text
+    assert "downloads model files when they are first needed" in text
 
 
 def test_hugging_face_token_uses_keychain_instead_of_user_defaults() -> None:
@@ -49,6 +55,8 @@ def test_swift_runtime_prefers_frozen_offline_companion() -> None:
     runtime = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/PythonRuntime.swift").read_text(encoding="utf-8")
     assert "GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber" in runtime
     assert 'frozenCompanion ? ["--native-worker"]' in runtime
+    assert "hasSourceRuntime || manager.isExecutableFile" in runtime
+    assert "companion != nil && hasBundledModels(root: root)" in runtime
     assert 'childEnvironment["HF_HUB_OFFLINE"] = "1"' in runtime
 
 
