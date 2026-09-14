@@ -10,6 +10,7 @@ def test_pull_requests_have_ci_gate() -> None:
     assert "test_release_hardening.py" in workflow
     assert "npm ci" in workflow
     assert "cargo metadata --locked" in workflow
+    assert "runs-on: macos-26" in workflow
     assert "swift build -c release" in workflow
 
 

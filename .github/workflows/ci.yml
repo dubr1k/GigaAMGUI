@@ -51,7 +51,8 @@ jobs:
 
   swift-build:
     name: Swift client build
-    runs-on: macos-14
+    # NSGlassEffectView requires the macOS 26 SDK; deployment remains macOS 13.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
       - name: Build native client
