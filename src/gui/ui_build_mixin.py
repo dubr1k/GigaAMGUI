@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .. import __version__ as APP_VERSION
 from ..config import APP_TITLE, OUTPUT_FORMATS
 
 
@@ -710,8 +711,8 @@ class UiBuildMixin:
         QMessageBox.about(
             self, self._t("О программе", "About"),
             self._t(
-                f"<b>{APP_TITLE}</b><br><br>Локальная транскрибация аудио и видео на GigaAM v3.",
-                f"<b>{APP_TITLE}</b><br><br>Local audio and video transcription powered by GigaAM v3.",
+                f"<b>{APP_TITLE}</b><br>Версия {APP_VERSION}<br><br>Локальная транскрибация аудио и видео на GigaAM v3.",
+                f"<b>{APP_TITLE}</b><br>Version {APP_VERSION}<br><br>Local audio and video transcription powered by GigaAM v3.",
             ),
         )
 

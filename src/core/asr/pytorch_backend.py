@@ -22,6 +22,7 @@ from .chunking import (
     normalize_chunk_words,
     plan_audio_chunks,
     stitch_overlapping_text,
+    vad_regions_miss_active_audio,
 )
 from .types import BackendCapabilities, TranscriptionSegment, TranscriptionWord, normalize_window_audio
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
@@ -340,13 +341,26 @@ class PyTorchBackend:
                     audio_path,
                     audio_duration=total_seconds,
                 )
-                self.segmentation_mode = "vad"
-                self.segmentation_fallback_reason = None
-                chunks = safe_overlap_chunks(
-                    boundaries,
-                    max_chunk_seconds=30.0,
-                )
-                if self._logger is not None:
+                if vad_regions_miss_active_audio(audio, boundaries, sample_rate=sample_rate):
+                    self.segmentation_mode = "overlap_chunks"
+                    self.segmentation_fallback_reason = (
+                        "VAD пропустил длинный участок с активным звуком; "
+                        "использовано полное разбиение по тихим точкам с перекрытием"
+                    )
+                    if self._logger is not None:
+                        self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                    chunks = safe_overlap_chunks(
+                        [(0.0, total_seconds)],
+                        max_chunk_seconds=20.0,
+                    )
+                else:
+                    self.segmentation_mode = "vad"
+                    self.segmentation_fallback_reason = None
+                    chunks = safe_overlap_chunks(
+                        boundaries,
+                        max_chunk_seconds=30.0,
+                    )
+                if self._logger is not None and self.segmentation_mode == "vad":
                     self._logger(
                         "ASR сегментация: VAD, "
                         f"речевых областей: {len(boundaries)}, окон декодера: {len(chunks)}"

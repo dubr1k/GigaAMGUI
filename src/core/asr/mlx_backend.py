@@ -15,6 +15,7 @@ from .chunking import (
     normalize_chunk_words,
     plan_audio_chunks,
     stitch_overlapping_text,
+    vad_regions_miss_active_audio,
 )
 from .token_timestamps import tokens_to_words
 from .types import BackendCapabilities, TranscriptionSegment, normalize_window_audio
@@ -315,6 +316,15 @@ class MLXBackend:
                 self._vad_fallback_reason(exc),
             )
 
+        gm = self._gigaam_mlx
+        if gm is None:
+            raise RuntimeError("MLX backend is not initialized")
+        if vad_regions_miss_active_audio(audio, boundaries, sample_rate=gm.audio.SAMPLE_RATE):
+            return self._use_overlap_chunks(
+                audio,
+                "VAD пропустил длинный участок с активным звуком; "
+                "использовано полное разбиение MLX по тихим точкам с перекрытием",
+            )
         self.segmentation_mode = "vad"
         self.segmentation_fallback_reason = None
         chunks = self._chunks_from_vad_boundaries(audio, boundaries)

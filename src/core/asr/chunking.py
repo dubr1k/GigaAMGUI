@@ -64,6 +64,69 @@ def _lowest_energy_cut(
     return lower + best + width // 2
 
 
+def vad_regions_miss_active_audio(
+    audio: Any,
+    regions: list[tuple[float, float]],
+    *,
+    sample_rate: int,
+    min_gap_seconds: float = 8.0,
+    window_seconds: float = 0.5,
+    min_active_fraction: float = 0.2,
+) -> bool:
+    """Detect long energetic gaps omitted by VAD and requiring full coverage.
+
+    VAD is an optimization, not permission to discard the rest of the file.
+    Archival/noisy speech can be rejected after applause or music. A long gap is
+    suspicious only when a meaningful fraction of its windows has real signal;
+    silent tails therefore keep the efficient VAD path.
+    """
+    if sample_rate <= 0 or not regions:
+        return False
+    values = _as_mono_array(audio)
+    if not len(values):
+        return False
+    total_seconds = float(len(values)) / sample_rate
+    valid = sorted(
+        (max(0.0, float(start)), min(total_seconds, float(end)))
+        for start, end in regions
+        if float(end) > float(start)
+    )
+    valid = [(start, end) for start, end in valid if end > start]
+    if not valid:
+        return False
+
+    gaps: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in valid:
+        if start > cursor:
+            gaps.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < total_seconds:
+        gaps.append((cursor, total_seconds))
+
+    window_samples = max(1, int(window_seconds * sample_rate))
+
+    def window_rms(segment: np.ndarray) -> np.ndarray:
+        count = len(segment) // window_samples
+        if count <= 0:
+            return np.empty(0, dtype=np.float64)
+        framed = segment[: count * window_samples].reshape(count, window_samples)
+        return np.sqrt(np.mean(np.square(framed, dtype=np.float64), axis=1))
+
+    reference = window_rms(values)
+    if not len(reference):
+        return False
+    activity_threshold = max(1e-4, float(np.percentile(reference, 90)) * 0.1)
+    for start, end in gaps:
+        if end - start < min_gap_seconds:
+            continue
+        gap = values[int(start * sample_rate) : int(end * sample_rate)]
+        levels = window_rms(gap)
+        if len(levels) and float(np.mean(levels >= activity_threshold)) >= min_active_fraction:
+            return True
+    return False
+
+
 def plan_audio_chunks(
     audio: Any,
     regions: list[tuple[float, float]],

@@ -1577,11 +1577,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(toggleRow("Анимации", key: "settings.animations", defaultValue: true))
         case "О приложении":
             body.spacing = 18
+            let releaseVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
             body.addArrangedSubview(label("GigaAM v3 Transcriber", size: 22, weight: .medium, color: Palette.ink))
             body.addArrangedSubview(wrappedLabel("Транскрибация русской речи из аудио и видео на базе GigaAM-v3.", size: 14, color: Palette.body))
             body.addArrangedSubview(divider())
-            body.addArrangedSubview(settingsField("Релиз основного приложения", control: label("1.3.0", size: 15, color: Palette.ink)))
-            body.addArrangedSubview(wrappedLabel("Этот интерфейс — нативный клиент AppKit без отдельного номера релиза. Импорт медиа и распознавание речи используют Python-сервисы проекта. Live и LLM пока не подключены.", size: 13, color: Palette.body))
+            body.addArrangedSubview(settingsField("Версия приложения", control: label(releaseVersion, size: 15, color: Palette.ink)))
+            body.addArrangedSubview(wrappedLabel("Импорт медиа и распознавание речи используют встроенные Python-сервисы проекта. Live и LLM пока не подключены.", size: 13, color: Palette.body))
             body.addArrangedSubview(label("Разработчики приложения", size: 12, color: Palette.muted))
             let developers = ["dubr1k", "Baggrisha"].map { name in
                 let link = button(name, action: #selector(openDeveloper(_:)))

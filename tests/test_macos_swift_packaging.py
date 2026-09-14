@@ -91,3 +91,11 @@ def test_downloaded_media_cleanup_retains_failed_roots_for_retry() -> None:
     assert "failed.insert(root)" in cleanup
     assert "downloadedMediaRoots = failed" in cleanup
     assert "NSLog" in cleanup
+
+
+def test_appkit_about_uses_bundle_release_version():
+    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    about = main.split('case "О приложении":', 1)[1].split("default: break", 1)[0]
+    assert 'CFBundleShortVersionString' in about
+    assert 'settingsField("Версия приложения"' in about
+    assert 'label("1.3.0"' not in about

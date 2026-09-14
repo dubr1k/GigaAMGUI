@@ -10,7 +10,12 @@ import numpy as np
 
 from ...config import ASR_SEGMENTATION_MODE
 from ...utils.model_cache import resolve_model_dir
-from .chunking import normalize_chunk_words, plan_audio_chunks, stitch_overlapping_text
+from .chunking import (
+    normalize_chunk_words,
+    plan_audio_chunks,
+    stitch_overlapping_text,
+    vad_regions_miss_active_audio,
+)
 from .models import onnx_model_name, onnx_model_repo, validate_asr_model
 from .onnx_provider import (
     ProviderSelection,
@@ -289,14 +294,29 @@ class OnnxBackend:
                     audio_path,
                     audio_duration=total_seconds,
                 )
-                chunks = plan_audio_chunks(
-                    audio,
-                    boundaries,
-                    sample_rate=sample_rate,
-                    max_chunk_seconds=20.0,
-                )
-                self.segmentation_mode = "vad"
-                self.segmentation_fallback_reason = None
+                if vad_regions_miss_active_audio(audio, boundaries, sample_rate=sample_rate):
+                    chunks = plan_audio_chunks(
+                        audio,
+                        [(0.0, total_seconds)],
+                        sample_rate=sample_rate,
+                        max_chunk_seconds=20.0,
+                    )
+                    self.segmentation_mode = "overlap_chunks"
+                    self.segmentation_fallback_reason = (
+                        "VAD пропустил длинный участок с активным звуком; "
+                        "использовано полное разбиение по тихим точкам с перекрытием"
+                    )
+                    if self._logger:
+                        self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                else:
+                    chunks = plan_audio_chunks(
+                        audio,
+                        boundaries,
+                        sample_rate=sample_rate,
+                        max_chunk_seconds=20.0,
+                    )
+                    self.segmentation_mode = "vad"
+                    self.segmentation_fallback_reason = None
             except Exception as exc:
                 chunks = plan_audio_chunks(
                     audio,

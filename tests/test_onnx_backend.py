@@ -318,6 +318,41 @@ def test_vad_boundaries_drive_chunk_boundaries(tmp_path):
     assert backend.capabilities().segmentation_fallback_reason is None
 
 
+def test_vad_active_tail_gap_uses_full_overlap_coverage(tmp_path):
+    wav_path = tmp_path / "issue-52.wav"
+    audio = np.zeros(40 * 16000, dtype=np.float32)
+    audio[:10 * 16000] = 0.2
+    audio[18 * 16000:38 * 16000] = 0.15
+    sf.write(wav_path, audio, 16000)
+    model = _FakeTimestampModel(
+        [
+            SimpleNamespace(text=f"уникальный фрагмент {index}", tokens=None, timestamps=None)
+            for index in range(3)
+        ]
+    )
+
+    class _Segmenter:
+        def segment_file(self, audio_path, *, audio_duration):
+            assert audio_path == str(wav_path)
+            assert audio_duration == 40.0
+            return [(0.0, 10.0)]
+
+    backend = OnnxBackend(
+        segmentation_mode="vad",
+        model_factory=lambda *args, **kwargs: model,
+        available_provider_probe=lambda: ("CPUExecutionProvider",),
+        vad_segmenter_factory=lambda **kwargs: _Segmenter(),
+    )
+    assert backend.load()
+
+    result = backend.transcribe_longform(str(wav_path))
+
+    assert result[-1]["boundaries"][1] == 40.0
+    capabilities = backend.capabilities()
+    assert capabilities.segmentation_mode == "overlap_chunks"
+    assert "пропустил длинный участок" in capabilities.segmentation_fallback_reason
+
+
 def test_vad_failure_uses_overlap_fallback_with_visible_reason(tmp_path):
     wav_path = tmp_path / "vad-failure.wav"
     sf.write(wav_path, np.zeros(16000, dtype=np.float32), 16000)

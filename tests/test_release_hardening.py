@@ -28,3 +28,23 @@ def test_tauri_api_examples_match_authenticated_v1_contract() -> None:
         assert "enable_diarization" in text
         assert "/api/transcribe" not in text
         assert '"diarize"' not in text
+
+
+def test_all_desktop_version_sources_match_release():
+    import json
+
+    expected = "2.0.1"
+    assert f'__version__ = "{expected}"' in Path("src/__init__.py").read_text(encoding="utf-8")
+    assert f'APP_VERSION = "{expected}"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
+    assert json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))["version"] == expected
+    assert json.loads(Path("desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"] == expected
+    assert f'version = "{expected}"' in Path("desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8")
+    assert f'name = "gigaam-desktop"\nversion = "{expected}"' in Path("desktop/src-tauri/Cargo.lock").read_text(encoding="utf-8")
+
+
+def test_pyqt_about_displays_release_version():
+    source = Path("src/gui/ui_build_mixin.py").read_text(encoding="utf-8")
+    about = source.split("def _show_about", 1)[1].split("def _make_progress_bar", 1)[0]
+    assert "APP_VERSION" in about
+    assert "Версия {APP_VERSION}" in about
+    assert "Version {APP_VERSION}" in about

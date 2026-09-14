@@ -16,6 +16,11 @@
   не сохраняет его в `localStorage`.
 - Загруженные по URL временные медиа удаляются при очистке списка и завершении
   работы приложения.
+- В окне «О программе» отображается фактическая версия релиза; версии PyQt,
+  AppKit, Tauri, npm и Cargo синхронизированы (`#51`).
+- VAD больше не может молча отбросить длинный активный участок аудио: если после
+  аплодисментов, музыки или шума остаётся нераспознанная активная дорожка,
+  включается полное overlap-разбиение файла (`#52`).
 - Исправлены примеры Tauri API: endpoint `/api/v1/transcribe`, актуальные query-
   параметры и обязательный заголовок `X-API-Key`.
 - Добавлены lock-файлы npm/Cargo и CI-проверки для pull request: Ruff,
@@ -31,6 +36,7 @@
 
 This patch release removes repository sources from GigaAMLiquid archives,
 prevents output-name collisions and stale batch results, restores the saved
-PyQt dark theme, protects the HF token, cleans downloaded media caches, fixes
-the Tauri API examples, adds npm/Cargo lockfiles, and introduces pull-request
-CI checks.
+PyQt dark theme, protects the HF token, cleans downloaded media caches, shows
+the real application version, prevents VAD from dropping long active audio
+regions, fixes the Tauri API examples, adds npm/Cargo lockfiles, and introduces
+pull-request CI checks.
