@@ -83,10 +83,9 @@ def test_processing_tab_in_scroll_area_no_overlap_when_short():
 
     proc_scroll = window.tabs.widget(0)
     assert isinstance(proc_scroll, QScrollArea)
-    content = proc_scroll.widget()
-    start_bottom = window.btn_start.mapTo(content, window.btn_start.rect().bottomLeft()).y()
-    clear_top = window.btn_clear.mapTo(content, window.btn_clear.rect().topLeft()).y()
-    assert start_bottom <= clear_top  # нет вертикального наложения
+    assert window.btn_start.isVisible()
+    assert window.btn_clear.isVisible()
+    assert not window.btn_start.geometry().intersects(window.btn_clear.geometry())
     window.close()
 
 
@@ -103,6 +102,35 @@ def test_default_size_needs_no_scroll():
     assert proc_scroll.horizontalScrollBar().maximum() == 0
     window.close()
 
+def test_compact_workspaces_fit_without_scrollbars():
+    """The three active workspaces retain the 760×440 desktop footprint."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    window.show()
+    app.processEvents()
+
+    assert window.size().width() == 760
+    assert window.size().height() == 440
+    for index in (0, 1, 2):
+        window.tabs.setCurrentIndex(index)
+        app.processEvents()
+        scroll = window.tabs.widget(index)
+        assert scroll.horizontalScrollBar().maximum() == 0
+        assert scroll.verticalScrollBar().maximum() == 0
+    window.close()
+
+def test_desktop_sidebar_stays_visible_with_large_ui_scale(monkeypatch):
+    monkeypatch.setenv("GIGAAM_UI_SCALE", "1.75")
+    app = QApplication.instance() or QApplication([])
+    window = GigaTranscriberQtApp()
+    window.resize(1568, 900)
+    window.show()
+    app.processEvents()
+
+    assert window._sidebar.isVisible()
+    window.close()
+
 
 def test_log_is_on_dedicated_tab():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -110,11 +138,14 @@ def test_log_is_on_dedicated_tab():
     window = GigaTranscriberQtApp()
     window._lang = "ru"
     window._apply_language()
-    assert window.tabs.count() == 4
-    assert window.tabs.tabText(0) == "Обработка"
-    assert window.tabs.tabText(1) == "Live"
-    assert window.tabs.tabText(2) == "LLM"
-    assert "Журнал" in window.tabs.tabText(3)
+    assert [window.tabs.tabText(index) for index in range(window.tabs.count())] == [
+        "Обработка",
+        "Live",
+        "LLM",
+        "API",
+        "Журнал",
+        "Настройки",
+    ]
     # Журнал лежит на отдельной вкладке, и логирование в него работает
     window.log("тестовое сообщение")
     assert "тестовое сообщение" in window.log_text.toPlainText()
@@ -136,7 +167,7 @@ def test_hf_token_button_always_opens_token_dialog(monkeypatch):
     window.close()
 
 
-def test_hf_token_button_is_retranslated():
+def test_hf_token_button_keeps_a_translated_accessible_description():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
@@ -144,7 +175,8 @@ def test_hf_token_button_is_retranslated():
     window._lang = "en"
     window._apply_language()
 
-    assert window.btn_hf_token.text() == "Set / change HF token"
+    assert window.btn_hf_token.text() == "HF"
+    assert "token" in window.btn_hf_token.toolTip().lower()
     window.close()
 
 
@@ -469,6 +501,29 @@ def test_processing_snapshot_captures_hf_token(monkeypatch):
     window._start_processing_thread()
 
     assert captured["kwargs"]["snapshot"]["hf_token"] == "token-at-start"
+    window.is_processing = False
+    window.close()
+
+
+def test_new_processing_batch_clears_previous_result_state(monkeypatch):
+    window = _new_window()
+    window.files_to_process = ["/tmp/input.wav"]
+    window._last_generated_transcript_files = ["/tmp/old.txt"]
+    window._last_processing_results = [{"file_path": "/tmp/old.wav"}]
+
+    class FakeThread:
+        def __init__(self, *, target, kwargs, daemon):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(threading, "Thread", FakeThread)
+
+    window._start_processing_thread()
+
+    assert window._last_generated_transcript_files == []
+    assert window._last_processing_results == []
     window.is_processing = False
     window.close()
 

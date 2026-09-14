@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f6f8fb" />
+    <title>GigaAMGUI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar glass-surface" aria-label="Навигация">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div>
+            <strong>GigaAM v3</strong>
+            <span>Транскрибация аудио и видео</span>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="Разделы приложения">
+          <button id="processing" class="nav-item active" type="button" data-page-target="processing"><span aria-hidden="true">⇪</span>Обработка</button>
+          <button id="result" class="nav-item" type="button" data-page-target="result"><span aria-hidden="true">▤</span>Результат</button>
+          <button id="live" class="nav-item" type="button" data-page-target="live"><span aria-hidden="true">●</span>Live</button>
+          <button id="llm" class="nav-item" type="button" data-page-target="llm"><span aria-hidden="true">✦</span>LLM</button>
+          <button id="api" class="nav-item" type="button" data-page-target="api"><span aria-hidden="true">⌘</span>API</button>
+          <button id="history" class="nav-item" type="button" data-page-target="history"><span aria-hidden="true">◷</span>Журнал</button>
+          <button id="settings" class="nav-item" type="button" data-page-target="settings"><span aria-hidden="true">⚙</span>Настройки</button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <strong>GigaAMGUI v3</strong>
+          <span>Локально. Быстро. Точно.</span>
+        </div>
+      </aside>
+
+      <main class="workspace glass-surface">
+        <header class="toolbar" aria-label="Панель инструментов">
+          <label class="search-field" for="global-search">
+            <span aria-hidden="true">⌕</span>
+            <input id="global-search" type="search" placeholder="Поиск файлов, транскрипций, заметок..." autocomplete="off" />
+            <kbd>Ctrl K</kbd>
+          </label>
+          <div class="toolbar-actions">
+            <button class="icon-button" id="search-focus" type="button" aria-label="Открыть поиск">⌕</button>
+            <button class="icon-button" id="appearance-button" type="button" aria-label="Изменить вид">◌</button>
+            <span class="language-pill" aria-label="Язык интерфейса">RU</span>
+            <span class="greeting">Приятной работы!</span>
+          </div>
+        </header>
+
+        <div class="main-scroll">
+          <section class="page active" data-page="processing" aria-labelledby="processing-title">
+            <div class="page-heading">
+              <h1 id="processing-title">Обработка</h1>
+              <p>Загрузите аудио или видео и настройте параметры.</p>
+            </div>
+
+            <div class="content-stack">
+              <div class="processing-grid">
+                <article class="card file-upload-card">
+                  <div class="card-title-row"><h2>Загрузка файлов</h2></div>
+                  <div class="drop-zone">
+                    <span class="drop-icon" aria-hidden="true">⇪</span>
+                    <strong>Перетащите сюда аудио или видео</strong>
+                    <span>.wav, .mp3, .m4a, .mp4, .mov, .mkv</span>
+                    <div class="action-row centered">
+                      <label class="button button-dark" for="media-files">Выбрать файлы</label>
+                      <button class="button" id="media-link-button" type="button">Ссылка на медиа</button>
+                    </div>
+                    <input id="media-files" type="file" multiple accept="audio/*,video/*,.m4a,.mkv" hidden />
+                  </div>
+                  <label class="field media-link-field" hidden>
+                    <span>Ссылка на медиа</span>
+                    <input type="url" placeholder="https://…" inputmode="url" />
+                  </label>
+                </article>
+
+                <article class="card settings-card">
+                  <h2>Настройки обработки</h2>
+                  <label class="field"><span>Режим</span><select><option>Авто (рекомендуется)</option><option>Точная расшифровка</option></select></label>
+                  <label class="field"><span>Движок</span><select><option>GigaAM-v3</option></select></label>
+                  <label class="field"><span>Язык</span><select><option>Русский</option></select></label>
+                  <label class="field"><span>Кол-во спикеров</span><select><option>Авто</option><option>2</option><option>3</option></select></label>
+                  <label class="switch-row"><input type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Диаризация спикеров</span></label>
+                </article>
+              </div>
+
+              <div class="processing-grid">
+                <article class="card selected-files-card">
+                  <div class="card-title-row"><h2>Выбранные файлы</h2><button class="text-button" id="clear-files" type="button" disabled>Очистить</button></div>
+                  <div id="selected-files" class="empty-state compact"><span class="empty-icon" aria-hidden="true">◌</span><strong>Файлы пока не выбраны</strong><p>Выберите аудио или видео, чтобы добавить их в очередь.</p></div>
+                </article>
+                <article class="card output-card">
+                  <h2>Форматы вывода</h2>
+                  <div class="checkbox-grid">
+                    <label><input type="checkbox" checked />Текст (.txt)</label>
+                    <label><input type="checkbox" checked />Таймкоды (.txt)</label>
+                    <label><input type="checkbox" />Markdown (.md)</label>
+                    <label><input type="checkbox" />SRT (.srt)</label>
+                    <label><input type="checkbox" />VTT (.vtt)</label>
+                  </div>
+                  <div class="section-divider"></div>
+                  <h3>Настройки субтитров</h3>
+                  <div class="inline-fields"><label class="field"><span>Строк в блоке</span><select><option>2</option><option>1</option><option>3</option></select></label><label class="field"><span>Символов</span><select><option>64</option><option>48</option><option>80</option></select></label></div>
+                  <label class="switch-row"><input type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Разбивать по предложениям</span></label>
+                </article>
+              </div>
+
+              <article class="card save-location-card">
+                <h2>Папка сохранения результатов</h2>
+                <div class="action-row"><input aria-label="Папка сохранения результатов" value="Выберите папку после подключения worker" readonly /><button class="button" type="button" data-notice="Выбор папки будет доступен после подключения локального worker.">Изменить</button></div>
+              </article>
+              <button class="button button-dark button-primary" type="button" data-notice="Обработка станет доступна после подключения локального worker.">Запустить обработку</button>
+              <div class="progress-row"><strong>Общий прогресс</strong><div class="progress-track" aria-label="Общий прогресс: 0%"><span></span></div><span>0%</span><span class="muted">Готов к работе</span></div>
+            </div>
+          </section>
+
+          <section class="page" data-page="result" aria-labelledby="result-title" hidden>
+            <div class="page-heading"><h1 id="result-title">Результат обработки</h1><p>Файл обработан. Прослушайте запись и работайте с транскрипцией.</p></div>
+            <div class="result-grid">
+              <article class="card result-main-card">
+                <div class="card-title-row"><div><h2>Результат</h2><p class="muted">Текущая сессия не содержит готовых транскрипций.</p></div></div>
+                <div class="empty-state result-empty"><span class="empty-icon" aria-hidden="true">▤</span><strong>Нет готового результата</strong><p>После завершения обработки здесь появятся плеер, транскрипция и экспорт.</p><button class="button" type="button" data-page-target="processing">Перейти к обработке</button></div>
+              </article>
+              <aside class="card result-side-card">
+                <h2>Полезное</h2>
+                <h3>Действия</h3>
+                <div class="button-stack"><button class="button" type="button" disabled>Скачать все</button><button class="button" type="button" disabled>Копировать текст</button><button class="button" type="button" disabled>Скачать SRT</button><button class="button" type="button" disabled>Скачать Markdown</button><button class="button" type="button" disabled>Скачать JSON</button></div>
+                <div class="section-divider"></div>
+                <h3>Ключевые темы</h3>
+                <p class="muted">Появятся вместе с готовым результатом.</p>
+              </aside>
+            </div>
+          </section>
+
+          <section class="page" data-page="live" aria-labelledby="live-title" hidden>
+            <div class="page-heading"><h1 id="live-title">Live</h1><p>Захват в реальном времени и мгновенная транскрипция.</p></div>
+            <div class="live-top-grid">
+              <article class="card"><h2>Источник аудио</h2><label class="field"><span>Микрофон</span><select><option>Не подключен</option></select></label><label class="field"><span>Системный звук</span><select><option>Выкл.</option></select></label><label class="switch-row"><input type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Записывать дорожку микрофона</span></label><label class="switch-row"><input type="checkbox" /><span class="switch" aria-hidden="true"></span><span>Записывать системный звук</span></label><label class="field"><span>Диаризация</span><select><option>Включено</option><option>Выключено</option></select></label></article>
+              <article class="card live-recorder-card"><h2>Запись</h2><div class="recorder-status"><strong>00:00:00</strong><span>Захват не запущен</span></div><div class="wave-placeholder" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="action-row centered"><button class="icon-button" type="button" data-notice="Локальный захват будет доступен после подключения worker." aria-label="Начать запись">●</button><button class="icon-button icon-primary" type="button" data-notice="Локальный захват будет доступен после подключения worker." aria-label="Остановить запись">■</button><button class="icon-button" type="button" data-notice="Локальный захват будет доступен после подключения worker." aria-label="Пауза">❚❚</button></div></article>
+              <article class="card"><h2>Параметры</h2><label class="field"><span>Язык аудио</span><select><option>Русский</option></select></label><label class="field"><span>Движок</span><select><option>Pyannote 3.1</option></select></label><label class="field"><span>Кол-во спикеров</span><select><option>Авто</option></select></label><div class="checkbox-grid single"><label><input type="checkbox" checked />TXT (.txt)</label><label><input type="checkbox" checked />SRT (.srt)</label><label><input type="checkbox" checked />Разбивать по предложениям</label></div></article>
+            </div>
+            <article class="card live-transcript-card"><div class="card-title-row"><div><h2>Live transcript</h2><p class="muted">Сегменты появятся, когда начнется реальный захват.</p></div><div class="action-row"><button class="button" type="button" disabled>Сохранить запись</button><button class="button button-dark" type="button" disabled>Готово</button></div></div><div class="empty-state compact"><span class="empty-icon" aria-hidden="true">◌</span><strong>Транскрипт пока пуст</strong><p>Подключите источник аудио и запустите запись.</p></div></article>
+          </section>
+
+          <section class="page" data-page="llm" aria-labelledby="llm-title" hidden>
+            <div class="page-heading"><h1 id="llm-title">LLM</h1><p>Постобработка транскрипций и работа с пользовательскими промптами.</p></div>
+            <div class="llm-grid">
+              <article class="card llm-source-card"><h2>Исходный текст</h2><label class="button button-file" for="transcript-file">Выбрать файл с транскриптом</label><input id="transcript-file" type="file" accept=".txt,.md,.srt,.vtt" hidden /><label class="field text-area-field"><span>или вставьте текст</span><textarea id="llm-source" rows="12" placeholder="Вставьте сюда транскрипт или используйте файл из предыдущей обработки."></textarea></label><label class="field"><span>Провайдер</span><select data-setting="llmProvider"><option>OpenAI-compatible</option><option>Anthropic</option><option>Локальный CLI</option></select></label><label class="field"><span>Модель</span><input data-setting="llmModel" value="gpt-4.1-mini" /></label></article>
+              <article class="card llm-templates-card"><h2>Шаблоны</h2><div class="template-stack"><button class="template active" type="button" data-template="summary"><strong>Краткое содержание</strong><span>Сжать текст в тезисы</span></button><button class="template" type="button" data-template="tasks"><strong>Извлечение задач</strong><span>Выделить action items</span></button><button class="template" type="button" data-template="custom"><strong>Свой промпт</strong><span>Использовать инструкцию</span></button></div><label class="field text-area-field"><span>Пользовательский промпт</span><textarea id="llm-prompt" rows="6" placeholder="Например: сделай краткое содержание и выдели основные решения по встрече."></textarea></label><button class="button button-dark" id="llm-run" type="button">Запустить обработку</button></article>
+              <article class="card llm-result-card"><h2>Результат</h2><div class="empty-state"><span class="empty-icon" aria-hidden="true">✦</span><strong>Нет результата LLM</strong><p>Добавьте исходный текст и подключите совместимый провайдер, чтобы получить результат.</p></div><div class="action-row"><button class="button" type="button" disabled>Копировать</button><button class="button" type="button" disabled>Скачать (.md)</button></div></article>
+            </div>
+          </section>
+
+          <section class="page" data-page="api" aria-labelledby="api-title" hidden>
+            <div class="page-heading"><h1 id="api-title">API</h1><p>Рабочая документация и примеры запросов внутри приложения.</p></div>
+            <div class="api-grid">
+              <article class="card api-examples-card"><h2>Примеры запросов</h2><div class="api-status"><span class="status-dot inactive" aria-hidden="true"></span><div><span class="eyebrow">Статус API</span><strong>Не подключен</strong><p>Проверка локального API появится после подключения worker.</p></div></div><div class="action-row"><button class="button" id="copy-api-url" type="button">Скопировать URL</button><button class="button button-dark" type="button" data-notice="Документация откроется после подключения локального API.">Открыть документацию</button></div><div class="segmented" role="tablist" aria-label="Язык примера"><button class="active" type="button" data-code-language="python">Python</button><button type="button" data-code-language="curl">cURL</button><button type="button" data-code-language="javascript">JavaScript</button></div><pre id="api-code"><code>import requests
+
+url = "http://127.0.0.1:8000/api/transcribe"
+files = {"file": open("audio.mp3", "rb")}
+data = {"language": "ru", "diarize": True}
+response = requests.post(url, files=files, data=data)</code></pre><button class="button" id="copy-api-code" type="button">Копировать пример</button></article>
+              <aside class="card api-docs-card"><h2>Документация</h2><div class="documentation-list"><button type="button">Быстрый старт <span>›</span></button><button type="button">Эндпоинты <span>›</span></button><button type="button">Параметры <span>›</span></button><button type="button">Примеры <span>›</span></button><button type="button">Форматы ответов <span>›</span></button><button type="button">Скачать OpenAPI (JSON) <span>›</span></button></div></aside>
+            </div>
+          </section>
+
+          <section class="page" data-page="history" aria-labelledby="history-title" hidden>
+            <div class="page-heading"><h1 id="history-title">Журнал</h1><p>История обработок, статусов и готовых результатов.</p></div>
+            <article class="card history-card"><div class="card-title-row"><h2>История</h2><label class="small-search"><span aria-hidden="true">⌕</span><input id="history-search" type="search" placeholder="Поиск..." /></label></div><div class="action-row filters" role="group" aria-label="Фильтр журнала"><button class="active" type="button">Все</button><button type="button">Готово</button><button type="button">В обработке</button><button type="button">Ошибка</button></div><div class="history-table" role="table" aria-label="Журнал обработок"><div class="history-head" role="row"><span>Файл</span><span>Длительность</span><span>Статус</span><span>Дата</span></div><div class="empty-state history-empty"><span class="empty-icon" aria-hidden="true">◷</span><strong>В журнале пока нет записей</strong><p>Завершенные и прерванные обработки появятся здесь автоматически.</p></div></div></article>
+          </section>
+
+          <section class="page" data-page="settings" aria-labelledby="settings-title" hidden>
+            <div class="page-heading"><h1 id="settings-title">Настройки</h1><p>Параметры приложения, обработки, моделей и путей хранения.</p></div>
+            <div class="settings-layout">
+              <aside class="card settings-nav" aria-label="Разделы настроек"><button class="active" type="button" data-settings-section="general">Общие</button><button type="button" data-settings-section="models">Модели</button><button type="button" data-settings-section="processing">Обработка</button><button type="button" data-settings-section="diarization">Диаризация</button><button type="button" data-settings-section="audio">Аудио</button><button type="button" data-settings-section="llm">LLM</button><button type="button" data-settings-section="api">API</button><button type="button" data-settings-section="paths">Пути</button><button type="button" data-settings-section="interface">Интерфейс</button><button type="button" data-settings-section="experimental">Экспериментальные</button></aside>
+              <div class="settings-content">
+                <div class="settings-tabs" role="tablist"><button class="active" type="button" data-settings-section="general">Общие</button><button type="button" data-settings-section="models">Модели</button><button type="button" data-settings-section="audio">Аудио</button><button type="button" data-settings-section="interface">Интерфейс</button><button type="button" data-settings-section="paths">Пути</button></div>
+                <p id="settings-status" class="save-status" aria-live="polite">Изменения сохраняются на этом устройстве.</p>
+                <div class="settings-cards">
+                  <article class="card"><h2>Общие</h2><label class="field"><span>Язык интерфейса</span><select data-setting="language"><option value="ru">Русский</option><option value="en">English</option></select></label><label class="field"><span>Тема</span><select data-setting="theme"><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Темная</option></select></label><label class="switch-row"><input data-setting="autoUpdates" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Автообновления</span></label></article>
+                  <article class="card"><h2>Модели и backend</h2><label class="field"><span>ASR backend</span><select data-setting="asrBackend"><option>GigaAM-v3</option></select></label><label class="field"><span>Устройство</span><select data-setting="device"><option>Auto / GPU</option><option>CPU</option></select></label><label class="switch-row"><input data-setting="cpuFallback" type="checkbox" /><span class="switch" aria-hidden="true"></span><span>Fallback на CPU</span></label></article>
+                  <article class="card"><h2>Обработка и субтитры</h2><label class="switch-row"><input data-setting="splitSentences" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Разбивать по предложениям</span></label><div class="inline-fields"><label class="field"><span>Строк в блоке</span><select data-setting="captionLines"><option>2</option><option>1</option><option>3</option></select></label><label class="field"><span>Символов</span><select data-setting="captionChars"><option>64</option><option>48</option><option>80</option></select></label></div><label class="switch-row"><input data-setting="showSpeaker" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Показывать спикера</span></label></article>
+                  <article class="card"><h2>Диаризация и аудио</h2><label class="field"><span>Движок диаризации</span><select data-setting="diarizationEngine"><option>Pyannote 3.1</option></select></label><label class="field"><span>Sample rate</span><select data-setting="sampleRate"><option>16000 Hz</option><option>44100 Hz</option></select></label><label class="field"><span>HF Token</span><input data-setting="hfToken" type="password" placeholder="Не сохранен" autocomplete="off" /></label></article>
+                  <article class="card"><h2>LLM</h2><label class="field"><span>Provider</span><select data-setting="llmProvider"><option>OpenAI-compatible</option><option>Anthropic</option><option>Локальный CLI</option></select></label><label class="field"><span>Модель</span><input data-setting="llmModel" value="gpt-4.1-mini" /></label></article>
+                  <article class="card"><h2>Пути и интерфейс</h2><label class="field"><span>Папка результатов</span><input data-setting="outputPath" value="Выберите после подключения worker" /></label><label class="switch-row"><input data-setting="liquidGlass" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Liquid Glass</span></label><label class="switch-row"><input data-setting="animations" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Анимации</span></label></article>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

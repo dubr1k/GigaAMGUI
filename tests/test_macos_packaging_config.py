@@ -24,7 +24,7 @@ def test_spec_includes_mlx_packages():
     # tests/test_macos_x86_64_packaging.py).
     assert '"CFBundleShortVersionString": APP_VERSION' in text
     assert '"CFBundleVersion": APP_VERSION' in text
-    assert 'APP_VERSION = "1.6.0"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
+    assert 'APP_VERSION = "2.0"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
 
 
 def test_spec_can_bundle_sortformer_runtime():
@@ -82,7 +82,7 @@ def test_ci_builds_and_publishes_full_app_zip():
     assert "MAX_RELEASE_ASSET_BYTES" in text
     assert "CFBundleShortVersionString" in text
     assert "publish-release:" in text
-    assert "needs: [build, build-macos-full, build-macos-intel]" in text
+    assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in text
     assert "Download completed release artifacts" in text
     assert "requirements-sortformer.txt" in text
     assert 'GIGAAM_BUNDLE_SORTFORMER: "1"' in text

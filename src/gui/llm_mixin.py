@@ -346,6 +346,8 @@ class LlmMixin:
         if not hasattr(self, "btn_clear_llm_files"):
             return
         has_files = bool(self.transcript_files_for_llm)
+        self.btn_clear_llm_files.setVisible(has_files)
+        self.btn_remove_llm_file.setVisible(has_files)
         self.btn_clear_llm_files.setEnabled(has_files and not self.is_llm_processing)
         self.btn_remove_llm_file.setEnabled(bool(self.llm_files_list.selectedItems()) and not self.is_llm_processing)
 

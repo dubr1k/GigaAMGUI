@@ -78,6 +78,10 @@ class TuiWorker:
         except (TypeError, ValueError) as exc:
             self.emit("error", message=str(exc))
             return
+        audio_preprocessing_mode = str(command.get("audio_preprocessing_mode") or "auto")
+        if audio_preprocessing_mode not in {"auto", "off", "light", "denoise"}:
+            self.emit("error", message=f"Unknown audio preprocessing mode: {audio_preprocessing_mode!r}")
+            return
         self._cancel_requested.clear()
         self._task = threading.Thread(
             target=self._run_batch,
@@ -91,6 +95,7 @@ class TuiWorker:
                 command.get("backend") or "auto",
                 command.get("model") or "v3_e2e_rnnt",
                 command.get("onnx_provider") or "auto",
+                audio_preprocessing_mode,
                 subtitle_options.sentence_split,
                 subtitle_options.max_line_count,
                 subtitle_options.max_line_width,
@@ -172,6 +177,7 @@ class TuiWorker:
         backend,
         model,
         onnx_provider,
+        audio_preprocessing_mode,
         subtitle_sentence_split,
         subtitle_max_lines,
         subtitle_max_width,
@@ -181,7 +187,7 @@ class TuiWorker:
         try:
             # Keep the protocol health check lightweight: ML dependencies load only
             # when a batch actually starts.
-            from src.config import AUDIO_PREPROCESSING_MODE, STATS_FILE
+            from src.config import STATS_FILE
             from src.core.model_loader import ModelLoader
             from src.core.progress import ProgressEvent
             from src.services.transcription_service import build_processor
@@ -233,7 +239,7 @@ class TuiWorker:
                         total_files=len(files),
                         enable_diarization=diarization,
                         diarization_backend=diarization_backend,
-                        audio_preprocessing_mode=AUDIO_PREPROCESSING_MODE,
+                        audio_preprocessing_mode=audio_preprocessing_mode,
                         num_speakers=num_speakers if isinstance(num_speakers, int) and num_speakers > 0 else None,
                         output_formats=formats,
                         subtitle_options=SubtitleOptions(

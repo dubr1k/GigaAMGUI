@@ -4,11 +4,14 @@ Mixin: методы работают со `self` главного окна. По
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import threading
 import time
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -54,6 +57,9 @@ class ProcessingMixin:
         self.current_stage_progress = 0.0
         self.start_processing_after_download = False
         self._last_result_dir = ""
+        self._last_processing_results = []
+        if hasattr(self, "processing_stack"):
+            self.processing_stack.setCurrentWidget(self._processing_start_page)
         self.log_text.clear()
         self.progress_bar_total.setValue(0)
         self.progress_bar_file.setValue(0)
@@ -93,6 +99,10 @@ class ProcessingMixin:
     def _start_processing_thread(self):
         if self.is_processing:
             return
+        if hasattr(self, "processing_stack"):
+            self.processing_stack.setCurrentWidget(self._processing_start_page)
+        if hasattr(self, "_progress_frame"):
+            self._progress_frame.setVisible(True)
         if self.is_downloading:
             QMessageBox.information(self, self._t("Информация", "Information"), self._t("Дождитесь завершения загрузки по ссылке.", "Wait for the URL download to finish."))
             return
@@ -107,6 +117,10 @@ class ProcessingMixin:
             return
         if not self.output_dir:
             self.log(self._t("Папка сохранения не выбрана. Результаты будут сохраняться рядом с каждым исходным файлом.", "Output folder not selected. Results will be saved next to each source file."))
+        # A failed preparation must not reuse files/results from the previous
+        # successful batch when the completion handler decides what to show.
+        self._last_generated_transcript_files = []
+        self._last_processing_results = []
         self.is_processing = True
         self._cancel_requested = False
         self.start_time = time.time()
@@ -208,6 +222,7 @@ class ProcessingMixin:
             failed_names = []
             time_spent = 0.0
             generated_transcript_files = []
+            completed_results = []
             for i, filepath in enumerate(files):
                 if self._cancel_requested:
                     self.log(self._t("Обработка отменена пользователем", "Processing cancelled by user"))
@@ -235,6 +250,13 @@ class ProcessingMixin:
                     )
                     if result['success']:
                         files_processed += 1
+                        completed_results.append({
+                            "file_path": result.get("file_path", filepath),
+                            "file_size": result.get("file_size", 0),
+                            "media_duration": result.get("media_duration", 0),
+                            "saved_files": list(result.get("saved_files", [])),
+                            "diarization": dict(result.get("diarization", {})),
+                        })
                         for saved_file in result.get('saved_files', []):
                             if saved_file.lower().endswith(('.txt', '.md', '.srt', '.vtt')):
                                 generated_transcript_files.append(saved_file)
@@ -269,6 +291,7 @@ class ProcessingMixin:
                 message += self._t(f"\nНе удалось: {shown}\nПодробности — на вкладке «Журнал обработки».", f"\nFailed: {shown}\nSee details in the 'Processing log' tab.")
             success = (files_processed > 0) and (files_failed == 0) and not cancelled
             self._last_generated_transcript_files = generated_transcript_files
+            self._last_processing_results = completed_results
             self.signals.processing_finished.emit(success, message)
         except PreparationCancelled:
             self.log(self._t("Подготовка моделей отменена пользователем", "Model preparation cancelled by user"))
@@ -516,7 +539,221 @@ class ProcessingMixin:
             self.lbl_llm_files.setText(self._t(f"Выбрано транскриптов: {len(generated_files)}", f"Selected transcripts: {len(generated_files)}"))
             self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
 
-        self._show_completion_dialog(success, message, has_results)
+        if getattr(self, "_last_processing_results", []):
+            self._show_processing_result()
+        else:
+            self._show_completion_dialog(success, message, has_results)
+
+    def _format_result_time(self, seconds: float) -> str:
+        seconds = max(0, int(seconds or 0))
+        return f"{seconds // 3600:02d}:{(seconds // 60) % 60:02d}:{seconds % 60:02d}"
+
+    def _format_result_size(self, size: int) -> str:
+        amount = float(size or 0)
+        for unit in ("Б", "КБ", "МБ", "ГБ"):
+            if amount < 1024 or unit == "ГБ":
+                return f"{amount:.0f} {unit}" if unit == "Б" else f"{amount:.1f} {unit}"
+            amount /= 1024
+        return ""
+
+    def _read_result_file(self, path: str | None, fallback: str) -> str:
+        if not path or not os.path.isfile(path):
+            return fallback
+        try:
+            with open(path, encoding="utf-8") as source:
+                return source.read()
+        except OSError as error:
+            return self._t(f"Не удалось прочитать файл результата: {error}", f"Could not read result file: {error}")
+
+    def _parse_result_segments(self, path: str | None) -> list[dict]:
+        if not path or not os.path.isfile(path):
+            return []
+        pattern = re.compile(r"^\[(?P<start>[^-]+)\s*-\s*(?P<end>[^]]+)\]\s*(?:(?P<speaker>[^:]+):\s*)?(?P<text>.*)$")
+        segments = []
+        for line in self._read_result_file(path, "").splitlines():
+            match = pattern.match(line.strip())
+            if not match:
+                continue
+            start = match.group("start").strip()
+            parts = start.replace(",", ".").split(":")
+            try:
+                seconds = sum(float(value) * 60 ** index for index, value in enumerate(reversed(parts)))
+            except ValueError:
+                seconds = 0.0
+            segments.append({"start": start, "seconds": seconds, "speaker": (match.group("speaker") or "").strip(), "text": match.group("text").strip()})
+        return segments
+
+    def _show_processing_result(self):
+        records = getattr(self, "_last_processing_results", [])
+        if not records or not hasattr(self, "result_file_picker"):
+            return
+        blocked = self.result_file_picker.blockSignals(True)
+        self.result_file_picker.clear()
+        for record in records:
+            self.result_file_picker.addItem(os.path.basename(record["file_path"]), record)
+        self.result_file_picker.blockSignals(blocked)
+        self.result_file_picker.setCurrentIndex(0)
+        self._populate_processing_result(records[0])
+        self.processing_stack.setCurrentWidget(self._processing_result_page)
+        self.tabs.setCurrentIndex(0)
+
+    def _select_processing_result(self, index: int):
+        record = self.result_file_picker.itemData(index)
+        if isinstance(record, dict):
+            self._populate_processing_result(record)
+
+    def _ensure_result_player(self) -> bool:
+        if hasattr(self, "_result_player"):
+            return self._result_player is not None
+        try:
+            from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+        except ImportError:
+            self._result_player = None
+            self.result_player_status.setText(self._t("Воспроизведение недоступно в этой сборке.", "Playback is unavailable in this build."))
+            return False
+        self._result_audio_output = QAudioOutput(self)
+        self._result_player = QMediaPlayer(self)
+        self._result_player.setAudioOutput(self._result_audio_output)
+        self._result_player.positionChanged.connect(self._sync_result_player_position)
+        self._result_player.durationChanged.connect(self._sync_result_player_duration)
+        self._result_player.playbackStateChanged.connect(self._sync_result_playback_state)
+        return True
+
+    def _populate_processing_result(self, record: dict):
+        source_path = record["file_path"]
+        saved_files = [path for path in record.get("saved_files", []) if os.path.isfile(path)]
+        duration = float(record.get("media_duration") or 0)
+        self._active_processing_result = record
+        self.result_title.setText(os.path.basename(source_path))
+        media_info = " · ".join(part for part in (self._format_result_time(duration) if duration else "", self._format_result_size(record.get("file_size", 0)), os.path.splitext(source_path)[1].removeprefix(".").upper()) if part)
+        self.result_meta.setText(media_info)
+        self.result_media_name.setText(os.path.basename(source_path))
+        self.result_timeline.setRange(0, max(0, int(duration * 1000)))
+        self.result_timeline.setValue(0)
+        self.result_position_label.setText(f"00:00 / {self._format_result_time(duration)}")
+        has_player = self._ensure_result_player()
+        for control in (self.btn_result_back, self.btn_result_play, self.btn_result_forward, self.result_speed, self.result_volume, self.result_timeline):
+            control.setEnabled(has_player and os.path.isfile(source_path))
+        if has_player and os.path.isfile(source_path):
+            self._result_player.stop()
+            self._result_player.setSource(QUrl.fromLocalFile(source_path))
+            self._result_audio_output.setVolume(self.result_volume.value() / 100)
+            self.result_player_status.setText("")
+
+        plain_text = next((path for path in saved_files if path.lower().endswith(".txt") and "_timecodes" not in path and "_diarize" not in path), None)
+        timed_text = next((path for path in saved_files if path.lower().endswith("_timecodes.txt")), None)
+        diarized_text = next((path for path in saved_files if "_diarize" in os.path.basename(path).lower() and path.lower().endswith(".txt")), None)
+        srt = next((path for path in saved_files if path.lower().endswith(".srt")), None)
+        segments = self._parse_result_segments(timed_text)
+        text = self._read_result_file(plain_text, self._t("Текстовый экспорт для этого запуска не создавался.", "A plain-text export was not created for this run."))
+        self._result_text = text
+        self._populate_result_transcript(segments, text)
+        self.result_srt.setPlainText(self._read_result_file(srt, self._t("SRT не создавался для этого запуска.", "SRT was not created for this run.")))
+        self.result_diarization.setPlainText(self._read_result_file(diarized_text, self._t("Диаризация не применялась или не создала отдельный экспорт.", "Diarization was not applied or did not create a separate export.")))
+        self.result_summary.setPlainText(self._t("Краткое содержание не создавалось автоматически. Отправьте готовый текст на вкладку LLM, чтобы создать его.", "No summary was generated automatically. Send the completed text to the LLM tab to create one."))
+        self.result_json.setPlainText(json.dumps(record, ensure_ascii=False, indent=2))
+        self._populate_result_actions(saved_files)
+        self.result_topics.setText(self._t("Ключевые темы появятся после LLM-обработки результата.", "Key topics appear after LLM processing of this result."))
+        self.result_summary_rail.setText(self._t("Не создавалось автоматически.", "Not generated automatically."))
+
+    def _populate_result_transcript(self, segments: list[dict], fallback_text: str):
+        layout = self.result_transcript_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not segments:
+            label = QLabel(fallback_text)
+            label.setWordWrap(True)
+            label.setObjectName("result_segment")
+            layout.addWidget(label)
+        for segment in segments:
+            row = QVBoxLayout()
+            meta = QHBoxLayout()
+            time_button = QPushButton(segment["start"])
+            time_button.setObjectName("text_button")
+            time_button.clicked.connect(lambda _checked=False, position=int(segment["seconds"] * 1000): self._seek_result_to(position))
+            meta.addWidget(time_button)
+            if segment["speaker"]:
+                badge = QLabel(segment["speaker"])
+                badge.setObjectName("speaker_badge")
+                meta.addWidget(badge)
+            meta.addStretch()
+            row.addLayout(meta)
+            body = QLabel(segment["text"])
+            body.setWordWrap(True)
+            body.setObjectName("result_segment")
+            row.addWidget(body)
+            layout.addLayout(row)
+        layout.addStretch()
+
+    def _populate_result_actions(self, saved_files: list[str]):
+        layout = self.result_actions_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        show_folder = QPushButton(self._t("Показать результаты", "Show results"))
+        show_folder.setObjectName("text_button")
+        show_folder.clicked.connect(self._open_results_folder)
+        layout.addWidget(show_folder)
+        copy_text = QPushButton(self._t("Копировать текст", "Copy text"))
+        copy_text.setObjectName("text_button")
+        copy_text.clicked.connect(self._copy_result_text)
+        layout.addWidget(copy_text)
+        for path in saved_files:
+            suffix = os.path.splitext(path)[1].removeprefix(".").upper()
+            action = QPushButton(self._t(f"Открыть {suffix}", f"Open {suffix}"))
+            action.setObjectName("text_button")
+            action.clicked.connect(lambda _checked=False, result_path=path: QDesktopServices.openUrl(QUrl.fromLocalFile(result_path)))
+            layout.addWidget(action)
+
+    def _copy_result_text(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(getattr(self, "_result_text", ""))
+        self._set_status(self._t("Текст скопирован", "Text copied"))
+
+    def _sync_result_player_position(self, position: int):
+        if self.result_timeline.isSliderDown():
+            return
+        self.result_timeline.setValue(position)
+        total = max(0, self.result_timeline.maximum())
+        self.result_position_label.setText(f"{self._format_result_time(position / 1000)} / {self._format_result_time(total / 1000)}")
+
+    def _sync_result_player_duration(self, duration: int):
+        if duration > 0:
+            self.result_timeline.setMaximum(duration)
+
+    def _sync_result_playback_state(self, state):
+        playing = str(state).endswith("PlayingState")
+        self.btn_result_play.setText("❚❚" if playing else "▶")
+
+    def _toggle_result_playback(self):
+        if not self._ensure_result_player():
+            return
+        if self._result_player.playbackState().name == "PlayingState":
+            self._result_player.pause()
+        else:
+            self._result_player.play()
+
+    def _seek_result_playback(self):
+        self._seek_result_to(self.result_timeline.value())
+
+    def _seek_result_to(self, position: int):
+        self.result_timeline.setValue(position)
+        if self._ensure_result_player():
+            self._result_player.setPosition(position)
+
+    def _seek_result_by(self, delta: int):
+        self._seek_result_to(max(0, min(self.result_timeline.maximum(), self.result_timeline.value() + delta)))
+
+    def _set_result_playback_rate(self, _index: int):
+        if self._ensure_result_player():
+            self._result_player.setPlaybackRate(float(self.result_speed.currentData() or 1.0))
+
+    def _set_result_volume(self, value: int):
+        if self._ensure_result_player():
+            self._result_audio_output.setVolume(value / 100)
 
     def _show_completion_dialog(self, success: bool, message: str, has_results: bool):
         """Кастомный диалог завершения.

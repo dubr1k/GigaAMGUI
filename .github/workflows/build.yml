@@ -593,6 +593,85 @@ jobs:
           compression-level: 0
 
 
+  build-macos-swift:
+    name: Native Swift macOS arm64 app
+    runs-on: macos-14
+    needs: test-tui
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build native Swift client
+        run: swift build -c release --package-path macos/GigaAMLiquid
+
+      - name: Assemble and verify app bundle
+        id: archive
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' packaging/_spec_common.py)
+          fi
+          SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
+          PRODUCT="GigaAMLiquid-macos-arm64-${SAFE_REF_NAME}"
+          APP="stage/$PRODUCT/GigaAMLiquid.app"
+          EXECUTABLE="macos/GigaAMLiquid/.build/release/GigaAMLiquid"
+
+          test -x "$EXECUTABLE"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$EXECUTABLE" "$APP/Contents/MacOS/GigaAMLiquid"
+          chmod +x "$APP/Contents/MacOS/GigaAMLiquid"
+
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>ru</string>
+            <key>CFBundleExecutable</key><string>GigaAMLiquid</string>
+            <key>CFBundleIdentifier</key><string>ru.dubr1k.gigaam-liquid</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>GigaAMLiquid</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>NSMicrophoneUsageDescription</key><string>GigaAMLiquid uses microphone access for live transcription.</string>
+          </dict>
+          </plist>
+          PLIST
+
+          # The native client delegates model work to the repository's Python
+          # worker. Ship the tracked project beside the .app so runtime discovery
+          # works immediately after extraction; dependencies are installed by
+          # the user according to the included Swift client README.
+          git archive HEAD | tar -x -C "stage/$PRODUCT"
+
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
+          test "$(lipo -archs "$APP/Contents/MacOS/GigaAMLiquid")" = "arm64"
+
+          mkdir -p out
+          ARCHIVE="out/$PRODUCT.zip"
+          ditto -c -k --sequesterRsrc --keepParent "stage/$PRODUCT" "$ARCHIVE"
+          unzip -tq "$ARCHIVE"
+          echo "path=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload native Swift artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+
+
   test-tui:
     name: TUI tests
     runs-on: ubuntu-latest
@@ -608,7 +687,7 @@ jobs:
   publish-release:
     name: Publish release after all artifacts complete
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, build-macos-full, build-macos-intel]
+    needs: [build, build-macos-full, build-macos-intel, build-macos-swift]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -633,7 +712,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: release-assets
-          pattern: GigaAMTranscriber-*
+          pattern: GigaAM*
           merge-multiple: true
 
       - name: Publish GitHub release

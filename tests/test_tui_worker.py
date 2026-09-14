@@ -59,13 +59,14 @@ def test_tui_worker_forwards_onnx_provider(tmp_path, monkeypatch):
         "files": [str(sample)],
         "backend": "onnx",
         "onnx_provider": "cuda",
+        "audio_preprocessing_mode": "denoise",
         "subtitle_sentence_split": False,
         "subtitle_max_lines": 3,
         "subtitle_max_width": 72,
     })
 
-    assert captured["args"][-6:-3] == ("onnx", "v3_e2e_rnnt", "cuda")
-    assert captured["args"][-3:] == (False, 3, 72)
+    assert captured["args"][-7:-4] == ("onnx", "v3_e2e_rnnt", "cuda")
+    assert captured["args"][-4:] == ("denoise", False, 3, 72)
 
 
 def test_tui_worker_rejects_invalid_subtitle_limits(tmp_path):

@@ -150,7 +150,7 @@ def test_ci_builds_and_publishes_intel_offline_bundle():
     assert "GigaAMTranscriber-macos-x86_64-app-offline-" in text
     assert "--offline-models-smoke" in text
     assert 'lipo -archs' in text
-    assert "needs: [build, build-macos-full, build-macos-intel]" in text
+    assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in text
 
 
 def test_onnx_pipeline_imports_without_the_torch_chain():
