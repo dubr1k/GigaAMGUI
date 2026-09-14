@@ -598,12 +598,19 @@ jobs:
     # NSGlassEffectView is provided by the macOS 26 SDK. The executable keeps
     # a macOS 13 deployment target and guards the glass path with #available.
     runs-on: macos-26
-    needs: test-tui
-    timeout-minutes: 20
+    needs: [test-tui, build-macos-full]
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Download offline Python companion
+        uses: actions/download-artifact@v8
+        with:
+          path: companion-offline
+          pattern: GigaAMTranscriber-macos-app-offline-*
+          merge-multiple: true
 
       - name: Build native Swift client
         run: swift build -c release --package-path macos/GigaAMLiquid
@@ -673,6 +680,54 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Assemble and verify offline native Swift archive
+        id: archive_offline
+        shell: bash
+        run: |
+          SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
+          PRODUCT="GigaAMLiquid-macos-arm64-${SAFE_REF_NAME}"
+          OFFLINE_PRODUCT="GigaAMLiquid-macos-arm64-offline-${SAFE_REF_NAME}"
+          ROOT="stage/$OFFLINE_PRODUCT"
+          SWIFT_APP="$ROOT/GigaAMLiquid.app"
+
+          mkdir -p "$ROOT"
+          git archive HEAD | tar -x -C "$ROOT"
+          ditto "stage/$PRODUCT/GigaAMLiquid.app" "$SWIFT_APP"
+
+          COMPANION_ARCHIVE=$(find companion-offline -type f -name 'GigaAMTranscriber-macos-app-offline-*.zip' -print -quit)
+          test -n "$COMPANION_ARCHIVE"
+          unzip -q "$COMPANION_ARCHIVE" -d "$ROOT"
+
+          COMPANION="$ROOT/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+          test -x "$COMPANION"
+          test -d "$ROOT/models/hf"
+          test -n "$(find "$ROOT/models/hf" -type f -print -quit)"
+          test "$(lipo -archs "$COMPANION")" = "arm64"
+          codesign --verify --deep --strict "$SWIFT_APP"
+
+          printf '{"type":"ping"}\n' | "$COMPANION" --native-worker > "${RUNNER_TEMP}/native-worker.jsonl"
+          grep -q '"type": "pong"' "${RUNNER_TEMP}/native-worker.jsonl"
+
+          ARCHIVE="out/$OFFLINE_PRODUCT.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$ROOT" "$ARCHIVE"
+          unzip -tq "$ARCHIVE"
+          ARCHIVE_BYTES=$(stat -f%z "$ARCHIVE")
+          MAX_RELEASE_ASSET_BYTES=$((2 * 1024 * 1024 * 1024))
+          test "$ARCHIVE_BYTES" -lt "$MAX_RELEASE_ASSET_BYTES" || {
+            echo "Liquid offline archive is too large for GitHub Release: $ARCHIVE_BYTES bytes"
+            exit 1
+          }
+          echo "path=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload offline native Swift artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive_offline.outputs.name }}
+          path: ${{ steps.archive_offline.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+
 
   test-tui:
     name: TUI tests
@@ -724,3 +779,4 @@ jobs:
           name: ${{ steps.notes.outputs.version }}
           body_path: ${{ steps.notes.outputs.path }}
           files: release-assets/*
+          overwrite_files: true

@@ -11,6 +11,8 @@ def test_swift_release_job_builds_and_archives_native_app() -> None:
     assert "codesign --verify --deep --strict" in text
     assert 'lipo -archs "$APP/Contents/MacOS/GigaAMLiquid"' in text
     assert "GigaAMLiquid-macos-arm64-${SAFE_REF_NAME}" in text
+    assert "GigaAMLiquid-macos-arm64-offline-${SAFE_REF_NAME}" in text
+    assert "--native-worker" in text
 
 
 def test_release_waits_for_and_downloads_swift_artifact() -> None:
@@ -41,6 +43,13 @@ def test_native_client_blocks_colliding_output_stems_and_cleans_download_cache()
     assert "перезапишут результаты друг друга" in main
     assert "rememberDownloadedMedia(files)" in main
     assert "cleanupDownloadedMedia()" in main
+
+
+def test_swift_runtime_prefers_frozen_offline_companion() -> None:
+    runtime = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/PythonRuntime.swift").read_text(encoding="utf-8")
+    assert "GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber" in runtime
+    assert 'frozenCompanion ? ["--native-worker"]' in runtime
+    assert 'childEnvironment["HF_HUB_OFFLINE"] = "1"' in runtime
 
 
 def test_tauri_prototype_does_not_persist_hf_token() -> None:

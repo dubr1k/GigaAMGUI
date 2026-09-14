@@ -139,7 +139,7 @@ final class NativeTranscriptionJob {
         ]
         let task = Process()
         task.executableURL = runtime.executable
-        task.arguments = ["-m", "src.tui_worker"]
+        task.arguments = runtime.transcriptionArguments
         task.currentDirectoryURL = runtime.root
         task.environment = environment
         let stdinPipe = Pipe(), stdoutPipe = Pipe(), stderrPipe = Pipe()

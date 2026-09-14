@@ -113,7 +113,7 @@ def test_ci_publishes_offline_variant_for_every_platform():
     # больше нет, но контракт обязан оставаться проверяемым.
     assert "name: ${{ matrix.offline_asset }}" in text
     assert "name: ${{ steps.archive_offline.outputs.name }}" in text
-    assert "pattern: GigaAMTranscriber-*" in text
+    assert "pattern: GigaAM*" in text
     assert "files: release-assets/*" in text
 
 

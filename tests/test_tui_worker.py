@@ -1,7 +1,21 @@
 import io
 import json
+import subprocess
+import sys
 
 from src.tui_worker import TuiWorker
+
+
+def test_frozen_native_worker_entrypoint_replies_to_ping():
+    result = subprocess.run(
+        [sys.executable, "app.py", "--native-worker"],
+        input='{"type":"ping"}\n',
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.splitlines()[-1]) == {"type": "pong"}
 
 
 def _messages(output):

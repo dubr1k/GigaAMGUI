@@ -5,6 +5,16 @@ struct PythonRuntime {
     let root: URL
     let executable: URL
     let environment: [String: String]
+    let frozenCompanion: Bool
+
+    var transcriptionArguments: [String] {
+        frozenCompanion ? ["--native-worker"] : ["-m", "src.tui_worker"]
+    }
+
+    func mediaDownloadArguments(url: URL, target: URL) -> [String] {
+        let arguments = ["--media-download-smoke", url.absoluteString, target.path]
+        return frozenCompanion ? arguments : [root.appendingPathComponent("app.py").path] + arguments
+    }
 
     struct Failure: LocalizedError {
         let message: String
@@ -13,11 +23,29 @@ struct PythonRuntime {
 
     static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> PythonRuntime {
         let root = try projectRoot(environment: environment)
-        let executable = try pythonURL(root: root, environment: environment)
+        let companion = companionURL(root: root, environment: environment)
+        let executable = try companion ?? pythonURL(root: root, environment: environment)
         var childEnvironment = environment
         childEnvironment["PYTHONUNBUFFERED"] = "1"
         childEnvironment["PYTHONIOENCODING"] = "utf-8"
-        return PythonRuntime(root: root, executable: executable, environment: childEnvironment)
+        if companion != nil {
+            childEnvironment["HF_HUB_OFFLINE"] = "1"
+            childEnvironment["TRANSFORMERS_OFFLINE"] = "1"
+        }
+        return PythonRuntime(
+            root: root,
+            executable: executable,
+            environment: childEnvironment,
+            frozenCompanion: companion != nil
+        )
+    }
+
+    private static func companionURL(root: URL, environment: [String: String]) -> URL? {
+        guard environment["GIGAAM_PYTHON", default: ""].isEmpty else { return nil }
+        let candidate = root.appendingPathComponent(
+            "GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+        )
+        return FileManager.default.isExecutableFile(atPath: candidate.path) ? candidate : nil
     }
 
     private static func projectRoot(environment: [String: String]) throws -> URL {

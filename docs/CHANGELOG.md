@@ -18,6 +18,8 @@
   остановка после текущего файла, экспорт TXT/SRT и двуязычный интерфейс.
 - Отдельный GitHub Actions job собирает, проверяет и публикует Swift-клиент как
   `GigaAMLiquid-macos-arm64-v2.0.zip` вместе с Python-частью проекта.
+- Добавлен автономный архив `GigaAMLiquid-macos-arm64-offline-v2.0.zip` с
+  frozen Python runtime и моделями, проверяемый через JSONL worker smoke-test.
 - Исходники экспериментальной Tauri-оболочки в `desktop/`.
 - Новые адаптивные экраны и вспомогательные поверхности Desktop GUI.
 

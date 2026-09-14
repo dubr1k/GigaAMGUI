@@ -14,6 +14,9 @@
 - Светлая/тёмная тема и русский/английский язык сохраняются между запусками.
 - GitHub Actions собирает Swift package в `.app`, проверяет архитектуру и
   подпись, а затем публикует архив `GigaAMLiquid-macos-arm64-v2.0.zip`.
+- Для полностью автономной работы также публикуется
+  `GigaAMLiquid-macos-arm64-offline-v2.0.zip` со встроенным frozen runtime и
+  моделями. Установка Python и скачивание моделей для него не требуются.
 
 Swift-клиент использует Python worker этого проекта. В архив включён исходный
 код, но Python 3.11 и зависимости требуется установить по инструкции в
@@ -53,6 +56,9 @@ Swift-клиент использует Python worker этого проекта.
 - GitHub Actions builds the Swift package as an `.app`, verifies its
   architecture and signature, and publishes
   `GigaAMLiquid-macos-arm64-v2.0.zip`.
+- A self-contained `GigaAMLiquid-macos-arm64-offline-v2.0.zip` is also
+  published with the frozen runtime and model files; it requires neither a
+  separate Python installation nor model downloads.
 
 The Swift client delegates inference to this project's Python worker. The
 archive includes the project sources, but Python 3.11 and its dependencies must

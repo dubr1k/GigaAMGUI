@@ -452,6 +452,13 @@ def run_media_download_smoke(url: str, target_dir: str) -> dict[str, list[str]]:
 
 def main():
     """Главная функция запуска приложения."""
+    if "--native-worker" in sys.argv:
+        # JSONL worker mode for native front-ends. Keeping this entry point in
+        # the frozen executable lets GigaAMLiquid use the same self-contained
+        # PyInstaller runtime and offline model bundle as the Qt application.
+        from src.tui_worker import main as worker_main
+
+        raise SystemExit(worker_main())
     if "--asr-runtime-smoke" in sys.argv:
         print(json.dumps(run_asr_runtime_smoke(), ensure_ascii=False, sort_keys=True))
         return

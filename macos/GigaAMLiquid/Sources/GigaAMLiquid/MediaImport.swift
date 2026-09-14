@@ -112,7 +112,7 @@ final class MediaDownloadJob {
 
         let task = Process()
         task.executableURL = python
-        task.arguments = [root.appendingPathComponent("app.py").path, "--media-download-smoke", url.absoluteString, target.path]
+        task.arguments = runtime.mediaDownloadArguments(url: url, target: target)
         task.currentDirectoryURL = root
         task.environment = runtime.environment
         task.standardInput = FileHandle.nullDevice
