@@ -80,6 +80,35 @@ def test_swift_job_launch_does_not_require_source_tree_with_frozen_companion() -
     assert 'guard runtime.frozenCompanion || manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path)' in launch
 
 
+def test_swift_client_installs_main_menu_with_standard_shortcuts() -> None:
+    # SwiftPM-исполняемый файл не несёт MainMenu.nib: без программного меню в
+    # menu bar только имя приложения, а ⌘Q/⌘W/⌘C/⌘V не имеют key equivalents.
+    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    menu = main.split("private func installMainMenu()", 1)[1].split("\n    }\n", 1)[0]
+    assert "NSApp.mainMenu = " in menu
+    assert "#selector(NSApplication.terminate(_:))" in menu and 'keyEquivalent: "q"' in menu
+    assert "#selector(NSWindow.performClose(_:))" in menu and 'keyEquivalent: "w"' in menu
+    assert "#selector(NSText.paste(_:))" in menu and 'keyEquivalent: "v"' in menu
+    assert "NSApp.windowsMenu = " in menu
+    assert "func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }" in main
+    assert "installMainMenu()" in main.split("func applicationDidFinishLaunching", 1)[1].split("buildWindow()", 1)[0]
+    assert "installMainMenu()" in main.split("private func rebuildInterface()", 1)[1].split("show(page: page)", 1)[0]
+
+
+def test_swift_window_accepts_dropped_media_files() -> None:
+    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    background = main.split("private final class BlobBackgroundView", 1)[1].split("\nprivate final class", 1)[0]
+    assert "registerForDraggedTypes([.fileURL])" in background
+    assert "override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation" in background
+    assert "override func performDragOperation(_ sender: NSDraggingInfo) -> Bool" in background
+    drop = main.split("private func acceptDroppedFiles(_ urls: [URL]) -> Bool", 1)[1].split("\n    }\n", 1)[0]
+    assert "conforms(to: .audio)" in drop and "conforms(to: .movie)" in drop
+    assert "appendSelectedFiles(" in drop
+    # Тот же путь, что и у панели выбора: дедупликация и refreshSelectedFiles().
+    chooser = main.split("@objc private func chooseFiles(_ sender: Any?)", 1)[1].split("\n    }\n", 1)[0]
+    assert "appendSelectedFiles(panel.urls)" in chooser
+
+
 def test_tauri_prototype_does_not_persist_hf_token() -> None:
     app = Path("desktop/ui/app.js").read_text(encoding="utf-8")
     assert 'restored.hfToken = ""' in app

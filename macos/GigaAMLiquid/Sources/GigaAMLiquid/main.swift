@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 private enum Page: String, CaseIterable {
     case processing, result, live, llm, api, history, settings
@@ -68,6 +69,9 @@ private enum Palette {
 }
 
 private final class BlobBackgroundView: NSVisualEffectView {
+    /// Files dropped anywhere on the window; returns true when at least one was accepted.
+    var dropHandler: (([URL]) -> Bool)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         material = .underWindowBackground
@@ -75,9 +79,28 @@ private final class BlobBackgroundView: NSVisualEffectView {
         state = .active
         wantsLayer = true
         layer?.backgroundColor = NSColor(calibratedWhite: Palette.isDark ? 0.08 : 0.97, alpha: 0.18).cgColor
+        registerForDraggedTypes([.fileURL])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dropHandler != nil && !fileURLs(from: sender).isEmpty ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let dropHandler else { return false }
+        return dropHandler(fileURLs(from: sender))
+    }
 }
 
 private final class GlassView: NSView {
@@ -783,10 +806,78 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             defaults.removeObject(forKey: "settings.hfToken")
         }
         cleanupDownloadedMedia()
+        installMainMenu()
         buildWindow()
         show(page: .processing)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // Single-window utility app: closing the window is quitting.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// A SwiftPM executable ships no MainMenu.nib, so without this the menu bar shows only the
+    /// app name and ⌘Q/⌘W/⌘C/⌘V have no key equivalents. Standard selectors with a nil target
+    /// travel the responder chain (text fields, window, NSApp); own actions target self.
+    private func installMainMenu() {
+        let appName = "GigaAM v3"
+        func item(_ title: String, _ action: Selector?, keyEquivalent: String = "", modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil) -> NSMenuItem {
+            let item = NSMenuItem(title: L10n.text(title), action: action, keyEquivalent: keyEquivalent)
+            item.keyEquivalentModifierMask = modifiers
+            item.target = target
+            return item
+        }
+        func submenu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
+            let menu = NSMenu(title: L10n.text(title))
+            items.forEach(menu.addItem)
+            let holder = NSMenuItem(title: L10n.text(title), action: nil, keyEquivalent: "")
+            holder.submenu = menu
+            return holder
+        }
+
+        let main = NSMenu()
+        main.addItem(submenu(appName, [
+            item("О приложении " + appName, #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+            .separator(),
+            item("Скрыть " + appName, #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
+            item("Скрыть остальные", #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h", modifiers: [.command, .option]),
+            item("Показать все", #selector(NSApplication.unhideAllApplications(_:))),
+            .separator(),
+            item("Завершить " + appName, #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        ]))
+        main.addItem(submenu("Файл", [
+            item("Выбрать файлы…", #selector(chooseFiles(_:)), keyEquivalent: "o", target: self),
+            item("Ссылка на медиа…", #selector(chooseMediaURL(_:)), keyEquivalent: "o", modifiers: [.command, .shift], target: self),
+            .separator(),
+            item("Закрыть окно", #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        ]))
+        main.addItem(submenu("Правка", [
+            item("Отменить", Selector(("undo:")), keyEquivalent: "z"),
+            item("Повторить", Selector(("redo:")), keyEquivalent: "z", modifiers: [.command, .shift]),
+            .separator(),
+            item("Вырезать", #selector(NSText.cut(_:)), keyEquivalent: "x"),
+            item("Копировать", #selector(NSText.copy(_:)), keyEquivalent: "c"),
+            item("Вставить", #selector(NSText.paste(_:)), keyEquivalent: "v"),
+            item("Выделить всё", #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        ]))
+        let windowMenu = submenu("Окно", [
+            item("Свернуть", #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"),
+            item("Масштабировать", #selector(NSWindow.performZoom(_:))),
+            .separator(),
+            item("Все окна — на передний план", #selector(NSApplication.arrangeInFront(_:)))
+        ])
+        main.addItem(windowMenu)
+        let helpMenu = submenu("Справка", [
+            item("Проект на GitHub", #selector(openProjectPage(_:)), target: self)
+        ])
+        main.addItem(helpMenu)
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = windowMenu.submenu
+        NSApp.helpMenu = helpMenu.submenu
+    }
+
+    @objc private func openProjectPage(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "https://github.com/dubr1k/GigaAMGUI")!)
     }
 
     private func buildWindow() {
@@ -811,6 +902,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         window.appearance = NSAppearance(named: Palette.isDark ? .darkAqua : .aqua)
         let background = BlobBackgroundView()
         background.translatesAutoresizingMaskIntoConstraints = false
+        background.dropHandler = { [weak self] urls in self?.acceptDroppedFiles(urls) ?? false }
         window.contentView = background
 
         let shell = NSStackView()
@@ -2338,10 +2430,28 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self else { return }
             guard self.transcriptionJob == nil, !self.isClosing else { return }
-            var known = Set(self.selectedFileURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
-            self.selectedFileURLs.append(contentsOf: panel.urls.map { $0.standardizedFileURL.resolvingSymlinksInPath() }.filter { known.insert($0).inserted })
-            self.refreshSelectedFiles()
+            self.appendSelectedFiles(panel.urls)
         }
+    }
+
+    /// Shared by the open panel and drag & drop: normalises paths and skips duplicates.
+    private func appendSelectedFiles(_ urls: [URL]) {
+        var known = Set(selectedFileURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
+        selectedFileURLs.append(contentsOf: urls.map { $0.standardizedFileURL.resolvingSymlinksInPath() }.filter { known.insert($0).inserted })
+        refreshSelectedFiles()
+    }
+
+    private func acceptDroppedFiles(_ urls: [URL]) -> Bool {
+        guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil, window.attachedSheet == nil else { return false }
+        // Same filter as the open panel; folders and documents are ignored, not rejected loudly.
+        let media = urls.filter { url in
+            guard let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType else { return false }
+            return type.conforms(to: .audio) || type.conforms(to: .movie)
+        }
+        guard !media.isEmpty else { return false }
+        if currentPage != .processing { show(page: .processing) }
+        appendSelectedFiles(media)
+        return true
     }
 
     @objc private func chooseMediaURL(_ sender: Any?) {
@@ -2688,6 +2798,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let page = currentPage
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.installMainMenu()
             self.buildWindowContent()
             self.show(page: page)
             self.window.makeKeyAndOrderFront(nil)
