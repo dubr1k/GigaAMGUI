@@ -726,6 +726,16 @@ jobs:
           printf '{"type":"ping"}\n' | "$COMPANION" --native-worker > "${RUNNER_TEMP}/native-worker.jsonl"
           grep -q '"type": "pong"' "${RUNNER_TEMP}/native-worker.jsonl"
 
+          # Гейт: один реальный файл через worker в раскладке «чистый Mac» —
+          # пустой пользовательский кэш, только models/hf из архива, backend
+          # auto и HF_HUB_OFFLINE=1, как их выставляет GigaAMLiquid. pong не
+          # ловит ни колесо scipy, которое dyld отказывается грузить, ни auto,
+          # уходящий офлайн за MLX-моделью.
+          SMOKE_CLIP="${RUNNER_TEMP}/liquid-offline-smoke.aiff"
+          say -o "$SMOKE_CLIP" "Testing the offline release of GigaAM Liquid on a clean machine."
+          HF_HOME="${RUNNER_TEMP}/liquid-offline-smoke-hf" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            python3 scripts/native_worker_smoke.py "$COMPANION" "$SMOKE_CLIP" "${RUNNER_TEMP}/liquid-offline-smoke-out"
+
           ARCHIVE="out/$OFFLINE_PRODUCT.zip"
           ditto -c -k --sequesterRsrc --keepParent "$ROOT" "$ARCHIVE"
           unzip -tq "$ARCHIVE"

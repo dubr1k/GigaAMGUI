@@ -21,6 +21,17 @@ def test_swift_release_job_builds_and_archives_native_app() -> None:
     assert 'test ! -e "$ROOT/src"' in text
 
 
+def test_offline_swift_archive_runs_a_real_file_through_the_companion() -> None:
+    # pong не ловит ни колесо scipy, которое dyld не грузит, ни auto-backend,
+    # уходящий офлайн за MLX-моделью: гейт гоняет файл с пустым кэшем и
+    # HF_HUB_OFFLINE=1 — ровно так companion запускает GigaAMLiquid.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    offline = text.split("Assemble and verify offline native Swift archive", 1)[1].split("Upload offline native Swift artifact", 1)[0]
+    assert "python3 scripts/native_worker_smoke.py" in offline
+    assert 'HF_HOME="${RUNNER_TEMP}/liquid-offline-smoke-hf" HF_HUB_OFFLINE=1' in offline
+    assert "--backend" not in offline  # auto, как у пользователя по умолчанию
+
+
 def test_release_waits_for_and_downloads_swift_artifact() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in text
@@ -58,6 +69,15 @@ def test_swift_runtime_prefers_frozen_offline_companion() -> None:
     assert "hasSourceRuntime || manager.isExecutableFile" in runtime
     assert "companion != nil && hasBundledModels(root: root)" in runtime
     assert 'childEnvironment["HF_HUB_OFFLINE"] = "1"' in runtime
+
+
+def test_swift_job_launch_does_not_require_source_tree_with_frozen_companion() -> None:
+    # Release archives ship GigaAMLiquid.app + GigaAMTranscriber.app and no src/;
+    # the legacy `python -m src.tui_worker` guard must not run in companion mode.
+    transcription = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
+    launch = transcription.split("private func launch() throws {", 1)[1].split("let task = Process()", 1)[0]
+    assert "let runtime = try PythonRuntime.resolve()" in launch
+    assert 'guard runtime.frozenCompanion || manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path)' in launch
 
 
 def test_tauri_prototype_does_not_persist_hf_token() -> None:

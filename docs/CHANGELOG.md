@@ -9,6 +9,30 @@
 
 Пока нет изменений.
 
+## [2.0.3] - 2026-09-16
+
+### Исправлено
+
+- Нативный клиент `GigaAMLiquid` в релизной раскладке (рядом с
+  `GigaAMTranscriber.app`, без исходников) падал на первой же транскрибации с
+  «The Python project is missing src/tui_worker.py»: проверка исходного дерева
+  осталась от режима `python -m src.tui_worker` и не учитывала frozen
+  companion. Затрагивало архивы Liquid 2.0.1 и 2.0.2.
+- На macOS 27 dyld отказывается загружать колесо `scipy==1.15.3`
+  (`__thread_bss … offset field is not zero`), из-за чего транскрибация в
+  companion и в `.venv` падала на импорте `scipy.sparse.linalg`. Пин поднят до
+  `scipy==1.16.3` для arm64 и x86_64.
+- Офлайн-архив Liquid на чистом Mac с backend `auto` не запускался: `auto`
+  выбирал MLX, модели которого в `models/hf` нет, а `HF_HUB_OFFLINE=1` запрещал
+  докачку. Теперь при `HF_HUB_OFFLINE` и отсутствии MLX-модели в кэше `auto`
+  берёт ONNX-цепочку из офлайн-набора.
+
+### Добавлено
+
+- `scripts/native_worker_smoke.py` — прогон реального файла через JSONL-worker
+  companion; release job гоняет его в офлайн-архиве Liquid с пустым кэшем и
+  `HF_HUB_OFFLINE=1`, потому что `ping`/`pong` эти поломки не ловил.
+
 ## [2.0.2] - 2026-09-14
 
 ### Исправлено

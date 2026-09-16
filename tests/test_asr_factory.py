@@ -135,6 +135,58 @@ def test_explicit_mlx_rejects_multilingual_model():
         )
 
 
+def _auto_arm64(**overrides):
+    kwargs = dict(
+        requested_backend="auto",
+        model_name="v3_e2e_rnnt",
+        model_revision="v3_e2e_rnnt",
+        mlx_model_repo="repo/mlx",
+        allow_fallback=True,
+        platform_name="darwin",
+        machine_name="arm64",
+        import_probe=lambda modules: True,
+    )
+    kwargs.update(overrides)
+    return create_backend_from_config(**kwargs)
+
+
+def test_auto_offline_prefers_bundled_onnx_when_mlx_model_is_not_cached(monkeypatch):
+    # Офлайн-архив Liquid везёт только ONNX-цепочку и запускает companion с
+    # HF_HUB_OFFLINE=1: MLX-модель докачать нельзя, а PyTorch-fallback офлайн
+    # мёртв так же — auto обязан взять ONNX, раз его модель лежит в кэше.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    backend, reason = _auto_arm64(repo_is_cached=lambda repo: repo != "repo/mlx")
+
+    assert isinstance(backend, OnnxBackend)
+    assert backend.model_revision == "v3_e2e_rnnt"
+    assert reason is not None and "repo/mlx" in reason and "ONNX" in reason
+
+
+def test_auto_offline_keeps_mlx_when_its_model_is_cached(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    backend, reason = _auto_arm64(repo_is_cached=lambda repo: True)
+
+    assert backend.name == "mlx"
+    assert reason is None
+
+
+def test_auto_offline_keeps_mlx_when_nothing_is_cached(monkeypatch):
+    # Нечего предпочесть — пусть MLX упадёт своим понятным сообщением о модели.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    backend, reason = _auto_arm64(repo_is_cached=lambda repo: False)
+
+    assert backend.name == "mlx"
+    assert reason is None
+
+
+def test_auto_online_ignores_cache_state(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    backend, reason = _auto_arm64(repo_is_cached=lambda repo: False)
+
+    assert backend.name == "mlx"
+    assert reason is None
+
+
 def test_auto_selects_onnx_on_macos_x86_64():
     # Под macOS x86_64 нет ни колёс torch>=2.6, ни mlx: PyTorch-ветка там не
     # медленнее, а мертва — падает с «No module named 'gigaam'» (issue #45).

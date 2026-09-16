@@ -114,7 +114,8 @@ final class NativeTranscriptionJob {
         guard outputDirectory.isFileURL else { throw Failure("Output directory must be a local folder.") }
         let runtime = try PythonRuntime.resolve()
         runtimeRoot = runtime.root
-        guard manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path) else {
+        // The frozen companion runs `--native-worker`; only the source-tree runtime needs src.tui_worker.
+        guard runtime.frozenCompanion || manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path) else {
             throw Failure("The Python project is missing src/tui_worker.py.")
         }
         try manager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)

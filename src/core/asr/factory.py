@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Any
 
+from ...utils.model_cache import hf_repo_is_cached
 from .mlx_backend import MLXBackend
+from .models import onnx_model_repo
 from .onnx_backend import OnnxBackend
 from .pytorch_backend import PyTorchBackend
 from .types import validate_backend_name
+
+# Те же значения, что huggingface_hub считает «истиной» для HF_HUB_OFFLINE.
+_ENV_TRUE_VALUES = {"1", "ON", "YES", "TRUE"}
 
 
 def _is_macos_arm64(platform_name: str, machine_name: str) -> bool:
@@ -22,6 +28,10 @@ def _default_import_probe(modules: tuple[str, ...]) -> bool:
         return True
     except Exception:
         return False
+
+
+def _hf_hub_offline() -> bool:
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().upper() in _ENV_TRUE_VALUES
 
 
 def _mlx_supports_model(model_revision: str) -> bool:
@@ -46,8 +56,12 @@ def create_backend(
     platform_name: str = __import__("sys").platform,
     machine_name: str = __import__("platform").machine(),
     import_probe: Callable[[tuple[str, ...]], bool] = _default_import_probe,
+    repo_is_cached: Callable[[str], bool] = hf_repo_is_cached,
+    offline: bool | None = None,
 ) -> tuple[Any, str | None]:
     requested = validate_backend_name(requested_backend)
+    if offline is None:
+        offline = _hf_hub_offline()
 
     if requested == "pytorch":
         return PyTorchBackend(model=model_name, revision=model_revision), None
@@ -100,6 +114,21 @@ def create_backend(
         )
 
     if import_probe(("mlx", "gigaam_mlx")):
+        # Офлайн-архив везёт только ONNX-цепочку (models/hf) и запускает worker с
+        # HF_HUB_OFFLINE=1. MLX-модель в таком режиме не докачать, а PyTorch-fallback
+        # офлайн мёртв так же, поэтому auto берёт ONNX, если его модель уже в кэше.
+        onnx_repo = onnx_model_repo(model_revision)
+        if offline and not repo_is_cached(mlx_repo) and repo_is_cached(onnx_repo):
+            return OnnxBackend(
+                model=model_revision,
+                provider=onnx_provider,
+                quantization=onnx_quantization,
+                model_dir=onnx_model_dir,
+                vad_model=onnx_vad_model,
+            ), (
+                f"Офлайн-режим (HF_HUB_OFFLINE): MLX-модель {mlx_repo} не найдена в "
+                f"локальном кэше, использован ONNX backend с моделью {onnx_repo}"
+            )
         return MLXBackend(model=model_name, repo=mlx_repo), None
 
     if allow_fallback:
@@ -122,6 +151,8 @@ def create_backend_from_config(
     platform_name: str = __import__("sys").platform,
     machine_name: str = __import__("platform").machine(),
     import_probe: Callable[[tuple[str, ...]], bool] = _default_import_probe,
+    repo_is_cached: Callable[[str], bool] = hf_repo_is_cached,
+    offline: bool | None = None,
 ):
     return create_backend(
         requested_backend=requested_backend,
@@ -136,4 +167,6 @@ def create_backend_from_config(
         platform_name=platform_name,
         machine_name=machine_name,
         import_probe=import_probe,
+        repo_is_cached=repo_is_cached,
+        offline=offline,
     )
