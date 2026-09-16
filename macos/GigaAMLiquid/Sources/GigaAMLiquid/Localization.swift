@@ -68,6 +68,10 @@ enum L10n {
         "Форматы вывода": "Output formats",
         "Текст (.txt)": "Text (.txt)",
         "Таймкоды": "Timestamps",
+        "Диаризация (.txt)": "Diarization (.txt)",
+        "Диар. + таймкоды": "Diar. + timestamps",
+        "Sortformer определяет спикеров автоматически (до 4). Pyannote и ONNX принимают известное число спикеров.": "Sortformer detects speakers automatically (up to 4). Pyannote and ONNX accept a known speaker count.",
+        "Sortformer определяет спикеров автоматически (до 4); ручное значение доступно для pyannote и ONNX.": "Sortformer detects speakers automatically (up to 4); a manual count is available for pyannote and ONNX.",
         "Настройки субтитров": "Subtitle settings",
         "Строк в блоке": "Lines per block",
         "Символов": "Characters",
@@ -259,7 +263,6 @@ enum L10n {
         "Скрыть остальные": "Hide Others",
         "Показать все": "Show All",
         "Завершить GigaAM v3": "Quit GigaAM v3",
-        "Файл": "File",
         "Выбрать файлы…": "Choose Files…",
         "Ссылка на медиа…": "Media Link…",
         "Закрыть окно": "Close Window",
@@ -267,14 +270,12 @@ enum L10n {
         "Отменить": "Undo",
         "Повторить": "Redo",
         "Вырезать": "Cut",
-        "Копировать": "Copy",
         "Вставить": "Paste",
         "Выделить всё": "Select All",
         "Окно": "Window",
         "Свернуть": "Minimize",
         "Масштабировать": "Zoom",
         "Все окна — на передний план": "Bring All to Front",
-        "Справка": "Help",
-        "Проект на GitHub": "Project on GitHub"
+        "Справка": "Help"
     ]
 }

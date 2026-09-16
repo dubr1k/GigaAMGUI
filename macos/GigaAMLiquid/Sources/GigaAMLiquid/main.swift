@@ -370,6 +370,12 @@ private final class NavigationRowButton: NSButton {
 private final class PaddedButton: NSButton {
     var keyHandler: ((NSEvent) -> Bool)?
 
+    // Layer-backed buttons keep their filled background when disabled; AppKit only
+    // greys the title, which is invisible on the black primary button.
+    override var isEnabled: Bool {
+        didSet { alphaValue = isEnabled ? 1 : 0.45 }
+    }
+
     override func keyDown(with event: NSEvent) {
         if keyHandler?(event) != true { super.keyDown(with: event) }
     }
@@ -1204,7 +1210,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         settings.addArrangedSubview(compactField("Подготовка аудио", control: popup(["auto", "off", "light", "denoise"], key: "processing.preprocessing")))
         settings.addArrangedSubview(compactField("Модель", control: popup(["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"], key: "settings.model")))
         settings.addArrangedSubview(toggleRow("Диаризация", key: "settings.diarization", defaultValue: false))
-        settings.addArrangedSubview(compactField("Кол-во спикеров", control: popup(["Авто", "1", "2", "3", "4", "5", "6"], key: "processing.speakers")))
+        settings.addArrangedSubview(compactField("Кол-во спикеров", control: speakerCountPopup()))
         processing.widthAnchor.constraint(equalToConstant: 252).isActive = true
         settings.bottomAnchor.constraint(equalTo: processing.bottomAnchor, constant: -16).isActive = true
         content.addArrangedSubview(horizontal([upload, processing], spacing: 16))
@@ -1224,7 +1230,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         selectedStack.bottomAnchor.constraint(equalTo: selected.bottomAnchor, constant: -16).isActive = true
 
         let folder = compactCard("Папка сохранения результатов")
-        let path = editableText(defaults.string(forKey: "output.path") ?? "~/Documents/GigaAM", key: "output.path", placeholder: "Выберите папку")
+        let path = editableText(outputPathText, key: "output.path", placeholder: "Выберите папку")
         path.heightAnchor.constraint(equalToConstant: 36).isActive = true
         path.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let change = button("Изменить", action: #selector(chooseOutputFolder(_:)), height: 36)
@@ -1246,6 +1252,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             checkbox("SRT (.srt)", key: "output.srt", defaultValue: false)
         ], spacing: 6))
         formats.addArrangedSubview(checkbox("VTT (.vtt)", key: "output.vtt", defaultValue: false))
+        formats.addArrangedSubview(checkbox("Диаризация (.txt)", key: "output.diarize", defaultValue: false))
+        formats.addArrangedSubview(checkbox("Диар. + таймкоды", key: "output.diarizeTimestamps", defaultValue: false))
         formats.addArrangedSubview(divider())
         formats.addArrangedSubview(label("Настройки субтитров", size: 15, weight: .medium, color: Palette.ink))
         formats.addArrangedSubview(equalColumns([
@@ -1625,7 +1633,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(divider())
             body.addArrangedSubview(toggleRow("Диаризация", key: "settings.diarization", defaultValue: false))
             body.addArrangedSubview(settingsField("Движок диаризации", control: popup(["pyannote", "onnx", "sortformer"], key: "settings.diarizationEngine")))
-            body.addArrangedSubview(settingsField("Кол-во спикеров", control: popup(["Авто", "1", "2", "3", "4", "5", "6"], key: "processing.speakers")))
+            body.addArrangedSubview(settingsField("Кол-во спикеров", control: speakerCountPopup()))
+            body.addArrangedSubview(wrappedLabel("Sortformer определяет спикеров автоматически (до 4). Pyannote и ONNX принимают известное число спикеров.", size: 12, color: Palette.muted))
             let value = SecureStore.string(for: "hfToken") ?? ""
             let token = RoundedSecureTextField(string: value)
             token.cell = CenteredSecureTextCell(textCell: value)
@@ -1664,7 +1673,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         case "Пути":
             body.addArrangedSubview(wrappedLabel("Хранение результатов и визуальные эффекты приложения.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
-            body.addArrangedSubview(settingsField("Папка результатов", control: editableText(defaults.string(forKey: "output.path") ?? "~/Documents/GigaAM", key: "output.path", placeholder: "Папка")))
+            body.addArrangedSubview(settingsField("Папка результатов", control: editableText(outputPathText, key: "output.path", placeholder: "Папка")))
             body.addArrangedSubview(toggleRow("Liquid Glass", key: "settings.liquidGlass", defaultValue: true))
             body.addArrangedSubview(toggleRow("Анимации", key: "settings.animations", defaultValue: true))
         case "О приложении":
@@ -2207,8 +2216,35 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
     }
 
+    private static let speakerCountValues = ["Авто", "1", "2", "3", "4", "5", "6"]
+
+    private func speakerCountPopup() -> NSPopUpButton {
+        let control = popup(Self.speakerCountValues, key: "processing.speakers")
+        control.toolTip = L10n.text("Sortformer определяет спикеров автоматически (до 4); ручное значение доступно для pyannote и ONNX.")
+        return control
+    }
+
+    /// Sortformer infers the speaker set itself (up to 4); a manual count is only
+    /// meaningful for pyannote and ONNX clustering.
+    private var manualSpeakerCountAvailable: Bool {
+        enabledOption("settings.diarization", defaultValue: false)
+            && option("settings.diarizationEngine", values: ["pyannote", "onnx", "sortformer"]) != "sortformer"
+    }
+
+    /// Mirrors the PyQt client: a count hidden behind a disabled control must not
+    /// resurface when the engine or the diarization toggle changes again.
+    private func resetManualSpeakerCountIfUnavailable() {
+        guard !manualSpeakerCountAvailable else { return }
+        defaults.removeObject(forKey: "processing.speakers")
+    }
+
     private var outputFormats: [String] {
-        [("output.txt", "txt", true), ("output.timestamps", "txt_timecodes", true), ("output.md", "md", false), ("output.srt", "srt", false), ("output.vtt", "vtt", false)].compactMap { key, format, fallback in
+        let diarization = enabledOption("settings.diarization", defaultValue: false)
+        let choices: [(String, String, Bool)] = [
+            ("output.txt", "txt", true), ("output.timestamps", "txt_timecodes", true),
+            ("output.md", "md", false), ("output.srt", "srt", false), ("output.vtt", "vtt", false)
+        ] + (diarization ? [("output.diarize", "txt_diarize", false), ("output.diarizeTimestamps", "txt_diarize_timecodes", false)] : [])
+        return choices.compactMap { key, format, fallback in
             enabledOption(key, defaultValue: fallback) ? format : nil
         }
     }
@@ -2221,7 +2257,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         settings.onnxProvider = option("settings.onnxProvider", values: ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"])
         settings.diarization = enabledOption("settings.diarization", defaultValue: false)
         settings.diarizationBackend = option("settings.diarizationEngine", values: ["pyannote", "onnx", "sortformer"])
-        settings.numSpeakers = settings.diarization ? Int(option("processing.speakers", values: ["Авто", "1", "2", "3", "4", "5", "6"])) : nil
+        settings.numSpeakers = manualSpeakerCountAvailable ? Int(option("processing.speakers", values: Self.speakerCountValues)) : nil
         settings.audioPreprocessingMode = option("processing.preprocessing", values: ["auto", "off", "light", "denoise"])
         settings.subtitleSentenceSplit = enabledOption("subtitle.sentences", defaultValue: true)
         settings.subtitleMaxLines = Int(option("subtitle.lines", values: ["2", "1", "3", "4"])) ?? 2
@@ -2231,9 +2267,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return settings
     }
 
+    /// The field persists on every keystroke, so a cleared field stores "" rather
+    /// than nil; an empty path means the default folder, not "no folder".
+    private var outputPathText: String {
+        let stored = (defaults.string(forKey: "output.path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return stored.isEmpty ? "~/Documents/GigaAM" : stored
+    }
+
     private var outputDirectory: URL? {
-        let raw = (defaults.string(forKey: "output.path") ?? "~/Documents/GigaAM").trimmingCharacters(in: .whitespacesAndNewlines)
-        let path = (raw as NSString).expandingTildeInPath
+        let path = (outputPathText as NSString).expandingTildeInPath
         guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
         let destination = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         var ancestor = destination
@@ -2252,7 +2294,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             if let control = view as? NSControl, let key = control.identifier?.rawValue {
                 if key.hasPrefix("processing.") || key.hasPrefix("output.") || key.hasPrefix("subtitle.") || ["settings.backend", "settings.model", "settings.onnxProvider", "settings.diarization", "settings.diarizationEngine", "settings.hfToken"].contains(key) {
                     control.isEnabled = !busy
-                    if key == "processing.speakers" || key == "settings.diarizationEngine" { control.isEnabled = !busy && enabledOption("settings.diarization", defaultValue: false) }
+                    if key == "processing.speakers" {
+                        control.isEnabled = !busy && manualSpeakerCountAvailable
+                        if !manualSpeakerCountAvailable, let popup = control as? NSPopUpButton { popup.selectItem(withTitle: "Авто") }
+                    }
+                    if ["settings.diarizationEngine", "output.diarize", "output.diarizeTimestamps"].contains(key) { control.isEnabled = !busy && enabledOption("settings.diarization", defaultValue: false) }
                 }
             }
             view.subviews.forEach(update)
@@ -2396,6 +2442,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         guard let key = sender.identifier?.rawValue, let value = sender.titleOfSelectedItem else { return }
         defaults.set(value, forKey: key)
         if key == "settings.theme" || key == "settings.language" { rebuildInterface() }
+        if key == "settings.diarizationEngine" { resetManualSpeakerCountIfUnavailable() }
         refreshProcessingControls()
     }
 
@@ -2403,6 +2450,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         guard let key = sender.identifier?.rawValue else { return }
         defaults.set(sender.state == .on, forKey: key)
         if key == "settings.liquidGlass" { rebuildInterface() }
+        if key == "settings.diarization" { resetManualSpeakerCountIfUnavailable() }
         refreshProcessingControls()
     }
 

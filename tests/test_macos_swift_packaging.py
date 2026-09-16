@@ -148,3 +148,86 @@ def test_appkit_about_uses_bundle_release_version():
     assert 'CFBundleShortVersionString' in about
     assert 'settingsField("Версия приложения"' in about
     assert 'label("1.3.0"' not in about
+
+
+MAIN_SWIFT = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift")
+
+
+def _swift_block(source: str, opener: str) -> str:
+    """Тело первого объявления `opener { … }` на уровне метода AppController."""
+    return source.split(opener, 1)[1].split("\n    }\n", 1)[0]
+
+
+def test_swift_empty_output_path_falls_back_to_default_folder() -> None:
+    # Поле пути сохраняется на каждое нажатие клавиши; стёртое поле оставляло в
+    # defaults пустую строку, `?? "~/Documents/GigaAM"` не срабатывал, и кнопка
+    # запуска молча выключалась без видимого disabled-состояния.
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    text = _swift_block(main, "private var outputPathText: String {")
+    assert 'defaults.string(forKey: "output.path")' in text
+    assert "trimmingCharacters(in: .whitespacesAndNewlines)" in text
+    assert 'isEmpty ? "~/Documents/GigaAM"' in text
+    directory = _swift_block(main, "private var outputDirectory: URL? {")
+    assert "(outputPathText as NSString).expandingTildeInPath" in directory
+    assert 'defaults.string(forKey: "output.path") ?? "~/Documents/GigaAM"' not in main
+    assert main.count('editableText(outputPathText, key: "output.path"') == 2
+
+
+def test_swift_disabled_primary_button_is_visibly_dimmed() -> None:
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    padded = main.split("private final class PaddedButton: NSButton {", 1)[1].split("\nprivate final class", 1)[0]
+    assert "override var isEnabled: Bool" in padded
+    assert "alphaValue = isEnabled ? 1 :" in padded
+
+
+def test_swift_sortformer_never_sends_manual_speaker_count() -> None:
+    # Sortformer определяет спикеров сам (до 4); ручное значение 5–6 роняло файл
+    # с «Sortformer поддерживает не более 4 спикеров», а 1–4 молча игнорировалось.
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    available = _swift_block(main, "private var manualSpeakerCountAvailable: Bool {")
+    assert 'enabledOption("settings.diarization", defaultValue: false)' in available
+    assert '!= "sortformer"' in available
+    settings = _swift_block(main, "private func transcriptionSettings() -> NativeTranscriptionSettings {")
+    assert "settings.numSpeakers = manualSpeakerCountAvailable ?" in settings
+    controls = _swift_block(main, "private func refreshProcessingControls() {")
+    assert 'key == "processing.speakers"' in controls
+    assert "manualSpeakerCountAvailable" in controls
+    assert 'if key == "processing.speakers" || key == "settings.diarizationEngine" { control.isEnabled = !busy && enabledOption' not in controls
+    assert "Sortformer определяет спикеров автоматически" in main
+    # Как в PyQt (_change_diarization_backend → setValue(0)): скрытое ручное
+    # значение сбрасывается, а не всплывает позже при смене движка.
+    reset = _swift_block(main, "private func resetManualSpeakerCountIfUnavailable() {")
+    assert "guard !manualSpeakerCountAvailable" in reset
+    assert 'defaults.removeObject(forKey: "processing.speakers")' in reset
+    assert "resetManualSpeakerCountIfUnavailable()" in _swift_block(main, "@objc private func popupChanged(_ sender: NSPopUpButton) {")
+    assert "resetManualSpeakerCountIfUnavailable()" in _swift_block(main, "@objc private func switchChanged(_ sender: NSButton) {")
+    assert 'popup.selectItem(withTitle: "Авто")' in controls
+
+
+def test_swift_english_dictionary_has_no_duplicate_keys() -> None:
+    # Swift traps on a dictionary literal with duplicate keys, and `english` is a
+    # lazy static touched only when the UI language is English: 2.0.4 crashed at
+    # launch for every English user with «Dictionary literal contains duplicate keys».
+    import re
+
+    source = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Localization.swift").read_text(encoding="utf-8")
+    literal = source.split("private static let english: [String: String] = [", 1)[1].split("\n    ]\n", 1)[0]
+    keys = re.findall(r'^\s*"((?:[^"\\]|\\.)*)":', literal, flags=re.MULTILINE)
+    assert len(keys) > 200
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert duplicates == []
+
+
+def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
+    assert 'checkbox("Диаризация (.txt)", key: "output.diarize", defaultValue: false)' in processing
+    assert 'checkbox("Диар. + таймкоды", key: "output.diarizeTimestamps", defaultValue: false)' in processing
+    formats = _swift_block(main, "private var outputFormats: [String] {")
+    assert '("output.diarize", "txt_diarize", false)' in formats
+    assert '("output.diarizeTimestamps", "txt_diarize_timecodes", false)' in formats
+    assert 'enabledOption("settings.diarization", defaultValue: false)' in formats
+    controls = _swift_block(main, "private func refreshProcessingControls() {")
+    assert '"output.diarize"' in controls and '"output.diarizeTimestamps"' in controls
+    english = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Localization.swift").read_text(encoding="utf-8")
+    assert '"Диаризация (.txt)":' in english and '"Диар. + таймкоды":' in english
