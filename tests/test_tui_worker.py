@@ -61,6 +61,15 @@ def test_tui_worker_rejects_colliding_output_stems(tmp_path):
     assert "overwrite" in message["message"]
 
 
+def test_tui_worker_routes_llm_cancel_without_job():
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+
+    worker.handle({"type": "llm_cancel"})
+
+    assert _messages(output) == [{"type": "error", "message": "No LLM request is running"}]
+
+
 def test_tui_worker_rejects_unknown_command():
     output = io.StringIO()
     worker = TuiWorker(output=output)
