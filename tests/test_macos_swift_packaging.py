@@ -243,6 +243,16 @@ def test_swift_worker_process_is_shared_between_jobs() -> None:
     assert "WorkerProcess(" in transcription
 
 
+def test_swift_llm_job_uses_worker_protocol_and_redacts_api_key() -> None:
+    job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LLMJob.swift").read_text(encoding="utf-8")
+    assert '"type": "llm_start"' in job and '"type": "llm_cancel"' in job
+    for event in ('"llm_started"', '"llm_chunk"', '"llm_completed"'):
+        assert event in job
+    assert "WorkerProcess(" in job
+    assert 'settings["api_key"]' in job  # secret collected for redaction
+    assert "WorkerRedaction.safeText" in job
+
+
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
