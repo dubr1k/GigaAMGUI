@@ -33,7 +33,7 @@ def test_tauri_api_examples_match_authenticated_v1_contract() -> None:
 def test_all_desktop_version_sources_match_release():
     import json
 
-    expected = "2.1.2"
+    expected = "2.1.3"
     assert f'__version__ = "{expected}"' in Path("src/__init__.py").read_text(encoding="utf-8")
     assert f'APP_VERSION = "{expected}"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
     assert json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))["version"] == expected
@@ -43,8 +43,15 @@ def test_all_desktop_version_sources_match_release():
 
 
 def test_liquid_release_bundle_contains_configured_icon():
+    # Liquid has its own generated icon (scripts/make_liquid_icon.py); the PyQt
+    # bundles keep assets/icon.icns.
     workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
-    assert 'cp assets/icon.icns "$APP/Contents/Resources/GigaAMLiquid.icns"' in workflow
+    assert 'cp assets/icon-liquid.icns "$APP/Contents/Resources/GigaAMLiquid.icns"' in workflow
+    assert 'cp assets/icon.icns "$APP/Contents/Resources/GigaAMLiquid.icns"' not in workflow
+    icon = Path("assets/icon-liquid.icns")
+    assert icon.is_file() and icon.stat().st_size > 50_000
+    assert icon.read_bytes()[:4] == b"icns"
+    assert Path("assets/icon-liquid.png").is_file()
     assert '<key>CFBundleIconFile</key><string>GigaAMLiquid.icns</string>' in workflow
     assert 'test -s "$APP/Contents/Resources/GigaAMLiquid.icns"' in workflow
 
