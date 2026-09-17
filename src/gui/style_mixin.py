@@ -5,14 +5,29 @@ Mixin: методы работают со `self` главного окна. По
 from __future__ import annotations
 
 import os
+import sys
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics
 from PyQt6.QtWidgets import QApplication, QColorDialog, QLabel
 
-_BASE_FONT_PT = 12.0
 _MIN_UI_SCALE = 0.85
 _MAX_UI_SCALE = 1.75
+# The UI scale follows the system font so that users who enlarge it get a
+# larger window. Default fonts differ per platform (macOS 13 pt, Windows 9 pt
+# Segoe UI, most Linux desktops 10 pt), so each platform needs its own
+# baseline; with a single 12 pt baseline Windows collapsed to the minimum
+# scale and text shrank while card metrics did not (#54). The design was tuned
+# on macOS, so every baseline maps the platform default to ≈1.05–1.08.
+_PLATFORM_BASE_FONT_PT = {"darwin": 12.0, "win32": 8.5}
+_FALLBACK_BASE_FONT_PT = 9.5
+
+
+def font_scale_for(font_pt: float, platform: str | None = None) -> float:
+    base = _PLATFORM_BASE_FONT_PT.get(platform or sys.platform, _FALLBACK_BASE_FONT_PT)
+    if font_pt <= 0:
+        font_pt = base
+    return max(_MIN_UI_SCALE, min(_MAX_UI_SCALE, font_pt / base))
 
 
 def _read_ui_scale() -> float:
@@ -80,11 +95,8 @@ class StyleMixin:
 
     def _effective_ui_scale(self) -> float:
         app = QApplication.instance()
-        font_pt = app.font().pointSizeF() if app else _BASE_FONT_PT
-        if font_pt <= 0:
-            font_pt = _BASE_FONT_PT
-        font_scale = max(_MIN_UI_SCALE, min(_MAX_UI_SCALE, font_pt / _BASE_FONT_PT))
-        ui_scale = font_scale * _read_ui_scale()
+        font_pt = app.font().pointSizeF() if app else 0.0
+        ui_scale = font_scale_for(font_pt) * _read_ui_scale()
         return round(max(_MIN_UI_SCALE, min(_MAX_UI_SCALE, ui_scale)), 4)
 
     def _px(self, value: int | float) -> int:

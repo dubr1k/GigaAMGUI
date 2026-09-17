@@ -54,6 +54,9 @@ class ThemeMixin:
                 QPushButton:hover {{ background: {c['btn_hover_bg']}; color: {c['btn_hover_text']}; border-color: {c['btn_hover_border']}; }}
                 QPushButton:disabled {{ background: {c['input_dis']}; color: {c['input_dis_text']}; border-color: {c['border']}; }}
                 QPushButton#nav_button {{ color: {c['text_sub']}; }}
+                QLabel {{ background: transparent; }}
+                QGroupBox#glass_panel::title, QGroupBox#dense_panel::title,
+                QGroupBox#settings_group::title {{ color: {c['text_sub']}; }}
                 QPushButton#nav_button:checked, QPushButton#journal_filter:checked,
                 QTabWidget#settings_category_tabs QTabBar::tab:selected {{
                     background: {c['accent_dis']}; color: {c['text']}; border-color: {c['accent']};
@@ -126,13 +129,13 @@ class ThemeMixin:
             QPushButton#profile_button {{ min-height: 0; background: #E8EEF5; border: none; border-radius: {p(13)}px; padding: 0; color: #43536A; font-size: {pt(7)}pt; }}
             QPushButton#live_record_button {{ background: #F15A5A; border-color: #F15A5A; color: white; border-radius: {p(18)}px; }}
             QPushButton#live_stop_button {{ background: #FFF1F2; border-color: #FECACA; color: #B42318; border-radius: {p(18)}px; }}
-            QGroupBox#glass_panel, QGroupBox#dense_panel {{ margin-top: {p(9)}px; padding-top: {p(4)}px; }}
-            QGroupBox#glass_panel::title, QGroupBox#dense_panel::title {{ subcontrol-origin: margin; left: {p(12)}px; padding: 0 {p(3)}px; color: #202C40; font-size: {pt(8)}pt; font-weight: 600; }}
+            QGroupBox#glass_panel, QGroupBox#dense_panel {{ margin-top: {p(16)}px; padding-top: {p(4)}px; }}
+            QGroupBox#glass_panel::title, QGroupBox#dense_panel::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {p(12)}px; top: 0; padding: 0 {p(3)}px; color: #202C40; font-size: {pt(8)}pt; font-weight: 600; }}
             QGroupBox::title {{
                 background: transparent;
             }}
-            QGroupBox#settings_group {{ border: none; margin-top: {p(6)}px; padding-top: {p(3)}px; }}
-            QGroupBox#settings_group::title {{ subcontrol-origin: margin; left: 0; padding: 0; color: #324156; font-size: {pt(8)}pt; font-weight: 600; }}
+            QGroupBox#settings_group {{ border: none; margin-top: {p(16)}px; padding-top: {p(3)}px; }}
+            QGroupBox#settings_group::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: 0; top: 0; padding: 0; color: #324156; font-size: {pt(8)}pt; font-weight: 600; }}
             QCheckBox {{ background: transparent; color: #3B4A5E; spacing: {p(6)}px; font-size: {pt(8)}pt; }}
             QCheckBox::indicator {{ width: {p(13)}px; height: {p(13)}px; border: 1px solid #BDD1E3; border-radius: {p(3)}px; background: #FFFFFF; }}
             QCheckBox::indicator:checked {{ background: #2D95F7; border-color: #2D95F7; }}

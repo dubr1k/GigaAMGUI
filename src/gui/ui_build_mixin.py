@@ -230,13 +230,16 @@ class UiBuildMixin:
         settings_panel.setObjectName("processing_settings_panel")
         settings_layout = QVBoxLayout(settings_panel)
         settings_layout.setContentsMargins(self._px(14), self._px(13), self._px(14), self._px(13))
-        settings_layout.setSpacing(self._px(6))
+        settings_layout.setSpacing(self._px(4))
         settings_title = QLabel("Настройки обработки")
         settings_title.setObjectName("section_title")
         settings_layout.addWidget(settings_title)
         settings_layout.addWidget(self._create_audio_preprocessing_group())
         settings_layout.addWidget(self._create_diarization_group())
         settings_layout.addWidget(self._create_formats_group())
+        # Without a stretch the spare height is split between the cards, which
+        # leaves each group floating in empty space on small fonts (#54).
+        settings_layout.addStretch(1)
         workspace_row.addWidget(settings_panel, 2)
         start_layout.addLayout(workspace_row, 1)
 
@@ -646,9 +649,6 @@ class UiBuildMixin:
         self._processing_start_layout.setSpacing(self._px(8 if tight else 10))
         self._workspace_row.setStretch(0, 3)
         self._workspace_row.setStretch(1, 2)
-        if hasattr(self, "lbl_subtitle_max_width"):
-            self.lbl_subtitle_max_width.setVisible(not compact)
-            self.spin_subtitle_max_width.setVisible(not compact)
 
     def _build_menu_bar(self):
         menubar = self.menuBar()
@@ -869,20 +869,26 @@ class UiBuildMixin:
         self.cb_subtitle_sentence_split = QCheckBox("Разбивать по предложениям")
         self.cb_subtitle_sentence_split.setChecked(True)
         layout.addWidget(self.cb_subtitle_sentence_split)
-        options = QHBoxLayout()
+        # Two label/spinner pairs on a grid: a single row overflowed the
+        # settings column and cut off "Символов" (#54).
+        options = QGridLayout()
+        options.setHorizontalSpacing(self._px(6))
+        options.setVerticalSpacing(self._px(2))
         self.lbl_subtitle_max_lines = QLabel("Строк:")
-        options.addWidget(self.lbl_subtitle_max_lines)
+        self.lbl_subtitle_max_lines.setObjectName("field_label")
+        options.addWidget(self.lbl_subtitle_max_lines, 0, 0)
         self.spin_subtitle_max_lines = QSpinBox()
         self.spin_subtitle_max_lines.setRange(1, 4)
         self.spin_subtitle_max_lines.setValue(2)
-        options.addWidget(self.spin_subtitle_max_lines)
+        options.addWidget(self.spin_subtitle_max_lines, 0, 1)
         self.lbl_subtitle_max_width = QLabel("Символов:")
-        options.addWidget(self.lbl_subtitle_max_width)
+        self.lbl_subtitle_max_width.setObjectName("field_label")
+        options.addWidget(self.lbl_subtitle_max_width, 1, 0)
         self.spin_subtitle_max_width = QSpinBox()
         self.spin_subtitle_max_width.setRange(20, 100)
         self.spin_subtitle_max_width.setValue(64)
-        options.addWidget(self.spin_subtitle_max_width)
-        options.addStretch()
+        options.addWidget(self.spin_subtitle_max_width, 1, 1)
+        options.setColumnStretch(2, 1)
         layout.addLayout(options)
         self._update_subtitle_controls_enabled()
         return group
