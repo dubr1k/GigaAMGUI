@@ -772,6 +772,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private var selectedOutputFormat: String?
     private var transcriptionResults: [NativeTranscriptionResult] = []
     private var transcriptionJob: NativeTranscriptionJob?
+    private var llmJob: LLMJob?
+    private var llmResultText = ""
+    private weak var llmResultView: NSTextView?
+    private weak var llmRunButton: NSButton?
+    private weak var llmCancelButton: NSButton?
+    private weak var llmStatusLabel: NSTextField?
+    private weak var llmCopyButton: NSButton?
+    private weak var llmSaveButton: NSButton?
     private var transcriptionFiles: [URL] = []
     private var fileStates: [URL: String] = [:]
     private var cancellationRequested = false
@@ -1426,13 +1434,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         content.addArrangedSubview(transcript)
     }
 
+    private static let llmProviders = ["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other"]
+
     private func buildLLM(into content: NSStackView) {
         let source = card("Исходный текст")
         let sourceBody = contentStack(source)
         sourceBody.spacing = 10
         sourceBody.addArrangedSubview(button("Выбрать файл с транскриптом", action: #selector(chooseTranscript(_:))))
-        sourceBody.addArrangedSubview(compactField("Провайдер", control: popup(["OpenAI-compatible", "Anthropic", "Локальный"], key: "llm.provider")))
-        sourceBody.addArrangedSubview(compactField("Модель", control: editableText(defaults.string(forKey: "llm.model") ?? "gpt-4.1-mini", key: "llm.model", placeholder: "Модель")))
+        sourceBody.addArrangedSubview(equalColumns([
+            compactField("Провайдер", control: popup(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other"], key: "llm.provider")),
+            compactField("Модель", control: editableText(defaults.string(forKey: "llm.model") ?? "", key: "llm.model", placeholder: "gpt-4.1-mini"))
+        ], spacing: 12))
+        sourceBody.addArrangedSubview(wrappedLabel("Адрес, ключ и пути к CLI-провайдерам — в Настройки → LLM.", size: 12, color: Palette.muted))
         sourceBody.addArrangedSubview(label("Транскрипция · можно вставить текст", size: 12, color: Palette.body))
         let editor = textEditor(defaults.string(forKey: "llm.source") ?? "", key: "llm.source", height: 180)
         transcriptEditor = editor.documentView as? NSTextView
@@ -1455,28 +1468,43 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         promptEditor = prompt.documentView as? NSTextView
         promptEditor?.setAccessibilityLabel(L10n.text("Пользовательский промпт"))
         templatesBody.addArrangedSubview(prompt)
-        templatesBody.addArrangedSubview(wrappedLabel("LLM-сервис не подключён. Запросы не отправляются.", size: 12, color: Palette.muted))
-        let run = unavailableButton("Запустить обработку", primary: true, reason: "LLM-сервис не подключён.")
-        run.font = .systemFont(ofSize: 12)
-        templatesBody.addArrangedSubview(run)
+        let run = button("Запустить обработку", primary: true, action: #selector(runLLM(_:)), height: 44)
+        run.identifier = NSUserInterfaceItemIdentifier("llm.run")
+        llmRunButton = run
+        let cancel = button("Отменить запрос", action: #selector(cancelLLM(_:)), height: 44)
+        cancel.identifier = NSUserInterfaceItemIdentifier("llm.cancel")
+        llmCancelButton = cancel
+        templatesBody.addArrangedSubview(equalColumns([run, cancel], spacing: 12))
+        let status = wrappedLabel("", size: 12, color: Palette.muted)
+        status.identifier = NSUserInterfaceItemIdentifier("llm.status")
+        status.maximumNumberOfLines = 3
+        llmStatusLabel = status
+        templatesBody.addArrangedSubview(status)
         templates.widthAnchor.constraint(equalToConstant: 878).isActive = true
         templatesBody.bottomAnchor.constraint(equalTo: templates.bottomAnchor, constant: -16).isActive = true
 
         let output = card("Результат")
         let outputBody = contentStack(output)
-        let result = insetPanel()
-        embed(vertical([
-            label("Краткое содержание", size: 15, weight: .medium, color: Palette.ink),
-            wrappedLabel("Ответа пока нет. Здесь появится результат запроса к выбранному провайдеру.", size: 14, color: Palette.body)
-        ], spacing: 18), in: result, inset: 16)
-        result.heightAnchor.constraint(equalToConstant: 150).isActive = true
+        outputBody.spacing = 12
+        let result = textEditor(llmResultText.isEmpty ? L10n.text("Ответа пока нет. Здесь появится результат запроса к выбранному провайдеру.") : llmResultText, key: nil, height: 220)
+        llmResultView = result.documentView as? NSTextView
+        llmResultView?.isEditable = false
+        llmResultView?.identifier = NSUserInterfaceItemIdentifier("llm.result")
+        llmResultView?.setAccessibilityLabel(L10n.text("Результат"))
         outputBody.addArrangedSubview(result)
-        outputBody.addArrangedSubview(equalColumns([unavailableButton("Копировать"), unavailableButton("Скачать .md")], spacing: 12))
+        let copy = button("Копировать", action: #selector(copyLLMResult(_:)), height: 34)
+        copy.identifier = NSUserInterfaceItemIdentifier("llm.copy")
+        llmCopyButton = copy
+        let save = button("Сохранить .md", action: #selector(saveLLMResult(_:)), height: 34)
+        save.identifier = NSUserInterfaceItemIdentifier("llm.save")
+        llmSaveButton = save
+        outputBody.addArrangedSubview(equalColumns([copy, save], spacing: 12))
         output.widthAnchor.constraint(equalToConstant: 878).isActive = true
         outputBody.bottomAnchor.constraint(equalTo: output.bottomAnchor, constant: -16).isActive = true
         content.addArrangedSubview(source)
         content.addArrangedSubview(templates)
         content.addArrangedSubview(output)
+        refreshLLMControls()
     }
 
     private func buildAPI(into content: NSStackView) {
@@ -1659,10 +1687,28 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(settingsField("Частота дискретизации", control: inactive(popup(["16000 Hz"], key: "settings.sampleRate"))))
             body.addArrangedSubview(wrappedLabel("Частоту 16000 Hz задаёт конвертер. auto — автоматическая подготовка, off — без неё, light — лёгкая обработка, denoise — шумоподавление.", size: 12, color: Palette.muted))
         case "LLM":
-            body.addArrangedSubview(wrappedLabel("Сохранённые параметры постобработки. LLM-сервис не подключён.", size: 13, color: Palette.body))
+            body.addArrangedSubview(wrappedLabel("Провайдер постобработки и вопросов ассистенту в Live. API — OpenAI-совместимый или Anthropic адрес; остальные — локальные CLI.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
-            body.addArrangedSubview(settingsField("Провайдер", control: popup(["OpenAI-compatible", "Anthropic", "Локальный"], key: "settings.llmProvider")))
-            body.addArrangedSubview(settingsField("Модель", control: editableText(defaults.string(forKey: "settings.llmModel") ?? "gpt-4.1-mini", key: "settings.llmModel", placeholder: "Модель")))
+            body.spacing = 16
+            body.addArrangedSubview(settingsField("Провайдер", control: popup(Self.llmProviders, key: "llm.provider")))
+            body.addArrangedSubview(settingsField("API URL", control: editableText(defaults.string(forKey: "llm.apiUrl") ?? "", key: "llm.apiUrl", placeholder: "https://api.openai.com/v1")))
+            body.addArrangedSubview(settingsField("API Key", control: secureField(account: "llmApiKey", key: "llm.apiKey")))
+            body.addArrangedSubview(equalColumns([
+                settingsField("Модель", control: editableText(defaults.string(forKey: "llm.model") ?? "", key: "llm.model", placeholder: "gpt-4.1-mini")),
+                settingsField("Temperature", control: editableText(defaults.string(forKey: "llm.temperature") ?? "", key: "llm.temperature", placeholder: "0.2"))
+            ], spacing: 20))
+            for (title, pathKey, argsKey, fallback) in [
+                ("Claude Code", "llm.claudePath", "llm.claudeArgs", "claude"), ("Codex", "llm.codexPath", "llm.codexArgs", "codex"),
+                ("OpenCode", "llm.opencodePath", "llm.opencodeArgs", "opencode"), ("Pi", "llm.piPath", "llm.piArgs", "pi"),
+                ("Другое (команда)", "llm.otherPath", "llm.otherArgs", "")
+            ] {
+                body.addArrangedSubview(equalColumns([
+                    settingsField(title, control: editableText(defaults.string(forKey: pathKey) ?? "", key: pathKey, placeholder: fallback.isEmpty ? "/path/to/tool" : fallback)),
+                    settingsField("Аргументы", control: editableText(defaults.string(forKey: argsKey) ?? "", key: argsKey, placeholder: ""))
+                ], spacing: 20))
+            }
+            body.addArrangedSubview(settingsField("Pi provider", control: editableText(defaults.string(forKey: "llm.piProvider") ?? "", key: "llm.piProvider", placeholder: "")))
+            body.addArrangedSubview(wrappedLabel("Ключ хранится в Связке ключей. CLI-провайдеры запускаются Python-сервисом проекта с указанными путями и аргументами.", size: 12, color: Palette.muted))
         case "API":
             body.addArrangedSubview(wrappedLabel("Отдельный REST API запускается из api.py. Нативный клиент не запускает сервер и не проверяет его доступность.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
@@ -1970,6 +2016,26 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         popup.font = NSFont.systemFont(ofSize: 13)
         popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return popup
+    }
+
+    /// Secure text field whose value lives in the Keychain (`SecureStore`) under `account`; `key` is only the control identifier.
+    private func secureField(account: String, key: String) -> NSTextField {
+        let value = SecureStore.string(for: account) ?? ""
+        let field = RoundedSecureTextField(string: value)
+        field.cell = CenteredSecureTextCell(textCell: value)
+        field.isEditable = true
+        field.isSelectable = true
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.wantsLayer = true
+        field.layer?.cornerRadius = 18
+        field.layer?.masksToBounds = true
+        field.placeholderString = L10n.text("Не настроен")
+        field.identifier = NSUserInterfaceItemIdentifier(key)
+        field.target = self
+        field.delegate = self
+        field.action = #selector(textChanged(_:))
+        return field
     }
 
     private func editableText(_ value: String, key: String, placeholder: String) -> NSTextField {
@@ -2424,7 +2490,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     private func replyWhenJobsFinished() {
-        if isTerminating && transcriptionJob == nil && mediaDownloadJob == nil { NSApp.reply(toApplicationShouldTerminate: true) }
+        if isTerminating && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil { NSApp.reply(toApplicationShouldTerminate: true) }
     }
 
     @objc private func showProcessingLog(_ sender: Any?) {
@@ -2461,6 +2527,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
                 try SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "hfToken")
             } catch {
                 showNotice("Не удалось сохранить HF Token", error.localizedDescription)
+            }
+        } else if key == "llm.apiKey" {
+            do {
+                try SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "llmApiKey")
+            } catch {
+                showNotice("Не удалось сохранить API Key", error.localizedDescription)
             }
         } else {
             defaults.set(sender.stringValue, forKey: key)
@@ -2610,16 +2682,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         mediaDownloadJob?.cancel()
         transcriptionJob?.cancel()
         transcriptionJob?.terminate()
+        llmJob?.terminate()
         cleanupDownloadedMedia()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isClosing = true
-        guard mediaDownloadJob != nil || transcriptionJob != nil else { return .terminateNow }
+        guard mediaDownloadJob != nil || transcriptionJob != nil || llmJob != nil else { return .terminateNow }
         isTerminating = true
         mediaDownloadJob?.cancel()
         transcriptionJob?.cancel()
         transcriptionJob?.terminate()
+        llmJob?.terminate()
         return .terminateLater
     }
 
@@ -2709,6 +2783,121 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
         promptEditor?.string = prompt
         defaults.set(prompt, forKey: "llm.prompt")
+    }
+
+    // MARK: - LLM
+
+    /// Same shape as the PyQt client's `_collect_llm_settings`, so `llm_service` needs no adapter.
+    private func llmSettings() throws -> [String: Any] {
+        let provider = option("llm.provider", values: Self.llmProviders)
+        func text(_ key: String, _ fallback: String = "") -> String {
+            let value = (defaults.string(forKey: key) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? fallback : value
+        }
+        let apiURL = text("llm.apiUrl")
+        let apiKey = (SecureStore.string(for: "llmApiKey") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = text("llm.model")
+        guard let temperature = Double(text("llm.temperature", "0.2")), (0...2).contains(temperature) else {
+            throw WorkerFailure(L10n.text("Temperature должно быть числом в диапазоне 0..2"))
+        }
+        if provider == "API" {
+            guard !apiURL.isEmpty else { throw WorkerFailure(L10n.text("Укажите API URL в Настройки → LLM")) }
+            guard !apiKey.isEmpty else { throw WorkerFailure(L10n.text("Укажите API Key в Настройки → LLM")) }
+            guard !model.isEmpty else { throw WorkerFailure(L10n.text("Укажите модель")) }
+        }
+        if provider == "Other", text("llm.otherPath").isEmpty {
+            throw WorkerFailure(L10n.text("Укажите команду для провайдера «Другое» в Настройки → LLM"))
+        }
+        return [
+            "provider": provider, "api_url": apiURL, "api_key": apiKey, "model": model, "temperature": temperature,
+            "claude_path": text("llm.claudePath", "claude"), "claude_args": text("llm.claudeArgs"),
+            "codex_path": text("llm.codexPath", "codex"), "codex_args": text("llm.codexArgs"),
+            "opencode_path": text("llm.opencodePath", "opencode"), "opencode_args": text("llm.opencodeArgs"),
+            "pi_path": text("llm.piPath", "pi"), "pi_provider": text("llm.piProvider"), "pi_args": text("llm.piArgs"),
+            "other_path": text("llm.otherPath"), "other_args": text("llm.otherArgs")
+        ]
+    }
+
+    @objc private func runLLM(_ sender: Any?) {
+        window.makeFirstResponder(nil)
+        guard llmJob == nil, !isClosing else { return }
+        let source = (transcriptEditor?.string ?? defaults.string(forKey: "llm.source") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            showNotice("Не удалось запустить LLM", "Выберите файл с транскриптом или вставьте текст.")
+            return
+        }
+        let prompt = (promptEditor?.string ?? defaults.string(forKey: "llm.prompt") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            showNotice("Не удалось запустить LLM", "Выберите шаблон или введите пользовательский промпт.")
+            return
+        }
+        let settings: [String: Any]
+        do { settings = try llmSettings() } catch { showNotice("LLM не настроена", error.localizedDescription); return }
+        llmResultText = ""
+        llmResultView?.string = ""
+        llmStatusLabel?.stringValue = L10n.text("Запрос отправлен…")
+        let request = LLMRequest(text: source, modes: ["custom"], prompt: prompt, settings: settings, outputDirectory: outputDirectory)
+        let job = LLMJob(request: request) { [weak self] event in self?.receiveLLMEvent(event) }
+        llmJob = job
+        refreshLLMControls()
+        job.start()
+    }
+
+    @objc private func cancelLLM(_ sender: Any?) { llmJob?.cancel() }
+
+    private func receiveLLMEvent(_ event: LLMJobEvent) {
+        switch event {
+        case .started:
+            llmStatusLabel?.stringValue = L10n.text("Ожидание ответа провайдера…")
+        case .chunk(_, let text):
+            llmResultText += text
+            llmResultView?.string = llmResultText
+            llmResultView?.scrollToEndOfDocument(nil)
+        case .completed(let results, let saved):
+            llmResultText = results.map(\.text).joined(separator: "\n\n")
+            llmResultView?.string = llmResultText
+            let names = saved.map(\.lastPathComponent).joined(separator: ", ")
+            llmStatusLabel?.stringValue = names.isEmpty ? L10n.text("Готово.") : L10n.text("Готово. Сохранено: ") + names
+            finishLLM()
+        case .cancelled:
+            llmStatusLabel?.stringValue = L10n.text("Запрос отменён.")
+            finishLLM()
+        case .failed(let message):
+            llmStatusLabel?.stringValue = message
+            transcriptionLog += message + "\n"
+            finishLLM()
+        case .log(let message):
+            transcriptionLog += message + "\n"
+        }
+    }
+
+    private func finishLLM() {
+        llmJob = nil
+        if isTerminating { replyWhenJobsFinished(); return }
+        refreshLLMControls()
+    }
+
+    private func refreshLLMControls() {
+        let running = llmJob != nil
+        llmRunButton?.isEnabled = !running && !isClosing
+        llmCancelButton?.isEnabled = running
+        llmCopyButton?.isEnabled = !llmResultText.isEmpty
+        llmSaveButton?.isEnabled = !llmResultText.isEmpty
+    }
+
+    @objc private func copyLLMResult(_ sender: Any?) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(llmResultText, forType: .string)
+    }
+
+    @objc private func saveLLMResult(_ sender: Any?) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "llm_result.md"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            do { try self.llmResultText.write(to: url, atomically: true, encoding: .utf8) }
+            catch { self.showNotice("Не удалось сохранить", error.localizedDescription) }
+        }
     }
 
     @objc private func openDocumentation(_ sender: NSButton) {

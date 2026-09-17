@@ -253,6 +253,33 @@ def test_swift_llm_job_uses_worker_protocol_and_redacts_api_key() -> None:
     assert "WorkerRedaction.safeText" in job
 
 
+def test_swift_llm_page_is_wired_to_llm_job() -> None:
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    page = main.split("private func buildLLM(into content: NSStackView)", 1)[1].split("private func buildAPI", 1)[0]
+    assert "unavailableButton(" not in page
+    assert "LLM-сервис не подключён" not in page
+    assert "#selector(runLLM(_:))" in page and "#selector(cancelLLM(_:))" in page
+    assert 'popup(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other"], key: "llm.provider")' in page
+    settings = _swift_block(main, "private func llmSettings() throws -> [String: Any] {")
+    assert 'SecureStore.string(for: "llmApiKey")' in settings
+    assert '"temperature":' in settings and '"claude_path":' in settings and '"other_args":' in settings
+    handler = _swift_block(main, "@objc private func runLLM(_ sender: Any?) {")
+    assert "LLMJob(request:" in handler
+    receive = _swift_block(main, "private func receiveLLMEvent(_ event: LLMJobEvent) {")
+    assert "case .chunk" in receive and "case .completed" in receive and "case .failed" in receive
+    assert "LLM-сервис не подключён" not in main
+
+
+def test_swift_llm_api_key_uses_keychain() -> None:
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    text_changed = _swift_block(main, "@objc private func textChanged(_ sender: NSTextField) {")
+    assert 'key == "llm.apiKey"' in text_changed
+    assert 'SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "llmApiKey")' in text_changed
+    assert 'defaults.set(sender.stringValue, forKey: "llm.apiKey")' not in main
+    terminate = _swift_block(main, "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {")
+    assert "llmJob?.terminate()" in terminate
+
+
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
