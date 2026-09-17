@@ -9,6 +9,46 @@
 
 Пока нет изменений.
 
+## [2.1.0] - 2026-09-17
+
+### Добавлено
+
+- **Live в `GigaAMLiquid`.** Страница Live подключена к рабочему live-стеку
+  проекта. Микрофон захватывается через AVAudioEngine с выбором устройства,
+  системный звук — через ScreenCaptureKit; клиент сам приводит звук к 16 кГц
+  int16 и шлёт его worker'у чанками по 100 мс как base64 в JSONL
+  (`live_audio`). Worker кладёт чанки в новый `PushCaptureAdapter` и гоняет тот
+  же `LiveSession`, что и PyQt: потоковое распознавание с partial/final,
+  диаризация (`off`/`live_estimate`/`after_stop`, движки pyannote/onnx/
+  sortformer без ручного числа спикеров), экспорт в семь форматов, вопросы
+  ассистенту по текущей записи со стримингом ответа. Разрешения на микрофон и
+  запись экрана запрашивает только GigaAMLiquid; companion к железу не
+  обращается. Записи сессий пишутся в 16 кГц.
+- **LLM в `GigaAMLiquid`.** Страница LLM и Настройки → LLM работают через
+  worker (`llm_start` с вставленным текстом, `llm_chunk` для стриминга,
+  `llm_cancel`). Шесть провайдеров как в PyQt: API (OpenAI-совместимый или
+  Anthropic), Claude Code, Codex, OpenCode, Pi, Other; ключ API хранится в
+  Связке ключей и маскируется в логах.
+- **Протокол worker.** Команды `live_start`, `live_audio`,
+  `live_capture_event`, `live_pause`, `live_resume`, `live_stop`, `live_ask`,
+  `live_ask_cancel`, `llm_cancel`; события `live_status`, `live_partial`,
+  `live_final`, `live_capture_event`, `live_answer_chunk`, `live_answer`,
+  `live_stopped`, `llm_chunk`. Батч, LLM и live взаимно исключают друг друга в
+  одном worker'е.
+- **CI.** `scripts/native_worker_smoke.py --live` гоняет клип через
+  live-протокол замороженного companion в офлайн-раскладке и требует
+  `live_final` и непустой `transcript.txt`; гейт в `build-macos-swift`.
+
+### Изменено
+
+- Логика LLM и live вынесена из `TuiWorker` в `LLMWorkerService` и
+  `LiveWorkerService`; worker остался маршрутизатором команд.
+- Ленивый ASR-бэкенд live вынесен из Qt-миксина в `src/live/asr_backend.py`
+  (`LazyModelBackend`), чтобы worker не импортировал `src.gui`.
+- В Swift-клиенте процесс worker'а, неблокирующий `LineReader` и маскирование
+  секретов вынесены в `WorkerProcess.swift`; `NativeTranscriptionJob`,
+  `LiveSessionJob` и `LLMJob` используют его совместно.
+
 ## [2.0.5] - 2026-09-16
 
 Релизы 2.0–2.0.4 отозваны с GitHub; 2.0.5 — первый опубликованный релиз ветки
