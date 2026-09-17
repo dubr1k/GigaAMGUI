@@ -32,6 +32,19 @@ def test_offline_swift_archive_runs_a_real_file_through_the_companion() -> None:
     assert "--backend" not in offline  # auto, как у пользователя по умолчанию
 
 
+def test_offline_swift_archive_runs_live_smoke_through_the_companion() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    offline = text.split("Assemble and verify offline native Swift archive", 1)[1].split("Upload offline native Swift artifact", 1)[0]
+    assert "python3 scripts/native_worker_smoke.py --live" in offline
+
+
+def test_native_worker_smoke_has_live_mode() -> None:
+    source = Path("scripts/native_worker_smoke.py").read_text(encoding="utf-8")
+    assert "def run_live_smoke(" in source
+    assert '"type": "live_start"' in source and '"type": "live_audio"' in source and '"type": "live_stop"' in source
+    assert '"--live"' in source
+
+
 def test_release_waits_for_and_downloads_swift_artifact() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in text

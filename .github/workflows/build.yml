@@ -736,6 +736,15 @@ jobs:
           HF_HOME="${RUNNER_TEMP}/liquid-offline-smoke-hf" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
             python3 scripts/native_worker_smoke.py "$COMPANION" "$SMOKE_CLIP" "${RUNNER_TEMP}/liquid-offline-smoke-out"
 
+          # Гейт Live: тот же клип через live_start/live_audio/live_stop, как
+          # его шлёт страница Live в GigaAMLiquid (16 kHz int16 чанками по
+          # 100 мс). Ловит поломки PushCaptureAdapter/LiveSession в frozen
+          # companion, которые батч-транскрибация не задевает.
+          LIVE_CLIP="${RUNNER_TEMP}/liquid-offline-live.wav"
+          afconvert -f WAVE -d LEI16@16000 -c 1 "$SMOKE_CLIP" "$LIVE_CLIP"
+          HF_HOME="${RUNNER_TEMP}/liquid-offline-smoke-hf" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            python3 scripts/native_worker_smoke.py --live "$COMPANION" "$LIVE_CLIP" "${RUNNER_TEMP}/liquid-offline-live-sessions"
+
           ARCHIVE="out/$OFFLINE_PRODUCT.zip"
           ditto -c -k --sequesterRsrc --keepParent "$ROOT" "$ARCHIVE"
           unzip -tq "$ARCHIVE"
