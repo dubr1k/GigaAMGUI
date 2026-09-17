@@ -101,7 +101,6 @@ final class MediaDownloadJob {
         if isCancelled { throw Failure.cancelled }
         let manager = FileManager.default
         let runtime = try PythonRuntime.resolve()
-        let root = runtime.root
         let python = runtime.executable
         let cache = try manager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let target = cache.appendingPathComponent("GigaAMLiquid/Media", isDirectory: true)
@@ -113,7 +112,7 @@ final class MediaDownloadJob {
         let task = Process()
         task.executableURL = python
         task.arguments = runtime.mediaDownloadArguments(url: url, target: target)
-        task.currentDirectoryURL = root
+        task.currentDirectoryURL = runtime.workingDirectory
         task.environment = runtime.environment
         task.standardInput = FileHandle.nullDevice
         let stdout = Pipe()

@@ -6,6 +6,11 @@ struct PythonRuntime {
     let executable: URL
     let environment: [String: String]
     let frozenCompanion: Bool
+    /// Where worker processes run. The source tree for development; a writable
+    /// Application Support folder for a frozen companion, which may live inside the
+    /// signed GigaAMLiquid.app bundle where nothing (e.g. processing_stats.json)
+    /// may be written.
+    let workingDirectory: URL
 
     var transcriptionArguments: [String] {
         frozenCompanion ? ["--native-worker"] : ["-m", "src.tui_worker"]
@@ -36,8 +41,17 @@ struct PythonRuntime {
             root: root,
             executable: executable,
             environment: childEnvironment,
-            frozenCompanion: companion != nil
+            frozenCompanion: companion != nil,
+            workingDirectory: companion != nil ? try supportDirectory() : root
         )
+    }
+
+    private static func supportDirectory() throws -> URL {
+        let manager = FileManager.default
+        let base = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let directory = base.appendingPathComponent("GigaAMLiquid", isDirectory: true)
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     private static func companionURL(root: URL, environment: [String: String]) -> URL? {
@@ -75,6 +89,9 @@ struct PythonRuntime {
             if isPreparedRoot(root) { return root }
             throw Failure(message: L10n.text("GIGAAM_PROJECT_ROOT должен указывать на папку с GigaAMTranscriber.app или подготовленным Python-проектом."))
         }
+        // A self-contained release keeps the companion (and, offline, models/hf) in
+        // the app's own Contents/Resources; older archives put it beside the app.
+        if let resources = Bundle.main.resourceURL?.standardizedFileURL, isPreparedRoot(resources) { return resources }
         let starts = [Bundle.main.executableURL?.deletingLastPathComponent(), URL(fileURLWithPath: manager.currentDirectoryPath)].compactMap { $0 }
         for start in starts {
             var candidate = start.resolvingSymlinksInPath().standardizedFileURL

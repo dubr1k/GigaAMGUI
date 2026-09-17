@@ -55,7 +55,7 @@ final class WorkerProcess {
         let task = Process()
         task.executableURL = runtime.executable
         task.arguments = arguments
-        task.currentDirectoryURL = runtime.root
+        task.currentDirectoryURL = runtime.workingDirectory
         task.environment = environment
         let stdinPipe = Pipe(), stdoutPipe = Pipe(), stderrPipe = Pipe()
         task.standardInput = stdinPipe

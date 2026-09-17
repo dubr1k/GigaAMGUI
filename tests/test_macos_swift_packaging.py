@@ -15,10 +15,29 @@ def test_swift_release_job_builds_and_archives_native_app() -> None:
     assert "--native-worker" in text
     assert "git archive HEAD" not in text
     assert "pattern: GigaAMTranscriber-macos-app-v*" in text
-    assert 'test ! -e "stage/$PRODUCT/app.py"' in text
-    assert 'test ! -e "stage/$PRODUCT/src"' in text
-    assert 'test ! -e "$ROOT/app.py"' in text
-    assert 'test ! -e "$ROOT/src"' in text
+    assert 'test ! -e "$RESOURCES/app.py"' in text
+    assert 'test ! -e "$RESOURCES/src"' in text
+
+
+def test_swift_release_archives_contain_a_single_self_contained_app() -> None:
+    # С 2.1.1 в архиве одно приложение: companion и (офлайн) модели лежат внутри
+    # GigaAMLiquid.app/Contents/Resources, а не рядом с ним.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    online = text.split("Assemble and verify app bundle", 1)[1].split("Upload native Swift artifact", 1)[0]
+    assert 'RESOURCES="$APP/Contents/Resources"' in online
+    assert 'unzip -q "$COMPANION_ARCHIVE" -d "$RESOURCES"' in online
+    assert 'COMPANION="$RESOURCES/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"' in online
+    assert 'test ! -e "stage/$PRODUCT/GigaAMTranscriber.app"' in online
+    # Вложенный companion подписывается вместе с внешним бандлом и только после того, как положен внутрь.
+    assert online.index('unzip -q "$COMPANION_ARCHIVE"') < online.index('codesign --force --deep --sign - "$APP"')
+    offline = text.split("Assemble and verify offline native Swift archive", 1)[1].split("Upload offline native Swift artifact", 1)[0]
+    assert 'RESOURCES="$SWIFT_APP/Contents/Resources"' in offline
+    assert 'unzip -q "$COMPANION_ARCHIVE" -d "$RESOURCES"' in offline
+    assert 'test -d "$RESOURCES/models/hf"' in offline
+    assert 'test ! -e "$ROOT/GigaAMTranscriber.app"' in offline and 'test ! -e "$ROOT/models"' in offline
+    assert 'codesign --force --deep --sign - "$SWIFT_APP"' in offline
+    assert offline.index('unzip -q "$COMPANION_ARCHIVE"') < offline.index('codesign --force --deep --sign - "$SWIFT_APP"')
+    assert offline.index('codesign --force --deep --sign - "$SWIFT_APP"') < offline.index("native_worker_smoke.py")
 
 
 def test_offline_swift_archive_runs_a_real_file_through_the_companion() -> None:
@@ -82,6 +101,22 @@ def test_swift_runtime_prefers_frozen_offline_companion() -> None:
     assert "hasSourceRuntime || manager.isExecutableFile" in runtime
     assert "companion != nil && hasBundledModels(root: root)" in runtime
     assert 'childEnvironment["HF_HUB_OFFLINE"] = "1"' in runtime
+
+
+def test_swift_runtime_prefers_companion_embedded_in_its_own_bundle() -> None:
+    # Самостоятельный .app: сначала Contents/Resources собственного бандла, потом
+    # старая раскладка «рядом» и исходники. Worker не должен писать в подписанный
+    # бандл (processing_stats.json идёт в cwd), поэтому cwd — Application Support.
+    runtime = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/PythonRuntime.swift").read_text(encoding="utf-8")
+    assert "let workingDirectory: URL" in runtime
+    resolve = runtime.split("private static func projectRoot(", 1)[1].split("private static func pythonURL(", 1)[0]
+    assert "Bundle.main.resourceURL" in resolve
+    assert resolve.index("Bundle.main.resourceURL") < resolve.index("Bundle.main.executableURL?.deletingLastPathComponent()")
+    assert "applicationSupportDirectory" in runtime
+    for name in ("WorkerProcess.swift", "MediaImport.swift"):
+        source = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid", name).read_text(encoding="utf-8")
+        assert "currentDirectoryURL = runtime.workingDirectory" in source, name
+        assert "currentDirectoryURL = runtime.root" not in source and "currentDirectoryURL = root" not in source, name
 
 
 def test_swift_job_launch_does_not_require_source_tree_with_frozen_companion() -> None:

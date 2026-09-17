@@ -52,6 +52,18 @@ def test_cache_inside_macos_resources_is_found(tmp_path, monkeypatch):
     assert bundled_hf_cache_dir(frozen=True) == cache
 
 
+def test_cache_beside_companion_nested_in_liquid_bundle_is_found(tmp_path, monkeypatch):
+    """Самостоятельный GigaAMLiquid.app везёт companion и модели в Contents/Resources."""
+    resources = tmp_path / "GigaAMLiquid.app" / "Contents" / "Resources"
+    executable = resources / "GigaAMTranscriber.app" / "Contents" / "MacOS" / "GigaAMTranscriber"
+    executable.parent.mkdir(parents=True)
+    cache = _make_cache(resources)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    assert bundled_hf_cache_dir(frozen=True) == cache
+
+
 def test_directory_without_hub_is_ignored(tmp_path, monkeypatch):
     """Пустая папка models/hf не должна перехватывать кэш у рабочего каталога."""
     (tmp_path / "models" / "hf").mkdir(parents=True)

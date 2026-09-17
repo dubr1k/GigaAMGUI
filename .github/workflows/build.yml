@@ -663,20 +663,24 @@ jobs:
           </plist>
           PLIST
 
-          # Ship only the frozen companion application. The release must not
-          # expose the repository sources or require a separate Python install.
+          # Self-contained app: the frozen companion lives inside the bundle's
+          # Contents/Resources (PythonRuntime.resolve() looks there first), so the
+          # archive ships exactly one .app. The release must not expose the
+          # repository sources or require a separate Python install.
+          RESOURCES="$APP/Contents/Resources"
           COMPANION_ARCHIVE=$(find companion-online -type f -name 'GigaAMTranscriber-macos-app-v*.zip' -print -quit)
           test -n "$COMPANION_ARCHIVE"
-          unzip -q "$COMPANION_ARCHIVE" -d "stage/$PRODUCT"
-          COMPANION="stage/$PRODUCT/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+          unzip -q "$COMPANION_ARCHIVE" -d "$RESOURCES"
+          COMPANION="$RESOURCES/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
           test -x "$COMPANION"
-          test ! -e "stage/$PRODUCT/app.py"
-          test ! -e "stage/$PRODUCT/src"
-          printf '{"type":"ping"}\n' | "$COMPANION" --native-worker > "${RUNNER_TEMP}/native-worker-online.jsonl"
-          grep -q '"type": "pong"' "${RUNNER_TEMP}/native-worker-online.jsonl"
+          test ! -e "stage/$PRODUCT/GigaAMTranscriber.app"
+          test ! -e "$RESOURCES/app.py"
+          test ! -e "$RESOURCES/src"
 
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict "$APP"
+          printf '{"type":"ping"}\n' | "$COMPANION" --native-worker > "${RUNNER_TEMP}/native-worker-online.jsonl"
+          grep -q '"type": "pong"' "${RUNNER_TEMP}/native-worker-online.jsonl"
           test -s "$APP/Contents/Resources/GigaAMLiquid.icns"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" = "GigaAMLiquid.icns"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
@@ -709,18 +713,25 @@ jobs:
 
           mkdir -p "$ROOT"
           ditto "stage/$PRODUCT/GigaAMLiquid.app" "$SWIFT_APP"
+          # Start from the online bundle but replace its companion with the offline
+          # one, which brings models/hf; both land in Contents/Resources.
+          RESOURCES="$SWIFT_APP/Contents/Resources"
+          rm -rf "$RESOURCES/GigaAMTranscriber.app"
 
           COMPANION_ARCHIVE=$(find companion-offline -type f -name 'GigaAMTranscriber-macos-app-offline-*.zip' -print -quit)
           test -n "$COMPANION_ARCHIVE"
-          unzip -q "$COMPANION_ARCHIVE" -d "$ROOT"
+          unzip -q "$COMPANION_ARCHIVE" -d "$RESOURCES"
 
-          COMPANION="$ROOT/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+          COMPANION="$RESOURCES/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
           test -x "$COMPANION"
-          test -d "$ROOT/models/hf"
-          test -n "$(find "$ROOT/models/hf" -type f -print -quit)"
-          test ! -e "$ROOT/app.py"
-          test ! -e "$ROOT/src"
+          test -d "$RESOURCES/models/hf"
+          test -n "$(find "$RESOURCES/models/hf" -type f -print -quit)"
+          test ! -e "$ROOT/GigaAMTranscriber.app"
+          test ! -e "$ROOT/models"
+          test ! -e "$RESOURCES/app.py"
+          test ! -e "$RESOURCES/src"
           test "$(lipo -archs "$COMPANION")" = "arm64"
+          codesign --force --deep --sign - "$SWIFT_APP"
           codesign --verify --deep --strict "$SWIFT_APP"
 
           printf '{"type":"ping"}\n' | "$COMPANION" --native-worker > "${RUNNER_TEMP}/native-worker.jsonl"
