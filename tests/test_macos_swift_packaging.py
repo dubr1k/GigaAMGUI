@@ -280,6 +280,18 @@ def test_swift_llm_api_key_uses_keychain() -> None:
     assert "llmJob?.terminate()" in terminate
 
 
+def test_swift_live_capture_uses_avaudioengine_and_screencapturekit() -> None:
+    capture = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LiveCapture.swift").read_text(encoding="utf-8")
+    assert "import AVFoundation" in capture and "import ScreenCaptureKit" in capture
+    assert "final class MicrophoneCapture" in capture and "final class SystemAudioCapture" in capture
+    assert "AVAudioEngine()" in capture and "installTap(onBus: 0" in capture
+    assert "SCStreamConfiguration()" in capture and "capturesAudio = true" in capture
+    assert "AVAudioConverter(" in capture
+    assert "CGRequestScreenCaptureAccess()" in capture and "AVCaptureDevice.requestAccess(for: .audio" in capture
+    assert "chunkFrames: Int = 1600" in capture  # 100 ms at 16 kHz
+    assert "Int16" in capture
+
+
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
