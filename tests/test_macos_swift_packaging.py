@@ -362,6 +362,11 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     assert "MicrophoneCapture.devices()" in page
     assert 'popup(["pyannote", "onnx", "sortformer"], key: "live.diarizationEngine")' in page
     assert '"live.speakers"' not in main  # live diarization never takes a manual speaker count
+    # Diarization titles are too long for a half-width column of the 270 pt
+    # parameters card ("Диар. + таймкоды" rendered as "Диар. +"): full rows only.
+    for key in ("live.diarize", "live.diarizeTimestamps"):
+        row = page.split(f'key: "{key}"', 1)[0].rsplit("\n", 1)[1]
+        assert row.strip().startswith("parametersBody.addArrangedSubview(checkbox("), key
     start = _swift_block(main, "@objc private func startLive(_ sender: Any?) {")
     assert "MicrophoneCapture.requestAccess" in start
     assert "SystemAudioCapture.requestAccess()" in start

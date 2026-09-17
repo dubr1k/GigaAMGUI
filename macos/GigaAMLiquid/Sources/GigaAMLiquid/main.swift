@@ -1448,14 +1448,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             checkbox("Таймкоды", key: "live.timestamps", defaultValue: false)
         ], spacing: 8))
         parametersBody.addArrangedSubview(equalColumns([
-            checkbox("Диаризация (.txt)", key: "live.diarize", defaultValue: false),
-            checkbox("Диар. + таймкоды", key: "live.diarizeTimestamps", defaultValue: false)
-        ], spacing: 8))
-        parametersBody.addArrangedSubview(equalColumns([
             checkbox("Markdown", key: "live.md", defaultValue: false),
             checkbox("SRT (.srt)", key: "live.srt", defaultValue: true)
         ], spacing: 8))
         parametersBody.addArrangedSubview(checkbox("VTT (.vtt)", key: "live.vtt", defaultValue: false))
+        // The diarization titles do not fit a half-width column of this card
+        // ("Диар. + таймкоды" was truncated to "Диар. +"); give them full rows
+        // like the processing page does.
+        parametersBody.addArrangedSubview(checkbox("Диаризация (.txt)", key: "live.diarize", defaultValue: false))
+        parametersBody.addArrangedSubview(checkbox("Диар. + таймкоды", key: "live.diarizeTimestamps", defaultValue: false))
         parametersBody.addArrangedSubview(equalColumns([
             compactField("Строк в блоке", control: popup(["2", "1", "3", "4"], key: "live.lines")),
             compactField("Символов", control: popup(["64", "42", "80"], key: "live.characters"))
