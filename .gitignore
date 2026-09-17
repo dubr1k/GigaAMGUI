@@ -126,6 +126,8 @@ checkpoints/
 !requirements-live-macos.txt
 !web/static/robots.txt
 *.wav
+# 4-second speech clip for the CI companion smoke (batch + live), 130 KB.
+!tests/fixtures/liquid_smoke.wav
 *.mp3
 *.mp4
 *.avi

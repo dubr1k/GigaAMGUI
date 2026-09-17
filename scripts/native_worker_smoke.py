@@ -116,6 +116,11 @@ def run_smoke(
         print(f"native worker smoke: result file missing: {result}", flush=True)
         return 1
     text = result.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        # A silent or truncated clip yields success=true with nothing recognised;
+        # that proves nothing about the ASR chain.
+        print(f"native worker smoke: transcript is empty: {result}", flush=True)
+        return 1
     elapsed = time.monotonic() - started
     print(f"native worker smoke: OK in {elapsed:.1f}s, backend={backend}: {text!r}", flush=True)
     return 0

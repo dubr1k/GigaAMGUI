@@ -57,6 +57,20 @@ def test_offline_swift_archive_runs_live_smoke_through_the_companion() -> None:
     assert "python3 scripts/native_worker_smoke.py --live" in offline
 
 
+def test_offline_smoke_uses_a_committed_clip_instead_of_say() -> None:
+    # v2.1.1: `say` на раннере выдал почти пустой клип, батч-smoke пропустил пустой
+    # текст, а live-гейт честно упал без единого final. Клип теперь фикстура в
+    # репозитории, и оба smoke требуют непустой транскрипт.
+    text = WORKFLOW.read_text(encoding="utf-8")
+    offline = text.split("Assemble and verify offline native Swift archive", 1)[1].split("Upload offline native Swift artifact", 1)[0]
+    assert "say -o" not in offline
+    assert 'SMOKE_CLIP="tests/fixtures/liquid_smoke.wav"' in offline
+    clip = Path("tests/fixtures/liquid_smoke.wav")
+    assert clip.is_file() and 40_000 < clip.stat().st_size < 400_000
+    source = Path("scripts/native_worker_smoke.py").read_text(encoding="utf-8")
+    assert "transcript is empty" in source
+
+
 def test_native_worker_smoke_has_live_mode() -> None:
     source = Path("scripts/native_worker_smoke.py").read_text(encoding="utf-8")
     assert "def run_live_smoke(" in source

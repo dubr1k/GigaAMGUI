@@ -742,8 +742,10 @@ jobs:
           # auto и HF_HUB_OFFLINE=1, как их выставляет GigaAMLiquid. pong не
           # ловит ни колесо scipy, которое dyld отказывается грузить, ни auto,
           # уходящий офлайн за MLX-моделью.
-          SMOKE_CLIP="${RUNNER_TEMP}/liquid-offline-smoke.aiff"
-          say -o "$SMOKE_CLIP" "Testing the offline release of GigaAM Liquid on a clean machine."
+          # Клип — фикстура из репозитория (16 kHz mono int16, ~4 с английской
+          # речи): `say` на раннере однажды выдал почти пустой файл (v2.1.1),
+          # и гейт упал на инфраструктуре, а не на коде.
+          SMOKE_CLIP="tests/fixtures/liquid_smoke.wav"
           HF_HOME="${RUNNER_TEMP}/liquid-offline-smoke-hf" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
             python3 scripts/native_worker_smoke.py "$COMPANION" "$SMOKE_CLIP" "${RUNNER_TEMP}/liquid-offline-smoke-out"
 
@@ -751,10 +753,8 @@ jobs:
           # его шлёт страница Live в GigaAMLiquid (16 kHz int16 чанками по
           # 100 мс). Ловит поломки PushCaptureAdapter/LiveSession в frozen
           # companion, которые батч-транскрибация не задевает.
-          LIVE_CLIP="${RUNNER_TEMP}/liquid-offline-live.wav"
-          afconvert -f WAVE -d LEI16@16000 -c 1 "$SMOKE_CLIP" "$LIVE_CLIP"
           HF_HOME="${RUNNER_TEMP}/liquid-offline-smoke-hf" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-            python3 scripts/native_worker_smoke.py --live "$COMPANION" "$LIVE_CLIP" "${RUNNER_TEMP}/liquid-offline-live-sessions"
+            python3 scripts/native_worker_smoke.py --live "$COMPANION" "$SMOKE_CLIP" "${RUNNER_TEMP}/liquid-offline-live-sessions"
 
           ARCHIVE="out/$OFFLINE_PRODUCT.zip"
           ditto -c -k --sequesterRsrc --keepParent "$ROOT" "$ARCHIVE"
