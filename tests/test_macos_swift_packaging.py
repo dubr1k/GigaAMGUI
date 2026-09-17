@@ -231,6 +231,18 @@ def test_swift_english_dictionary_has_no_duplicate_keys() -> None:
     assert duplicates == []
 
 
+def test_swift_worker_process_is_shared_between_jobs() -> None:
+    worker = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/WorkerProcess.swift").read_text(encoding="utf-8")
+    assert "final class WorkerProcess" in worker
+    assert "final class LineReader" in worker
+    assert "enum WorkerRedaction" in worker
+    assert "F_SETNOSIGPIPE" in worker
+    transcription = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
+    assert "final class LineReader" not in transcription
+    assert "credentialPatterns" not in transcription
+    assert "WorkerProcess(" in transcription
+
+
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
