@@ -772,6 +772,24 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private var selectedOutputFormat: String?
     private var transcriptionResults: [NativeTranscriptionResult] = []
     private var transcriptionJob: NativeTranscriptionJob?
+    private var liveJob: LiveSessionJob?
+    private var liveState = "idle"
+    private var liveFinals: [(id: String, text: String, speaker: String?)] = []
+    private var livePartials: [LiveSource: String] = [:]
+    private var liveStartedAt: Date?
+    private var liveTimer: Timer?
+    private var liveAnswerText = ""
+    private var liveDeviceIDs: [String] = []
+    private weak var liveTranscriptView: NSTextView?
+    private weak var liveClockLabel: NSTextField?
+    private weak var liveStatusLabel: NSTextField?
+    private weak var liveLevelView: ProgressTrackView?
+    private weak var liveStartButton: NSButton?
+    private weak var livePauseButton: NSButton?
+    private weak var liveStopButton: NSButton?
+    private weak var liveQuestionField: NSTextField?
+    private weak var liveAskButton: NSButton?
+    private weak var liveAnswerView: NSTextView?
     private var llmJob: LLMJob?
     private var llmResultText = ""
     private weak var llmResultView: NSTextView?
@@ -1373,65 +1391,115 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         content.addArrangedSubview(horizontal([result, useful], spacing: 16))
     }
 
+    private static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
+    private static let liveDiarizationModeValues = ["off", "live_estimate", "after_stop"]
+
     private func buildLive(into content: NSStackView) {
         let source = card("Источник аудио", dense: true)
         let sourceBody = contentStack(source)
         sourceBody.spacing = 5
-        let microphone = popup(["Не подключён"], key: "live.microphone")
-        microphone.isEnabled = false
+        let devices = MicrophoneCapture.devices()
+        liveDeviceIDs = ["default"] + devices.map(\.id)
+        let microphone = popup([L10n.text("По умолчанию")] + devices.map(\.name), key: "live.microphone")
+        if let stored = defaults.string(forKey: "live.microphone"), let index = liveDeviceIDs.firstIndex(of: stored) { microphone.selectItem(at: index) }
         sourceBody.addArrangedSubview(compactField("Микрофон", control: microphone))
-        sourceBody.addArrangedSubview(compactField("Системный звук", control: popup(["Выкл.", "Включено"], key: "live.systemAudio")))
+        sourceBody.addArrangedSubview(toggleRow("Системный звук", key: "live.systemAudio", defaultValue: false))
         sourceBody.addArrangedSubview(toggleRow("Записывать микрофон", key: "live.recordMic", defaultValue: true))
         sourceBody.addArrangedSubview(toggleRow("Записывать системный звук", key: "live.recordSystem", defaultValue: false))
-        sourceBody.addArrangedSubview(compactField("Диаризация", control: popup(["Включено", "Выключено"], key: "live.diarization")))
-        size(source, width: 314, height: 266)
+        sourceBody.addArrangedSubview(compactField("Диаризация", control: popup(Self.liveDiarizationModes, key: "live.diarizationMode")))
+        sourceBody.addArrangedSubview(compactField("Движок", control: popup(["pyannote", "onnx", "sortformer"], key: "live.diarizationEngine")))
+        size(source, width: 314, height: 306)
 
         let recorder = card("Запись")
         let recorderBody = contentStack(recorder)
         recorderBody.spacing = 9
-        recorderBody.addArrangedSubview(centered(label("00:00:00", size: 28, weight: .medium, color: Palette.ink)))
-        recorderBody.addArrangedSubview(centered(label("Запись не начата", size: 13, color: Palette.body)))
-        let meter = EmptyTimelineView()
-        meter.heightAnchor.constraint(equalToConstant: 58).isActive = true
+        let clock = label("00:00:00", size: 28, weight: .medium, color: Palette.ink)
+        clock.identifier = NSUserInterfaceItemIdentifier("live.clock")
+        liveClockLabel = clock
+        recorderBody.addArrangedSubview(centered(clock))
+        let status = wrappedLabel("Запись не начата", size: 12, color: Palette.body)
+        status.identifier = NSUserInterfaceItemIdentifier("live.status")
+        status.maximumNumberOfLines = 3
+        status.alignment = .center
+        liveStatusLabel = status
+        recorderBody.addArrangedSubview(status)
+        let meter = ProgressTrackView()
+        meter.heightAnchor.constraint(equalToConstant: 8).isActive = true
+        meter.setAccessibilityLabel(L10n.text("Уровень сигнала"))
+        liveLevelView = meter
         recorderBody.addArrangedSubview(meter)
-        recorderBody.addArrangedSubview(centered(horizontal([
-            unavailableIcon("record.circle", hint: "Начать запись: рабочий сервис не подключён"),
-            unavailableIcon("stop.fill", hint: "Остановить запись"),
-            unavailableIcon("pause.fill", hint: "Приостановить запись")
-        ], spacing: 8)))
-        size(recorder, width: 262, height: 266)
+        let start = iconButton("record.circle", hint: "Начать запись", action: #selector(startLive(_:)))
+        start.identifier = NSUserInterfaceItemIdentifier("live.start")
+        liveStartButton = start
+        let pause = iconButton("pause.fill", hint: "Приостановить запись", action: #selector(pauseLive(_:)))
+        pause.identifier = NSUserInterfaceItemIdentifier("live.pause")
+        livePauseButton = pause
+        let stop = iconButton("stop.fill", hint: "Остановить запись", action: #selector(stopLive(_:)))
+        stop.identifier = NSUserInterfaceItemIdentifier("live.stop")
+        liveStopButton = stop
+        recorderBody.addArrangedSubview(centered(horizontal([start, pause, stop], spacing: 8)))
+        size(recorder, width: 262, height: 306)
 
         let parameters = card("Параметры", dense: true)
         let parametersBody = contentStack(parameters)
         parametersBody.spacing = 5
-        parametersBody.addArrangedSubview(compactField("Язык аудио", control: popup(["Русский", "Авто"], key: "live.language")))
-        parametersBody.addArrangedSubview(compactField("Движок", control: popup(["Pyannote 3.1", "Выключен"], key: "live.engine")))
-        parametersBody.addArrangedSubview(compactField("Кол-во спикеров", control: popup(["Авто", "1", "2", "3"], key: "live.speakers")))
         parametersBody.addArrangedSubview(equalColumns([
             checkbox("TXT (.txt)", key: "live.txt", defaultValue: true),
+            checkbox("Таймкоды", key: "live.timestamps", defaultValue: false)
+        ], spacing: 8))
+        parametersBody.addArrangedSubview(equalColumns([
+            checkbox("Диаризация (.txt)", key: "live.diarize", defaultValue: false),
+            checkbox("Диар. + таймкоды", key: "live.diarizeTimestamps", defaultValue: false)
+        ], spacing: 8))
+        parametersBody.addArrangedSubview(equalColumns([
+            checkbox("Markdown", key: "live.md", defaultValue: false),
             checkbox("SRT (.srt)", key: "live.srt", defaultValue: true)
         ], spacing: 8))
-        parametersBody.addArrangedSubview(checkbox("Разбивать по предложениям", key: "live.sentences", defaultValue: true))
-        size(parameters, width: 270, height: 266)
+        parametersBody.addArrangedSubview(checkbox("VTT (.vtt)", key: "live.vtt", defaultValue: false))
+        parametersBody.addArrangedSubview(equalColumns([
+            compactField("Строк в блоке", control: popup(["2", "1", "3", "4"], key: "live.lines")),
+            compactField("Символов", control: popup(["64", "42", "80"], key: "live.characters"))
+        ], spacing: 8))
+        parametersBody.addArrangedSubview(toggleRow("Разбивать по предложениям", key: "live.sentences", defaultValue: true))
+        let folder = editableText(liveSessionRootText, key: "live.sessionRoot", placeholder: "Папка сессий")
+        folder.font = NSFont.systemFont(ofSize: 12)
+        parametersBody.addArrangedSubview(compactField("Папка сессий", control: folder))
+        size(parameters, width: 270, height: 306)
         content.addArrangedSubview(horizontal([source, recorder, parameters], spacing: 16))
 
         let transcript = card("Live transcript")
         let transcriptBody = contentStack(transcript)
-        transcriptBody.addArrangedSubview(columnHeadings([("Время", 76), ("Спикер", 90), ("Транскрипция", 500)]))
-        transcriptBody.addArrangedSubview(divider())
-        let empty = wrappedLabel("Нет фрагментов. Захват аудио не подключён.", size: 14, color: Palette.body)
-        empty.heightAnchor.constraint(equalToConstant: 196).isActive = true
-        transcriptBody.addArrangedSubview(empty)
-        let save = unavailableButton("Сохранить запись")
-        let done = unavailableButton("Готово", primary: true)
-        save.setContentCompressionResistancePriority(.required, for: .horizontal)
-        done.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let actions = horizontal([flexibleSpace(), save, done], spacing: 12)
-        actions.alignment = .centerY
-        actions.heightAnchor.constraint(equalToConstant: 38).isActive = true
-        transcriptBody.addArrangedSubview(actions)
-        size(transcript, width: 878, height: 354)
+        transcriptBody.spacing = 10
+        let editor = textEditor("", key: nil, height: 220)
+        liveTranscriptView = editor.documentView as? NSTextView
+        liveTranscriptView?.isEditable = false
+        liveTranscriptView?.identifier = NSUserInterfaceItemIdentifier("live.transcript")
+        liveTranscriptView?.setAccessibilityLabel(L10n.text("Live transcript"))
+        transcriptBody.addArrangedSubview(editor)
+        renderLiveTranscript()
+        let question = editableText("", key: "live.question", placeholder: "Вопрос ассистенту по текущей записи")
+        question.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        question.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        liveQuestionField = question
+        let ask = button("Спросить", primary: true, action: #selector(askLive(_:)), height: 36)
+        ask.identifier = NSUserInterfaceItemIdentifier("live.ask")
+        ask.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        liveAskButton = ask
+        let cancelAsk = button("Отменить", action: #selector(cancelAskLive(_:)), height: 36)
+        cancelAsk.identifier = NSUserInterfaceItemIdentifier("live.askCancel")
+        cancelAsk.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        transcriptBody.addArrangedSubview(horizontal([question, ask, cancelAsk], spacing: 12))
+        let answer = textEditor(liveAnswerText, key: nil, height: 110)
+        liveAnswerView = answer.documentView as? NSTextView
+        liveAnswerView?.isEditable = false
+        liveAnswerView?.identifier = NSUserInterfaceItemIdentifier("live.answer")
+        liveAnswerView?.setAccessibilityLabel(L10n.text("Ответ ассистента"))
+        transcriptBody.addArrangedSubview(answer)
+        transcript.widthAnchor.constraint(equalToConstant: 878).isActive = true
+        transcriptBody.bottomAnchor.constraint(equalTo: transcript.bottomAnchor, constant: -16).isActive = true
         content.addArrangedSubview(transcript)
+        refreshLiveControls()
+        refreshLiveClock()
     }
 
     private static let llmProviders = ["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other"]
@@ -1729,7 +1797,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(wrappedLabel("Транскрибация русской речи из аудио и видео на базе GigaAM-v3.", size: 14, color: Palette.body))
             body.addArrangedSubview(divider())
             body.addArrangedSubview(settingsField("Версия приложения", control: label(releaseVersion, size: 15, color: Palette.ink)))
-            body.addArrangedSubview(wrappedLabel("Импорт медиа и распознавание речи используют встроенные Python-сервисы проекта. Live и LLM пока не подключены.", size: 13, color: Palette.body))
+            body.addArrangedSubview(wrappedLabel("Импорт медиа, распознавание, live-захват и LLM используют встроенные Python-сервисы проекта; звук захватывает само приложение.", size: 13, color: Palette.body))
             body.addArrangedSubview(label("Разработчики приложения", size: 12, color: Palette.muted))
             let developers = ["dubr1k", "Baggrisha"].map { name in
                 let link = button(name, action: #selector(openDeveloper(_:)))
@@ -2355,7 +2423,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     private func refreshProcessingControls() {
-        let busy = transcriptionJob != nil || mediaDownloadJob != nil || isClosing
+        let busy = transcriptionJob != nil || mediaDownloadJob != nil || liveJob != nil || isClosing
         func update(_ view: NSView) {
             if let control = view as? NSControl, let key = control.identifier?.rawValue {
                 if key.hasPrefix("processing.") || key.hasPrefix("output.") || key.hasPrefix("subtitle.") || ["settings.backend", "settings.model", "settings.onnxProvider", "settings.diarization", "settings.diarizationEngine", "settings.hfToken"].contains(key) {
@@ -2373,6 +2441,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let reason: String
         if transcriptionJob != nil { reason = "Настройки зафиксированы до завершения обработки. Навигация доступна." }
         else if mediaDownloadJob != nil { reason = "Дождитесь завершения импорта медиа." }
+        else if liveJob != nil { reason = "Дождитесь завершения live-сессии." }
         else if selectedFileURLs.isEmpty { reason = "Добавьте аудио или видео для начала обработки." }
         else if outputDirectory == nil { reason = "Укажите абсолютный путь к доступной папке результатов." }
         else if outputFormats.isEmpty { reason = "Выберите хотя бы один формат вывода." }
@@ -2490,7 +2559,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     private func replyWhenJobsFinished() {
-        if isTerminating && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil { NSApp.reply(toApplicationShouldTerminate: true) }
+        if isTerminating && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil && liveJob == nil { NSApp.reply(toApplicationShouldTerminate: true) }
     }
 
     @objc private func showProcessingLog(_ sender: Any?) {
@@ -2506,6 +2575,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     @objc private func popupChanged(_ sender: NSPopUpButton) {
         guard let key = sender.identifier?.rawValue, let value = sender.titleOfSelectedItem else { return }
+        if key == "live.microphone" {
+            // Titles are device names; persist the stable device id instead.
+            defaults.set(liveDeviceIDs.indices.contains(sender.indexOfSelectedItem) ? liveDeviceIDs[sender.indexOfSelectedItem] : "default", forKey: key)
+            return
+        }
         defaults.set(value, forKey: key)
         if key == "settings.theme" || key == "settings.language" { rebuildInterface() }
         if key == "settings.diarizationEngine" { resetManualSpeakerCountIfUnavailable() }
@@ -2683,17 +2757,19 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         transcriptionJob?.cancel()
         transcriptionJob?.terminate()
         llmJob?.terminate()
+        liveJob?.terminate()
         cleanupDownloadedMedia()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isClosing = true
-        guard mediaDownloadJob != nil || transcriptionJob != nil || llmJob != nil else { return .terminateNow }
+        guard mediaDownloadJob != nil || transcriptionJob != nil || llmJob != nil || liveJob != nil else { return .terminateNow }
         isTerminating = true
         mediaDownloadJob?.cancel()
         transcriptionJob?.cancel()
         transcriptionJob?.terminate()
         llmJob?.terminate()
+        liveJob?.terminate()
         return .terminateLater
     }
 
@@ -2783,6 +2859,212 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
         promptEditor?.string = prompt
         defaults.set(prompt, forKey: "llm.prompt")
+    }
+
+    // MARK: - Live
+
+    private var liveExports: [String: Any] {
+        [
+            "txt": enabledOption("live.txt", defaultValue: true),
+            "txt_timecodes": enabledOption("live.timestamps", defaultValue: false),
+            "txt_diarize": enabledOption("live.diarize", defaultValue: false),
+            "txt_diarize_timecodes": enabledOption("live.diarizeTimestamps", defaultValue: false),
+            "md": enabledOption("live.md", defaultValue: false),
+            "srt": enabledOption("live.srt", defaultValue: true),
+            "vtt": enabledOption("live.vtt", defaultValue: false),
+            "sentence_split": enabledOption("live.sentences", defaultValue: true),
+            "max_line_count": Int(option("live.lines", values: ["2", "1", "3", "4"])) ?? 2,
+            "max_line_width": Int(option("live.characters", values: ["64", "42", "80"])) ?? 64
+        ]
+    }
+
+    /// Like `outputPathText`: an empty field means the default folder.
+    private var liveSessionRootText: String {
+        let stored = (defaults.string(forKey: "live.sessionRoot") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return stored.isEmpty ? "~/Documents/GigaAM/live" : stored
+    }
+
+    private var liveSessionRoot: URL? {
+        let path = (liveSessionRootText as NSString).expandingTildeInPath
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+    }
+
+    @objc private func startLive(_ sender: Any?) {
+        window.makeFirstResponder(nil)
+        if liveState == "paused" { liveJob?.resume(); return }
+        guard liveJob == nil, transcriptionJob == nil, mediaDownloadJob == nil, llmJob == nil, !isClosing else {
+            showNotice("Не удалось начать запись", "Дождитесь завершения текущей обработки.")
+            return
+        }
+        guard let root = liveSessionRoot else { showNotice("Не удалось начать запись", "Укажите абсолютный путь к папке сессий."); return }
+        do { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
+        catch { showNotice("Не удалось начать запись", error.localizedDescription); return }
+        let wantsSystem = enabledOption("live.systemAudio", defaultValue: false)
+        liveStatusLabel?.stringValue = L10n.text("Запрос доступа к микрофону…")
+        MicrophoneCapture.requestAccess { [weak self] granted in
+            guard let self, !self.isClosing, self.liveJob == nil else { return }
+            guard granted else {
+                self.liveStatusLabel?.stringValue = L10n.text("Запись не начата")
+                self.showNotice("Нет доступа к микрофону", "Разрешите доступ в Системных настройках → Конфиденциальность и безопасность → Микрофон.")
+                return
+            }
+            if wantsSystem, !SystemAudioCapture.requestAccess() {
+                self.liveStatusLabel?.stringValue = L10n.text("Запись не начата")
+                self.showNotice("Нет доступа к системному звуку", "Разрешите «Запись экрана и системного звука» для GigaAMLiquid в Системных настройках → Конфиденциальность и безопасность.")
+                return
+            }
+            self.launchLive(root: root, withSystem: wantsSystem)
+        }
+    }
+
+    private func launchLive(root: URL, withSystem: Bool) {
+        var settings = LiveSessionSettings(sessionRoot: root, sources: withSystem ? [.mic, .system] : [.mic])
+        let device = defaults.string(forKey: "live.microphone") ?? "default"
+        settings.microphoneDeviceID = device == "default" ? nil : device
+        let modeIndex = Self.liveDiarizationModes.firstIndex(of: option("live.diarizationMode", values: Self.liveDiarizationModes)) ?? 0
+        settings.diarizationMode = Self.liveDiarizationModeValues[modeIndex]
+        settings.diarizationBackend = option("live.diarizationEngine", values: ["pyannote", "onnx", "sortformer"])
+        settings.recordMic = enabledOption("live.recordMic", defaultValue: true)
+        settings.recordSystem = enabledOption("live.recordSystem", defaultValue: false)
+        settings.exports = liveExports
+        settings.backend = option("settings.backend", values: ["auto", "mlx", "onnx", "pytorch"])
+        settings.model = option("settings.model", values: ["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"])
+        settings.onnxProvider = option("settings.onnxProvider", values: ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"])
+        settings.hfToken = SecureStore.string(for: "hfToken")
+        // Captures need the job to forward events and the job needs the captures: bind through a late reference.
+        var job: LiveSessionJob?
+        let forward: (LiveCaptureEvent) -> Void = { event in job?.handleCapture(event) }
+        var captures: [LiveCaptureSource] = [MicrophoneCapture(deviceID: settings.microphoneDeviceID, onEvent: forward)]
+        if withSystem { captures.append(SystemAudioCapture(onEvent: forward)) }
+        let created = LiveSessionJob(settings: settings, captures: captures) { [weak self] event in self?.receiveLiveEvent(event) }
+        job = created
+        liveJob = created
+        liveFinals = []
+        livePartials = [:]
+        liveAnswerText = ""
+        liveAnswerView?.string = ""
+        liveStartedAt = Date()
+        liveTimer?.invalidate()
+        liveTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshLiveClock() }
+        liveState = "starting"
+        liveStatusLabel?.stringValue = L10n.text("Запуск…")
+        transcriptionLog = ""
+        refreshLiveControls()
+        refreshProcessingControls()
+        renderLiveTranscript()
+        created.start()
+    }
+
+    @objc private func pauseLive(_ sender: Any?) { liveJob?.pause() }
+    @objc private func stopLive(_ sender: Any?) {
+        liveStatusLabel?.stringValue = L10n.text("Остановка…")
+        liveJob?.stop()
+    }
+
+    @objc private func askLive(_ sender: Any?) {
+        guard let job = liveJob else { return }
+        let question = (liveQuestionField?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return }
+        let settings: [String: Any]
+        do { settings = try llmSettings() } catch { showNotice("LLM не настроена", error.localizedDescription); return }
+        liveAnswerText = ""
+        liveAnswerView?.string = L10n.text("Ассистент отвечает…")
+        job.ask(question, settings: settings)
+    }
+
+    @objc private func cancelAskLive(_ sender: Any?) { liveJob?.cancelAsk() }
+
+    private func receiveLiveEvent(_ event: LiveSessionEvent) {
+        switch event {
+        case .status(let state, _, let failed):
+            liveState = state
+            if !failed.isEmpty {
+                liveStatusLabel?.stringValue = L10n.text("Источник недоступен: ") + failed.map(\.rawValue).joined(separator: ", ")
+            } else {
+                let titles = ["recording": "Идёт запись", "paused": "Пауза", "starting": "Запуск…", "stopping": "Остановка…", "failed": "Захват не удался"]
+                liveStatusLabel?.stringValue = L10n.text(titles[state] ?? state)
+            }
+            refreshLiveControls()
+        case .partial(_, let source, _, let text):
+            livePartials[source] = text
+            renderLiveTranscript()
+        case .final(let id, _, _, _, let text, let speaker):
+            livePartials.removeAll()
+            let firstFinal = liveFinals.isEmpty
+            if let index = liveFinals.firstIndex(where: { $0.id == id }) { liveFinals[index] = (id, text, speaker) }
+            else { liveFinals.append((id, text, speaker)) }
+            renderLiveTranscript()
+            if firstFinal { refreshLiveControls() }  // the assistant needs at least one final
+        case .level(_, let rms):
+            liveLevelView?.fraction = Double(min(1, rms * 4))
+        case .captureEvent(_, let kind, let detail):
+            if kind != "status" { liveStatusLabel?.stringValue = detail }
+            transcriptionLog += "[live/\(kind)] \(detail)\n"
+        case .answerChunk(_, let text):
+            liveAnswerText += text
+            liveAnswerView?.string = liveAnswerText
+        case .answer(_, let status, let text):
+            switch status {
+            case "complete": liveAnswerText = text
+            case "cancelled": liveAnswerText = L10n.text("Запрос отменён.")
+            default: liveAnswerText = L10n.text("Ошибка LLM: ") + text
+            }
+            liveAnswerView?.string = liveAnswerText
+        case .stopped(let directory, let saved):
+            let names = saved.map(\.lastPathComponent).joined(separator: ", ")
+            finishLive(status: L10n.text("Сессия сохранена: ") + directory.lastPathComponent + (names.isEmpty ? "" : " · " + names))
+        case .failed(let message):
+            transcriptionLog += message + "\n"
+            finishLive(status: message)
+        case .log(let message):
+            transcriptionLog += message + "\n"
+            if transcriptionLog.utf8.count > 131_072 { transcriptionLog = String(transcriptionLog.suffix(65_536)) }
+        }
+    }
+
+    private func finishLive(status: String) {
+        liveJob = nil
+        liveState = "idle"
+        liveTimer?.invalidate()
+        liveTimer = nil
+        liveStartedAt = nil
+        liveLevelView?.fraction = 0
+        liveStatusLabel?.stringValue = status
+        if isTerminating { replyWhenJobsFinished(); return }
+        guard !isClosing else { return }
+        refreshLiveControls()
+        refreshProcessingControls()
+    }
+
+    private func renderLiveTranscript() {
+        var lines = liveFinals.map { ($0.speaker.map { "\($0): " } ?? "") + $0.text }
+        for (source, text) in livePartials.sorted(by: { $0.key.rawValue < $1.key.rawValue }) { lines.append("[\(source.rawValue) …] \(text)") }
+        liveTranscriptView?.string = lines.isEmpty ? L10n.text("Нет фрагментов. Начните запись.") : lines.joined(separator: "\n")
+        liveTranscriptView?.scrollToEndOfDocument(nil)
+    }
+
+    private func refreshLiveClock() {
+        guard let started = liveStartedAt else { liveClockLabel?.stringValue = "00:00:00"; return }
+        let seconds = Int(Date().timeIntervalSince(started))
+        liveClockLabel?.stringValue = String(format: "%02d:%02d:%02d", seconds / 3600, seconds % 3600 / 60, seconds % 60)
+    }
+
+    private func refreshLiveControls() {
+        let running = liveJob != nil
+        liveStartButton?.isEnabled = !isClosing && (!running || liveState == "paused") && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil
+        livePauseButton?.isEnabled = running && liveState == "recording"
+        liveStopButton?.isEnabled = running && liveState != "stopping"
+        liveQuestionField?.isEnabled = running
+        liveAskButton?.isEnabled = running && !liveFinals.isEmpty
+        func update(_ view: NSView) {
+            if let control = view as? NSControl, let key = control.identifier?.rawValue,
+               key.hasPrefix("live."), !["live.question", "live.start", "live.pause", "live.stop", "live.ask", "live.askCancel"].contains(key) {
+                control.isEnabled = !running
+            }
+            view.subviews.forEach(update)
+        }
+        if let root = window.contentView { update(root) }
     }
 
     // MARK: - LLM

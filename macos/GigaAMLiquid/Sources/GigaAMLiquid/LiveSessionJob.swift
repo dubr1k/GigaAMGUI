@@ -39,6 +39,8 @@ final class LiveSessionJob {
     private var worker: WorkerProcess?
     private var finished = false
     private var stopping = false
+    /// Set by the first `live_status`; until then any worker error means live_start was rejected.
+    private var sessionReported = false
     private var secrets: [String] = []
     private let backlogLock = NSLock()
     private var backlog = 0
@@ -200,6 +202,7 @@ final class LiveSessionJob {
         let source = LiveSource(rawValue: object["source"] as? String ?? "") ?? .mic
         switch type {
         case "live_status":
+            sessionReported = true
             let active = (object["active_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
             let failed = (object["failed_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
             emit(.status(state: object["state"] as? String ?? "", active: active, failed: failed))
@@ -224,13 +227,11 @@ final class LiveSessionJob {
             finish(.stopped(sessionDir: directory, saved: saved))
         case "error":
             let message = safe(object["message"] as? String ?? "Live worker error.")
-            // Before the session is running, an error means live_start was rejected.
-            if stopping || worker?.isRunning != true { finish(.failed(message)) }
-            else if message.hasPrefix("Could not start live session") || message == "Processing is already running" || message.hasPrefix("session_root") {
-                finish(.failed(message))
-            } else {
-                emit(.log(message))
-            }
+            // Before the first live_status the only thing we sent was live_start, so an error
+            // (rejected settings, an old companion without live support, …) is terminal.
+            // Afterwards errors concern single commands (a bad chunk, a rejected question).
+            if !sessionReported || stopping { finish(.failed(message)) }
+            else { emit(.captureEvent(source: .mic, kind: "error", detail: message)) }  // surfaced in the status label
         case "log":
             emit(.log(safe(object["message"] as? String ?? "")))
         default:

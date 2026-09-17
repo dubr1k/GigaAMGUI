@@ -303,6 +303,38 @@ def test_swift_live_session_job_streams_pcm_and_handles_events() -> None:
     assert "WorkerProcess(" in job
 
 
+def test_swift_live_page_is_wired_to_live_session_job() -> None:
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    page = main.split("private func buildLive(into content: NSStackView)", 1)[1].split("private static let llmProviders", 1)[0]
+    assert "unavailableButton(" not in page and "unavailableIcon(" not in page
+    assert "Захват аудио не подключён" not in page
+    assert "#selector(startLive(_:))" in page and "#selector(pauseLive(_:))" in page and "#selector(stopLive(_:))" in page
+    assert "#selector(askLive(_:))" in page
+    assert "MicrophoneCapture.devices()" in page
+    assert 'popup(["pyannote", "onnx", "sortformer"], key: "live.diarizationEngine")' in page
+    assert '"live.speakers"' not in main  # live diarization never takes a manual speaker count
+    start = _swift_block(main, "@objc private func startLive(_ sender: Any?) {")
+    assert "MicrophoneCapture.requestAccess" in start
+    assert "SystemAudioCapture.requestAccess()" in start
+    launch = _swift_block(main, "private func launchLive(root: URL, withSystem: Bool) {")
+    assert "LiveSessionJob(settings:" in launch
+    assert "SystemAudioCapture(onEvent:" in launch and "MicrophoneCapture(deviceID:" in launch
+    assert "Live и LLM пока не подключены" not in main
+    receive = _swift_block(main, "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
+    assert "case .partial" in receive and "case .final" in receive and "case .stopped" in receive and "case .failed" in receive
+    terminate = _swift_block(main, "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {")
+    assert "liveJob?.terminate()" in terminate
+    controls = _swift_block(main, "private func refreshProcessingControls() {")
+    assert "liveJob != nil" in controls  # batch and live exclude each other in one worker
+    # Первый final включает «Спросить»: кнопка гейтится на liveFinals, а статус
+    # после начала записи больше не меняется — без refresh она оставалась выключенной.
+    assert "if firstFinal { refreshLiveControls() }" in receive
+    job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LiveSessionJob.swift").read_text(encoding="utf-8")
+    # Ошибка до первого live_status (например, старый companion без live_*) завершает
+    # job, иначе UI навсегда остаётся в «Запуск…».
+    assert "if !sessionReported || stopping { finish(.failed(message)) }" in job
+
+
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
