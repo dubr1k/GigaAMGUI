@@ -3041,7 +3041,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         var lines = liveFinals.map { ($0.speaker.map { "\($0): " } ?? "") + $0.text }
         for (source, text) in livePartials.sorted(by: { $0.key.rawValue < $1.key.rawValue }) { lines.append("[\(source.rawValue) …] \(text)") }
         liveTranscriptView?.string = lines.isEmpty ? L10n.text("Нет фрагментов. Начните запись.") : lines.joined(separator: "\n")
-        liveTranscriptView?.scrollToEndOfDocument(nil)
+        scrollToTail(liveTranscriptView)
+    }
+
+    /// `scrollToEndOfDocument` also scrolls horizontally to the end of a long line;
+    /// revealing the last character keeps the wrapped text pinned to the left edge.
+    private func scrollToTail(_ view: NSTextView?) {
+        guard let view else { return }
+        view.scrollRangeToVisible(NSRange(location: (view.string as NSString).length, length: 0))
+        if let clip = view.enclosingScrollView?.contentView, clip.bounds.origin.x != 0 {
+            clip.scroll(to: NSPoint(x: 0, y: clip.bounds.origin.y))
+            view.enclosingScrollView?.reflectScrolledClipView(clip)
+        }
     }
 
     private func refreshLiveClock() {
@@ -3134,7 +3145,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         case .chunk(_, let text):
             llmResultText += text
             llmResultView?.string = llmResultText
-            llmResultView?.scrollToEndOfDocument(nil)
+            scrollToTail(llmResultView)
         case .completed(let results, let saved):
             llmResultText = results.map(\.text).joined(separator: "\n\n")
             llmResultView?.string = llmResultText
