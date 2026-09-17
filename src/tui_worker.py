@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.subtitles import SubtitleOptions
+from src.services.live_worker_service import LiveWorkerService
 from src.services.llm_worker_service import LLMWorkerService
 from src.utils.output_naming import find_output_collisions
 
@@ -29,6 +30,7 @@ class TuiWorker:
         self._task: threading.Thread | None = None
         self._cancel_requested = threading.Event()
         self._llm = LLMWorkerService(self.emit)
+        self._live = LiveWorkerService(self.emit)
 
     def emit(self, message_type: str, **payload: Any) -> None:
         message = {"type": message_type, **payload}
@@ -48,17 +50,38 @@ class TuiWorker:
         elif command_type == "cancel":
             self._cancel()
         elif command_type == "llm_start":
-            if self._task and self._task.is_alive():
+            if self._busy():
                 self.emit("error", message="Processing is already running")
             else:
                 self._llm.start(command)
         elif command_type == "llm_cancel":
             self._llm.cancel()
+        elif command_type == "live_start":
+            if self._busy():
+                self.emit("error", message="Processing is already running")
+            else:
+                self._live.start(command)
+        elif command_type in self._LIVE_COMMANDS:
+            self._LIVE_COMMANDS[command_type](self, command)
         else:
             self.emit("error", message=f"Unknown command: {command_type!r}")
 
+    _LIVE_COMMANDS = {
+        "live_audio": lambda self, command: self._live.audio(command),
+        "live_capture_event": lambda self, command: self._live.capture_event(command),
+        "live_pause": lambda self, command: self._live.pause(),
+        "live_resume": lambda self, command: self._live.resume(),
+        "live_stop": lambda self, command: self._live.stop(),
+        "live_ask": lambda self, command: self._live.ask(command),
+        "live_ask_cancel": lambda self, command: self._live.ask_cancel(),
+    }
+
+    def _busy(self) -> bool:
+        """Batch, LLM and live work share one worker and exclude each other."""
+        return bool(self._task and self._task.is_alive()) or self._llm.is_running() or self._live.is_running()
+
     def _start(self, command: dict[str, Any]) -> None:
-        if (self._task and self._task.is_alive()) or self._llm.is_running():
+        if self._busy():
             self.emit("error", message="Processing is already running")
             return
         files = [str(path) for path in command.get("files", []) if str(path).strip()]

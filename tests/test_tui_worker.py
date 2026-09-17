@@ -70,6 +70,41 @@ def test_tui_worker_routes_llm_cancel_without_job():
     assert _messages(output) == [{"type": "error", "message": "No LLM request is running"}]
 
 
+def test_tui_worker_routes_live_commands_to_service():
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+
+    worker.handle({"type": "live_stop"})
+    worker.handle({"type": "live_audio", "source": "mic", "seq": 0, "sample_offset": 0, "timestamp_ns": 0, "pcm": ""})
+    worker.handle({"type": "live_ask", "question": "?", "settings": {}})
+
+    assert [m["message"] for m in _messages(output)] == [
+        "No live session is running",
+        "No live session is running",
+        "No live session is running",
+    ]
+
+
+def test_tui_worker_batch_start_is_rejected_while_live_session_runs(tmp_path):
+    class FakeLive:
+        def is_running(self):
+            return True
+
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+    worker._live = FakeLive()
+    sample = tmp_path / "a.wav"
+    sample.write_bytes(b"x")
+
+    worker.handle({"type": "start", "files": [str(sample)]})
+    worker.handle({"type": "llm_start", "text": "t", "modes": ["summary"], "settings": {}})
+
+    assert _messages(output) == [
+        {"type": "error", "message": "Processing is already running"},
+        {"type": "error", "message": "Processing is already running"},
+    ]
+
+
 def test_tui_worker_rejects_unknown_command():
     output = io.StringIO()
     worker = TuiWorker(output=output)
