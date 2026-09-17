@@ -292,6 +292,17 @@ def test_swift_live_capture_uses_avaudioengine_and_screencapturekit() -> None:
     assert "Int16" in capture
 
 
+def test_swift_live_session_job_streams_pcm_and_handles_events() -> None:
+    job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LiveSessionJob.swift").read_text(encoding="utf-8")
+    for command in ('"live_start"', '"live_audio"', '"live_pause"', '"live_resume"', '"live_stop"', '"live_ask"', '"live_ask_cancel"', '"live_capture_event"'):
+        assert command in job
+    for event in ('"live_status"', '"live_partial"', '"live_final"', '"live_stopped"', '"live_answer_chunk"', '"live_answer"'):
+        assert event in job
+    assert "base64EncodedString()" in job
+    assert "maxBufferedChunks" in job  # 5 s backlog guard → overflow
+    assert "WorkerProcess(" in job
+
+
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
