@@ -640,7 +640,7 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$EXECUTABLE" "$APP/Contents/MacOS/GigaAMLiquid"
           chmod +x "$APP/Contents/MacOS/GigaAMLiquid"
-          cp assets/icon.icns "$APP/Contents/Resources/GigaAMLiquid.icns"
+          cp assets/icon-liquid.icns "$APP/Contents/Resources/GigaAMLiquid.icns"
 
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
