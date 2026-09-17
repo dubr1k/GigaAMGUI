@@ -820,11 +820,14 @@ jobs:
           pattern: GigaAM*
           merge-multiple: true
 
+      # Sequential uploads with retries; the parallel upload of
+      # softprops/action-gh-release failed with "Error saving asset" for the
+      # 11 large archives (v2.1.3, three attempts). The script keeps the
+      # release a draft until every asset is attached. Title is the bare
+      # version number; the notes come from docs/RELEASE_NOTES_<version>.md.
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          # Только номер версии: имя продукта в заголовке релиза не дублируем.
-          name: ${{ steps.notes.outputs.version }}
-          body_path: ${{ steps.notes.outputs.path }}
-          files: release-assets/*
-          overwrite_files: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/publish_release_assets.sh "$GITHUB_REF_NAME" release-assets "${{ steps.notes.outputs.path }}"

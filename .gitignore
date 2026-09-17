@@ -14,6 +14,7 @@ scripts/*
 !scripts/build_offline_models.py
 !scripts/native_worker_smoke.py
 !scripts/make_liquid_icon.py
+!scripts/publish_release_assets.sh
 *.py[cod]
 *$py.class
 *.so

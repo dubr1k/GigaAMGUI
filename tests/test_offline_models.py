@@ -126,7 +126,7 @@ def test_ci_publishes_offline_variant_for_every_platform():
     assert "name: ${{ matrix.offline_asset }}" in text
     assert "name: ${{ steps.archive_offline.outputs.name }}" in text
     assert "pattern: GigaAM*" in text
-    assert "files: release-assets/*" in text
+    assert "scripts/publish_release_assets.sh \"$GITHUB_REF_NAME\" release-assets" in text
 
 
 def test_ci_proves_offline_bundle_needs_no_network():

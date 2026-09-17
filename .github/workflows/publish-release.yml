@@ -1,0 +1,47 @@
+name: Publish release from existing build artifacts
+
+# Manual fallback for build.yml's publish job: reuse the artifacts of a finished
+# tagged build run when only the asset upload failed, instead of rebuilding
+# everything by re-tagging.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z)
+        required: true
+      run_id:
+        description: build.yml run id whose artifacts to publish
+        required: true
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.tag }} from run ${{ inputs.run_id }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      # Checks out the dispatching branch (main), not the tag: the script and
+      # the release notes must be the current ones even for an older tag.
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          pattern: GigaAM*
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          bash scripts/publish_release_assets.sh "$TAG" release-assets "docs/RELEASE_NOTES_${VERSION}.md"

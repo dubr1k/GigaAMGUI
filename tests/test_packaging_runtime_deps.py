@@ -233,7 +233,17 @@ def test_tagged_build_workflow_publishes_matching_release_notes_after_assets():
     assert "publish-release:" in workflow
     assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in workflow
     assert "RELEASE_NOTES_${VERSION}.md" in workflow
-    assert "body_path:" in workflow
+    # Assets go up one at a time with retries and the release stays a draft
+    # until all of them are attached (parallel upload failed for v2.1.3).
+    assert 'bash scripts/publish_release_assets.sh "$GITHUB_REF_NAME" release-assets "${{ steps.notes.outputs.path }}"' in workflow
+    assert "uses: softprops/action-gh-release" not in workflow
+    script = Path("scripts/publish_release_assets.sh").read_text(encoding="utf-8")
+    assert 'gh release upload "$TAG" "$file" --clobber' in script
+    assert 'gh release edit "$TAG" --draft=false --latest' in script
+    assert script.index("--draft=false") > script.index("Expected ${#FILES[@]} assets")
+    fallback = Path(".github/workflows/publish-release.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in fallback and "run-id: ${{ inputs.run_id }}" in fallback
+    assert "scripts/publish_release_assets.sh" in fallback
 
 def test_all_specs_remain_valid_python_after_shared_contract_changes():
     for spec in PACKAGING_DIR.glob("*.spec"):
