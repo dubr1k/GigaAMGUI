@@ -74,7 +74,8 @@ class MLXBackend:
 
             self._gigaam_mlx = gigaam_mlx
             if logger:
-                logger(f"MLX backend load requested: repo={self.repo_id}")
+                logger(f"Загружаем модель для Apple Silicon (MLX): {self.repo_id}")
+                logger("При первом запуске модель скачивается — это может занять несколько минут.")
 
             model, tokenizer = gigaam_mlx.load_model(
                 model_type=self.model_name,
@@ -86,8 +87,8 @@ class MLXBackend:
         except Exception as exc:
             if logger:
                 logger(
-                    f"MLX load failed: backend={self.name}, model={self.model_name}, "
-                    f"repo={self.repo_id}: {type(exc).__name__}: {exc}"
+                    f"Не удалось загрузить модель MLX ({self.model_name}, {self.repo_id}): "
+                    f"{type(exc).__name__}: {exc}"
                 )
             return False
 
@@ -330,8 +331,8 @@ class MLXBackend:
         chunks = self._chunks_from_vad_boundaries(audio, boundaries)
         if self._logger is not None:
             self._logger(
-                "ASR сегментация: VAD, "
-                f"речевых областей: {len(boundaries)}, окон декодера: {len(chunks)}"
+                f"Речь найдена: участков — {len(boundaries)}, "
+                f"фрагментов для распознавания — {len(chunks)}"
             )
         return chunks
 

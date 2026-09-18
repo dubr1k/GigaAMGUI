@@ -184,12 +184,12 @@ class PyTorchBackend:
             self._gigaam = gigaam
 
             if logger:
-                logger("Инициализация модели GigaAM-v3...")
-                logger("Это может занять несколько минут при первом запуске (скачивание весов).")
+                logger("Подготавливаем модель распознавания речи (GigaAM-v3)…")
+                logger("При первом запуске модель скачивается — это может занять несколько минут.")
 
             self.device = self._select_device()
             if logger:
-                logger(f"Устройство вычисления: {self.device.upper()}")
+                logger(f"Вычисления выполняются на устройстве: {self.device.upper()}")
 
             use_fp16 = self.device != "cpu"
             self.model = gigaam.load_model(
@@ -200,11 +200,11 @@ class PyTorchBackend:
             )
 
             if logger:
-                logger("Модель успешно загружена!")
+                logger("Модель готова.")
             return True
         except Exception as e:
             if logger:
-                logger(f"КРИТИЧЕСКАЯ ОШИБКА загрузки модели:\n{e}")
+                logger(f"Не удалось загрузить модель распознавания:\n{e}")
             return False
 
     def _empty_cache(self):
@@ -362,8 +362,8 @@ class PyTorchBackend:
                     )
                 if self._logger is not None and self.segmentation_mode == "vad":
                     self._logger(
-                        "ASR сегментация: VAD, "
-                        f"речевых областей: {len(boundaries)}, окон декодера: {len(chunks)}"
+                        f"Речь найдена: участков — {len(boundaries)}, "
+                        f"фрагментов для распознавания — {len(chunks)}"
                     )
             except Exception as exc:
                 self._vad_segmenter = None

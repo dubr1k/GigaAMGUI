@@ -219,11 +219,11 @@ class AudioConverter:
 
         # Проверяем существование файла
         if not os.path.exists(input_path):
-            self.logger(f"ОШИБКА: Файл не найден: {input_path}")
+            self.logger(f"Ошибка: файл не найден: {input_path}")
             return None
 
         if not os.path.isfile(input_path):
-            self.logger(f"ОШИБКА: Путь не является файлом: {input_path}")
+            self.logger(f"Ошибка: это не файл, а папка или другой объект: {input_path}")
             return None
 
         # Создаём временный файл в папке вывода с уникальным именем,
@@ -231,11 +231,8 @@ class AudioConverter:
         temp_filename = f"temp_{uuid.uuid4().hex}_{os.path.basename(input_path)}.wav"
         temp_wav = os.path.join(output_dir, temp_filename)
 
-        self.logger(f"Конвертация {os.path.basename(input_path)} -> 16kHz WAV...")
-
-        # Логируем реальный путь для отладки
-        self.logger(f"DEBUG: Абсолютный путь к файлу: {input_path}")
-        self.logger(f"DEBUG: Файл существует: {os.path.exists(input_path)}")
+        self.logger(f"Подготавливаем звук: {os.path.basename(input_path)} → WAV 16 кГц…")
+        self.logger(f"Файл: {input_path}")
 
         try:
             command = [
@@ -251,10 +248,6 @@ class AudioConverter:
                 "-progress", "pipe:1",
                 "-nostats",
             ]
-
-            self.logger(
-                f"DEBUG: Команда FFmpeg: ffmpeg -i [файл] -ar {AUDIO_SAMPLE_RATE} -ac {AUDIO_CHANNELS} -vn -y [выход] -progress pipe:1"
-            )
 
             duration = media_duration if media_duration is not None and media_duration > 0 else 0.0
             process = subprocess.Popen(
@@ -354,12 +347,12 @@ class AudioConverter:
                 stderr_thread.join(timeout=1.0)
 
             if killed_by_watchdog[0]:
-                self.logger("Конвертация прервана watchdog'ом — файл не обработан (issue #20).")
+                self.logger("Подготовка звука заняла слишком долго и была прервана — файл не обработан.")
                 return None
 
             if returncode != 0:
                 stderr_text = "".join(stderr_lines).strip()
-                self.logger(f"Ошибка FFmpeg: код возврата {returncode}")
+                self.logger(f"FFmpeg не смог подготовить звук (код ошибки {returncode}). Подробности ниже:")
                 self._log_ffmpeg_tail(stderr_text)
                 if "moov atom not found" in stderr_text or "Invalid data found when processing input" in stderr_text:
                     self.logger("")
@@ -367,15 +360,15 @@ class AudioConverter:
                     self.logger("Что попробовать: перезаписать/скачать файл заново, открыть в другом плеере и пересохранить, либо взять другой файл.")
                 return None
 
-            self.logger(f"Конвертация завершена: {os.path.basename(temp_wav)} (ffmpeg код {returncode}).")
+            self.logger("Звук подготовлен.")
             if progress_callback is not None and duration > 0 and last_reported < 1.0:
                 progress_callback(1.0)
             return temp_wav
 
         except FileNotFoundError:
-            self.logger("ОШИБКА: FFmpeg не найден в bundle/bin приложения и PATH.")
+            self.logger("Ошибка: не найдена программа FFmpeg (ни в приложении, ни в системе) — без неё звук подготовить нельзя.")
             return None
         except OSError as exc:
-            self.logger(f"ОШИБКА: не удалось запустить FFmpeg ({exc}).")
+            self.logger(f"Ошибка: не удалось запустить FFmpeg ({exc}).")
             self.logger("Проверьте, что рядом с приложением нет несовместимого ffmpeg для другой ОС/архитектуры.")
             return None

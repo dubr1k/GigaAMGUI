@@ -108,12 +108,11 @@ class OnnxBackend:
             self.device = selection.active
             if logger:
                 message = (
-                    "ONNX ASR загружен: "
-                    f"{self.model_revision}, provider chain="
-                    + " → ".join(selection.providers)
+                    f"Модель готова (ONNX, {self.model_revision}); "
+                    f"вычисления выполняются на: {selection.active}"
                 )
                 if selection.fallback_reason:
-                    message += f"; {selection.fallback_reason}"
+                    message += f". {selection.fallback_reason}"
                 logger(message)
             return True
         except Exception as exc:
@@ -121,7 +120,7 @@ class OnnxBackend:
             self.provider_selection = None
             self.device = None
             if logger:
-                logger(f"КРИТИЧЕСКАЯ ОШИБКА загрузки ONNX ASR:\n{exc}")
+                logger(f"Не удалось загрузить модель распознавания (ONNX):\n{exc}")
             return False
 
     def transcribe_longform(

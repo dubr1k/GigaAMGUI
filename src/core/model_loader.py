@@ -153,19 +153,19 @@ class ModelLoader:
             return True
 
         if logger:
-            logger(f"Запрошен ASR backend: {self._requested_backend}")
+            logger(f"Движок распознавания: {self._requested_backend}")
 
         try:
             self._ensure_backend()
         except Exception as exc:
             if logger:
-                logger(f"Ошибка инициализации backend: {exc}")
-            self._factory_error = f"Backend create failed: {exc}"
+                logger(f"Не удалось запустить движок распознавания: {exc}")
+            self._factory_error = f"Не удалось запустить движок распознавания: {exc}"
             return False
 
         if self._backend is None:
             if logger:
-                logger("Не удалось создать backend для загрузки модели")
+                logger("Не удалось выбрать движок распознавания для загрузки модели")
             self._fallback_reason = None
             return False
 
@@ -174,9 +174,9 @@ class ModelLoader:
             return True
 
         if logger:
-            logger(f"Не удалось загрузить backend {self._backend.name}")
+            logger(f"Не удалось загрузить модель через движок {self._backend.name}")
         self._factory_error = (
-            f"Не удалось загрузить backend {self._backend.name if self._backend else 'неизвестный'}"
+            f"Не удалось загрузить модель через движок {self._backend.name if self._backend else 'неизвестный'}"
         )
         return False
 

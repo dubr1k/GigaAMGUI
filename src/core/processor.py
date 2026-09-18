@@ -23,6 +23,52 @@ if TYPE_CHECKING:
     from .diarization.base import DiarizationBackend
 
 
+# Журнал читают люди без технического бэкграунда: отчёт предобработки хранит
+# английские машинные формулировки (их проверяют тесты и API), а в журнал они
+# попадают уже по-русски. Неизвестная причина выводится как есть.
+_PREPROCESSING_ACTIONS_RU = {
+    "none": "не требуется",
+    "light_cleanup": "лёгкая очистка от шума",
+    "neural_denoise": "нейросетевое подавление шума",
+    "normalize": "выравнивание громкости",
+}
+_PREPROCESSING_REASONS_RU = {
+    "Reduced estimated signal-to-noise ratio": "речь слабо выделяется на фоне шума",
+    "Broadband stationary noise signature": "в записи постоянный фоновый шум",
+    "Low-frequency rumble signature": "в записи низкочастотный гул",
+    "Severe broadband noise detected": "в записи сильный фоновый шум",
+    "Neural denoiser unavailable; using conservative FFmpeg cleanup": "нейросетевая очистка недоступна, применена мягкая очистка FFmpeg",
+    "Severe clipping detected; denoising cannot restore clipped speech safely": "запись сильно перегружена (клиппинг), очистка не поможет",
+    "Almost no analyzable speech signal; processing refused": "в записи почти нет речи, очистка не выполнялась",
+    "Signal is quiet but estimated SNR is uncertain; amplification refused": "запись тихая, но усиливать её небезопасно",
+    "Speech level is low while signal-to-noise ratio is healthy": "речь тихая, но чистая — громкость выровнена",
+    "Input appears clean; enhancement is unnecessary": "запись чистая, очистка не нужна",
+    "Audio preprocessing is disabled": "очистка звука отключена в настройках",
+    "Light cleanup explicitly requested": "лёгкая очистка выбрана в настройках",
+    "Neural denoising explicitly requested": "нейросетевая очистка выбрана в настройках",
+    "Selected preprocessing backend failed safely": "средство очистки завершилось с ошибкой, использована исходная запись",
+}
+_QUALITY_GATE_PREFIX = "Quality gate rejected candidate: "
+_QUALITY_GATE_RU = {
+    "clipping increased": "после очистки появились перегрузки",
+    "too much speech became silence": "очистка заглушила часть речи",
+    "useful signal level collapsed": "после очистки речь стала слишком тихой",
+    "loudness moved away from target": "громкость ушла от нужного уровня",
+    "no measurable cleanup benefit": "очистка не дала заметного улучшения",
+}
+
+
+def _preprocessing_reason_ru(reason: str) -> str:
+    if reason in _PREPROCESSING_REASONS_RU:
+        return _PREPROCESSING_REASONS_RU[reason]
+    if reason.startswith(_QUALITY_GATE_PREFIX):
+        detail = reason[len(_QUALITY_GATE_PREFIX):]
+        return "результат очистки отклонён: " + _QUALITY_GATE_RU.get(detail, detail)
+    if reason.startswith("Quality gate could not validate candidate: "):
+        return "не удалось проверить результат очистки: " + reason.split(": ", 1)[1]
+    return reason
+
+
 class TranscriptionProcessor:
     """Класс для обработки файлов транскрибации"""
 
@@ -124,7 +170,7 @@ class TranscriptionProcessor:
                 )
                 self._diarization_provider = provider
             except Exception as e:
-                self.logger(f"Не удалось инициализировать менеджер диаризации: {e}")
+                self.logger(f"Не удалось подготовить определение говорящих: {e}")
         return self._diarization_manager
 
     def _update_progress(
@@ -216,8 +262,8 @@ class TranscriptionProcessor:
 
         # Логирование начала
         duration_str = f"{int(media_duration//60)}:{int(media_duration%60):02d}" if media_duration > 0 else "неизвестна"
-        self.logger(f"--- Обработка файла {file_index+1}/{total_files}: {filename} ---")
-        self.logger(f"Длительность: {duration_str}")
+        self.logger(f"Файл {file_index+1} из {total_files}: {filename}")
+        self.logger(f"Длительность записи: {duration_str}")
 
         from ..utils.diarization import normalize_diarization_backend
 
@@ -245,7 +291,7 @@ class TranscriptionProcessor:
             self._update_progress('conversion', 1.0, total_seconds=media_duration, processed_seconds=media_duration)
 
         if not temp_audio:
-            self.logger(f"Пропуск файла {filename}")
+            self.logger(f"Файл пропущен: {filename}")
             result['total_time'] = time.time() - file_start_time
             return result
 
@@ -267,19 +313,22 @@ class TranscriptionProcessor:
             preprocessing_temp_paths = prepared_audio.temporary_paths
             result['audio_preprocessing'] = prepared_audio.report.to_dict()
             decision = prepared_audio.report.decision
-            self.logger(
-                "Предобработка аудио: "
-                f"режим={prepared_audio.report.mode}, действие={decision.action}, "
-                f"применено={'да' if prepared_audio.report.applied else 'нет'}"
-            )
+            action_ru = _PREPROCESSING_ACTIONS_RU.get(decision.action, decision.action)
+            if prepared_audio.report.applied:
+                self.logger(f"Очистка звука: {action_ru} (режим {prepared_audio.report.mode})")
+            else:
+                self.logger(f"Очистка звука не выполнялась: {action_ru} (режим {prepared_audio.report.mode})")
             for reason in decision.reasons:
-                self.logger(f"  Причина: {reason}")
+                self.logger(f"  Почему: {_preprocessing_reason_ru(reason)}")
             if prepared_audio.report.runtime_fallback:
-                detail = prepared_audio.report.fallback_reason or "безопасный fallback к исходной дорожке"
-                self.logger(f"  Очистка не применена: {detail}")
+                detail = prepared_audio.report.fallback_reason
+                self.logger(
+                    "  Очистка не применена: "
+                    + (_preprocessing_reason_ru(detail) if detail else "использована исходная запись")
+                )
         except Exception as exc:
             # Quality enhancement никогда не должен ломать базовую транскрибацию.
-            self.logger(f"Предобработка аудио недоступна, используется исходная дорожка: {exc}")
+            self.logger(f"Очистка звука недоступна, используем запись как есть: {exc}")
         finally:
             result['preprocessing_time'] = time.time() - preprocessing_start
             self._update_progress(
@@ -292,7 +341,7 @@ class TranscriptionProcessor:
         # Транскрибация
         transcription_start = time.time()
         try:
-            self.logger("Распознавание речи (GigaAM-v3)...")
+            self.logger("Распознаём речь…")
             # Транскрибация (обновляем прогресс постепенно)
             try:
                 utterances = self.model_loader.transcribe_longform(
@@ -307,18 +356,16 @@ class TranscriptionProcessor:
             except ValueError as e:
                 # Ошибка VAD (обычно связана с токеном)
                 error_msg = str(e)
+                self.logger(f"Не удалось найти речь в записи (ошибка детектора речи): {error_msg}")
                 if "HF_TOKEN" in error_msg:
-                    self.logger(f"ОШИБКА VAD: {error_msg}")
                     self.logger("Проверьте токен HF_TOKEN в .env файле и убедитесь, что приняли условия доступа:")
                     self.logger("https://huggingface.co/pyannote/segmentation-3.0")
-                else:
-                    self.logger(f"ОШИБКА VAD: {error_msg}")
                 result['transcription_time'] = time.time() - transcription_start
                 result['total_time'] = time.time() - file_start_time
                 return result
             except Exception as e:
                 # Другие ошибки транскрибации
-                self.logger(f"ОШИБКА при транскрибации: {str(e)}")
+                self.logger(f"Ошибка при распознавании речи: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 result['transcription_time'] = time.time() - transcription_start
@@ -328,14 +375,7 @@ class TranscriptionProcessor:
             result['transcription_time'] = time.time() - transcription_start
             self._update_progress('transcription', 1.0)
 
-            # Логирование результатов транскрибации для отладки
-            self.logger(f"Транскрибация завершена. Получено сегментов: {len(utterances) if utterances else 0}")
-            if utterances and len(utterances) > 0:
-                # Показываем структуру первого сегмента для отладки
-                first_utt = utterances[0]
-                self.logger(f"Пример структуры сегмента: keys={list(first_utt.keys())}, "
-                           f"has_transcription={'transcription' in first_utt}, "
-                           f"has_boundaries={'boundaries' in first_utt}")
+            self.logger(f"Распознавание завершено: фрагментов текста — {len(utterances) if utterances else 0}")
 
             # Применение диаризации, если включена
             if (
@@ -348,13 +388,13 @@ class TranscriptionProcessor:
                     "с префиксом hf_."
                 )
                 result['diarization']['error'] = token_error
-                self.logger(f"ОШИБКА: {token_error}")
-                self.logger("Установите токен через чекбокс 'Диаризация' в интерфейсе.")
+                self.logger(f"Ошибка: {token_error}")
+                self.logger("Укажите токен в настройках диаризации (определения говорящих).")
                 enable_diarization = False
 
             diarization_applied = False
             if enable_diarization and utterances and len(utterances) > 0:
-                self.logger(f"Применение диаризации спикеров ({self._active_diarization_backend})...")
+                self.logger(f"Определяем, кто говорит ({self._active_diarization_backend})…")
                 try:
                     active_diarization_manager = self.diarization_manager
                     runtime_details = []
@@ -362,12 +402,12 @@ class TranscriptionProcessor:
                         device = getattr(active_diarization_manager, "device", None)
                         provider = getattr(active_diarization_manager, "provider", None)
                         if device:
-                            runtime_details.append(f"device={device}")
+                            runtime_details.append(f"устройство {device}")
                         if provider:
-                            runtime_details.append(f"provider={provider}")
+                            runtime_details.append(f"провайдер {provider}")
                     if runtime_details:
                         self.logger(
-                            "Вычислительный runtime диаризации: "
+                            "Определение говорящих выполняется на: "
                             + ", ".join(runtime_details)
                         )
                     self._update_progress("diarization", None)
@@ -392,33 +432,33 @@ class TranscriptionProcessor:
                     )
                     if fallback_reason:
                         self.logger(
-                            "ПРЕДУПРЕЖДЕНИЕ: fallback диаризации — "
+                            "Внимание: определение говорящих переключилось на запасной режим — "
                             + fallback_reason
                         )
                         active_diarization_manager.last_fallback_reason = None
-                    self.logger(f"Диаризация завершена. Найдено спикеров: {len(set(u.get('speaker', 'Неизвестный спикер') for u in utterances))}")
+                    self.logger(f"Говорящих найдено: {len(set(u.get('speaker', 'Неизвестный спикер') for u in utterances))}")
                 except Exception as e:
                     result['diarization']['error'] = str(e)
                     # Диаризация не удалась — сохраняем транскрипт БЕЗ фиктивной
                     # разметки «Спикер №1» и даём пользователю реальную причину.
-                    self.logger(f"ОШИБКА: диаризация не выполнена — спикеры НЕ размечены: {e}")
+                    self.logger(f"Не удалось определить говорящих, текст сохранён без разметки по говорящим: {e}")
                     if self._active_diarization_backend == "pyannote":
                         self.logger("Частая причина: на huggingface.co не приняты условия ВСЕХ моделей —")
                         self.logger("  pyannote/segmentation-3.0, pyannote/speaker-diarization-3.1")
                         self.logger("  и модели эмбеддингов (wespeaker-voxceleb-resnet34-LM),")
-                        self.logger("либо у токена нет доступа read. Транскрипт сохранён без разметки спикеров.")
+                        self.logger("либо у токена нет права read.")
                     else:
-                        self.logger("Транскрипт сохранён без разметки спикеров; подробности ошибки приведены выше.")
+                        self.logger("Причина указана выше.")
 
             # Проверка результатов транскрибации
             if not utterances or len(utterances) == 0:
                 error_msg = (
-                    f"ПРЕДУПРЕЖДЕНИЕ: VAD (Voice Activity Detection) не нашел сегментов речи в файле {filename}.\n"
+                    f"Внимание: в файле {filename} не найдено речи.\n"
                     f"Возможные причины:\n"
-                    f"  1. В файле нет речи или очень тихая речь\n"
-                    f"  2. Проблема с токеном HuggingFace для pyannote/segmentation-3.0\n"
-                    f"  3. Проблема с сегментацией аудио\n"
-                    f"Проверьте токен HF_TOKEN в src/config.py и убедитесь, что приняли условия доступа:\n"
+                    f"  1. В записи нет речи или она очень тихая\n"
+                    f"  2. Не работает токен HuggingFace для pyannote/segmentation-3.0\n"
+                    f"  3. Не удалось разбить запись на участки речи\n"
+                    f"Проверьте токен HF_TOKEN и убедитесь, что приняли условия доступа:\n"
                     f"https://huggingface.co/pyannote/segmentation-3.0"
                 )
                 self.logger(error_msg)
@@ -428,7 +468,7 @@ class TranscriptionProcessor:
                 full_text_diarized = ""
                 timecoded_lines_diarized = []
             else:
-                self.logger(f"Найдено сегментов речи: {len(utterances)}")
+                self.logger(f"Реплик в тексте: {len(utterances)}")
 
                 # Формирование результатов: обычный текст и диаризованный (если включена диаризация)
                 # Обычный текст — всегда без меток спикеров
@@ -446,7 +486,7 @@ class TranscriptionProcessor:
 
                     # Проверка на пустой текст
                     if not text or not text.strip():
-                        self.logger(f"ПРЕДУПРЕЖДЕНИЕ: Пустой текст в сегменте {boundaries}")
+                        self.logger(f"Внимание: фрагмент {boundaries} распознан без текста")
                         continue
 
                     start, end = boundaries
@@ -485,7 +525,7 @@ class TranscriptionProcessor:
                 full_text_diarized = "\n".join(full_text_lines_diarized)
 
                 if not full_text.strip():
-                    self.logger("ПРЕДУПРЕЖДЕНИЕ: Все сегменты имеют пустой текст транскрипции")
+                    self.logger("Внимание: речь не распознана — все фрагменты пустые")
 
             # Определяем форматы вывода (по умолчанию txt). Если пользователь
             # запросил диаризацию и она действительно сработала, всегда создаём
@@ -532,7 +572,7 @@ class TranscriptionProcessor:
                             f.write(full_text_diarized)
                         saved_files.append(path_diarize)
                     elif enable_diarization:
-                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Диаризация не применена, _diarize.txt не создан")
+                        self.logger("Внимание: говорящих определить не удалось, файл _diarize.txt не создан")
 
                 elif fmt == 'txt_diarize_timecodes':
                     # Текст с метками спикеров (только после успешной диаризации)
@@ -542,7 +582,7 @@ class TranscriptionProcessor:
                             f.write("\n".join(timecoded_lines_diarized))
                         saved_files.append(path_diarize_ts)
                     elif enable_diarization:
-                        self.logger("ПРЕДУПРЕЖДЕНИЕ: Диаризация не применена, _diarize_timecodes.txt не создан")
+                        self.logger("Внимание: говорящих определить не удалось, файл _diarize_timecodes.txt не создан")
 
                 elif fmt == 'md':
                     # Markdown формат
@@ -572,9 +612,9 @@ class TranscriptionProcessor:
 
             # Проверка сохраненных данных
             if not full_text.strip():
-                self.logger("ПРЕДУПРЕЖДЕНИЕ: Текст транскрипции пустой")
+                self.logger("Внимание: распознанный текст пуст")
             else:
-                self.logger(f"Сохранено символов: {len(full_text)}")
+                self.logger(f"Объём текста: {len(full_text)} символов")
 
             # Успех
             result['success'] = True
@@ -583,17 +623,17 @@ class TranscriptionProcessor:
 
             # Логируем сохраненные файлы
             for saved_file in saved_files:
-                self.logger(f"Сохранено: {os.path.basename(saved_file)}")
-            self.logger(f"Время обработки: {self.time_formatter.format_duration(result['total_time'])} " +
-                       f"(Конверсия: {round(result['conversion_time'], 1)}с, " +
-                       f"Транскрибация: {round(result['transcription_time'], 1)}с)")
+                self.logger(f"Сохранён файл: {os.path.basename(saved_file)}")
+            self.logger(f"Готово за {self.time_formatter.format_duration(result['total_time'])} " +
+                       f"(подготовка звука {round(result['conversion_time'], 1)} с, " +
+                       f"распознавание {round(result['transcription_time'], 1)} с)")
             self._update_progress("finalizing", 1.0)
 
         except Exception as e:
             result['transcription_time'] = time.time() - transcription_start
             result['total_time'] = time.time() - file_start_time
 
-            self.logger(f"Ошибка при обработке {filename}: {str(e)}")
+            self.logger(f"Не удалось обработать {filename}: {str(e)}")
             import traceback
             traceback.print_exc()
 
@@ -666,7 +706,7 @@ class TranscriptionProcessor:
             # чтобы process_file показал настоящую причину (иначе пользователь
             # видит «найден 1 спикер» и думает, что диаризация сработала).
             import traceback
-            self.logger(f"ОШИБКА диаризации: {e}")
+            self.logger(f"Ошибка при определении говорящих: {e}")
             self.logger(traceback.format_exc().strip())
             raise
 

@@ -12,13 +12,23 @@ import sys
 import threading
 import time
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any
 
-from src.core.subtitles import SubtitleOptions
-from src.services.live_worker_service import LiveWorkerService
-from src.services.llm_worker_service import LLMWorkerService
-from src.utils.output_naming import find_output_collisions
+# Те же фильтры, что и в app.py: deprecation-шум pyannote/speechbrain/torchaudio
+# уходит в stderr, который клиенты показывают пользователю как диагностику.
+warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
+warnings.filterwarnings("ignore", category=UserWarning, module="speechbrain")
+warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
+warnings.filterwarnings("ignore", message=".*torchaudio.*deprecated.*")
+warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.*")
+
+from src.core.subtitles import SubtitleOptions  # noqa: E402
+from src.services.live_worker_service import LiveWorkerService  # noqa: E402
+from src.services.llm_worker_service import LLMWorkerService  # noqa: E402
+from src.utils.output_naming import find_output_collisions  # noqa: E402
 
 
 class TuiWorker:
@@ -175,7 +185,7 @@ class TuiWorker:
         self._cancel_requested.set()
         # The shared processor has no safe mid-file cancellation mechanism.  This
         # matches the GUI: finish the current file, then stop the remaining queue.
-        self.emit("cancelling", message="Cancellation requested; stopping after the current file")
+        self.emit("cancelling", message="Остановка запрошена: закончим текущий файл и остановимся.")
 
     def _run_batch(
         self,
@@ -210,11 +220,11 @@ class TuiWorker:
                 model_revision=model,
                 onnx_provider=onnx_provider,
             )
-            self._log("Loading GigaAM model…")
+            self._log("Загружаем модель распознавания речи…")
             if not loader.load_model(logger=self._log):
-                self.emit("completed", success=False, cancelled=False, results=[], message="Failed to load model")
+                self.emit("completed", success=False, cancelled=False, results=[], message="Не удалось загрузить модель распознавания")
                 return
-            self._log("GigaAM model ready")
+            self._log("Модель загружена.")
             stats = ProcessingStats(STATS_FILE)
             current: dict[str, Any] = {"index": 0, "file": files[0]}
 
@@ -260,7 +270,7 @@ class TuiWorker:
                         ),
                     )
                 except Exception as exc:
-                    self._log(f"Error while processing {os.path.basename(filepath)}: {exc}")
+                    self._log(f"Не удалось обработать {os.path.basename(filepath)}: {exc}")
                     result = {"file_path": filepath, "success": False, "error": str(exc), "saved_files": []}
                 results.append(result)
                 if result.get("success") and result.get("media_duration", 0) > 0:
