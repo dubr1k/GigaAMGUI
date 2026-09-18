@@ -1884,7 +1884,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         if category == "LLM" {
             // The tools table plus per-provider fields outgrow the fixed 652 pt detail
             // panel; scroll the body instead of squeezing the rows into each other.
-            embed(scrollable(body, width: 602 - 60), in: surface.contentView, inset: 30, fillHeight: true)
+            embed(scrollable(body, width: 602 - 48), in: surface.contentView, inset: 24, fillHeight: true)  // 24 + 6 pt body inset = the 30 pt other pages use
         } else {
             embed(body, in: surface.contentView, inset: 30)
         }
@@ -1910,10 +1910,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            body.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            body.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            body.topAnchor.constraint(equalTo: document.topAnchor),
-            body.bottomAnchor.constraint(equalTo: document.bottomAnchor)
+            // The focus ring is drawn ~4 pt outside a field; fields flush with the
+            // document edge would have it clipped by the scroll view's clip view.
+            body.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 6),
+            body.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -6),
+            body.topAnchor.constraint(equalTo: document.topAnchor, constant: 6),
+            body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -6)
         ])
         return scroll
     }
