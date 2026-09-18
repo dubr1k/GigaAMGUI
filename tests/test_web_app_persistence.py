@@ -439,3 +439,38 @@ def test_health_includes_asr_and_runtime(web_state, monkeypatch):
             web_app.transcription_service.available_asr_backends()
         )
         assert options["defaults"]["asr_backend"] == "pytorch"
+
+
+def test_llm_tools_endpoint_returns_registry_and_statuses(monkeypatch):
+    from src.services import cli_tools
+
+    fake = [cli_tools.ToolStatus("omp", "oh-my-pi", "found", "/x/omp", "18.2.5", None, "brew …")]
+    captured = {}
+
+    def fake_scan(overrides=None, *, fresh=False):
+        captured["fresh"] = fresh
+        return fake
+
+    monkeypatch.setattr(cli_tools, "scan", fake_scan)
+
+    payload = asyncio.run(web_app.llm_tools(fresh=True, user="test-user"))
+
+    assert payload["providers"] == cli_tools.canonical_provider_names()
+    assert "oh-my-pi" in payload["providers"]
+    assert payload["tools"] == [fake[0].to_dict()]
+    assert captured["fresh"] is True
+
+
+def test_llm_tool_check_endpoint(monkeypatch):
+    from src.services import cli_tools
+
+    monkeypatch.setattr(
+        cli_tools, "resolve_tool",
+        lambda spec, override=None: cli_tools.ToolStatus(spec.id, spec.name, "missing", None, None, None, spec.install_hint),
+    )
+    payload = asyncio.run(web_app.llm_tool_check(provider="Pi", path="", user="test-user"))
+    assert payload["tool"]["status"] == "missing"
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(web_app.llm_tool_check(provider="Nope", path="", user="test-user"))
+    assert exc.value.status_code == 400

@@ -56,6 +56,10 @@ class TuiWorker:
                 self._llm.start(command)
         elif command_type == "llm_cancel":
             self._llm.cancel()
+        elif command_type == "llm_tools":
+            self._llm_tools(command)
+        elif command_type == "llm_tool_check":
+            self._llm_tool_check(command)
         elif command_type == "live_start":
             if self._busy():
                 self.emit("error", message="Processing is already running")
@@ -75,6 +79,29 @@ class TuiWorker:
         "live_ask": lambda self, command: self._live.ask(command),
         "live_ask_cancel": lambda self, command: self._live.ask_cancel(),
     }
+
+    def _llm_tools(self, command: dict[str, Any]) -> None:
+        """Реестр провайдеров + статусы CLI для нативных фронтендов (Liquid, TUI)."""
+        from src.services import cli_tools
+
+        overrides = command.get("overrides") or {}
+        statuses = cli_tools.scan(overrides, fresh=bool(command.get("fresh")))
+        self.emit(
+            "llm_tools",
+            providers=cli_tools.canonical_provider_names(),
+            tools=[status.to_dict() for status in statuses],
+        )
+
+    def _llm_tool_check(self, command: dict[str, Any]) -> None:
+        from src.services import cli_tools
+
+        try:
+            spec = cli_tools.provider_by_name(str(command.get("provider") or ""))
+        except KeyError:
+            self.emit("error", message=f"Unknown LLM provider: {command.get('provider')!r}")
+            return
+        status = cli_tools.resolve_tool(spec, command.get("path") or None)
+        self.emit("llm_tool_check", tool=status.to_dict())
 
     def _busy(self) -> bool:
         """Batch, LLM and live work share one worker and exclude each other."""

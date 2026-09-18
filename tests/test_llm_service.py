@@ -115,7 +115,8 @@ def test_codex_uses_json_output_without_a_shared_model_and_reads_agent_message(m
     )
 
     assert result == "final answer"
-    assert captured["command"][:4] == ["codex", "exec", "--json", "-o"]
+    assert captured["command"][0].split("/")[-1] == "codex"  # может быть резолвлен в абсолютный путь
+    assert captured["command"][1:4] == ["exec", "--json", "-o"]
     assert "-m" not in captured["command"]
     assert captured["command"][-1] == "-"
 
@@ -165,11 +166,135 @@ def test_opencode_command_shape(monkeypatch):
         {"opencode_path": "oc", "model": "m", "opencode_args": "--flag x"},
         "T", "P", provider="OpenCode", strict_empty_cli=True,
     )
-    assert captured["cmd"][0] == "oc"
-    assert "--model" in captured["cmd"] and "m" in captured["cmd"]
+    assert captured["cmd"][:2] == ["oc", "run"]
+    assert "-m" in captured["cmd"] and "m" in captured["cmd"]
     assert "--flag" in captured["cmd"] and "x" in captured["cmd"]
-    # последний аргумент — собранный prompt
-    assert captured["cmd"][-1] == llm_service.build_prompt_text("T", "P")
+    # промпт уходит в stdin, а не в argv
+    assert llm_service.build_prompt_text("T", "P") not in captured["cmd"]
+
+
+# --- 2.2: реестр, stdin, safe-флаги, oh-my-pi --------------------------------
+
+def _capture_run(monkeypatch, stdout="ok"):
+    captured = {}
+    # На машине разработчика бинари реально стоят — не резолвим, чтобы cmd[0] был предсказуем.
+    monkeypatch.setattr(llm_service.cli_tools, "search_dirs", lambda: [])
+
+    def fake_run(command, *a, **k):
+        captured["cmd"] = command
+        captured["kwargs"] = k
+        return _Proc(0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return captured
+
+
+def test_claude_prompt_goes_to_stdin_with_safe_flags(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    llm_service.run_provider(
+        {"claude_path": "claude", "model": "sonnet"}, "T", "P", provider="Claude Code", strict_empty_cli=True,
+    )
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["claude", "-p", "--output-format", "text"]
+    assert "--model" in cmd and "sonnet" in cmd
+    assert "--no-session-persistence" in cmd
+    assert cmd[cmd.index("--tools") + 1] == ""
+    assert captured["kwargs"]["input"] == llm_service.build_prompt_text("T", "P")
+    assert llm_service.build_prompt_text("T", "P") not in cmd
+
+
+def test_allow_tools_drops_safe_flags(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    llm_service.run_provider(
+        {"claude_path": "claude", "llm_allow_tools": True}, "T", "P", provider="Claude Code", strict_empty_cli=True,
+    )
+    assert "--tools" not in captured["cmd"]
+    assert "--no-session-persistence" not in captured["cmd"]
+
+
+def test_omp_command_shape(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    llm_service.run_provider(
+        {"omp_path": "omp", "omp_provider": "anthropic", "model": "opus", "omp_args": "--thinking low"},
+        "T", "P", provider="oh-my-pi", strict_empty_cli=True,
+    )
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["omp", "-p", "--mode", "text"]
+    assert cmd[cmd.index("--provider") + 1] == "anthropic"
+    assert cmd[cmd.index("--model") + 1] == "opus"
+    assert "--no-tools" in cmd and "--no-session" in cmd
+    assert cmd[-2:] == ["--thinking", "low"]
+    assert captured["kwargs"]["input"] == llm_service.build_prompt_text("T", "P")
+
+
+def test_pi_command_uses_stdin_and_safe_flags(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    llm_service.run_provider({"pi_path": "pi"}, "T", "P", provider="Pi", strict_empty_cli=True)
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["pi", "-p", "--mode", "text"]
+    assert "--no-tools" in cmd and "--no-session" in cmd
+    assert captured["kwargs"]["input"]
+
+
+def test_opencode_run_pure_by_default(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    llm_service.run_provider({"opencode_path": "opencode"}, "T", "P", provider="OpenCode", strict_empty_cli=True)
+    assert captured["cmd"][:3] == ["opencode", "run", "--pure"]
+
+    llm_service.run_provider(
+        {"opencode_path": "opencode", "llm_allow_tools": True}, "T", "P", provider="OpenCode", strict_empty_cli=True,
+    )
+    assert "--pure" not in captured["cmd"]
+
+
+def test_other_keeps_prompt_as_last_argument_and_feeds_stdin(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    llm_service.run_provider(
+        {"other_path": "my-llm", "other_args": "--x 1"}, "T", "P", provider="Other", strict_empty_cli=True,
+    )
+    prompt = llm_service.build_prompt_text("T", "P")
+    assert captured["cmd"] == ["my-llm", "--x", "1", prompt]
+    assert captured["kwargs"]["input"] == prompt
+
+
+def test_other_stdin_marker_removes_prompt_from_argv(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    llm_service.run_provider(
+        {"other_path": "my-llm", "other_args": "--x {stdin} --y"}, "T", "P", provider="Other", strict_empty_cli=True,
+    )
+    assert captured["cmd"] == ["my-llm", "--x", "--y"]
+    assert captured["kwargs"]["input"] == llm_service.build_prompt_text("T", "P")
+
+
+def test_cli_child_gets_extended_path(monkeypatch):
+    captured = _capture_run(monkeypatch)
+    monkeypatch.setattr(llm_service.cli_tools, "search_dirs", lambda: ["/only/this"])
+    llm_service.run_provider({"claude_path": "claude"}, "T", "P", provider="Claude Code", strict_empty_cli=True)
+    assert captured["kwargs"]["env"]["PATH"] == "/only/this"
+
+
+def test_cli_binary_resolved_to_absolute_path(tmp_path, monkeypatch):
+    exe = tmp_path / "omp"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    captured = _capture_run(monkeypatch)
+    monkeypatch.setattr(llm_service.cli_tools, "search_dirs", lambda: [str(tmp_path)])
+    llm_service.run_provider({"omp_path": "omp"}, "T", "P", provider="oh-my-pi", strict_empty_cli=True)
+    assert captured["cmd"][0] == str(exe)
+
+
+def test_missing_binary_raises_friendly_error_with_install_hint(monkeypatch):
+    monkeypatch.setattr(llm_service.cli_tools, "search_dirs", lambda: [])
+
+    def not_found(*a, **k):
+        raise FileNotFoundError(2, "No such file", "omp")
+
+    monkeypatch.setattr(subprocess, "run", not_found)
+    with pytest.raises(RuntimeError) as exc:
+        llm_service.run_provider({"omp_path": "omp"}, "T", "P", provider="oh-my-pi", strict_empty_cli=True)
+    message = str(exc.value)
+    assert "oh-my-pi" in message and "omp" in message
+    assert "brew install" in message
 
 
 def test_cancelled_cli_provider_terminates_its_subprocess(monkeypatch):

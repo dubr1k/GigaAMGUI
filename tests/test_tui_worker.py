@@ -178,3 +178,58 @@ def test_tui_worker_rejects_non_integer_subtitle_limits(tmp_path):
     message = _messages(output)[0]
     assert message["type"] == "error"
     assert "max_line_count" in message["message"]
+
+
+def test_tui_worker_lists_llm_tools(monkeypatch):
+    from src.services import cli_tools
+
+    fake = [cli_tools.ToolStatus("omp", "oh-my-pi", "found", "/opt/homebrew/bin/omp", "18.2.5", None, "brew …")]
+    captured = {}
+
+    def fake_scan(overrides=None, *, fresh=False):
+        captured["overrides"] = overrides
+        captured["fresh"] = fresh
+        return fake
+
+    monkeypatch.setattr(cli_tools, "scan", fake_scan)
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+
+    worker.handle({"type": "llm_tools", "overrides": {"omp": "/x/omp"}, "fresh": True})
+
+    message = _messages(output)[0]
+    assert message["type"] == "llm_tools"
+    assert message["providers"] == ["API", "Claude Code", "Codex", "OpenCode", "Pi", "oh-my-pi", "Other"]
+    assert message["tools"] == [fake[0].to_dict()]
+    assert captured == {"overrides": {"omp": "/x/omp"}, "fresh": True}
+
+
+def test_tui_worker_checks_one_llm_tool(monkeypatch):
+    from src.services import cli_tools
+
+    captured = {}
+
+    def fake_resolve(spec, override=None):
+        captured["spec"] = spec.id
+        captured["override"] = override
+        return cli_tools.ToolStatus(spec.id, spec.name, "broken", override, None, "exit 1", spec.install_hint)
+
+    monkeypatch.setattr(cli_tools, "resolve_tool", fake_resolve)
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+
+    worker.handle({"type": "llm_tool_check", "provider": "Claude Code", "path": "/x/claude"})
+
+    message = _messages(output)[0]
+    assert message["type"] == "llm_tool_check"
+    assert message["tool"]["status"] == "broken"
+    assert captured == {"spec": "claude", "override": "/x/claude"}
+
+
+def test_tui_worker_llm_tool_check_unknown_provider():
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+
+    worker.handle({"type": "llm_tool_check", "provider": "Nope"})
+
+    assert _messages(output)[0]["type"] == "error"

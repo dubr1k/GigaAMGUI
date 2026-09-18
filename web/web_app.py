@@ -1265,6 +1265,34 @@ async def delete_task(task_id: str, user: str = Depends(require_auth)):
     return {"ok": True, "message": "Задача удалена"}
 
 
+@app.get("/api/llm/tools")
+async def llm_tools(fresh: bool = False, user: str = Depends(require_auth)):
+    """Реестр LLM-провайдеров и статусы CLI-инструментов на сервере (скан — в пуле потоков)."""
+    from src.services import cli_tools
+
+    statuses = await asyncio.to_thread(cli_tools.scan, None, fresh=fresh)
+    return {
+        "providers": cli_tools.canonical_provider_names(),
+        "tools": [status.to_dict() for status in statuses],
+    }
+
+
+@app.post("/api/llm/tools/check")
+async def llm_tool_check(
+    provider: str = Form(...),
+    path: str = Form(""),
+    user: str = Depends(require_auth),
+):
+    from src.services import cli_tools
+
+    try:
+        spec = cli_tools.provider_by_name(provider)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=f"Неизвестный провайдер: {provider}") from exc
+    status = await asyncio.to_thread(cli_tools.resolve_tool, spec, path.strip() or None)
+    return {"tool": status.to_dict()}
+
+
 @app.post("/api/llm/process")
 async def llm_process(
     request: Request,
@@ -1282,8 +1310,12 @@ async def llm_process(
     pi_path: str = Form("pi"),
     pi_provider: str = Form(""),
     pi_args: str = Form(""),
+    omp_path: str = Form("omp"),
+    omp_provider: str = Form(""),
+    omp_args: str = Form(""),
     other_path: str = Form(""),
     other_args: str = Form(""),
+    llm_allow_tools: bool = Form(False),
     summary_enabled: bool = Form(False),
     tasks_enabled: bool = Form(False),
     custom_enabled: bool = Form(False),
@@ -1315,8 +1347,12 @@ async def llm_process(
         "pi_path": pi_path.strip() or "pi",
         "pi_provider": pi_provider.strip(),
         "pi_args": pi_args.strip(),
+        "omp_path": omp_path.strip() or "omp",
+        "omp_provider": omp_provider.strip(),
+        "omp_args": omp_args.strip(),
         "other_path": other_path.strip(),
         "other_args": other_args.strip(),
+        "llm_allow_tools": bool(llm_allow_tools),
     }
 
     items = []

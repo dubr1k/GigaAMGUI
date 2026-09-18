@@ -69,7 +69,30 @@ class LLMClient:
             return url
         return f"{url}/v1/messages"
 
-    def _post_with_retry(self, endpoint: str, *, headers: dict, payload: dict, stream: bool = False):
+    @staticmethod
+    def _sleep_with_cancel(delay: float, cancel_check: Callable[[], bool] | None) -> None:
+        """Ждать `delay` секунд, но прерваться, если пользователь отменил запрос."""
+        if cancel_check is None:
+            time.sleep(delay)
+            return
+        deadline = time.monotonic() + delay
+        while True:
+            if cancel_check():
+                raise RuntimeError("LLM request cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.1, remaining))
+
+    def _post_with_retry(
+        self,
+        endpoint: str,
+        *,
+        headers: dict,
+        payload: dict,
+        stream: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
+    ):
         last_response = None
         for attempt in range(3):
             response = requests.post(
@@ -88,7 +111,7 @@ class LLMClient:
             except ValueError:
                 delay = 2**attempt
             response.close()
-            time.sleep(delay)
+            self._sleep_with_cancel(delay, cancel_check)
         return last_response
 
     def process_transcript(
@@ -144,7 +167,7 @@ class LLMClient:
         }
         if stream_callback:
             payload["stream"] = True
-            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True)
+            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True, cancel_check=cancel_check)
             response.raise_for_status()
             parts = []
             for line in response.iter_lines(decode_unicode=True):
@@ -163,7 +186,7 @@ class LLMClient:
                     stream_callback(delta)
             return self._extract_text_content("".join(parts))
 
-        response = self._post_with_retry(endpoint, headers=headers, payload=payload)
+        response = self._post_with_retry(endpoint, headers=headers, payload=payload, cancel_check=cancel_check)
         response.raise_for_status()
         data = response.json()
         choices = data.get("choices") or []
@@ -204,7 +227,7 @@ class LLMClient:
         }
         if stream_callback:
             payload["stream"] = True
-            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True)
+            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True, cancel_check=cancel_check)
             response.raise_for_status()
             parts = []
             for line in response.iter_lines(decode_unicode=True):
@@ -221,7 +244,7 @@ class LLMClient:
                     stream_callback(text)
             return self._extract_text_content("".join(parts))
 
-        response = self._post_with_retry(endpoint, headers=headers, payload=payload)
+        response = self._post_with_retry(endpoint, headers=headers, payload=payload, cancel_check=cancel_check)
         response.raise_for_status()
         data = response.json()
         content = data.get("content", "")
