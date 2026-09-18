@@ -276,6 +276,10 @@ private final class FlippedDocumentView: NSView {
     }
 }
 
+private final class AutoLayoutDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 private final class EditorScrollView: NSScrollView {
     override func scrollWheel(with event: NSEvent) {
         if let outer = superview?.enclosingScrollView, let documentView {
@@ -791,6 +795,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private weak var liveAskButton: NSButton?
     private weak var liveAnswerView: NSTextView?
     private var llmJob: LLMJob?
+    private var llmToolsQuery: LLMToolsQuery?
+    private var llmToolChecks: [String: LLMToolsQuery] = [:]
+    /// Last discovery result per provider name; persisted so the page renders
+    /// badges immediately while a fresh scan runs in the worker.
+    private var llmToolStatuses: [String: LLMToolStatus] = [:]
+    private weak var llmProviderStatusLabel: NSTextField?
+    private var llmToolRows: [String: (dot: NSTextField, version: NSTextField, path: NSTextField, check: NSButton)] = [:]
+    private weak var llmRescanButton: NSButton?
     private var llmResultText = ""
     private weak var llmResultView: NSTextView?
     private weak var llmRunButton: NSButton?
@@ -838,6 +850,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             defaults.removeObject(forKey: "settings.hfToken")
         }
         cleanupDownloadedMedia()
+        loadLLMToolsCache()
         installMainMenu()
         buildWindow()
         show(page: .processing)
@@ -1503,18 +1516,35 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshLiveClock()
     }
 
-    private static let llmProviders = ["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other"]
+    /// Mirrors `cli_tools.PROVIDERS` (order included). The Python registry is the
+    /// source of truth; this copy only seeds the popup before the worker answers.
+    private static let llmProviders = ["API", "Claude Code", "Codex", "OpenCode", "Pi", "oh-my-pi", "Other"]
+    /// CLI providers with their settings-key prefix, default binary and whether the
+    /// tool takes an inner `--provider` (pi / oh-my-pi).
+    private static let llmCliProviders: [(name: String, prefix: String, binary: String, hasProvider: Bool)] = [
+        ("Claude Code", "claude", "claude", false), ("Codex", "codex", "codex", false),
+        ("OpenCode", "opencode", "opencode", false), ("Pi", "pi", "pi", true), ("oh-my-pi", "omp", "omp", true),
+    ]
 
     private func buildLLM(into content: NSStackView) {
         let source = card("Исходный текст")
         let sourceBody = contentStack(source)
         sourceBody.spacing = 10
         sourceBody.addArrangedSubview(button("Выбрать файл с транскриптом", action: #selector(chooseTranscript(_:))))
+        let providerPopup = popup(Self.llmProviders, key: "llm.provider")
+        let providerStatus = label("", size: 12, color: Palette.muted)
+        providerStatus.lineBreakMode = .byTruncatingMiddle
+        providerStatus.setContentHuggingPriority(.required, for: .horizontal)
+        providerStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        providerStatus.setAccessibilityIdentifier("llm.providerStatus")
+        llmProviderStatusLabel = providerStatus
         sourceBody.addArrangedSubview(equalColumns([
-            compactField("Провайдер", control: popup(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other"], key: "llm.provider")),
+            compactField("Провайдер", control: horizontal([providerPopup, providerStatus], spacing: 10)),
             compactField("Модель", control: editableText(defaults.string(forKey: "llm.model") ?? "", key: "llm.model", placeholder: "gpt-4.1-mini"))
         ], spacing: 12))
         sourceBody.addArrangedSubview(wrappedLabel("Адрес, ключ и пути к CLI-провайдерам — в Настройки → LLM.", size: 12, color: Palette.muted))
+        refreshLLMProviderStatus()
+        refreshLLMTools(fresh: false)
         sourceBody.addArrangedSubview(label("Транскрипция · можно вставить текст", size: 12, color: Palette.body))
         let editor = textEditor(defaults.string(forKey: "llm.source") ?? "", key: "llm.source", height: 180)
         transcriptEditor = editor.documentView as? NSTextView
@@ -1766,18 +1796,34 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
                 settingsField("Модель", control: editableText(defaults.string(forKey: "llm.model") ?? "", key: "llm.model", placeholder: "gpt-4.1-mini")),
                 settingsField("Temperature", control: editableText(defaults.string(forKey: "llm.temperature") ?? "", key: "llm.temperature", placeholder: "0.2"))
             ], spacing: 20))
-            for (title, pathKey, argsKey, fallback) in [
-                ("Claude Code", "llm.claudePath", "llm.claudeArgs", "claude"), ("Codex", "llm.codexPath", "llm.codexArgs", "codex"),
-                ("OpenCode", "llm.opencodePath", "llm.opencodeArgs", "opencode"), ("Pi", "llm.piPath", "llm.piArgs", "pi"),
-                ("Другое (команда)", "llm.otherPath", "llm.otherArgs", "")
-            ] {
-                body.addArrangedSubview(equalColumns([
-                    settingsField(title, control: editableText(defaults.string(forKey: pathKey) ?? "", key: pathKey, placeholder: fallback.isEmpty ? "/path/to/tool" : fallback)),
-                    settingsField("Аргументы", control: editableText(defaults.string(forKey: argsKey) ?? "", key: argsKey, placeholder: ""))
-                ], spacing: 20))
+            body.addArrangedSubview(divider())
+            let rescan = button("Пересканировать", action: #selector(rescanLLMTools(_:)), height: 30)
+            rescan.setAccessibilityIdentifier("llm.rescan")
+            llmRescanButton = rescan
+            body.addArrangedSubview(horizontal([label("Инструменты", size: 17, weight: .medium, color: Palette.ink), rescan], spacing: 12))
+            body.addArrangedSubview(wrappedLabel("Пустой путь — автопоиск по PATH и типичным каталогам (homebrew, npm, bun, nvm). Приложение из Finder не видит PATH терминала — поиск ведёт Python-сервис.", size: 12, color: Palette.muted))
+            llmToolRows = [:]
+            for tool in Self.llmCliProviders {
+                body.addArrangedSubview(llmToolRow(tool))
             }
-            body.addArrangedSubview(settingsField("Pi provider", control: editableText(defaults.string(forKey: "llm.piProvider") ?? "", key: "llm.piProvider", placeholder: "")))
-            body.addArrangedSubview(wrappedLabel("Ключ хранится в Связке ключей. CLI-провайдеры запускаются Python-сервисом проекта с указанными путями и аргументами.", size: 12, color: Palette.muted))
+            body.addArrangedSubview(divider())
+            for tool in Self.llmCliProviders {
+                var fields: [NSView] = [
+                    settingsField("\(tool.name) аргументы", control: editableText(defaults.string(forKey: "llm.\(tool.prefix)Args") ?? "", key: "llm.\(tool.prefix)Args", placeholder: ""))
+                ]
+                if tool.hasProvider {
+                    fields.append(settingsField("\(tool.name) provider", control: editableText(defaults.string(forKey: "llm.\(tool.prefix)Provider") ?? "", key: "llm.\(tool.prefix)Provider", placeholder: "anthropic / openai / google")))
+                }
+                body.addArrangedSubview(fields.count == 1 ? fields[0] : equalColumns(fields, spacing: 20))
+            }
+            body.addArrangedSubview(equalColumns([
+                settingsField("Другое (команда)", control: editableText(defaults.string(forKey: "llm.otherPath") ?? "", key: "llm.otherPath", placeholder: "/path/to/tool")),
+                settingsField("Аргументы", control: editableText(defaults.string(forKey: "llm.otherArgs") ?? "", key: "llm.otherArgs", placeholder: "{stdin}"))
+            ], spacing: 20))
+            body.addArrangedSubview(toggleRow("Разрешить инструменты и сессии агента", key: "llm.allowTools", defaultValue: false))
+            body.addArrangedSubview(wrappedLabel("Ключ хранится в Связке ключей. CLI-провайдеры запускаются Python-сервисом проекта: промпт через stdin, без инструментов и сессий, пока переключатель выключен.", size: 12, color: Palette.muted))
+            refreshLLMToolRows()
+            refreshLLMTools(fresh: false)
         case "API":
             body.addArrangedSubview(wrappedLabel("Отдельный REST API запускается из api.py. Нативный клиент не запускает сервер и не проверяет его доступность.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
@@ -1811,8 +1857,41 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(centered(button("Проект на GitHub", action: #selector(openProject(_:)))))
         default: break
         }
-        embed(body, in: surface.contentView, inset: 30)
+        if category == "LLM" {
+            // The tools table plus per-provider fields outgrow the fixed 652 pt detail
+            // panel; scroll the body instead of squeezing the rows into each other.
+            embed(scrollable(body, width: 602 - 60), in: surface.contentView, inset: 30, fillHeight: true)
+        } else {
+            embed(body, in: surface.contentView, inset: 30)
+        }
         return surface
+    }
+
+    /// A transparent, vertically scrolling wrapper for a settings body that may be
+    /// taller than its panel. Outer page scrolling takes over at either end.
+    private func scrollable(_ body: NSStackView, width: CGFloat) -> NSScrollView {
+        // Auto Layout document: its height follows the stack, so the scroll view
+        // knows the real content height without a manual layout pass.
+        let document = AutoLayoutDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        body.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(body)
+        let scroll = EditorScrollView()
+        scroll.drawsBackground = false
+        scroll.documentView = document
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.contentView.drawsBackground = false
+        NSLayoutConstraint.activate([
+            document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            body.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            body.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            body.topAnchor.constraint(equalTo: document.topAnchor),
+            body.bottomAnchor.constraint(equalTo: document.bottomAnchor)
+        ])
+        return scroll
     }
 
     private func size(_ view: NSView, width: CGFloat, height: CGFloat) {
@@ -2584,6 +2663,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         defaults.set(value, forKey: key)
         if key == "settings.theme" || key == "settings.language" { rebuildInterface() }
         if key == "settings.diarizationEngine" { resetManualSpeakerCountIfUnavailable() }
+        if key == "llm.provider" { refreshLLMProviderStatus() }
         refreshProcessingControls()
     }
 
@@ -2613,6 +2693,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             defaults.set(sender.stringValue, forKey: key)
         }
         if key == "output.path" { refreshProcessingControls() }
+        // An edited CLI path invalidates its badge: re-probe just that tool.
+        if key.hasPrefix("llm."), key.hasSuffix("Path"),
+           let tool = Self.llmCliProviders.first(where: { "llm.\($0.prefix)Path" == key }) {
+            checkLLMTool(tool.name)
+        }
     }
 
     @objc private func chooseFiles(_ sender: Any?) {
@@ -2759,6 +2844,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         transcriptionJob?.terminate()
         llmJob?.terminate()
         liveJob?.terminate()
+        llmToolsQuery?.cancel()
+        llmToolChecks.values.forEach { $0.cancel() }
         cleanupDownloadedMedia()
     }
 
@@ -3108,8 +3195,195 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             "codex_path": text("llm.codexPath", "codex"), "codex_args": text("llm.codexArgs"),
             "opencode_path": text("llm.opencodePath", "opencode"), "opencode_args": text("llm.opencodeArgs"),
             "pi_path": text("llm.piPath", "pi"), "pi_provider": text("llm.piProvider"), "pi_args": text("llm.piArgs"),
-            "other_path": text("llm.otherPath"), "other_args": text("llm.otherArgs")
+            "omp_path": text("llm.ompPath", "omp"), "omp_provider": text("llm.ompProvider"), "omp_args": text("llm.ompArgs"),
+            "other_path": text("llm.otherPath"), "other_args": text("llm.otherArgs"),
+            "llm_allow_tools": enabledOption("llm.allowTools", defaultValue: false)
         ]
+    }
+
+    // MARK: - LLM CLI tools (registry lives in the Python worker)
+
+    private static let llmToolsCacheKey = "llm.toolsCache"
+
+    private func loadLLMToolsCache() {
+        guard let data = defaults.data(forKey: Self.llmToolsCacheKey),
+              let objects = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        for status in objects.compactMap(LLMToolStatus.init) { llmToolStatuses[status.provider] = status }
+    }
+
+    private func saveLLMToolsCache() {
+        let objects = llmToolStatuses.values.map(\.dictionary)
+        if let data = try? JSONSerialization.data(withJSONObject: objects) { defaults.set(data, forKey: Self.llmToolsCacheKey) }
+    }
+
+    /// User-entered paths, keyed by registry id, for the worker's `overrides`.
+    private func llmToolOverrides() -> [String: String] {
+        var overrides: [String: String] = [:]
+        for tool in Self.llmCliProviders {
+            let value = (defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty && value != tool.binary { overrides[tool.prefix] = value }
+        }
+        return overrides
+    }
+
+    private func refreshLLMTools(fresh: Bool) {
+        guard llmToolsQuery == nil, !isClosing else { return }
+        llmRescanButton?.isEnabled = false
+        let query = LLMToolsQuery.scan(overrides: llmToolOverrides(), fresh: fresh) { [weak self] result in
+            guard let self else { return }
+            self.llmToolsQuery = nil
+            self.llmRescanButton?.isEnabled = true
+            switch result {
+            case .tools(_, let tools):
+                for tool in tools { self.llmToolStatuses[tool.provider] = tool }
+                self.saveLLMToolsCache()
+            case .tool(let tool):
+                self.llmToolStatuses[tool.provider] = tool
+            case .failed(let message):
+                self.transcriptionLog += "LLM tools: \(message)\n"
+            }
+            self.refreshLLMToolRows()
+            self.refreshLLMProviderStatus()
+        }
+        llmToolsQuery = query
+        query.start()
+    }
+
+    @objc private func rescanLLMTools(_ sender: Any?) {
+        refreshLLMTools(fresh: true)
+    }
+
+    private func checkLLMTool(_ provider: String) {
+        guard llmToolChecks[provider] == nil, !isClosing,
+              let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
+        let path = (defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        llmToolRows[provider]?.check.isEnabled = false
+        let query = LLMToolsQuery.check(provider: provider, path: path) { [weak self] result in
+            guard let self else { return }
+            self.llmToolChecks[provider] = nil
+            self.llmToolRows[provider]?.check.isEnabled = true
+            if case .tool(let status) = result {
+                self.llmToolStatuses[status.provider] = status
+                self.saveLLMToolsCache()
+            } else if case .failed(let message) = result {
+                self.transcriptionLog += "LLM tools: \(message)\n"
+            }
+            self.refreshLLMToolRows()
+            self.refreshLLMProviderStatus()
+        }
+        llmToolChecks[provider] = query
+        query.start()
+    }
+
+    @objc private func checkLLMToolButton(_ sender: NSButton) {
+        guard let provider = sender.identifier?.rawValue.replacingOccurrences(of: "llm.check.", with: "") else { return }
+        checkLLMTool(provider)
+    }
+
+    @objc private func browseLLMTool(_ sender: NSButton) {
+        guard let provider = sender.identifier?.rawValue.replacingOccurrences(of: "llm.browse.", with: ""),
+              let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.showsHiddenFiles = true
+        panel.message = L10n.text("Выберите исполняемый файл") + " \(tool.name)"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.defaults.set(url.path, forKey: "llm.\(tool.prefix)Path")
+            self.llmToolRows[provider]?.path.stringValue = url.path
+            self.checkLLMTool(provider)
+        }
+    }
+
+    private static let llmStatusGlyph: [String: String] = ["found": "●", "missing": "○", "broken": "⚠"]
+
+    private func llmStatusColor(_ status: String) -> NSColor {
+        switch status {
+        case "found": return NSColor.systemGreen
+        case "broken": return NSColor.systemOrange
+        default: return Palette.muted
+        }
+    }
+
+    private func llmStatusText(_ status: LLMToolStatus?) -> String {
+        guard let status else { return L10n.text("проверка…") }
+        switch status.status {
+        case "found": return status.version ?? L10n.text("найден")
+        case "broken": return L10n.text("не запускается")
+        default: return L10n.text("не найден")
+        }
+    }
+
+    private func llmToolRow(_ tool: (name: String, prefix: String, binary: String, hasProvider: Bool)) -> NSView {
+        let dot = label("○", size: 14, weight: .bold, color: Palette.muted)
+        dot.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        let name = label(tool.name, size: 14, weight: .medium, color: Palette.ink)
+        name.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        let version = label("", size: 12, color: Palette.muted)
+        version.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        version.lineBreakMode = .byTruncatingTail
+        let path = editableText(defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "", key: "llm.\(tool.prefix)Path", placeholder: tool.binary)
+        path.font = NSFont.systemFont(ofSize: 12)
+        path.lineBreakMode = .byTruncatingMiddle
+        path.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        path.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let browse = button("Обзор…", action: #selector(browseLLMTool(_:)), height: 30)
+        browse.identifier = NSUserInterfaceItemIdentifier("llm.browse.\(tool.name)")
+        browse.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let check = button("Проверить", action: #selector(checkLLMToolButton(_:)), height: 30)
+        check.identifier = NSUserInterfaceItemIdentifier("llm.check.\(tool.name)")
+        check.setContentCompressionResistancePriority(.required, for: .horizontal)
+        llmToolRows[tool.name] = (dot: dot, version: version, path: path, check: check)
+        let row = horizontal([dot, name, version, path, browse, check], spacing: 8)
+        row.alignment = .centerY
+        row.setAccessibilityIdentifier("llm.tool.\(tool.name)")
+        return row
+    }
+
+    private func refreshLLMToolRows() {
+        for (provider, row) in llmToolRows {
+            let status = llmToolStatuses[provider]
+            row.dot.stringValue = Self.llmStatusGlyph[status?.status ?? ""] ?? "○"
+            row.dot.textColor = llmStatusColor(status?.status ?? "")
+            row.version.stringValue = llmStatusText(status)
+            let hint: String
+            if let status, status.status == "found", let path = status.path {
+                hint = path
+                if row.path.stringValue.isEmpty { row.path.placeholderString = path }
+            } else if let status, status.status == "broken" {
+                hint = status.detail ?? ""
+            } else if let status, !status.installHint.isEmpty {
+                hint = L10n.text("Установка") + ": " + status.installHint
+            } else {
+                hint = ""
+            }
+            row.dot.toolTip = hint
+            row.version.toolTip = hint
+        }
+    }
+
+    private func refreshLLMProviderStatus() {
+        guard let label = llmProviderStatusLabel else { return }
+        let provider = option("llm.provider", values: Self.llmProviders)
+        switch provider {
+        case "API":
+            label.stringValue = "HTTP API"
+            label.textColor = Palette.muted
+            label.toolTip = nil
+        case "Other":
+            label.stringValue = L10n.text("произвольная команда")
+            label.textColor = Palette.muted
+            label.toolTip = nil
+        default:
+            let status = llmToolStatuses[provider]
+            let glyph = Self.llmStatusGlyph[status?.status ?? ""] ?? "○"
+            label.stringValue = "\(glyph) \(llmStatusText(status))"
+            label.textColor = status == nil ? Palette.muted : llmStatusColor(status!.status)
+            label.toolTip = status?.path ?? status?.detail ?? (status.map { L10n.text("Установка") + ": " + $0.installHint })
+        }
     }
 
     @objc private func runLLM(_ sender: Any?) {

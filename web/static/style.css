@@ -210,6 +210,19 @@ body {
 
 .btn-secondary { background: #4a4a4d; }
 .btn-secondary:hover { background: #58585b; }
+.btn-small { padding: 4px 10px; font-size: 12px; }
+
+/* ===== LLM CLI TOOLS ===== */
+.llm-tools-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.llm-tools-list li { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--text); }
+.llm-tools-list .tool-status { width: 1.2em; text-align: center; }
+.llm-tools-list .tool-found .tool-status { color: #3fb950; }
+.llm-tools-list .tool-missing .tool-status { color: var(--text-muted, #8b949e); }
+.llm-tools-list .tool-broken .tool-status { color: #e3b341; }
+.llm-tools-list .tool-name { min-width: 7em; }
+.llm-tools-list .tool-version { color: var(--text-muted, #8b949e); }
+.llm-tools-list .tool-detail { color: var(--text-muted, #8b949e); font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+#llm-provider option:disabled { color: #8b949e; }
 
 .btn-start {
     width: 100%;

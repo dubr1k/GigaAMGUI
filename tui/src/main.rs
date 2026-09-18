@@ -813,6 +813,7 @@ fn command_menu_options(app: &App) -> Vec<String> {
             "Codex",
             "OpenCode",
             "Pi",
+            "oh-my-pi",
             "Other",
             BACK_MENU_OPTION,
         ]
@@ -868,6 +869,7 @@ fn llm_model_options(provider: &str) -> Vec<String> {
         "Codex" => &["default"],
         "OpenCode" => &["default"],
         "Pi" => &["default"],
+        "oh-my-pi" => &["default"],
         "Other" => &["default"],
         _ => &["gpt-4.1-mini", "gpt-4.1", "gpt-5-mini", "gpt-5"],
     };
@@ -1739,6 +1741,7 @@ fn main() -> io::Result<()> {
                 "codex_path": "codex",
                 "opencode_path": "opencode",
                 "pi_path": "pi",
+                "omp_path": "omp",
                 "other_path": "",
             });
             if let Err(error) = send(
@@ -2154,6 +2157,7 @@ mod tests {
                 "Codex",
                 "OpenCode",
                 "Pi",
+                "oh-my-pi",
                 "Other",
                 BACK_MENU_OPTION
             ]

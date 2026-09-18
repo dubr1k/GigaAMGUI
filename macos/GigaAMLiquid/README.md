@@ -51,5 +51,5 @@ permissions. Sessions are written under the folder chosen on the Live page
 exports.
 
 The LLM page and Settings → LLM use the project's providers (an OpenAI-compatible
-or Anthropic API, Claude Code, Codex, OpenCode, Pi or any other CLI). The API key
+or Anthropic API, Claude Code, Codex, OpenCode, Pi, oh-my-pi or any other CLI). The API key
 is stored in the Keychain.

@@ -233,7 +233,7 @@
             <div class="row mt-8">
                 <label class="label" data-i18n="provider">Провайдер:</label>
                 <select id="llm-provider" class="input input-small">
-                    <option>API</option><option>Claude Code</option><option>Codex</option><option>OpenCode</option><option>Pi</option><option>Другое</option>
+                    <option>API</option><option>Claude Code</option><option>Codex</option><option>OpenCode</option><option>Pi</option><option>oh-my-pi</option><option>Другое</option>
                 </select>
                 <label class="label" data-i18n="model">Модель:</label>
                 <input id="llm-model" class="input" placeholder="gpt-4.1-mini / sonnet / o3 / qwen ...">
@@ -261,10 +261,23 @@
                 <div class="row mt-8"><input id="llm-pi-provider" class="input" placeholder="openai / anthropic / google"></div>
                 <div class="row mt-8"><input id="llm-pi-args" class="input" placeholder="Доп. аргументы Pi" data-i18n-placeholder="piArgsPlaceholder"></div>
             </div>
+            <div id="llm-provider-omp" class="mt-8 hidden">
+                <div class="row mt-8"><input id="llm-omp-path" class="input" placeholder="omp"></div>
+                <div class="row mt-8"><input id="llm-omp-provider" class="input" placeholder="anthropic / openai / google"></div>
+                <div class="row mt-8"><input id="llm-omp-args" class="input" placeholder="Доп. аргументы oh-my-pi" data-i18n-placeholder="ompArgsPlaceholder"></div>
+            </div>
             <div id="llm-provider-other" class="mt-8 hidden">
                 <div class="row mt-8"><input id="llm-other-path" class="input" placeholder="команда" data-i18n-placeholder="otherPathPlaceholder"></div>
                 <div class="row mt-8"><input id="llm-other-args" class="input" placeholder="аргументы" data-i18n-placeholder="otherArgsPlaceholder"></div>
             </div>
+            <div class="row mt-8">
+                <label class="checkbox-label"><input type="checkbox" id="llm-allow-tools"><span data-i18n="llmAllowTools">Разрешить инструменты и сессии агента</span></label>
+            </div>
+            <div class="row mt-8">
+                <span class="label" data-i18n="llmTools">Инструменты на сервере:</span>
+                <button id="btn-llm-rescan" class="btn btn-small" type="button" data-i18n="llmRescan">Пересканировать</button>
+            </div>
+            <ul id="llm-tools-list" class="llm-tools-list mt-8"></ul>
             <div class="row mt-8"><textarea id="llm-summary-prompt" class="input llm-textarea" placeholder="Промпт для выжимки" data-i18n-placeholder="summaryPromptPlaceholder"></textarea></div>
             <div class="row mt-8"><textarea id="llm-tasks-prompt" class="input llm-textarea" placeholder="Промпт для задач" data-i18n-placeholder="tasksPromptPlaceholder"></textarea></div>
             <div class="row mt-8"><textarea id="llm-custom-prompt" class="input llm-textarea" placeholder="Пользовательский промпт" data-i18n-placeholder="customPromptPlaceholder"></textarea></div>

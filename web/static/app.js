@@ -73,6 +73,14 @@ const I18N = {
         codexArgsPlaceholder: 'Доп. аргументы Codex',
         opencodeArgsPlaceholder: 'Доп. аргументы OpenCode',
         piArgsPlaceholder: 'Доп. аргументы Pi',
+        ompArgsPlaceholder: 'Доп. аргументы oh-my-pi',
+        llmAllowTools: 'Разрешить инструменты и сессии агента',
+        llmTools: 'Инструменты на сервере:',
+        llmRescan: 'Пересканировать',
+        toolFound: 'найден',
+        toolMissing: 'не найден',
+        toolBroken: 'не запускается',
+        toolInstall: 'установка:',
         otherPathPlaceholder: 'команда',
         otherArgsPlaceholder: 'аргументы',
         summaryPromptPlaceholder: 'Промпт для выжимки',
@@ -154,6 +162,14 @@ const I18N = {
         codexArgsPlaceholder: 'Extra Codex arguments',
         opencodeArgsPlaceholder: 'Extra OpenCode arguments',
         piArgsPlaceholder: 'Extra Pi arguments',
+        ompArgsPlaceholder: 'Extra oh-my-pi arguments',
+        llmAllowTools: 'Allow agent tools and sessions',
+        llmTools: 'Tools on the server:',
+        llmRescan: 'Rescan',
+        toolFound: 'found',
+        toolMissing: 'not found',
+        toolBroken: 'does not run',
+        toolInstall: 'install:',
         otherPathPlaceholder: 'command',
         otherArgsPlaceholder: 'arguments',
         summaryPromptPlaceholder: 'Prompt for summary',
@@ -1031,14 +1047,65 @@ window.removeLlmFile = function(idx) {
     updateLlmFileList();
 };
 
+const LLM_PROVIDER_IDS = { 'API': 'api', 'Claude Code': 'claude', 'Codex': 'codex', 'OpenCode': 'opencode', 'Pi': 'pi', 'oh-my-pi': 'omp', 'Другое': 'other', 'Other': 'other' };
+
 function updateLlmProviderFields() {
     const provider = document.getElementById('llm-provider').value;
-    ['api', 'claude', 'codex', 'opencode', 'pi', 'other'].forEach(name => {
+    ['api', 'claude', 'codex', 'opencode', 'pi', 'omp', 'other'].forEach(name => {
         document.getElementById(`llm-provider-${name}`).classList.add('hidden');
     });
-    const map = { 'API': 'api', 'Claude Code': 'claude', 'Codex': 'codex', 'OpenCode': 'opencode', 'Pi': 'pi', 'Другое': 'other', 'Other': 'other' };
-    const id = map[provider] || 'api';
+    const id = LLM_PROVIDER_IDS[provider] || 'api';
     document.getElementById(`llm-provider-${id}`).classList.remove('hidden');
+}
+
+// Статусы CLI-инструментов с сервера: бейджи в <select> и список под настройками.
+let llmToolStatuses = [];
+
+function toolStatusIcon(status) {
+    return status === 'found' ? '●' : status === 'broken' ? '⚠' : '○';
+}
+
+function renderLlmTools() {
+    const list = document.getElementById('llm-tools-list');
+    const select = document.getElementById('llm-provider');
+    if (!list || !select) return;
+    const byProvider = Object.fromEntries(llmToolStatuses.map(t => [t.provider, t]));
+    list.innerHTML = '';
+    llmToolStatuses.forEach(tool => {
+        const li = document.createElement('li');
+        li.className = `tool-${tool.status}`;
+        const label = tool.status === 'found' ? t('toolFound') : tool.status === 'broken' ? t('toolBroken') : t('toolMissing');
+        const detail = tool.status === 'found' ? (tool.path || '')
+            : tool.status === 'broken' ? (tool.detail || '')
+            : (tool.install_hint ? `${t('toolInstall')} ${tool.install_hint}` : '');
+        li.innerHTML = `<span class="tool-status">${toolStatusIcon(tool.status)}</span>`
+            + `<span class="tool-name">${tool.provider}</span>`
+            + `<span class="tool-version">${tool.version ? tool.version : label}</span>`
+            + `<span class="tool-detail">${detail}</span>`;
+        list.appendChild(li);
+    });
+    Array.from(select.options).forEach(option => {
+        const base = option.dataset.name || option.textContent.trim();
+        option.dataset.name = base;
+        const tool = byProvider[base];
+        if (!tool) return;
+        option.textContent = tool.status === 'found'
+            ? `${toolStatusIcon('found')} ${base}${tool.version ? ' ' + tool.version : ''}`
+            : `${toolStatusIcon(tool.status)} ${base} — ${tool.status === 'broken' ? t('toolBroken') : t('toolMissing')}`;
+        option.value = base;
+    });
+}
+
+async function loadLlmTools(fresh = false) {
+    try {
+        const res = await fetch(`${API}/llm/tools${fresh ? '?fresh=true' : ''}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        llmToolStatuses = data.tools || [];
+        renderLlmTools();
+    } catch (e) {
+        console.warn('llm tools scan failed', e);
+    }
 }
 
 function setupLlmTab() {
@@ -1064,6 +1131,8 @@ function setupLlmTab() {
     });
     document.getElementById('llm-provider').addEventListener('change', updateLlmProviderFields);
     updateLlmProviderFields();
+    document.getElementById('btn-llm-rescan').addEventListener('click', () => loadLlmTools(true));
+    loadLlmTools();
     document.getElementById('llm-summary-prompt').value = `Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке.`;
     document.getElementById('llm-tasks-prompt').value = `Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде.`;
     document.getElementById('llm-provider').querySelector('option:last-child').textContent = currentLang === 'ru' ? 'Другое' : 'Other';
@@ -1105,8 +1174,12 @@ async function processLlm() {
     formData.append('pi_path', document.getElementById('llm-pi-path').value || 'pi');
     formData.append('pi_provider', document.getElementById('llm-pi-provider').value || '');
     formData.append('pi_args', document.getElementById('llm-pi-args').value || '');
+    formData.append('omp_path', document.getElementById('llm-omp-path').value || 'omp');
+    formData.append('omp_provider', document.getElementById('llm-omp-provider').value || '');
+    formData.append('omp_args', document.getElementById('llm-omp-args').value || '');
     formData.append('other_path', document.getElementById('llm-other-path').value || '');
     formData.append('other_args', document.getElementById('llm-other-args').value || '');
+    formData.append('llm_allow_tools', document.getElementById('llm-allow-tools').checked);
     formData.append('summary_enabled', document.getElementById('llm-summary').checked);
     formData.append('tasks_enabled', document.getElementById('llm-tasks').checked);
     formData.append('custom_enabled', document.getElementById('llm-custom').checked);

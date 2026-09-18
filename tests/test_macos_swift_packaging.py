@@ -312,15 +312,40 @@ def test_swift_llm_page_is_wired_to_llm_job() -> None:
     assert "unavailableButton(" not in page
     assert "LLM-сервис не подключён" not in page
     assert "#selector(runLLM(_:))" in page and "#selector(cancelLLM(_:))" in page
-    assert 'popup(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Other"], key: "llm.provider")' in page
+    assert 'popup(Self.llmProviders, key: "llm.provider")' in page
+    assert "refreshLLMTools(fresh: false)" in page and "llmProviderStatusLabel = providerStatus" in page
     settings = _swift_block(main, "private func llmSettings() throws -> [String: Any] {")
     assert 'SecureStore.string(for: "llmApiKey")' in settings
     assert '"temperature":' in settings and '"claude_path":' in settings and '"other_args":' in settings
+    assert '"omp_path":' in settings and '"omp_provider":' in settings and '"llm_allow_tools":' in settings
     handler = _swift_block(main, "@objc private func runLLM(_ sender: Any?) {")
     assert "LLMJob(request:" in handler
     receive = _swift_block(main, "private func receiveLLMEvent(_ event: LLMJobEvent) {")
     assert "case .chunk" in receive and "case .completed" in receive and "case .failed" in receive
     assert "LLM-сервис не подключён" not in main
+
+
+def test_swift_llm_providers_mirror_python_registry() -> None:
+    from src.services import cli_tools
+
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    expected = ", ".join(f'"{name}"' for name in cli_tools.canonical_provider_names())
+    assert f"private static let llmProviders = [{expected}]" in main
+    for spec in cli_tools.cli_specs():
+        assert f'("{spec.name}", "{spec.settings_prefix}", "{spec.binary}", {str(spec.has_provider_field).lower()})' in main
+
+
+def test_swift_llm_tools_query_uses_worker_protocol() -> None:
+    query = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LLMToolsQuery.swift").read_text(encoding="utf-8")
+    assert '"type": "llm_tools"' in query and '"type": "llm_tool_check"' in query
+    assert 'case "llm_tools":' in query and 'case "llm_tool_check":' in query
+    assert "WorkerProcess(" in query
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    settings_llm = main.split('case "LLM":', 1)[1].split('case "API":', 1)[0]
+    assert "#selector(rescanLLMTools(_:))" in settings_llm
+    assert 'key: "llm.allowTools"' in settings_llm
+    assert "llmToolRow(tool)" in settings_llm
+    assert 'llm.piPath' not in settings_llm  # per-provider path rows are generated from llmCliProviders
 
 
 def test_swift_llm_api_key_uses_keychain() -> None:
