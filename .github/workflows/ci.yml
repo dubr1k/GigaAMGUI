@@ -57,3 +57,5 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build native client
         run: swift build -c release --package-path macos/GigaAMLiquid
+      - name: Test UI-free client logic
+        run: swift test --package-path macos/GigaAMLiquid

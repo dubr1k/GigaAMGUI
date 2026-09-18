@@ -39,7 +39,8 @@ enum NativeTranscriptionEvent {
 /// callbacks are ordered on the main queue, with exactly one terminal event.
 final class NativeTranscriptionJob {
     private let files: [URL]
-    private let outputDirectory: URL
+    /// `nil` means "next to each input file", which src.tui_worker applies per file.
+    private let outputDirectory: URL?
     private let settings: NativeTranscriptionSettings
     private let onEvent: (NativeTranscriptionEvent) -> Void
     private let queue = DispatchQueue(label: "GigaAMLiquid.transcription", qos: .userInitiated)
@@ -55,10 +56,10 @@ final class NativeTranscriptionJob {
     private var diagnostics = ""
     private var secrets: [String] = []
 
-    init(files: [URL], outputDirectory: URL, settings: NativeTranscriptionSettings,
+    init(files: [URL], outputDirectory: URL?, settings: NativeTranscriptionSettings,
          onEvent: @escaping (NativeTranscriptionEvent) -> Void) {
         self.files = files.map { $0.standardizedFileURL }
-        self.outputDirectory = outputDirectory.standardizedFileURL
+        self.outputDirectory = outputDirectory?.standardizedFileURL
         self.settings = settings
         self.onEvent = onEvent
     }
@@ -106,22 +107,24 @@ final class NativeTranscriptionJob {
                 throw WorkerFailure("Input file is not readable: \(file.path)")
             }
         }
-        guard outputDirectory.isFileURL else { throw WorkerFailure("Output directory must be a local folder.") }
+        if let outputDirectory, !outputDirectory.isFileURL { throw WorkerFailure("Output directory must be a local folder.") }
         let runtime = try PythonRuntime.resolve()
         runtimeRoot = runtime.root
         // The frozen companion runs `--native-worker`; only the source-tree runtime needs src.tui_worker.
         guard runtime.frozenCompanion || manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path) else {
             throw WorkerFailure("The Python project is missing src/tui_worker.py.")
         }
-        try manager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        resolvedOutputDirectory = outputDirectory.resolvingSymlinksInPath().standardizedFileURL
+        if let outputDirectory {
+            try manager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            resolvedOutputDirectory = outputDirectory.resolvingSymlinksInPath().standardizedFileURL
+        }
         var environment = runtime.environment
         if let token = settings.hfToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             environment["HF_TOKEN"] = token
         }
         secrets = WorkerRedaction.secrets(in: environment)
         let command: [String: Any] = [
-            "type": "start", "files": files.map(\.path), "output_dir": outputDirectory.path,
+            "type": "start", "files": files.map(\.path), "output_dir": outputDirectory?.path ?? "",
             "formats": settings.formats, "backend": settings.backend, "model": settings.model,
             "onnx_provider": settings.onnxProvider, "diarization": settings.diarization,
             "diarization_backend": settings.diarizationBackend,
@@ -135,14 +138,15 @@ final class NativeTranscriptionJob {
         let worker = try WorkerProcess(
             runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
             onLine: { self.consume($0) },
-            onStderr: { self.recordLog($0) },
+            // Library warnings and tracebacks are for failure reports, not the user-facing log.
+            onStderr: { self.recordDiagnostic($0) },
             onStdoutEnd: { self.requestTerminal(.failed(self.failureDetails("The transcription worker closed stdout without a completion event."))) },
             onError: { self.requestTerminal(.failed($0)) },
             onExit: { self.workerExited(status: $0) }
         )
         self.worker = worker
         try send(command)
-        emit(.progress(nil, "Loading GigaAM model…"))
+        emit(.progress(nil, "Загружаем модель распознавания речи…"))
     }
 
     private func send(_ command: [String: Any]) throws {
@@ -247,7 +251,8 @@ final class NativeTranscriptionJob {
         if let diarization = raw["diarization"] as? [String: Any],
            let error = diarization["error"] as? String, !error.isEmpty { errors.append(error) }
         for savedPath in saved {
-            guard let root = runtimeRoot, let directory = resolvedOutputDirectory else { throw WorkerFailure("Missing Python runtime context.") }
+            guard let root = runtimeRoot else { throw WorkerFailure("Missing Python runtime context.") }
+            let directory = resolvedOutputDirectory ?? files[index].deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
             let reported = URL(fileURLWithPath: savedPath, relativeTo: root).standardizedFileURL
             let file = reported.resolvingSymlinksInPath().standardizedFileURL
             let expectedName = reported.lastPathComponent
@@ -303,18 +308,25 @@ final class NativeTranscriptionJob {
     }
 
     private func recordLog(_ text: String) {
-        guard !finished, pendingTerminal == nil else { return }
-        let text = safeText(text).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        diagnostics = String((diagnostics + "\n" + text).suffix(16 * 1024))
+        guard let text = recordDiagnostic(text) else { return }
         emit(.log(text))
+    }
+
+    /// Keeps the raw line for failure reports; returns it redacted, or nil when blank.
+    @discardableResult
+    private func recordDiagnostic(_ text: String) -> String? {
+        guard !finished, pendingTerminal == nil else { return nil }
+        let text = safeText(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        diagnostics = String((diagnostics + "\n" + text).suffix(16 * 1024))
+        return text
     }
 
     private func safeText(_ text: String) -> String { WorkerRedaction.safeText(text, secrets: secrets) }
 
     private func failureDetails(_ message: String) -> String {
         let summary = safeText(message)
-        return diagnostics.isEmpty ? summary : summary + "\n" + safeText(diagnostics)
+        return diagnostics.isEmpty ? summary : summary + "\n\n" + L10n.text("Технические подробности для отчёта об ошибке:") + "\n" + safeText(diagnostics)
     }
 
     private func requestTerminal(_ event: NativeTranscriptionEvent) {

@@ -1,4 +1,5 @@
 import AppKit
+import GigaAMLiquidCore
 import UniformTypeIdentifiers
 
 private enum Page: String, CaseIterable {
@@ -1228,8 +1229,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let zone = DropZoneView()
         let zoneText = vertical([
             symbol("square.and.arrow.up", size: 28),
-            label("Перетащите сюда аудио или видео", size: 17, weight: .regular, color: Palette.ink),
-            label(".wav, .mp3, .m4a, .mp4, .mov, .mkv", size: 13, color: Palette.body)
+            label("Перетащите сюда аудио, видео или папку", size: 17, weight: .regular, color: Palette.ink),
+            label(".wav, .mp3, .m4a, .mp4, .mov, .mkv · папка сканируется целиком", size: 13, color: Palette.body)
         ], spacing: 8, alignment: .centerX)
         zoneText.translatesAutoresizingMaskIntoConstraints = false
         zone.addSubview(zoneText)
@@ -1277,13 +1278,16 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         selectedStack.bottomAnchor.constraint(equalTo: selected.bottomAnchor, constant: -16).isActive = true
 
         let folder = compactCard("Папка сохранения результатов")
-        let path = editableText(outputPathText, key: "output.path", placeholder: "Выберите папку")
+        let path = editableText(outputPathText, key: "output.path", placeholder: "Рядом с исходным файлом")
         path.heightAnchor.constraint(equalToConstant: 36).isActive = true
         path.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let change = button("Изменить", action: #selector(chooseOutputFolder(_:)), height: 36)
         change.identifier = NSUserInterfaceItemIdentifier("output.choose")
         change.widthAnchor.constraint(equalToConstant: 92).isActive = true
         contentStack(folder).addArrangedSubview(horizontal([path, change], spacing: 12))
+        let folderHint = wrappedLabel("Пустое поле — результаты сохраняются в папку исходного файла.", size: 12, color: Palette.muted)
+        folderHint.preferredMaxLayoutWidth = 574
+        contentStack(folder).addArrangedSubview(folderHint)
         folder.widthAnchor.constraint(equalToConstant: 610).isActive = true
         contentStack(folder).bottomAnchor.constraint(equalTo: folder.bottomAnchor, constant: -16).isActive = true
 
@@ -1858,7 +1862,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         case "Пути":
             body.addArrangedSubview(wrappedLabel("Хранение результатов и визуальные эффекты приложения.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
-            body.addArrangedSubview(settingsField("Папка результатов", control: editableText(outputPathText, key: "output.path", placeholder: "Папка")))
+            body.addArrangedSubview(settingsField("Папка результатов", control: editableText(outputPathText, key: "output.path", placeholder: "Рядом с исходным файлом")))
             body.addArrangedSubview(toggleRow("Liquid Glass", key: "settings.liquidGlass", defaultValue: true))
             body.addArrangedSubview(toggleRow("Анимации", key: "settings.animations", defaultValue: true))
         case "О приложении":
@@ -2256,10 +2260,19 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         progressTrack = progress
         let percentage = label("", size: 12, color: Palette.muted)
         percentage.identifier = NSUserInterfaceItemIdentifier("transcription.progress")
+        // "—" → "7%" → "100%" changes the label's natural width; a fixed slot keeps
+        // the bar and the log button from sliding while the job runs.
+        percentage.alignment = .right
+        percentage.widthAnchor.constraint(equalToConstant: 40).isActive = true
         progressPercentage = percentage
         let log = button("Журнал обработки", action: #selector(showProcessingLog(_:)), height: 30)
         log.identifier = NSUserInterfaceItemIdentifier("transcription.log")
-        let row = horizontal([label("Общий прогресс", size: 14, weight: .medium, color: Palette.ink), progress, percentage, log], spacing: 16)
+        log.setContentHuggingPriority(.required, for: .horizontal)
+        log.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let title = label("Общий прогресс", size: 14, weight: .medium, color: Palette.ink)
+        title.setContentHuggingPriority(.required, for: .horizontal)
+        title.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let row = horizontal([title, progress, percentage, log], spacing: 16)
         row.alignment = .centerY
         let status = wrappedLabel("", size: 12, color: Palette.body)
         status.maximumNumberOfLines = 3
@@ -2508,10 +2521,25 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     /// The field persists on every keystroke, so a cleared field stores "" rather
-    /// than nil; an empty path means the default folder, not "no folder".
+    /// than nil; an empty path means "next to the source file", not a default folder.
     private var outputPathText: String {
-        let stored = (defaults.string(forKey: "output.path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return stored.isEmpty ? "~/Documents/GigaAM" : stored
+        (defaults.string(forKey: "output.path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Where results go: `.besideSource` for an empty field, `.folder` for a usable
+    /// path, `nil` for a path that is not absolute or not writable.
+    private enum OutputDestination {
+        case besideSource
+        case folder(URL)
+
+        var folder: URL? {
+            if case .folder(let url) = self { return url }
+            return nil
+        }
+    }
+
+    private var outputDestination: OutputDestination? {
+        outputPathText.isEmpty ? .besideSource : outputDirectory.map(OutputDestination.folder)
     }
 
     private var outputDirectory: URL? {
@@ -2549,7 +2577,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         else if mediaDownloadJob != nil { reason = "Дождитесь завершения импорта медиа." }
         else if liveJob != nil { reason = "Дождитесь завершения live-сессии." }
         else if selectedFileURLs.isEmpty { reason = "Добавьте аудио или видео для начала обработки." }
-        else if outputDirectory == nil { reason = "Укажите абсолютный путь к доступной папке результатов." }
+        else if outputDestination == nil { reason = "Укажите абсолютный путь к доступной папке результатов или оставьте поле пустым." }
         else if outputFormats.isEmpty { reason = "Выберите хотя бы один формат вывода." }
         else { reason = "" }
         startProcessingButton?.isEnabled = !busy && reason.isEmpty
@@ -2573,7 +2601,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         window.makeFirstResponder(nil)
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let settings = transcriptionSettings()
-        guard !selectedFileURLs.isEmpty, !settings.formats.isEmpty, let destination = outputDirectory else {
+        guard !selectedFileURLs.isEmpty, !settings.formats.isEmpty, let destination = outputDestination else {
             showNotice("Не удалось начать обработку", "Выберите файлы, доступную папку и хотя бы один формат.")
             return
         }
@@ -2591,11 +2619,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             )
             return
         }
-        do {
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-        } catch {
-            showNotice("Не удалось начать обработку", error.localizedDescription)
-            return
+        if let folder = destination.folder {
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            } catch {
+                showNotice("Не удалось начать обработку", error.localizedDescription)
+                return
+            }
         }
         transcriptionResults.removeAll()
         selectedResultURL = nil
@@ -2605,7 +2635,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         transcriptionProgress = nil
         transcriptionStatus = "Запуск распознавания…"
         transcriptionLog = ""
-        let job = NativeTranscriptionJob(files: transcriptionFiles, outputDirectory: destination, settings: settings) { [weak self] event in
+        let job = NativeTranscriptionJob(files: transcriptionFiles, outputDirectory: destination.folder, settings: settings) { [weak self] event in
             self?.receiveTranscriptionEvent(event)
         }
         transcriptionJob = job
@@ -2622,11 +2652,17 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshProgress()
     }
 
+    /// The worker already logs in plain Russian (src.core.processor); the English
+    /// UI translates the static lines it knows and shows the rest as is.
+    private func appendProcessingLog(_ message: String) {
+        transcriptionLog += L10n.text(message) + "\n"
+        if transcriptionLog.utf8.count > 131_072 { transcriptionLog = String(transcriptionLog.suffix(65_536)) }
+    }
+
     private func receiveTranscriptionEvent(_ event: NativeTranscriptionEvent) {
         switch event {
         case .log(let message):
-            transcriptionLog += message + "\n"
-            if transcriptionLog.utf8.count > 131_072 { transcriptionLog = String(transcriptionLog.suffix(65_536)) }
+            appendProcessingLog(message)
         case .fileStarted(let file, let index, let total):
             fileStates[file.standardizedFileURL] = "В обработке"
             transcriptionStatus = "\(index + 1)/\(total) · \(file.lastPathComponent)"
@@ -2730,13 +2766,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
+        // A chosen folder is scanned recursively, like a dropped one.
+        panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.audio, .movie]
+        panel.allowedContentTypes = [.audio, .movie, .folder]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self else { return }
             guard self.transcriptionJob == nil, !self.isClosing else { return }
-            self.appendSelectedFiles(panel.urls)
+            self.appendSelectedFiles(MediaScan.expand(panel.urls))
         }
     }
 
@@ -2749,11 +2786,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     private func acceptDroppedFiles(_ urls: [URL]) -> Bool {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil, window.attachedSheet == nil else { return false }
-        // Same filter as the open panel; folders and documents are ignored, not rejected loudly.
-        let media = urls.filter { url in
-            guard let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType else { return false }
-            return type.conforms(to: .audio) || type.conforms(to: .movie)
-        }
+        // Same rules as the PyQt client: a dropped folder is scanned recursively for
+        // media by extension; documents are ignored, not rejected loudly.
+        let media = MediaScan.expand(urls)
         guard !media.isEmpty else { return false }
         if currentPage != .processing { show(page: .processing) }
         appendSelectedFiles(media)
@@ -3132,8 +3167,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             transcriptionLog += message + "\n"
             finishLive(status: message)
         case .log(let message):
-            transcriptionLog += message + "\n"
-            if transcriptionLog.utf8.count > 131_072 { transcriptionLog = String(transcriptionLog.suffix(65_536)) }
+            appendProcessingLog(message)
         }
     }
 
@@ -3461,7 +3495,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             transcriptionLog += message + "\n"
             finishLLM()
         case .log(let message):
-            transcriptionLog += message + "\n"
+            appendProcessingLog(message)
         }
     }
 

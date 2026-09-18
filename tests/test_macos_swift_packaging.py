@@ -164,11 +164,11 @@ def test_swift_window_accepts_dropped_media_files() -> None:
     assert "override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation" in background
     assert "override func performDragOperation(_ sender: NSDraggingInfo) -> Bool" in background
     drop = main.split("private func acceptDroppedFiles(_ urls: [URL]) -> Bool", 1)[1].split("\n    }\n", 1)[0]
-    assert "conforms(to: .audio)" in drop and "conforms(to: .movie)" in drop
+    assert "MediaScan.expand(urls)" in drop
     assert "appendSelectedFiles(" in drop
     # Тот же путь, что и у панели выбора: дедупликация и refreshSelectedFiles().
     chooser = main.split("@objc private func chooseFiles(_ sender: Any?)", 1)[1].split("\n    }\n", 1)[0]
-    assert "appendSelectedFiles(panel.urls)" in chooser
+    assert "appendSelectedFiles(MediaScan.expand(panel.urls))" in chooser
 
 
 def test_tauri_prototype_does_not_persist_hf_token() -> None:
@@ -224,18 +224,18 @@ def _swift_block(source: str, opener: str) -> str:
     return source.split(opener, 1)[1].split("\n    }\n", 1)[0]
 
 
-def test_swift_empty_output_path_falls_back_to_default_folder() -> None:
-    # Поле пути сохраняется на каждое нажатие клавиши; стёртое поле оставляло в
-    # defaults пустую строку, `?? "~/Documents/GigaAM"` не срабатывал, и кнопка
-    # запуска молча выключалась без видимого disabled-состояния.
+def test_swift_empty_output_path_keeps_the_start_button_enabled() -> None:
+    # Поле пути сохраняется на каждое нажатие клавиши; стёртое поле оставляет в
+    # defaults пустую строку. Раньше это молча выключало кнопку запуска; теперь
+    # пустое поле — штатный режим «рядом с исходным файлом».
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     text = _swift_block(main, "private var outputPathText: String {")
     assert 'defaults.string(forKey: "output.path")' in text
     assert "trimmingCharacters(in: .whitespacesAndNewlines)" in text
-    assert 'isEmpty ? "~/Documents/GigaAM"' in text
     directory = _swift_block(main, "private var outputDirectory: URL? {")
     assert "(outputPathText as NSString).expandingTildeInPath" in directory
-    assert 'defaults.string(forKey: "output.path") ?? "~/Documents/GigaAM"' not in main
+    controls = _swift_block(main, "private func refreshProcessingControls() {")
+    assert "outputDestination == nil" in controls
     assert main.count('editableText(outputPathText, key: "output.path"') == 2
 
 
@@ -431,3 +431,62 @@ def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
     assert '"output.diarize"' in controls and '"output.diarizeTimestamps"' in controls
     english = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Localization.swift").read_text(encoding="utf-8")
     assert '"Диаризация (.txt)":' in english and '"Диар. + таймкоды":' in english
+
+
+def test_swift_empty_output_folder_means_next_to_the_source_file() -> None:
+    """An empty folder field is a valid choice: the worker saves beside each input.
+
+    src.tui_worker already treats an empty output_dir as "dirname(file)"; the
+    client must not substitute ~/Documents/GigaAM behind the user's back.
+    """
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    assert "~/Documents/GigaAM\"" not in main
+    path_text = _swift_block(main, "private var outputPathText: String {")
+    assert "Documents/GigaAM" not in path_text
+    destination = _swift_block(main, "private var outputDestination: OutputDestination? {")
+    assert "outputPathText.isEmpty ? .besideSource" in destination
+    start = _swift_block(main, "@objc private func startProcessing(_ sender: Any?) {")
+    assert "let destination = outputDestination" in start
+    assert "outputDirectory: destination.folder" in start
+    assert 'placeholder: "Рядом с исходным файлом"' in main
+    job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
+    assert "private let outputDirectory: URL?" in job
+    assert '"output_dir": outputDirectory?.path ?? ""' in job
+    assert "resolvedOutputDirectory ?? files[index].deletingLastPathComponent()" in job
+
+
+def test_swift_processing_log_shows_worker_lines_and_keeps_stderr_in_diagnostics() -> None:
+    # The worker logs in plain Russian at the source (see test_processing_log_messages);
+    # the client shows every log event and keeps library stderr for failure reports.
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    assert "import GigaAMLiquidCore" in main
+    helper = _swift_block(main, "private func appendProcessingLog(_ message: String) {")
+    assert "transcriptionLog += L10n.text(message)" in helper
+    assert main.count("appendProcessingLog(message)") == 3, "batch, live and LLM logs share the sheet"
+    job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
+    assert "onStderr: { self.recordDiagnostic($0) }" in job
+    package = Path("macos/GigaAMLiquid/Package.swift").read_text(encoding="utf-8")
+    assert '.testTarget(name: "GigaAMLiquidCoreTests"' in package
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "swift test --package-path macos/GigaAMLiquid" in ci
+
+
+def test_swift_dropped_folders_are_scanned_like_the_pyqt_client() -> None:
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    drop = _swift_block(main, "private func acceptDroppedFiles(_ urls: [URL]) -> Bool {")
+    assert "MediaScan.expand(urls)" in drop
+    chooser = _swift_block(main, "@objc private func chooseFiles(_ sender: Any?) {")
+    assert "panel.canChooseDirectories = true" in chooser
+    assert "MediaScan.expand(panel.urls)" in chooser
+    scan = Path("macos/GigaAMLiquid/Sources/GigaAMLiquidCore/MediaScan.swift").read_text(encoding="utf-8")
+    import src.config as config
+    for extension in config.MEDIA_EXTENSIONS:
+        assert f'"{extension[1:]}"' in scan, extension
+
+
+def test_swift_progress_row_keeps_the_log_button_still() -> None:
+    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    card = _swift_block(main, "private func progressCard() -> GlassView {")
+    assert "percentage.widthAnchor.constraint(equalToConstant: 40)" in card
+    assert "log.setContentHuggingPriority(.required, for: .horizontal)" in card
+    assert "log.setContentCompressionResistancePriority(.required, for: .horizontal)" in card
