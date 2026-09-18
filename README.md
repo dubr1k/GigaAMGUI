@@ -42,7 +42,7 @@
 - Автоматическая диагностика качества, консервативная очистка и safe fallback без сдвига таймкодов.
 - Ускорение MLX RNN-T на Apple Silicon; CPU, CUDA, Intel XPU и MPS.
 - LLM-постобработка: выжимки, задачи и свои промпты.
-- Провайдеры LLM: OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi и произвольный CLI.
+- Провайдеры LLM: OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, oh-my-pi и произвольный CLI. CLI-инструменты находятся автоматически (PATH + homebrew/npm/bun/nvm), статус и версия видны в настройках.
 - RU/EN, светлая/тёмная тема, журнал, stage-aware progress и отмена очереди.
 - Web UI с авторизацией, SSE-прогрессом, восстановлением задач и Docker hardening.
 

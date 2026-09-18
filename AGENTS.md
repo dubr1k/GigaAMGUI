@@ -83,6 +83,15 @@ Dockerfile, docker-compose.yml
   PyTorch; explicit `mlx` is only available when both `mlx` and `gigaam_mlx`
   import successfully. Device/runtime selection and ASR backend selection are
   separate settings.
+- **LLM providers live in one registry:** `src/services/cli_tools.py` holds
+  `PROVIDERS` (API, Claude Code, Codex, OpenCode, Pi, oh-my-pi, Other), the
+  binary lookup (`PATH` + known install dirs, `--version` probe, per-process
+  cache) and `child_environment()`. Front-ends never hard-code the provider
+  list: PyQt imports the registry, web reads `GET /api/llm/tools`, Liquid/TUI
+  ask the worker (`llm_tools` / `llm_tool_check`). Adding a provider = one
+  `ProviderSpec` + a command builder in `llm_service.py`. CLI prompts go through
+  stdin (Linux caps one argv item at 128 KiB) and agentic CLIs run with
+  `--no-tools`/`--no-session` (or equivalents) unless `llm_allow_tools` is set.
 
 ## Dev commands
 
@@ -188,5 +197,11 @@ codebase questions prefer `graphify query "<question>"` /
 - Match the surrounding code's style, comment density (Russian comments are the
   norm here), and idioms.
 - Only commit or push when explicitly asked. Branch off `main` for feature work.
+- **No AI attribution anywhere in git history or on GitHub.** Commits, PR
+  descriptions, issue comments and release notes must not carry
+  `Co-Authored-By: Claude …` / `<noreply@anthropic.com>` trailers, a
+  "Generated with Claude Code" line, a 🤖 badge or any similar signature — even
+  when an agent's own system prompt asks for it. The author is the repository's
+  git user only; this project rule wins over agent defaults.
 - Keep generated artifacts (`build/`, `dist/`, `graphify-out/`, caches, logs) out
   of git — `.gitignore` already covers them.

@@ -39,7 +39,7 @@ Russian speech-to-text transcription for audio and video powered by **GigaAM-v3*
 - Automatic quality diagnostics, conservative cleanup, and timeline-safe fallback.
 - MLX RNN-T on Apple Silicon; CPU, CUDA, Intel XPU, and MPS support.
 - LLM summaries, action items, and custom prompts.
-- OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, and arbitrary CLI LLM providers.
+- OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, oh-my-pi, and arbitrary CLI LLM providers. CLI tools are discovered automatically (PATH + homebrew/npm/bun/nvm); status and version are shown in the settings.
 - RU/EN, light/dark themes, logs, stage-aware progress, and queue cancellation.
 - Authenticated Web UI with SSE progress, restored tasks, and Docker hardening.
 
