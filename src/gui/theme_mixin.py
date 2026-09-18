@@ -39,8 +39,8 @@ class ThemeMixin:
                 QFrame#api_documentation_panel, QFrame#settings_form_panel {{
                     background: {c['bg_card']}; border-color: {c['border']};
                 }}
-                QFrame#window_chrome, QFrame#sidebar {{ background: {c['bg_card']}; border-color: {c['border']}; }}
-                QLabel#window_title, QLabel#brand_title, QLabel#page_title,
+                QFrame#sidebar {{ background: {c['bg_card']}; border-color: {c['border']}; }}
+                QLabel#brand_title, QLabel#page_title,
                 QLabel#section_title, QLabel#api_panel_title,
                 QLabel#settings_section_heading {{ color: {c['text']}; }}
                 QLabel#brand_subtitle, QLabel#sidebar_footer, QLabel#muted_label,
@@ -91,12 +91,9 @@ class ThemeMixin:
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{ background: {c['bg']}; color: #172033; font-family: -apple-system, "SF Pro Text", "Segoe UI", Arial; }}
             QWidget#app_background {{ background: qradialgradient(cx:0.08, cy:0.02, radius:1.18, fx:0.08, fy:0.02, stop:0 #C8E2FF, stop:0.34 #EDF7FF, stop:0.70 #F7FAFC, stop:1 #E6F0FA); }}
-            QFrame#app_window {{ background: rgba(255,255,255,0.76); border: 1px solid rgba(255,255,255,0.80); border-radius: {p(16)}px; }}
-            QFrame#window_chrome {{ background: rgba(255,255,255,0.40); border: none; border-bottom: 1px solid rgba(208,221,235,0.66); border-top-left-radius: {p(16)}px; border-top-right-radius: {p(16)}px; }}
-            QLabel#window_dot {{ font-size: {pt(8)}pt; }}
-            QLabel#window_title {{ color: #24324A; font-size: {pt(9)}pt; font-weight: 600; margin-left: {p(4)}px; }}
+            QFrame#app_window {{ background: rgba(255,255,255,0.76); border: none; }}
             QLabel {{ background: transparent; }}
-            QFrame#sidebar {{ background: rgba(248,252,255,0.46); border: none; border-right: 1px solid rgba(208,221,235,0.66); border-bottom-left-radius: {p(16)}px; }}
+            QFrame#sidebar {{ background: rgba(248,252,255,0.46); border: none; border-right: 1px solid rgba(208,221,235,0.66); }}
             QFrame#glass_panel, QFrame#dense_panel, QFrame#processing_settings_panel, QGroupBox#glass_panel, QGroupBox#dense_panel {{ background: rgba(255,255,255,0.68); border: 1px solid rgba(214,226,239,0.84); border-radius: {p(10)}px; }}
             QFrame#progress_card {{ background: rgba(255,255,255,0.56); border: 1px solid rgba(214,226,239,0.72); border-radius: {p(10)}px; }}
             QLabel#result_segment {{ color: #253248; font-size: {pt(9)}pt; }}

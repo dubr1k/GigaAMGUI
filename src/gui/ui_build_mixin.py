@@ -65,7 +65,10 @@ class UiBuildMixin:
         root.setObjectName("app_background")
         root_layout = QVBoxLayout(root)
         self._root_layout = root_layout
-        root_layout.setContentsMargins(self._px(18), self._px(18), self._px(18), self._px(18))
+        # The app fills its window: the 2.0 mock-up drew a fake macOS window
+        # (inset rounded frame, traffic-light dots, a second title bar) inside
+        # the real one, which on Windows meant two title bars (#54).
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
         self.setCentralWidget(root)
 
@@ -76,24 +79,6 @@ class UiBuildMixin:
         app_window_layout.setSpacing(0)
         self._app_window = app_window
         root_layout.addWidget(app_window)
-
-        chrome = QFrame()
-        chrome.setObjectName("window_chrome")
-        chrome.setFixedHeight(self._px(34))
-        chrome_layout = QHBoxLayout(chrome)
-        chrome_layout.setContentsMargins(self._px(14), 0, self._px(14), 0)
-        chrome_layout.setSpacing(self._px(7))
-        for color in ("#FF5F57", "#FEBC2E", "#28C840"):
-            dot = QLabel("●")
-            dot.setObjectName("window_dot")
-            dot.setStyleSheet(f"color: {color};")
-            chrome_layout.addWidget(dot)
-        chrome_title = QLabel("GigaAMGUI v3")
-        chrome_title.setObjectName("window_title")
-        chrome_layout.addWidget(chrome_title)
-        chrome_layout.addStretch()
-        self._chrome_layout = chrome_layout
-        app_window_layout.addWidget(chrome)
 
         workspace = QWidget()
         workspace.setObjectName("app_workspace")
@@ -149,6 +134,22 @@ class UiBuildMixin:
             self._nav_buttons.append(nav_button)
             sidebar_layout.addWidget(nav_button)
         sidebar_layout.addStretch()
+        switches = QHBoxLayout()
+        switches.setSpacing(self._px(6))
+        self._btn_lang = QPushButton("EN")
+        self._btn_lang.setObjectName("profile_button")
+        self._btn_lang.setFixedSize(self._px(27), self._px(27))
+        self._btn_lang.setToolTip("Switch language")
+        self._btn_lang.clicked.connect(self._toggle_language)
+        switches.addWidget(self._btn_lang)
+        self._btn_theme = QPushButton(self._colors()["theme_btn"])
+        self._btn_theme.setObjectName("chrome_button")
+        self._btn_theme.setFixedSize(self._px(27), self._px(27))
+        self._btn_theme.setToolTip("Переключить тему")
+        self._btn_theme.clicked.connect(self._toggle_theme)
+        switches.addWidget(self._btn_theme)
+        switches.addStretch()
+        sidebar_layout.addLayout(switches)
         self._sidebar_footer = QLabel("GigaAMGUI v3\nЛокально. Быстро. Точно.")
         self._sidebar_footer.setObjectName("sidebar_footer")
         sidebar_layout.addWidget(self._sidebar_footer)
@@ -173,23 +174,7 @@ class UiBuildMixin:
         self._global_search.setClearButtonEnabled(True)
         self._global_search.setToolTip("Поиск по текущему рабочему контексту")
         toolbar_layout.addWidget(self._global_search)
-        self._btn_lang = QPushButton("МК")
-        self._btn_lang.setObjectName("profile_button")
-        self._btn_lang.setFixedSize(self._px(27), self._px(27))
-        self._btn_lang.setToolTip("Switch language")
-        self._btn_lang.clicked.connect(self._toggle_language)
-        self._btn_theme = QPushButton("⌕")
-        self._btn_theme.setObjectName("chrome_button")
-        self._btn_theme.setFixedSize(self._px(27), self._px(27))
-        self._btn_theme.setToolTip("Поиск")
-        self._btn_theme.setEnabled(False)
-        toolbar_layout.addWidget(self._btn_lang)
-        toolbar_layout.addWidget(self._btn_theme)
         toolbar.setVisible(False)
-        chrome_layout.addWidget(QLabel("⌕"))
-        chrome_layout.addWidget(QLabel("♧"))
-        chrome_layout.addWidget(self._btn_lang)
-        chrome_layout.addWidget(self._btn_theme)
         content_layout.addWidget(toolbar)
 
         tabs = QTabWidget()
@@ -630,14 +615,6 @@ class UiBuildMixin:
         if state == getattr(self, "_responsive_layout_state", None):
             return
         self._responsive_layout_state = state
-        outer_horizontal_margin = 8 if compact else (12 if tight else 18)
-        outer_vertical_margin = 8 if compact else 12
-        self._root_layout.setContentsMargins(
-            self._px(outer_horizontal_margin),
-            self._px(outer_vertical_margin),
-            self._px(outer_horizontal_margin),
-            self._px(outer_vertical_margin),
-        )
         horizontal_margin = 4 if compact else (12 if tight else 18)
         vertical_margin = 4 if compact else (10 if tight else 14)
         self._processing_start_layout.setContentsMargins(

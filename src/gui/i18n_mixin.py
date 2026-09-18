@@ -42,7 +42,8 @@ class I18nMixin:
     def _apply_language(self):
         is_ru = self._lang == "ru"
         _install_qt_translator(QApplication.instance(), self._lang)
-        self._btn_lang.setText("МК")
+        self._btn_lang.setText("EN" if is_ru else "RU")  # shows the language it switches to
+        self._btn_theme.setToolTip("Переключить тему" if is_ru else "Toggle theme")
         self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
         if hasattr(self, "_title_label"):
             self._title_label.setText("GigaAMGUI v3")
