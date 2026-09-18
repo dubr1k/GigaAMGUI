@@ -7,6 +7,7 @@
 """
 
 import json
+import multiprocessing
 import os
 import platform
 import sys
@@ -28,6 +29,16 @@ except ImportError:  # pragma: no cover - macOS build uses fcntl
     fcntl = None
 
 
+# Первое действие в замороженной сборке, до любого режима. multiprocessing.resource_tracker
+# (его поднимают torch/pyannote под shared memory) стартует helper как
+# `sys.executable -B -S -I -c "from multiprocessing.resource_tracker import main;main(fd)"`.
+# В PyInstaller-бинарнике `-c` никто не разбирает: без этого вызова helper заново
+# выполняет весь app.py — без `--native-worker` в argv он уходит в Qt-ветку, даёт
+# второе приложение в Dock рядом с GigaAMLiquid и падает на импорте. Runtime-hook
+# PyInstaller подменяет freeze_support() на перехват helper-argv; вне заморозки — no-op.
+multiprocessing.freeze_support()
+
+
 # Проверка целостности сборки: импортирует всю ML-цепочку и выходит 0/1.
 # Должна идти ДО любого импорта, тянущего torch (активация варианта — внутри).
 if "--selfcheck" in sys.argv:
@@ -44,7 +55,7 @@ if "--live-capture-smoke" in sys.argv:
     raise SystemExit(run_live_capture_check())
 
 
-from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER
+from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER  # noqa: E402 — после freeze_support() и гейтов
 
 
 def _user_config_dir() -> Path:
