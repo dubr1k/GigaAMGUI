@@ -15,6 +15,10 @@ scripts/*
 !scripts/native_worker_smoke.py
 !scripts/make_liquid_icon.py
 !scripts/publish_release_assets.sh
+!scripts/render_gui_screenshots.py
+# Output of scripts/render_gui_screenshots.py
+gui-screenshots/
+.gui-screenshots-config/
 *.py[cod]
 *$py.class
 *.so
