@@ -1,0 +1,46 @@
+# GigaAM Transcriber 2.1.4
+
+Второе исправление интерфейса PyQt по issue #54: приложение больше не рисует
+«окно macOS» внутри настоящего окна.
+
+## Исправлено
+
+- **Бутафорский window chrome.** Редизайн 2.0 воспроизводил дизайн-макет
+  буквально: скруглённая рамка с отступом 18 px от краёв окна, полоса с тремя
+  «светофорами» и вторым заголовком «GigaAMGUI v3», декоративные «⌕ ♧»,
+  кнопка языка с надписью «МК» и кнопка темы, превращённая в выключенный
+  значок поиска. На Windows это выглядело как два заголовка окна (нативный и
+  ненастоящий), на macOS заголовок тоже дублировался. Теперь приложение
+  занимает окно целиком, как обычная программа.
+- **Переключатели языка и темы** перенесены в низ сайдбара. Кнопка языка
+  показывает язык, на который переключит («EN»/«RU»); кнопка темы снова
+  работает (☀/🌙), как и пункт меню «Вид → Переключить тему».
+- **Публикация релизов.** Ассеты заливаются по одному с повторами
+  (`scripts/publish_release_assets.sh`), релиз остаётся черновиком, пока не
+  прикреплены все 11 файлов; ручной workflow `publish-release.yml`
+  перепубликует из артефактов готового билда без пересборки.
+
+Спасибо @eXpressionist за скриншоты — именно по ним стало видно, что дело не
+только в шрифтах.
+
+## Проверено
+
+- `tests/test_gui_window_chrome.py`: нет виджетов chrome/dots/title, рамка
+  приложения совпадает с центральным виджетом при любом размере окна,
+  переключатели языка и темы живут в сайдбаре, включены и работают.
+- Офскрин-рендер страницы «Обработка» при 9 pt (тёмная тема) и 13 pt
+  (светлая): один заголовок окна, карточки от края до края.
+- pytest, ruff без замечаний.
+
+## Packaging
+
+- Версии PyQt, AppKit, Tauri, npm и Cargo синхронизированы на `2.1.4`.
+
+---
+
+Removes the mock macOS window the 2.0 redesign drew inside the real PyQt
+window (inset rounded frame, traffic-light dots, a second title bar, dead
+decorative icons), which on Windows looked like two title bars (issue #54).
+The language and theme switches move to the bottom of the sidebar and the
+theme toggle works again. Release assets now upload sequentially with retries
+and the release stays a draft until all files are attached.
