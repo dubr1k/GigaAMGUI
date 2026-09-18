@@ -60,12 +60,28 @@ def main(argv: list[str] | None = None) -> int:
     window = GigaTranscriberQtApp()
     style = app.style()
     font = app.font()
+    from PyQt6.QtGui import QFontInfo
+
+    # The stylesheet asks for "-apple-system, SF Pro Text, Segoe UI, Arial";
+    # QFontInfo reports which family the platform actually resolved.
+    resolved = {
+        name: QFontInfo(widget.font()).family()
+        for name, widget in (
+            ("nav_button", window._nav_buttons[0]),
+            ("section_title", window.findChild(type(window._sidebar_footer), "section_title")),
+            ("field_label", window.lbl_audio_preprocessing_mode),
+            ("checkbox", window.format_checkboxes["txt"]),
+            ("combo", window.combo_audio_preprocessing),
+        )
+        if widget is not None
+    }
     environment = "\n".join([
         f"platform={platform.platform()}",
         f"qt={QT_VERSION_STR}",
         f"qpa={os.environ.get('QT_QPA_PLATFORM', '')}",
         f"style={style.objectName() if style else '?'}",
         f"font={font.family()} {font.pointSizeF()}pt",
+        *(f"resolved_font[{name}]={family}" for name, family in resolved.items()),
         f"ui_scale={window._ui_scale}",
         f"size={width}x{height}",
     ])

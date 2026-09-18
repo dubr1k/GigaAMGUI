@@ -89,7 +89,7 @@ class ThemeMixin:
                 QScrollBar::handle:vertical {{ background: {c['scroll_handle']}; }}
             """
         self.setStyleSheet(f"""
-            QMainWindow, QWidget {{ background: {c['bg']}; color: #172033; font-family: -apple-system, "SF Pro Text", "Segoe UI", Arial; }}
+            QMainWindow, QWidget {{ background: {c['bg']}; color: #172033; }}
             QWidget#app_background {{ background: qradialgradient(cx:0.08, cy:0.02, radius:1.18, fx:0.08, fy:0.02, stop:0 #C8E2FF, stop:0.34 #EDF7FF, stop:0.70 #F7FAFC, stop:1 #E6F0FA); }}
             QFrame#app_window {{ background: rgba(255,255,255,0.76); border: none; }}
             QLabel {{ background: transparent; }}
