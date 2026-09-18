@@ -203,6 +203,10 @@ private final class CenteredTextCell: NSTextFieldCell {
 }
 
 private final class RoundedTextField: NSTextField {
+    /// One radius for the background and the focus ring: a ring drawn with a
+    /// different radius than the field pokes out at the corners.
+    var cornerRadius: CGFloat = 10
+
     override var isEnabled: Bool {
         didSet { needsLayout = true; needsDisplay = true }
     }
@@ -210,12 +214,13 @@ private final class RoundedTextField: NSTextField {
     override var focusRingMaskBounds: NSRect { bounds }
 
     override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
     }
 
     override func layout() {
         super.layout()
-        layer?.cornerRadius = 10
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
         layer?.backgroundColor = Palette.fieldBackground(enabled: isEnabled).cgColor
         textColor = isEnabled ? Palette.ink : Palette.muted
         noteFocusRingMaskChanged()
@@ -238,6 +243,8 @@ private final class CenteredSecureTextCell: NSSecureTextFieldCell {
 }
 
 private final class RoundedSecureTextField: NSSecureTextField {
+    var cornerRadius: CGFloat = 10
+
     override var isEnabled: Bool {
         didSet { needsLayout = true; needsDisplay = true }
     }
@@ -245,12 +252,13 @@ private final class RoundedSecureTextField: NSSecureTextField {
     override var focusRingMaskBounds: NSRect { bounds }
 
     override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
     }
 
     override func layout() {
         super.layout()
-        layer?.cornerRadius = 10
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
         layer?.backgroundColor = Palette.fieldBackground(enabled: isEnabled).cgColor
         textColor = isEnabled ? Palette.ink : Palette.muted
         noteFocusRingMaskChanged()
@@ -1519,6 +1527,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     /// Mirrors `cli_tools.PROVIDERS` (order included). The Python registry is the
     /// source of truth; this copy only seeds the popup before the worker answers.
     private static let llmProviders = ["API", "Claude Code", "Codex", "OpenCode", "Pi", "oh-my-pi", "Other"]
+    /// Example flags shown as placeholders; each is a real option of that CLI.
+    private static let llmArgsExamples: [String: String] = [
+        "claude": "--permission-mode bypassPermissions",
+        "codex": "--dangerously-bypass-approvals-and-sandbox",
+        "opencode": "--agent build",
+        "pi": "--thinking low",
+        "omp": "--thinking low --profile work",
+    ]
     /// CLI providers with their settings-key prefix, default binary and whether the
     /// tool takes an inner `--provider` (pi / oh-my-pi).
     private static let llmCliProviders: [(name: String, prefix: String, binary: String, hasProvider: Bool)] = [
@@ -1807,21 +1823,29 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
                 body.addArrangedSubview(llmToolRow(tool))
             }
             body.addArrangedSubview(divider())
+            body.addArrangedSubview(label("Дополнительные параметры", size: 17, weight: .medium, color: Palette.ink))
+            body.addArrangedSubview(wrappedLabel("Обычно не нужны — всё работает с пустыми полями. «Аргументы» — флаги командной строки, которые добавляются к запуску CLI как есть (как в терминале): например, уровень рассуждений или профиль. «Provider» у Pi и oh-my-pi — внутренний поставщик модели (anthropic, openai, google…), если нужно переопределить настроенный в самом CLI. Модель берётся из общего поля «Модель» выше.", size: 12, color: Palette.muted))
             for tool in Self.llmCliProviders {
-                var fields: [NSView] = [
-                    settingsField("\(tool.name) аргументы", control: editableText(defaults.string(forKey: "llm.\(tool.prefix)Args") ?? "", key: "llm.\(tool.prefix)Args", placeholder: ""))
-                ]
+                let argsField = editableText(defaults.string(forKey: "llm.\(tool.prefix)Args") ?? "", key: "llm.\(tool.prefix)Args", placeholder: Self.llmArgsExamples[tool.prefix] ?? "")
+                argsField.toolTip = L10n.text("Флаги командной строки, добавляются к запуску как есть. Пример: ") + (Self.llmArgsExamples[tool.prefix] ?? "")
+                var fields: [NSView] = [settingsField("\(tool.name) — аргументы", control: argsField)]
                 if tool.hasProvider {
-                    fields.append(settingsField("\(tool.name) provider", control: editableText(defaults.string(forKey: "llm.\(tool.prefix)Provider") ?? "", key: "llm.\(tool.prefix)Provider", placeholder: "anthropic / openai / google")))
+                    let providerField = editableText(defaults.string(forKey: "llm.\(tool.prefix)Provider") ?? "", key: "llm.\(tool.prefix)Provider", placeholder: "по умолчанию из конфига CLI")
+                    providerField.toolTip = L10n.text("Внутренний поставщик модели: anthropic, openai, google, openrouter… Пусто — как настроено в ") + tool.name
+                    fields.append(settingsField("\(tool.name) — поставщик модели", control: providerField))
                 }
                 body.addArrangedSubview(fields.count == 1 ? fields[0] : equalColumns(fields, spacing: 20))
             }
+            body.addArrangedSubview(divider())
+            body.addArrangedSubview(wrappedLabel("«Другое» — любая своя команда. Промпт передаётся последним аргументом и одновременно в stdin; напишите {stdin} в аргументах, чтобы передавать только через stdin. Ответ читается из stdout.", size: 12, color: Palette.muted))
             body.addArrangedSubview(equalColumns([
-                settingsField("Другое (команда)", control: editableText(defaults.string(forKey: "llm.otherPath") ?? "", key: "llm.otherPath", placeholder: "/path/to/tool")),
-                settingsField("Аргументы", control: editableText(defaults.string(forKey: "llm.otherArgs") ?? "", key: "llm.otherArgs", placeholder: "{stdin}"))
+                settingsField("Другое — команда", control: editableText(defaults.string(forKey: "llm.otherPath") ?? "", key: "llm.otherPath", placeholder: "/usr/local/bin/my-llm")),
+                settingsField("Другое — аргументы", control: editableText(defaults.string(forKey: "llm.otherArgs") ?? "", key: "llm.otherArgs", placeholder: "--model x {stdin}"))
             ], spacing: 20))
-            body.addArrangedSubview(toggleRow("Разрешить инструменты и сессии агента", key: "llm.allowTools", defaultValue: false))
-            body.addArrangedSubview(wrappedLabel("Ключ хранится в Связке ключей. CLI-провайдеры запускаются Python-сервисом проекта: промпт через stdin, без инструментов и сессий, пока переключатель выключен.", size: 12, color: Palette.muted))
+            let allowTools = toggleRow("Разрешить инструменты и сессии агента", key: "llm.allowTools", defaultValue: false)
+            allowTools.toolTip = L10n.text("Выключено: claude/codex/opencode/pi/omp запускаются как чистый запрос к модели — без доступа к файлам и без записи в историю сессий агента.")
+            body.addArrangedSubview(allowTools)
+            body.addArrangedSubview(wrappedLabel("Выключено — CLI работает как чистый запрос к модели: агент не читает файлы и не сохраняет сессию. Включайте, только если хотите, чтобы он мог пользоваться своими инструментами. Ключ API хранится в Связке ключей.", size: 12, color: Palette.muted))
             refreshLLMToolRows()
             refreshLLMTools(fresh: false)
         case "API":
@@ -2176,7 +2200,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         field.isBezeled = false
         field.drawsBackground = false
         field.wantsLayer = true
-        field.layer?.cornerRadius = 18
+        field.cornerRadius = 18
         field.layer?.masksToBounds = true
         field.placeholderString = L10n.text("Не настроен")
         field.identifier = NSUserInterfaceItemIdentifier(key)
@@ -2194,7 +2218,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         field.drawsBackground = false
         field.isBezeled = false
         field.wantsLayer = true
-        field.layer?.cornerRadius = 16
+        field.cornerRadius = 16
         field.layer?.masksToBounds = true
         field.placeholderString = L10n.text(placeholder)
         field.font = NSFont.systemFont(ofSize: 14)
