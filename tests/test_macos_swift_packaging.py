@@ -187,12 +187,16 @@ def test_swift_batch_clears_previous_results_and_preserves_failed_keychain_migra
     assert "catch" in migration
 
 
-def test_dark_theme_overrides_named_light_widgets():
+def test_theme_styles_2_0_page_widgets_from_the_palette():
+    # The classic sheet is palette-driven, so the 2.0 pages (API, result tabs,
+    # settings) must be styled with palette colours rather than a separate
+    # dark-only override block of hard-coded hex values.
     theme = Path("src/gui/theme_mixin.py").read_text(encoding="utf-8")
-    dark = theme.split('if self._theme == "dark":', 1)[1].split("self.setStyleSheet", 1)[0]
-    assert "QPlainTextEdit#api_code_editor" in dark
-    assert "QTabWidget#result_tabs::pane" in dark
-    assert "QLineEdit#settings_path_value" in dark
+    assert 'if self._theme == "dark":' not in theme
+    for selector in ("QPlainTextEdit#api_code_editor", "QTabWidget#result_tabs::pane", "QLineEdit#settings_path_value"):
+        assert selector in theme, selector
+    sheet = theme.split("self.setStyleSheet(", 1)[1]
+    assert 'c["input_bg"]' in sheet and 'c["border"]' in sheet
 
 
 def test_downloaded_media_cleanup_retains_failed_roots_for_retry() -> None:

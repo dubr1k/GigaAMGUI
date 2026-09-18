@@ -102,25 +102,28 @@ def test_default_size_needs_no_scroll():
     assert proc_scroll.horizontalScrollBar().maximum() == 0
     window.close()
 
-def test_compact_workspaces_fit_without_scrollbars():
-    """The three active workspaces retain the 760×440 desktop footprint."""
+def test_workspaces_fit_the_minimum_window_width():
+    """At the classic 940×680 minimum no page needs a horizontal scroll bar;
+    the tall Processing page may scroll vertically, Live and LLM must not."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
+    window.resize(window.minimumSize())
     window.show()
     app.processEvents()
 
-    assert window.size().width() == 760
-    assert window.size().height() == 440
+    assert window.size().width() == window._px(940)
+    assert window.size().height() == window._px(680)
     for index in (0, 1, 2):
         window.tabs.setCurrentIndex(index)
         app.processEvents()
         scroll = window.tabs.widget(index)
-        assert scroll.horizontalScrollBar().maximum() == 0
-        assert scroll.verticalScrollBar().maximum() == 0
+        assert scroll.horizontalScrollBar().maximum() == 0, index
+        if index:
+            assert scroll.verticalScrollBar().maximum() == 0, index
     window.close()
 
-def test_desktop_sidebar_stays_visible_with_large_ui_scale(monkeypatch):
+def test_header_switches_stay_visible_with_large_ui_scale(monkeypatch):
     monkeypatch.setenv("GIGAAM_UI_SCALE", "1.75")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
@@ -128,7 +131,7 @@ def test_desktop_sidebar_stays_visible_with_large_ui_scale(monkeypatch):
     window.show()
     app.processEvents()
 
-    assert window._sidebar.isVisible()
+    assert window._btn_lang.isVisible() and window._btn_theme.isVisible()
     window.close()
 
 

@@ -67,9 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     resolved = {
         name: QFontInfo(widget.font()).family()
         for name, widget in (
-            ("nav_button", window._nav_buttons[0]),
-            ("section_title", window.findChild(type(window._sidebar_footer), "section_title")),
-            ("field_label", window.lbl_audio_preprocessing_mode),
+            ("tab_bar", window.tabs.tabBar()),
+            ("title", window._title_label),
+            ("group_box", window.grp_files),
+            ("label", window.lbl_audio_preprocessing_mode),
             ("checkbox", window.format_checkboxes["txt"]),
             ("combo", window.combo_audio_preprocessing),
         )

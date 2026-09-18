@@ -47,45 +47,21 @@ class I18nMixin:
         self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
         if hasattr(self, "_title_label"):
             self._title_label.setText("GigaAMGUI v3")
-        if hasattr(self, "_sidebar_subtitle"):
-            self._sidebar_subtitle.setText(
-                "Транскрибация аудио и видео.\nБыстро. Точно. Удобно."
-                if is_ru else
-                "Audio and video transcription.\nFast. Precise. Convenient."
-            )
-        if hasattr(self, "_sidebar_footer"):
-            self._sidebar_footer.setText(
-                "Быстрая и точная\nтранскрибация"
-                if is_ru else
-                "Fast and accurate\ntranscription"
-            )
-        if hasattr(self, "_hero_title"):
-            self._hero_title.setText("Добро пожаловать!" if is_ru else "Welcome!")
-        if hasattr(self, "_hero_subtitle"):
-            self._hero_subtitle.setText(
-                "Загрузите файлы, настройте параметры и получите готовую транскрипцию."
-                if is_ru else
-                "Add files, choose processing options, and get a ready transcript."
-            )
-        if hasattr(self, "_nav_buttons"):
-            nav_labels = ("Обработка", "Live", "LLM", "Журнал") if is_ru else ("Process", "Live", "LLM", "Log")
-            for nav_button, title in zip(self._nav_buttons, nav_labels, strict=False):
-                nav_button.setText(title)
         if hasattr(self, "tabs"):
-            self.tabs.setTabText(0, "Обработка" if is_ru else "Process")
+            self.tabs.setTabText(0, "Обработка" if is_ru else "Processing")
             self.tabs.setTabText(1, "Live")
             self.tabs.setTabText(2, "LLM")
-            self.tabs.setTabText(3, "Журнал обработки" if is_ru else "Processing log")
+            self.tabs.setTabText(3, "API")
+            self.tabs.setTabText(4, "Журнал" if is_ru else "Log")
+            self.tabs.setTabText(5, "Настройки" if is_ru else "Settings")
         if hasattr(self, "btn_start"):
             self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ" if is_ru else "START PROCESSING")
         if hasattr(self, "btn_clear"):
-            self.btn_clear.setText("Сброс" if is_ru else "Reset")
+            self.btn_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
         if hasattr(self, "btn_llm_process"):
             self.btn_llm_process.setText("ОБРАБОТАТЬ" if is_ru else "PROCESS")
         if hasattr(self, "btn_llm_clear"):
             self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
-        if hasattr(self, "_apply_shell_copy"):
-            self._apply_shell_copy()
         if hasattr(self, "status_bar"):
             self.status_bar.showMessage("Готов к работе" if is_ru else "Ready to work")
         if hasattr(self, "lbl_status") and self.lbl_status.text() in {"Готов к работе", "Ready to work"}:
