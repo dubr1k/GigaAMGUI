@@ -73,6 +73,8 @@ class WorkerSignals(QObject):
     llm_progress_started = pyqtSignal(int, int)
     llm_response_ready = pyqtSignal()
     llm_stream_chunk = pyqtSignal(str)
+    llm_tools_scanned = pyqtSignal(object)  # list[ToolStatus] из cli_tools.scan
+    llm_tool_checked = pyqtSignal(object)  # ToolStatus одного инструмента
     live_status = pyqtSignal(object)
     live_event = pyqtSignal(object)
     live_finished = pyqtSignal(object)
@@ -196,6 +198,8 @@ class GigaTranscriberQtApp(
         self.signals.llm_progress_started.connect(self._start_llm_progress)
         self.signals.llm_response_ready.connect(self._on_llm_response_ready)
         self.signals.llm_stream_chunk.connect(self._on_llm_stream_chunk)
+        self.signals.llm_tools_scanned.connect(self._on_llm_tools_scanned)
+        self.signals.llm_tool_checked.connect(self._on_llm_tool_checked)
         self.signals.live_status.connect(self._update_live_status)
         self.signals.live_event.connect(self._update_live_event)
         self.signals.live_finished.connect(self._on_live_finished)

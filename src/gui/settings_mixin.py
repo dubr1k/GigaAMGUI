@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 from datetime import datetime
 
 from PyQt6.QtCore import QByteArray, QUrl
@@ -22,6 +21,7 @@ from ..config import (
     save_env_value,
 )
 from ..data_paths import save_data_dir_selection
+from ..services import cli_tools
 from .llm_mixin import SUMMARY_PROMPT, TASKS_PROMPT
 
 
@@ -324,18 +324,26 @@ class SettingsMixin:
         self.entry_llm_api_key.setText(LLM_API_KEY)
         self.entry_llm_model.setText(self.user_settings.get_value("llm_model", LLM_MODEL))
         self.entry_llm_temperature.setText(str(self.user_settings.get_value("llm_temperature", LLM_TEMPERATURE)))
-        self.entry_llm_claude_path.setText(self.user_settings.get_value("llm_claude_path", shutil.which("claude") or "claude"))
-        self.entry_llm_claude_args.setText(self.user_settings.get_value("llm_claude_args", ""))
-        self.entry_llm_codex_path.setText(self.user_settings.get_value("llm_codex_path", shutil.which("codex") or "codex"))
-        self.entry_llm_codex_args.setText(self.user_settings.get_value("llm_codex_args", ""))
-        self.entry_llm_opencode_path.setText(self.user_settings.get_value("llm_opencode_path", shutil.which("opencode") or "opencode"))
-        self.entry_llm_opencode_args.setText(self.user_settings.get_value("llm_opencode_args", ""))
-        self.entry_llm_pi_path.setText(self.user_settings.get_value("llm_pi_path", shutil.which("pi") or "pi"))
-        self.entry_llm_pi_provider.setText(self.user_settings.get_value("llm_pi_provider", ""))
-        self.entry_llm_pi_args.setText(self.user_settings.get_value("llm_pi_args", ""))
+        # Пути к CLI не замораживаются: пустое поле = автопоиск при каждом запуске (cli_tools),
+        # в настройках остаётся только то, что пользователь ввёл сам. Голое имя бинаря
+        # («claude») — наследие старого дефолта, равносильно пустому.
+        for spec in cli_tools.cli_specs():
+            saved_path = self.user_settings.get_value(f"llm_{spec.settings_prefix}_path", "") or ""
+            getattr(self, f"entry_llm_{spec.settings_prefix}_path").setText(
+                "" if saved_path.strip() == spec.binary else saved_path
+            )
+            getattr(self, f"entry_llm_{spec.settings_prefix}_args").setText(
+                self.user_settings.get_value(f"llm_{spec.settings_prefix}_args", "")
+            )
+            if spec.has_provider_field:
+                getattr(self, f"entry_llm_{spec.settings_prefix}_provider").setText(
+                    self.user_settings.get_value(f"llm_{spec.settings_prefix}_provider", "")
+                )
         self.entry_llm_other_path.setText(self.user_settings.get_value("llm_other_path", ""))
         self.entry_llm_other_args.setText(self.user_settings.get_value("llm_other_args", ""))
+        self.cb_llm_allow_tools.setChecked(bool(self.user_settings.get_value("llm_allow_tools", False)))
         self._update_llm_provider_fields(self.combo_llm_provider.currentText())
+        self._refresh_llm_tools()
         self.txt_llm_summary_prompt.setPlainText(self.user_settings.get_value("llm_summary_prompt", SUMMARY_PROMPT))
         self.txt_llm_tasks_prompt.setPlainText(self.user_settings.get_value("llm_tasks_prompt", TASKS_PROMPT))
         self.txt_llm_custom_prompt.setPlainText(self.user_settings.get_value("llm_custom_prompt", ""))
@@ -413,15 +421,19 @@ class SettingsMixin:
                 self.log(f"Не удалось сохранить LLM API key: {exc}")
         self.user_settings.set_value("llm_model", self.entry_llm_model.text().strip())
         self.user_settings.set_value("llm_temperature", self.entry_llm_temperature.text().strip())
-        self.user_settings.set_value("llm_claude_path", self.entry_llm_claude_path.text().strip())
-        self.user_settings.set_value("llm_claude_args", self.entry_llm_claude_args.text().strip())
-        self.user_settings.set_value("llm_codex_path", self.entry_llm_codex_path.text().strip())
-        self.user_settings.set_value("llm_codex_args", self.entry_llm_codex_args.text().strip())
-        self.user_settings.set_value("llm_opencode_path", self.entry_llm_opencode_path.text().strip())
-        self.user_settings.set_value("llm_opencode_args", self.entry_llm_opencode_args.text().strip())
-        self.user_settings.set_value("llm_pi_path", self.entry_llm_pi_path.text().strip())
-        self.user_settings.set_value("llm_pi_provider", self.entry_llm_pi_provider.text().strip())
-        self.user_settings.set_value("llm_pi_args", self.entry_llm_pi_args.text().strip())
+        for spec in cli_tools.cli_specs():
+            self.user_settings.set_value(
+                f"llm_{spec.settings_prefix}_path", getattr(self, f"entry_llm_{spec.settings_prefix}_path").text().strip()
+            )
+            self.user_settings.set_value(
+                f"llm_{spec.settings_prefix}_args", getattr(self, f"entry_llm_{spec.settings_prefix}_args").text().strip()
+            )
+            if spec.has_provider_field:
+                self.user_settings.set_value(
+                    f"llm_{spec.settings_prefix}_provider",
+                    getattr(self, f"entry_llm_{spec.settings_prefix}_provider").text().strip(),
+                )
+        self.user_settings.set_value("llm_allow_tools", self.cb_llm_allow_tools.isChecked())
         self.user_settings.set_value("llm_other_path", self.entry_llm_other_path.text().strip())
         self.user_settings.set_value("llm_other_args", self.entry_llm_other_args.text().strip())
         self.user_settings.set_value("llm_summary_prompt", self.txt_llm_summary_prompt.toPlainText())

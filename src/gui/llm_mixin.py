@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMessageBox
 
 from ..config import LLM_TEMPERATURE
-from ..services import llm_service
+from ..services import cli_tools, llm_service
 
 SUMMARY_PROMPT = (
     "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
@@ -142,6 +142,7 @@ class LlmMixin:
             (("not found", "claude"), "Claude Code не найден — проверьте путь к команде claude"),
             (("not found", "codex"), "Codex не найден — проверьте путь к команде codex"),
             (("not found", "opencode"), "OpenCode не найден — проверьте путь к команде opencode"),
+            (("not found", "omp"), "oh-my-pi не найден — проверьте путь к команде omp"),
             (("not found", "pi"), "Pi не найден — проверьте путь к команде pi"),
         ]
         for needles, message in friendly_rules:
@@ -495,46 +496,38 @@ class LlmMixin:
                 raise ValueError("Укажите API Key")
             if not model:
                 raise ValueError("Укажите модель")
-        elif provider == "Claude Code":
-            claude_path = self.entry_llm_claude_path.text().strip() or "claude"
-            if not (shutil.which(claude_path) or os.path.isfile(claude_path)):
-                raise ValueError(f"Не найден Claude Code: {claude_path}")
-        elif provider == "Codex":
-            codex_path = self.entry_llm_codex_path.text().strip() or "codex"
-            if not (shutil.which(codex_path) or os.path.isfile(codex_path)):
-                raise ValueError(f"Не найден Codex: {codex_path}")
-        elif provider == "OpenCode":
-            opencode_path = self.entry_llm_opencode_path.text().strip() or "opencode"
-            if not (shutil.which(opencode_path) or os.path.isfile(opencode_path)):
-                raise ValueError(f"Не найден OpenCode: {opencode_path}")
-        elif provider == "Pi":
-            pi_path = self.entry_llm_pi_path.text().strip() or "pi"
-            if not (shutil.which(pi_path) or os.path.isfile(pi_path)):
-                raise ValueError(f"Не найден Pi: {pi_path}")
         elif self._normalize_llm_provider(provider) == "Other":
             other_path = self.entry_llm_other_path.text().strip()
             if not other_path:
                 raise ValueError(self._t("Укажите команду для провайдера «Другое»", "Specify a command for the 'Other' provider"))
             if not (shutil.which(other_path) or os.path.isfile(other_path)):
                 raise ValueError(f"Не найдена команда: {other_path}")
-        return {
+        else:
+            spec = cli_tools.provider_by_name(provider)
+            requested = getattr(self, f"entry_llm_{spec.settings_prefix}_path").text().strip()
+            if cli_tools.locate_tool(spec, requested or None) is None:
+                hint = f"\n{self._t('Установка', 'Install')}: {spec.install_hint}" if spec.install_hint else ""
+                raise ValueError(
+                    self._t(f"Не найден {spec.name}: {requested or spec.binary}", f"{spec.name} not found: {requested or spec.binary}")
+                    + hint
+                )
+        settings = {
             "provider": provider,
             "api_url": api_url,
             "api_key": api_key,
             "model": model,
             "temperature": temperature,
-            "claude_path": self.entry_llm_claude_path.text().strip() or "claude",
-            "claude_args": self.entry_llm_claude_args.text().strip(),
-            "codex_path": self.entry_llm_codex_path.text().strip() or "codex",
-            "codex_args": self.entry_llm_codex_args.text().strip(),
-            "opencode_path": self.entry_llm_opencode_path.text().strip() or "opencode",
-            "opencode_args": self.entry_llm_opencode_args.text().strip(),
-            "pi_path": self.entry_llm_pi_path.text().strip() or "pi",
-            "pi_provider": self.entry_llm_pi_provider.text().strip(),
-            "pi_args": self.entry_llm_pi_args.text().strip(),
             "other_path": self.entry_llm_other_path.text().strip(),
             "other_args": self.entry_llm_other_args.text().strip(),
+            "llm_allow_tools": self.cb_llm_allow_tools.isChecked(),
         }
+        for spec in cli_tools.cli_specs():
+            prefix = spec.settings_prefix
+            settings[f"{prefix}_path"] = getattr(self, f"entry_llm_{prefix}_path").text().strip() or spec.binary
+            settings[f"{prefix}_args"] = getattr(self, f"entry_llm_{prefix}_args").text().strip()
+            if spec.has_provider_field:
+                settings[f"{prefix}_provider"] = getattr(self, f"entry_llm_{prefix}_provider").text().strip()
+        return settings
 
     def _collect_llm_inputs(self):
         manual_text = self.txt_llm_transcript.toPlainText().strip()

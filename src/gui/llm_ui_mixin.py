@@ -1,25 +1,38 @@
 """LLM-tab widget construction for the desktop application."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+import os
+import threading
+
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
+
+from ..services import cli_tools
 
 
 class _LlmWorkspace(QWidget):
@@ -52,6 +65,7 @@ class LlmUiMixin:
         self.btn_llm_settings.clicked.connect(self._open_llm_settings_dialog)
         heading.addWidget(self.btn_llm_settings)
         layout.addLayout(heading)
+        layout.addWidget(self._create_llm_provider_strip())
 
         work_surface = QWidget()
         work_surface.setObjectName("llm_workspace_columns")
@@ -77,37 +91,75 @@ class LlmUiMixin:
         layout.addWidget(work_surface, 1)
         return tab
 
+    # ── провайдер: общие виджеты страницы и диалога ─────────────────────
+
+    def _ensure_llm_provider_widgets(self):
+        """Комбо провайдера, поле модели и бейдж статуса живут на странице LLM;
+        диалог настроек их не дублирует. Создаются один раз, кто первый спросил."""
+        if getattr(self, "combo_llm_provider", None) is not None:
+            return
+        self.llm_provider_items = {}
+        self.combo_llm_provider = QComboBox()
+        self.combo_llm_provider.setObjectName("llm_provider_combo")
+        for spec in cli_tools.PROVIDERS:
+            self.combo_llm_provider.addItem(self._llm_provider_display_name(spec), spec.name)
+        self._llm_other_index = self.combo_llm_provider.count() - 1
+        self.llm_provider_items[self._llm_other_index] = self.combo_llm_provider.itemText(self._llm_other_index)
+        self.combo_llm_provider.setMinimumWidth(self._px(190))
+        self.combo_llm_provider.setIconSize(QSize(self._px(10), self._px(10)))
+
+        self.entry_llm_model = QLineEdit()
+        self.entry_llm_model.setObjectName("llm_model_entry")
+        self.entry_llm_model.setPlaceholderText("gpt-4.1-mini / sonnet / o3 / qwen ...")
+
+        self.lbl_llm_provider_status = QLabel("")
+        self.lbl_llm_provider_status.setObjectName("llm_provider_status")
+        self.lbl_llm_provider_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._llm_tool_statuses: dict[str, cli_tools.ToolStatus] = {}
+        self._llm_scan_running = False
+
+    def _llm_provider_display_name(self, spec) -> str:
+        if spec.id == "other":
+            return "Другое" if getattr(self, "_lang", "ru") == "ru" else "Other"
+        return spec.name
+
+    def _create_llm_provider_strip(self) -> QWidget:
+        """Строка «Провайдер · статус · Модель» над рабочей областью страницы LLM."""
+        self._ensure_llm_provider_widgets()
+        strip = QWidget()
+        strip.setObjectName("llm_provider_strip")
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(self._px(6))
+        self.llm_provider_labels = getattr(self, "llm_provider_labels", {})
+        self.llm_provider_labels["provider"] = QLabel("Провайдер:")
+        row.addWidget(self.llm_provider_labels["provider"])
+        row.addWidget(self.combo_llm_provider)
+        row.addWidget(self.lbl_llm_provider_status, 1)
+        self.llm_provider_labels["model"] = QLabel("Модель:")
+        row.addWidget(self.llm_provider_labels["model"])
+        self.entry_llm_model.setMinimumWidth(self._px(140))
+        row.addWidget(self.entry_llm_model, 1)
+        return strip
+
+    # ── диалог: API, инструменты, аргументы ─────────────────────────────
+
     def _create_llm_api_group(self) -> QGroupBox:
+        self._ensure_llm_provider_widgets()
         group = QGroupBox("LLM API")
         layout = QVBoxLayout()
         layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(10))
         layout.setSpacing(self._px(8))
 
-        label_col = self._label_column_width(("Провайдер:", "Модель:", "API URL:", "API Key:"))
-        self.llm_provider_labels = {}
-        self.llm_provider_items = {5: "Другое"}
-
-        provider_row = QHBoxLayout()
-        self.llm_provider_labels["provider"] = self._form_label("Провайдер:", label_col)
-        provider_row.addWidget(self.llm_provider_labels["provider"])
-        self.combo_llm_provider = QComboBox()
-        self.combo_llm_provider.addItems(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Другое"])
-        self.combo_llm_provider.setMinimumWidth(self._px(180))
-        provider_row.addWidget(self.combo_llm_provider)
-        provider_row.addStretch()
-        layout.addLayout(provider_row)
+        label_col = self._label_column_width(("Temperature:", "API URL:", "API Key:"))
 
         common_row = QHBoxLayout()
-        self.llm_provider_labels["model"] = self._form_label("Модель:", label_col)
-        common_row.addWidget(self.llm_provider_labels["model"])
-        self.entry_llm_model = QLineEdit()
-        self.entry_llm_model.setPlaceholderText("gpt-4.1-mini / sonnet / o3 / qwen ...")
-        common_row.addWidget(self.entry_llm_model, 1)
-        common_row.addSpacing(self._px(12))
-        common_row.addWidget(QLabel("Temperature:"))
+        self.llm_provider_labels["temperature"] = self._form_label("Temperature:", label_col)
+        common_row.addWidget(self.llm_provider_labels["temperature"])
         self.entry_llm_temperature = QLineEdit()
         self.entry_llm_temperature.setMaximumWidth(self._px(110))
         common_row.addWidget(self.entry_llm_temperature)
+        common_row.addStretch()
         layout.addLayout(common_row)
 
         self.llm_api_settings_widget = QWidget()
@@ -130,100 +182,18 @@ class LlmUiMixin:
         api_layout.addLayout(row2)
         layout.addWidget(self.llm_api_settings_widget)
 
-        self.llm_claude_settings_widget = QWidget()
-        self.llm_claude_settings_widget.setStyleSheet("background: transparent;")
-        claude_layout = QVBoxLayout(self.llm_claude_settings_widget)
-        claude_layout.setContentsMargins(0, 0, 0, 0)
-        claude_layout.setSpacing(self._px(8))
-        claude_col = self._label_column_width(("Claude Code путь:", "Claude доп. аргументы:"))
-        row4 = QHBoxLayout()
-        self.llm_provider_labels["claude_path"] = self._form_label("Claude Code путь:", claude_col)
-        row4.addWidget(self.llm_provider_labels["claude_path"])
-        self.entry_llm_claude_path = QLineEdit()
-        self.entry_llm_claude_path.setPlaceholderText("claude")
-        row4.addWidget(self.entry_llm_claude_path, 1)
-        claude_layout.addLayout(row4)
-        row5 = QHBoxLayout()
-        self.llm_provider_labels["claude_args"] = self._form_label("Claude доп. аргументы:", claude_col)
-        row5.addWidget(self.llm_provider_labels["claude_args"])
-        self.entry_llm_claude_args = QLineEdit()
-        self.entry_llm_claude_args.setPlaceholderText("например: --permission-mode bypassPermissions")
-        row5.addWidget(self.entry_llm_claude_args, 1)
-        claude_layout.addLayout(row5)
-        layout.addWidget(self.llm_claude_settings_widget)
+        layout.addWidget(self._create_llm_tools_table())
 
-        self.llm_codex_settings_widget = QWidget()
-        self.llm_codex_settings_widget.setStyleSheet("background: transparent;")
-        codex_layout = QVBoxLayout(self.llm_codex_settings_widget)
-        codex_layout.setContentsMargins(0, 0, 0, 0)
-        codex_layout.setSpacing(self._px(8))
-        codex_col = self._label_column_width(("Codex путь:", "Codex доп. аргументы:"))
-        row6 = QHBoxLayout()
-        self.llm_provider_labels["codex_path"] = self._form_label("Codex путь:", codex_col)
-        row6.addWidget(self.llm_provider_labels["codex_path"])
-        self.entry_llm_codex_path = QLineEdit()
-        self.entry_llm_codex_path.setPlaceholderText("codex")
-        row6.addWidget(self.entry_llm_codex_path, 1)
-        codex_layout.addLayout(row6)
-        row7 = QHBoxLayout()
-        self.llm_provider_labels["codex_args"] = self._form_label("Codex доп. аргументы:", codex_col)
-        row7.addWidget(self.llm_provider_labels["codex_args"])
-        self.entry_llm_codex_args = QLineEdit()
-        self.entry_llm_codex_args.setPlaceholderText("например: --dangerously-bypass-approvals-and-sandbox")
-        row7.addWidget(self.entry_llm_codex_args, 1)
-        codex_layout.addLayout(row7)
-        layout.addWidget(self.llm_codex_settings_widget)
-
-        self.llm_opencode_settings_widget = QWidget()
-        self.llm_opencode_settings_widget.setStyleSheet("background: transparent;")
-        opencode_layout = QVBoxLayout(self.llm_opencode_settings_widget)
-        opencode_layout.setContentsMargins(0, 0, 0, 0)
-        opencode_layout.setSpacing(self._px(8))
-        opencode_col = self._label_column_width(("OpenCode путь:", "OpenCode доп. аргументы:"))
-        row8 = QHBoxLayout()
-        self.llm_provider_labels["opencode_path"] = self._form_label("OpenCode путь:", opencode_col)
-        row8.addWidget(self.llm_provider_labels["opencode_path"])
-        self.entry_llm_opencode_path = QLineEdit()
-        self.entry_llm_opencode_path.setPlaceholderText("opencode")
-        row8.addWidget(self.entry_llm_opencode_path, 1)
-        opencode_layout.addLayout(row8)
-        row9 = QHBoxLayout()
-        self.llm_provider_labels["opencode_args"] = self._form_label("OpenCode доп. аргументы:", opencode_col)
-        row9.addWidget(self.llm_provider_labels["opencode_args"])
-        self.entry_llm_opencode_args = QLineEdit()
-        self.entry_llm_opencode_args.setPlaceholderText("например: --print")
-        row9.addWidget(self.entry_llm_opencode_args, 1)
-        opencode_layout.addLayout(row9)
-        layout.addWidget(self.llm_opencode_settings_widget)
-
-        self.llm_pi_settings_widget = QWidget()
-        self.llm_pi_settings_widget.setStyleSheet("background: transparent;")
-        pi_layout = QVBoxLayout(self.llm_pi_settings_widget)
-        pi_layout.setContentsMargins(0, 0, 0, 0)
-        pi_layout.setSpacing(self._px(8))
-        pi_col = self._label_column_width(("Pi путь:", "Pi provider:", "Pi доп. аргументы:"))
-        row10 = QHBoxLayout()
-        self.llm_provider_labels["pi_path"] = self._form_label("Pi путь:", pi_col)
-        row10.addWidget(self.llm_provider_labels["pi_path"])
-        self.entry_llm_pi_path = QLineEdit()
-        self.entry_llm_pi_path.setPlaceholderText("pi")
-        row10.addWidget(self.entry_llm_pi_path, 1)
-        pi_layout.addLayout(row10)
-        row11 = QHBoxLayout()
-        self.llm_provider_labels["pi_provider"] = self._form_label("Pi provider:", pi_col)
-        row11.addWidget(self.llm_provider_labels["pi_provider"])
-        self.entry_llm_pi_provider = QLineEdit()
-        self.entry_llm_pi_provider.setPlaceholderText("openai / anthropic / google ...")
-        row11.addWidget(self.entry_llm_pi_provider, 1)
-        pi_layout.addLayout(row11)
-        row12 = QHBoxLayout()
-        self.llm_provider_labels["pi_args"] = self._form_label("Pi доп. аргументы:", pi_col)
-        row12.addWidget(self.llm_provider_labels["pi_args"])
-        self.entry_llm_pi_args = QLineEdit()
-        self.entry_llm_pi_args.setPlaceholderText("например: --no-tools --thinking low")
-        row12.addWidget(self.entry_llm_pi_args, 1)
-        pi_layout.addLayout(row12)
-        layout.addWidget(self.llm_pi_settings_widget)
+        # Аргументы/provider выбранного CLI и команда для «Другое».
+        self.llm_cli_settings_widgets = {}
+        for spec in cli_tools.cli_specs():
+            self.llm_cli_settings_widgets[spec.name] = self._create_llm_cli_args_widget(spec)
+            layout.addWidget(self.llm_cli_settings_widgets[spec.name])
+        self.llm_claude_settings_widget = self.llm_cli_settings_widgets["Claude Code"]
+        self.llm_codex_settings_widget = self.llm_cli_settings_widgets["Codex"]
+        self.llm_opencode_settings_widget = self.llm_cli_settings_widgets["OpenCode"]
+        self.llm_pi_settings_widget = self.llm_cli_settings_widgets["Pi"]
+        self.llm_omp_settings_widget = self.llm_cli_settings_widgets["oh-my-pi"]
 
         self.llm_other_settings_widget = QWidget()
         self.llm_other_settings_widget.setStyleSheet("background: transparent;")
@@ -242,10 +212,17 @@ class LlmUiMixin:
         self.llm_provider_labels["other_args"] = self._form_label("Аргументы:", other_col)
         row14.addWidget(self.llm_provider_labels["other_args"])
         self.entry_llm_other_args = QLineEdit()
-        self.entry_llm_other_args.setPlaceholderText("аргументы; промпт будет добавлен в конец как последний параметр")
+        self.entry_llm_other_args.setPlaceholderText("аргументы; промпт — последним параметром, либо {stdin}")
         row14.addWidget(self.entry_llm_other_args, 1)
         other_layout.addLayout(row14)
         layout.addWidget(self.llm_other_settings_widget)
+
+        self.cb_llm_allow_tools = QCheckBox("Разрешить инструменты и сессии агента")
+        self.cb_llm_allow_tools.setObjectName("llm_allow_tools")
+        self.cb_llm_allow_tools.setToolTip(
+            "Выключено: CLI запускается без инструментов и без сохранения сессии (--no-tools/--no-session и аналоги)."
+        )
+        layout.addWidget(self.cb_llm_allow_tools)
 
         self.lbl_llm_provider_info = QLabel()
         self.lbl_llm_provider_info.setWordWrap(True)
@@ -257,28 +234,305 @@ class LlmUiMixin:
         group.setLayout(layout)
         return group
 
+    def _create_llm_cli_args_widget(self, spec) -> QWidget:
+        """Аргументы (и внутренний provider для pi/omp) одного CLI-провайдера."""
+        widget = QWidget()
+        widget.setStyleSheet("background: transparent;")
+        box = QVBoxLayout(widget)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(self._px(8))
+        labels = [f"{spec.name} доп. аргументы:"] + ([f"{spec.name} provider:"] if spec.has_provider_field else [])
+        col = self._label_column_width(tuple(labels))
+        if spec.has_provider_field:
+            row = QHBoxLayout()
+            self.llm_provider_labels[f"{spec.settings_prefix}_provider"] = self._form_label(f"{spec.name} provider:", col)
+            row.addWidget(self.llm_provider_labels[f"{spec.settings_prefix}_provider"])
+            entry = QLineEdit()
+            entry.setPlaceholderText("anthropic / openai / google ...")
+            setattr(self, f"entry_llm_{spec.settings_prefix}_provider", entry)
+            row.addWidget(entry, 1)
+            box.addLayout(row)
+        row = QHBoxLayout()
+        self.llm_provider_labels[f"{spec.settings_prefix}_args"] = self._form_label(f"{spec.name} доп. аргументы:", col)
+        row.addWidget(self.llm_provider_labels[f"{spec.settings_prefix}_args"])
+        entry = QLineEdit()
+        entry.setPlaceholderText({
+            "claude": "например: --permission-mode bypassPermissions",
+            "codex": "например: --dangerously-bypass-approvals-and-sandbox",
+            "opencode": "например: --agent build",
+            "pi": "например: --thinking low",
+            "omp": "например: --thinking low --profile work",
+        }.get(spec.id, ""))
+        setattr(self, f"entry_llm_{spec.settings_prefix}_args", entry)
+        row.addWidget(entry, 1)
+        box.addLayout(row)
+        return widget
+
+    def _create_llm_tools_table(self) -> QGroupBox:
+        """Таблица найденных CLI: статус · инструмент · версия · путь · Обзор · Проверить."""
+        group = QGroupBox("Инструменты")
+        group.setObjectName("llm_tools_group")
+        self.grp_llm_tools = group
+        box = QVBoxLayout()
+        box.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(6))
+        box.setSpacing(self._px(6))
+
+        specs = cli_tools.cli_specs()
+        table = QTableWidget(len(specs), 6)
+        table.setObjectName("llm_tools_table")
+        self.tbl_llm_tools = table
+        table.setHorizontalHeaderLabels(["", "Инструмент", "Версия", "Путь", "", ""])
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        table.verticalHeader().setDefaultSectionSize(self._px(30))
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.setShowGrid(False)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        # Кнопки — cellWidget'ы, ResizeToContents их не видит: ширина по sizeHint самой кнопки.
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self._llm_tool_rows: dict[str, int] = {}
+        self._llm_tool_buttons: dict[str, tuple[QPushButton, QPushButton]] = {}
+        for row, spec in enumerate(specs):
+            self._llm_tool_rows[spec.name] = row
+            status_item = QTableWidgetItem("…")
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(row, 0, status_item)
+            table.setItem(row, 1, QTableWidgetItem(spec.name))
+            table.setItem(row, 2, QTableWidgetItem(""))
+            path_entry = QLineEdit()
+            path_entry.setObjectName("llm_tool_path")
+            path_entry.setPlaceholderText(spec.binary)
+            path_entry.setToolTip("Пусто — искать автоматически (PATH + типичные каталоги установки)")
+            path_entry.editingFinished.connect(lambda name=spec.name: self._on_llm_tool_path_edited(name))
+            setattr(self, f"entry_llm_{spec.settings_prefix}_path", path_entry)
+            table.setCellWidget(row, 3, path_entry)
+            browse = QPushButton("Обзор…")
+            browse.setObjectName("llm_tool_browse")
+            browse.clicked.connect(lambda _=False, name=spec.name: self._browse_llm_tool(name))
+            table.setCellWidget(row, 4, browse)
+            check = QPushButton("Проверить")
+            check.setObjectName("llm_tool_check")
+            check.clicked.connect(lambda _=False, name=spec.name: self._check_llm_tool(name))
+            table.setCellWidget(row, 5, check)
+            self._llm_tool_buttons[spec.name] = (browse, check)
+        button_width = max(b.sizeHint().width() for pair in self._llm_tool_buttons.values() for b in pair) + self._px(8)
+        table.setColumnWidth(4, button_width)
+        table.setColumnWidth(5, button_width)
+        # Все строки видны целиком — таблица не скроллится, её высота фиксирована по числу провайдеров.
+        row_height = table.verticalHeader().defaultSectionSize()
+        header_height = max(header.sizeHint().height(), row_height)
+        table.setFixedHeight(header_height + len(specs) * row_height + 2 * table.frameWidth() + self._px(4))
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        box.addWidget(table)
+
+        footer = QHBoxLayout()
+        self.lbl_llm_tools_note = QLabel("Пустой путь — автопоиск по PATH и типичным каталогам (homebrew, npm, bun, nvm).")
+        self.lbl_llm_tools_note.setWordWrap(True)
+        self.lbl_llm_tools_note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
+        footer.addWidget(self.lbl_llm_tools_note, 1)
+        self.btn_llm_tools_rescan = QPushButton("Пересканировать")
+        self.btn_llm_tools_rescan.setObjectName("llm_tools_rescan")
+        self.btn_llm_tools_rescan.clicked.connect(lambda: self._refresh_llm_tools(fresh=True))
+        footer.addWidget(self.btn_llm_tools_rescan)
+        box.addLayout(footer)
+        group.setLayout(box)
+        return group
+
+    # ── статусы инструментов ────────────────────────────────────────────
+
+    def _llm_tool_overrides(self) -> dict:
+        overrides = {}
+        for spec in cli_tools.cli_specs():
+            entry = getattr(self, f"entry_llm_{spec.settings_prefix}_path", None)
+            value = entry.text().strip() if entry is not None else ""
+            if value and value != spec.binary:
+                overrides[spec.id] = value
+        return overrides
+
+    def _refresh_llm_tools(self, fresh: bool = False):
+        """Скан в фоне; результат приходит сигналом llm_tools_scanned."""
+        if getattr(self, "_llm_scan_running", False):
+            return
+        self._llm_scan_running = True
+        if hasattr(self, "btn_llm_tools_rescan"):
+            self.btn_llm_tools_rescan.setEnabled(False)
+        overrides = self._llm_tool_overrides()
+        signals = self.signals
+
+        def work():
+            try:
+                statuses = cli_tools.scan(overrides, fresh=fresh)
+            except Exception as exc:  # noqa: BLE001 — статус-строка, не падение UI
+                statuses = exc
+            signals.llm_tools_scanned.emit(statuses)
+
+        threading.Thread(target=work, name="llm-tools-scan", daemon=True).start()
+
+    def _on_llm_tools_scanned(self, statuses):
+        self._llm_scan_running = False
+        if hasattr(self, "btn_llm_tools_rescan"):
+            self.btn_llm_tools_rescan.setEnabled(True)
+        if isinstance(statuses, Exception):
+            self.log(f"LLM: не удалось просканировать CLI-инструменты: {statuses}")
+            return
+        for status in statuses:
+            self._llm_tool_statuses[status.provider] = status
+        self._render_llm_tool_statuses()
+
+    def _check_llm_tool(self, provider_name: str):
+        spec = cli_tools.provider_by_name(provider_name)
+        entry = getattr(self, f"entry_llm_{spec.settings_prefix}_path")
+        override = entry.text().strip() or None
+        browse, check = self._llm_tool_buttons[provider_name]
+        check.setEnabled(False)
+        signals = self.signals
+
+        def work():
+            signals.llm_tool_checked.emit(cli_tools.resolve_tool(spec, override))
+
+        threading.Thread(target=work, name="llm-tool-check", daemon=True).start()
+
+    def _on_llm_tool_checked(self, status):
+        self._llm_tool_statuses[status.provider] = status
+        if status.provider in self._llm_tool_buttons:
+            self._llm_tool_buttons[status.provider][1].setEnabled(True)
+        self._render_llm_tool_statuses()
+
+    def _on_llm_tool_path_edited(self, provider_name: str):
+        # Правка пути делает старый статус недостоверным — перепроверяем именно этот инструмент.
+        self._check_llm_tool(provider_name)
+
+    def _browse_llm_tool(self, provider_name: str):
+        spec = cli_tools.provider_by_name(provider_name)
+        entry = getattr(self, f"entry_llm_{spec.settings_prefix}_path")
+        start = entry.text().strip() or os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(
+            self, self._t(f"Путь к {spec.name}", f"{spec.name} executable"), start,
+        )
+        if path:
+            entry.setText(path)
+            self._check_llm_tool(provider_name)
+
+    _LLM_STATUS_GLYPH = {"found": "●", "missing": "○", "broken": "⚠"}
+
+    def _llm_status_color(self, status: str) -> QColor:
+        colors = self._colors()
+        if status == "found":
+            return QColor(colors.get("success", "#3fb950"))
+        if status == "broken":
+            return QColor(colors.get("warning", "#e3b341"))
+        return QColor(colors.get("text_mute2", "#8b949e"))
+
+    def _llm_status_icon(self, status: str) -> QIcon:
+        size = self._px(10)
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._llm_status_color(status))
+        painter.drawEllipse(1, 1, size - 2, size - 2)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _llm_status_text(self, status) -> str:
+        if status is None:
+            return ""
+        if status.status == "found":
+            return status.version or self._t("найден", "found")
+        if status.status == "broken":
+            return self._t("не запускается", "does not run")
+        return self._t("не найден", "not found")
+
+    def _render_llm_tool_statuses(self):
+        """Таблица, иконки в комбо и бейдж на странице — из self._llm_tool_statuses."""
+        table = getattr(self, "tbl_llm_tools", None)
+        for name, status in self._llm_tool_statuses.items():
+            if table is not None and name in self._llm_tool_rows:
+                row = self._llm_tool_rows[name]
+                item = table.item(row, 0)
+                item.setText(self._LLM_STATUS_GLYPH.get(status.status, "○"))
+                item.setForeground(self._llm_status_color(status.status))
+                detail = status.detail or (status.install_hint and f"{self._t('Установка', 'Install')}: {status.install_hint}") or ""
+                item.setToolTip(detail)
+                table.item(row, 2).setText(self._llm_status_text(status))
+                table.item(row, 2).setToolTip(detail)
+                entry = table.cellWidget(row, 3)
+                if entry is not None:
+                    hint = status.path if status.status != "missing" else f"{status.provider}: {self._t('не найден', 'not found')}"
+                    entry.setToolTip(hint or "")
+                    if not entry.text().strip():
+                        entry.setPlaceholderText(status.path or cli_tools.provider_by_name(name).binary)
+            index = self.combo_llm_provider.findData(name)
+            if index >= 0:
+                self.combo_llm_provider.setItemIcon(index, self._llm_status_icon(status.status))
+                self.combo_llm_provider.setItemData(
+                    index,
+                    self._llm_status_text(status) + (f" · {status.path}" if status.path else ""),
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+                if status.status == "missing":
+                    self.combo_llm_provider.setItemData(index, self._llm_status_color("missing"), Qt.ItemDataRole.ForegroundRole)
+                else:
+                    self.combo_llm_provider.setItemData(index, None, Qt.ItemDataRole.ForegroundRole)
+        self._update_llm_provider_status_label()
+
+    def _update_llm_provider_status_label(self):
+        label = getattr(self, "lbl_llm_provider_status", None)
+        if label is None:
+            return
+        provider = self._normalize_llm_provider(self.combo_llm_provider.currentText())
+        status = self._llm_tool_statuses.get(provider)
+        colors = self._colors()
+        if provider == "API":
+            text, color = self._t("HTTP API", "HTTP API"), colors["text_mute2"]
+        elif provider == "Other":
+            text, color = self._t("произвольная команда", "custom command"), colors["text_mute2"]
+        elif status is None:
+            text, color = self._t("проверка…", "checking…"), colors["text_mute2"]
+        elif status.status == "found":
+            text = f"{self._LLM_STATUS_GLYPH['found']} {status.version or self._t('найден', 'found')}"
+            color = self._llm_status_color("found").name()
+            label.setToolTip(status.path or "")
+        elif status.status == "broken":
+            text = f"{self._LLM_STATUS_GLYPH['broken']} {self._t('не запускается', 'does not run')}"
+            color = self._llm_status_color("broken").name()
+            label.setToolTip(status.detail or "")
+        else:
+            text = f"{self._LLM_STATUS_GLYPH['missing']} {self._t('не найден', 'not found')}"
+            color = self._llm_status_color("missing").name()
+            label.setToolTip(f"{self._t('Установка', 'Install')}: {status.install_hint}" if status.install_hint else "")
+        label.setText(text)
+        label.setStyleSheet(self._transparent_label_style(color, font_pt=9))
+
     def _update_llm_provider_fields(self, provider: str):
         provider = self._normalize_llm_provider(provider)
-        widgets = {
-            "API": self.llm_api_settings_widget,
-            "Claude Code": self.llm_claude_settings_widget,
-            "Codex": self.llm_codex_settings_widget,
-            "OpenCode": self.llm_opencode_settings_widget,
-            "Pi": self.llm_pi_settings_widget,
-            "Other": self.llm_other_settings_widget,
-        }
-        for name, widget in widgets.items():
+        self.llm_api_settings_widget.setVisible(provider == "API")
+        for name, widget in self.llm_cli_settings_widgets.items():
             widget.setVisible(name == provider)
+        self.llm_other_settings_widget.setVisible(provider == "Other")
+        self.cb_llm_allow_tools.setVisible(provider not in ("API", "Other"))
+        self.grp_llm_tools.setVisible(provider != "API")
 
         info_map = {
             "API": self._t("Режим автоопределения API: поддерживает OpenAI-compatible и Anthropic Messages API. localhost/local network тоже поддерживается, если сервер совместим с одним из этих форматов.", "API auto-detection mode: supports OpenAI-compatible APIs and the Anthropic Messages API. localhost/local network is also supported if the server is compatible with one of these formats."),
-            "Claude Code": self._t("Локальный Claude CLI. Используются путь к claude, модель и доп. аргументы.", "Local Claude CLI. Uses the claude path, model, and extra arguments."),
-            "Codex": self._t("Локальный Codex CLI. Используются путь к codex, модель и доп. аргументы.", "Local Codex CLI. Uses the codex path, model, and extra arguments."),
-            "OpenCode": self._t("Локальный OpenCode CLI. Будет запущен как команда + аргументы + промпт в конце.", "Local OpenCode CLI. It will be launched as command + arguments + prompt at the end."),
-            "Pi": self._t("Локальный pi CLI. Можно указать внутренний provider для pi, модель и доп. аргументы.", "Local pi CLI. You can specify the internal provider for pi, the model, and extra arguments."),
-            "Other": self._t("Произвольный CLI. Укажи команду и аргументы; промпт будет передан последним аргументом.", "Arbitrary CLI. Specify the command and arguments; the prompt will be passed as the last argument."),
+            "Claude Code": self._t("Локальный Claude CLI (claude -p). Промпт передаётся через stdin; модель и доп. аргументы — из настроек.", "Local Claude CLI (claude -p). The prompt goes through stdin; model and extra arguments come from the settings."),
+            "Codex": self._t("Локальный Codex CLI (codex exec). Модель выбирает сам клиент Codex.", "Local Codex CLI (codex exec). The Codex client picks the model itself."),
+            "OpenCode": self._t("Локальный OpenCode CLI (opencode run). Модель в формате provider/model.", "Local OpenCode CLI (opencode run). Model in provider/model format."),
+            "Pi": self._t("Локальный pi CLI (pi -p). Можно указать внутренний provider, модель и доп. аргументы.", "Local pi CLI (pi -p). You can specify the internal provider, the model, and extra arguments."),
+            "oh-my-pi": self._t("oh-my-pi (omp -p) — форк pi с 60+ провайдерами. Модель задаётся нечётко: «opus», «gpt-5.2» или «openai/gpt-5.2».", "oh-my-pi (omp -p) — a pi fork with 60+ providers. Model is fuzzy-matched: “opus”, “gpt-5.2” or “openai/gpt-5.2”."),
+            "Other": self._t("Произвольный CLI. Промпт передаётся последним аргументом и в stdin; напишите {stdin} в аргументах, чтобы передавать только через stdin.", "Arbitrary CLI. The prompt is passed as the last argument and via stdin; put {stdin} in the arguments to pass it via stdin only."),
         }
         self.lbl_llm_provider_info.setText(info_map.get(provider, ""))
+        self._update_llm_provider_status_label()
 
     def _ensure_llm_settings_dialog(self):
         if getattr(self, "_llm_settings_dialog", None) is not None:
@@ -286,9 +540,22 @@ class LlmUiMixin:
         dialog = QDialog(self)
         dialog.setWindowTitle("Настройки LLM")
         dialog.setMinimumWidth(self._px(760))
-        layout = QVBoxLayout(dialog)
+        # Содержимое выше маленького экрана (таблица + три промпта): скролл, а не сжатие виджетов внахлёст.
+        outer = QVBoxLayout(dialog)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setObjectName("llm_settings_scroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        body.setObjectName("llm_settings_body")
+        layout = QVBoxLayout(body)
         layout.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
         layout.setSpacing(self._px(8))
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
         self.grp_llm_api_settings = self._create_llm_api_group()
         layout.addWidget(self.grp_llm_api_settings)
 
@@ -320,7 +587,7 @@ class LlmUiMixin:
         self.prompts_group.setLayout(prompts_layout)
         layout.addWidget(self.prompts_group)
 
-        self.lbl_llm_settings_note = QLabel("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env.")
+        self.lbl_llm_settings_note = QLabel("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi / oh-my-pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env.")
         self.lbl_llm_settings_note.setWordWrap(True)
         self.lbl_llm_settings_note.setContentsMargins(self._px(4), self._px(2), self._px(4), self._px(2))
         self.lbl_llm_settings_note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
@@ -332,8 +599,21 @@ class LlmUiMixin:
         self._llm_settings_buttons.accepted.connect(self._save_llm_settings_from_dialog)
         self._llm_settings_buttons.rejected.connect(dialog.reject)
         self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept)
-        layout.addWidget(self._llm_settings_buttons)
+        buttons_row = QWidget()
+        buttons_layout = QVBoxLayout(buttons_row)
+        buttons_layout.setContentsMargins(self._px(12), self._px(6), self._px(12), self._px(10))
+        buttons_layout.addWidget(self._llm_settings_buttons)
+        outer.addWidget(buttons_row)
+        dialog.resize(self._px(780), min(self._px(720), max(self._px(420), self._available_dialog_height())))
         self._llm_settings_dialog = dialog
+
+    def _available_dialog_height(self) -> int:
+        screen = self.screen() if hasattr(self, "screen") else None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return self._px(720)
+        return int(screen.availableGeometry().height() * 0.9)
 
     def _save_llm_settings_from_dialog(self):
         try:
