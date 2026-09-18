@@ -538,6 +538,3 @@ GigaAMGUI/
   потокового Sortformer на ONNX
 - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT,
   нейросетевое шумоподавление
-- [oh-my-pi](https://github.com/can1357/oh-my-pi) и
-  [pi](https://github.com/mariozechner/pi-coding-agent) — CLI-агенты,
-  которые здесь работают как LLM-провайдеры
