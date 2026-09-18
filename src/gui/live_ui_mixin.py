@@ -22,6 +22,14 @@ from PyQt6.QtWidgets import (
 )
 
 
+class _GrowingTextEdit(QTextEdit):
+    """QTextEdit whose size hint is its minimum, so it stretches to fill the
+    page but never forces a scroll bar on the 760×440 compact window."""
+
+    def sizeHint(self):
+        return self.minimumSizeHint()
+
+
 class LiveUiMixin:
     def _create_live_tab(self) -> QWidget:
         tab = QWidget()
@@ -50,8 +58,10 @@ class LiveUiMixin:
 
         source_pane = QWidget()
         source_pane.setObjectName("live_source_pane")
-        source_pane.setMinimumWidth(self._px(155))
-        source_pane.setMaximumWidth(self._px(175))
+        # Wide enough for a label plus a readable device name; the earlier
+        # 155–175 pt cap squeezed the combos to a few characters (#54).
+        source_pane.setMinimumWidth(self._px(230))
+        source_pane.setMaximumWidth(self._px(250))
         source_layout = QVBoxLayout(source_pane)
         source_layout.setContentsMargins(0, 0, 0, 0)
         source_layout.setSpacing(self._px(6))
@@ -63,29 +73,28 @@ class LiveUiMixin:
         source_form.setHorizontalSpacing(self._px(4))
         source_form.setVerticalSpacing(self._px(3))
         source_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        # macOS' form style keeps fields at their size hint; grow them everywhere.
+        source_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.combo_live_source = QComboBox()
         self.combo_live_source.addItem(self._t("Микрофон", "Microphone"), "mic")
         self.combo_live_source.addItem(self._t("Системный звук", "System audio"), "system")
         self.combo_live_source.addItem(self._t("Микрофон + системный звук", "Microphone + system audio"), "both")
-        self.combo_live_source.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_live_source = QLabel(self._t("Источник:", "Source:"))
         source_form.addRow(self.lbl_live_source, self.combo_live_source)
 
         self.combo_live_mic_device = QComboBox()
-        self.combo_live_mic_device.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_live_mic_device = QLabel(self._t("Микрофон:", "Microphone:"))
         source_form.addRow(self.lbl_live_mic_device, self.combo_live_mic_device)
         self.combo_live_system_device = QComboBox()
-        self.combo_live_system_device.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_live_system_device = QLabel(self._t("Системный звук:", "System audio:"))
         source_form.addRow(self.lbl_live_system_device, self.combo_live_system_device)
 
-        self.cb_live_mic_audio = QCheckBox(self._t("Записывать дорожку микрофона", "Record microphone track"))
+        # Short captions: the row label already says "Дорожки:" and the long
+        # "Записывать дорожку …" was cut to "Записыв" in the side pane.
+        self.cb_live_mic_audio = QCheckBox(self._t("Микрофон", "Microphone"))
         self.cb_live_mic_audio.setChecked(True)
-        self.cb_live_system_audio = QCheckBox(self._t("Записывать дорожку системного звука", "Record system audio track"))
+        self.cb_live_system_audio = QCheckBox(self._t("Системный звук", "System audio"))
         self.cb_live_system_audio.setChecked(True)
-        self.cb_live_mic_audio.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.cb_live_system_audio.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         tracks = QWidget()
         tracks.setObjectName("live_track_options")
         tracks_layout = QVBoxLayout(tracks)
@@ -166,7 +175,8 @@ class LiveUiMixin:
         self.lbl_live_waveform = QLabel(self._t("Аудиосигнал появится во время записи", "Audio signal appears during capture"))
         self.lbl_live_waveform.setObjectName("live_waveform_display")
         self.lbl_live_waveform.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_live_waveform.setFixedHeight(self._px(24))
+        self.lbl_live_waveform.setWordWrap(True)
+        self.lbl_live_waveform.setMaximumHeight(self._px(40))
         self.lbl_live_waveform.setToolTip(self._t("Индикатор аудиосигнала ожидает активную сессию.", "The audio signal indicator is waiting for an active session."))
         recorder_layout.addWidget(self.lbl_live_waveform)
         self.lbl_live_status = QLabel(self._t("Готово к записи", "Ready for live capture"))
@@ -216,11 +226,12 @@ class LiveUiMixin:
         transcript_hint.setWordWrap(True)
         transcript_hint.setMaximumHeight(self._px(28))
         transcript_layout.addWidget(transcript_hint)
-        self.live_transcript = QTextEdit()
+        self.live_transcript = _GrowingTextEdit()
         self.live_transcript.setObjectName("live_transcript_display")
         self.live_transcript.setReadOnly(True)
         self.live_transcript.setFont(self._font(10, fixed=True))
-        self.live_transcript.setFixedHeight(self._px(82))
+        # The transcript is the page's main content: let it take the spare height.
+        self.live_transcript.setMinimumHeight(self._px(60))
         self.live_transcript.setPlaceholderText(self._t("Расшифровка появится здесь", "Transcript appears here"))
         transcript_layout.addWidget(self.live_transcript, 1)
         capture_layout.addWidget(transcript_panel, 1)
@@ -228,8 +239,8 @@ class LiveUiMixin:
 
         parameters_pane = QWidget()
         parameters_pane.setObjectName("live_parameters_pane")
-        parameters_pane.setMinimumWidth(self._px(160))
-        parameters_pane.setMaximumWidth(self._px(180))
+        parameters_pane.setMinimumWidth(self._px(220))
+        parameters_pane.setMaximumWidth(self._px(240))
         parameters_layout = QVBoxLayout(parameters_pane)
         parameters_layout.setContentsMargins(0, 0, 0, 0)
         parameters_layout.setSpacing(self._px(6))
@@ -243,8 +254,8 @@ class LiveUiMixin:
         parameters_form.setHorizontalSpacing(self._px(4))
         parameters_form.setVerticalSpacing(self._px(3))
         parameters_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        parameters_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.combo_live_diarization = QComboBox()
-        self.combo_live_diarization.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.combo_live_diarization.addItem(self._t("Выключено", "Off"), "off")
         self.combo_live_diarization.addItem(self._t("Оценка в реальном времени", "Live estimate"), "live_estimate")
         self.combo_live_diarization.addItem(self._t("После остановки", "After stop"), "after_stop")
@@ -257,7 +268,6 @@ class LiveUiMixin:
         self.lbl_live_diarization = QLabel(self._t("Диаризация:", "Diarization:"))
         parameters_form.addRow(self.lbl_live_diarization, self.combo_live_diarization)
         self.spin_live_gain = QDoubleSpinBox()
-        self.spin_live_gain.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.spin_live_gain.setRange(0.0, 2.0)
         self.spin_live_gain.setSingleStep(0.1)
         self.spin_live_gain.setValue(1.0)
@@ -286,8 +296,6 @@ class LiveUiMixin:
             "srt": self.cb_live_export_srt,
             "vtt": self.cb_live_export_vtt,
         }
-        for checkbox in self.live_export_checkboxes.values():
-            checkbox.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         export_rows.addWidget(self.cb_live_export_txt, 0, 0, 1, 2)
         export_rows.addWidget(self.cb_live_export_txt_timecodes, 1, 0)
         export_rows.addWidget(self.cb_live_export_txt_diarize, 1, 1)
@@ -301,18 +309,19 @@ class LiveUiMixin:
         subtitle_layout.setSpacing(self._px(2))
         self.cb_live_subtitle_sentence_split = QCheckBox(self._t("По предложениям", "By sentences"))
         self.cb_live_subtitle_sentence_split.setChecked(True)
-        self.cb_live_subtitle_sentence_split.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         subtitle_layout.addWidget(self.cb_live_subtitle_sentence_split)
+        # Minimum, not fixed, widths: native Windows spin buttons are wider
+        # than Fusion's and a 44 pt box showed no digits at all.
         self.lbl_live_subtitle_max_lines = QLabel(self._t("Строк:", "Lines:"))
         self.spin_live_subtitle_max_lines = QSpinBox()
         self.spin_live_subtitle_max_lines.setRange(1, 4)
         self.spin_live_subtitle_max_lines.setValue(2)
-        self.spin_live_subtitle_max_lines.setFixedWidth(self._px(44))
+        self.spin_live_subtitle_max_lines.setMinimumWidth(self._px(64))
         self.lbl_live_subtitle_max_width = QLabel(self._t("Символов:", "Characters:"))
         self.spin_live_subtitle_max_width = QSpinBox()
         self.spin_live_subtitle_max_width.setRange(20, 100)
         self.spin_live_subtitle_max_width.setValue(64)
-        self.spin_live_subtitle_max_width.setFixedWidth(self._px(52))
+        self.spin_live_subtitle_max_width.setMinimumWidth(self._px(72))
         subtitle_lines = QHBoxLayout()
         subtitle_lines.setSpacing(self._px(3))
         subtitle_lines.addWidget(self.lbl_live_subtitle_max_lines)
