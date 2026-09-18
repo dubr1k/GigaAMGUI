@@ -6,432 +6,538 @@
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Desktop: PyQt6](https://img.shields.io/badge/Desktop-PyQt6-41CD52)](https://www.riverbankcomputing.com/software/pyqt/)
+[![macOS: Swift](https://img.shields.io/badge/macOS-Liquid%20Glass-000000?logo=apple)](#gigaam-liquid--нативное-приложение-для-macos)
 [![API: FastAPI](https://img.shields.io/badge/API-FastAPI-009688)](https://fastapi.tiangolo.com/)
 [![Web: Docker](https://img.shields.io/badge/Web-Docker-2496ED)](https://www.docker.com/)
 [![GitHub stars](https://img.shields.io/github/stars/dubr1k/GigaAMGUI?style=social)](https://github.com/dubr1k/GigaAMGUI/stargazers)
 
 **🇷🇺 Русский** · [🇺🇸 English](README_EN.md)
 
-Транскрибация русской речи из аудио и видео на базе **GigaAM-v3**. Один сервисный слой, пять интерфейсов: Desktop GUI, CLI, REST API, Web GUI и terminal TUI.
+Программа для расшифровки русской речи из аудио и видео на модели
+**GigaAM-v3** от SaluteDevices. Работает локально: файлы никуда не
+отправляются. Умеет разделять говорящих, делать субтитры, чистить шум и
+пересказывать расшифровку через LLM.
 
-> GigaAM Transcriber — полноценный workflow для расшифровки, экспорта, диаризации и LLM-постобработки, а не только обёртка над моделью.
+Один и тот же движок доступен в шести интерфейсах: нативное приложение для
+macOS (**GigaAM Liquid**), классическое десктоп-приложение на PyQt для
+Windows/macOS/Linux, командная строка, REST API, веб-панель и терминальный TUI.
 
 ## Содержание
 
-- [Возможности](#возможности)
-- [Быстрый старт](#быстрый-старт)
-- [Live desktop](#live-desktop)
+- [Как это выглядит](#как-это-выглядит)
+- [Что умеет](#что-умеет)
+- [Установка готовых сборок](#установка-готовых-сборок)
+- [GigaAM Liquid — нативное приложение для macOS](#gigaam-liquid--нативное-приложение-для-macos)
+- [Запуск из исходников](#запуск-из-исходников)
 - [Интерфейсы](#интерфейсы)
-- [Конфигурация](#конфигурация)
-- [Интеллектуальная подготовка аудио](#интеллектуальная-подготовка-аудио)
-- [ASR backend](#asr-backend)
+- [Live: запись и расшифровка в реальном времени](#live-запись-и-расшифровка-в-реальном-времени)
+- [LLM: выжимки, задачи и свои промпты](#llm-выжимки-задачи-и-свои-промпты)
+- [Субтитры](#субтитры)
+- [Диаризация — кто говорит](#диаризация--кто-говорит)
+- [Подготовка аудио и шумоподавление](#подготовка-аудио-и-шумоподавление)
+- [Движок распознавания (ASR backend)](#движок-распознавания-asr-backend)
+- [Где хранятся модели и данные](#где-хранятся-модели-и-данные)
 - [Офлайн-сборки](#офлайн-сборки)
-- [Структура](#структура)
-- [Скриншоты](#скриншоты)
+- [Веб-панель в Docker](#веб-панель-в-docker)
+- [Структура репозитория](#структура-репозитория)
 - [Благодарности](#благодарности)
 
-## Возможности
+## Как это выглядит
 
-- Пакетная обработка файлов и папок, рекурсивный поиск, drag & drop, загрузка через `yt-dlp`.
-- Экспорт: `txt`, `txt_timecodes`, `txt_diarize`, `txt_diarize_timecodes`, `md`, `srt`, `vtt`.
-- SRT/VTT делятся на короткие фразы по пунктуации и word timestamps; число строк
-  и максимальная длина строки настраиваются отдельно, не затрагивая TXT/MD.
-- При диаризации SRT называет спикера только при смене говорящего (`Спикер №1:`),
-  а VTT сохраняет стандартный voice span `<v Спикер №1>` на каждом cue.
-- Выбираемая диаризация: `pyannote`, ONNX PyAnnote + WeSpeaker или NVIDIA Streaming Sortformer v2.1.
-- Автоматическая диагностика качества, консервативная очистка и safe fallback без сдвига таймкодов.
-- Ускорение MLX RNN-T на Apple Silicon; CPU, CUDA, Intel XPU и MPS.
-- LLM-постобработка: выжимки, задачи и свои промпты.
-- Провайдеры LLM: OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, oh-my-pi и произвольный CLI. CLI-инструменты находятся автоматически (PATH + homebrew/npm/bun/nvm), статус и версия видны в настройках.
-- RU/EN, светлая/тёмная тема, журнал, stage-aware progress и отмена очереди.
-- Web UI с авторизацией, SSE-прогрессом, восстановлением задач и Docker hardening.
+### GigaAM Liquid (macOS)
 
-## Быстрый старт
+| Обработка | Live |
+|---|---|
+| ![Liquid — обработка](assets/screenshots/liquid-processing-light.png) | ![Liquid — Live](assets/screenshots/liquid-live-light.png) |
 
-### 1. Установите зависимости
+| LLM: провайдер найден автоматически | Настройки → LLM: найденные CLI |
+|---|---|
+| ![Liquid — LLM](assets/screenshots/liquid-llm-light.png) | ![Liquid — инструменты LLM](assets/screenshots/liquid-settings-llm-light.png) |
+
+Тёмная тема: [обработка](assets/screenshots/liquid-processing-dark.png) ·
+[Live](assets/screenshots/liquid-live-dark.png) ·
+[LLM](assets/screenshots/liquid-llm-dark.png) ·
+[настройки LLM](assets/screenshots/liquid-settings-llm-dark.png).
+
+### Классическое приложение (PyQt, Windows / macOS / Linux)
+
+| Обработка | LLM |
+|---|---|
+| ![PyQt — обработка](assets/screenshots/pyqt-processing-light.png) | ![PyQt — LLM](assets/screenshots/pyqt-llm-light.png) |
+
+| Настройки LLM: таблица инструментов | Тёмная тема |
+|---|---|
+| ![PyQt — настройки LLM](assets/screenshots/pyqt-llm-settings-light.png) | ![PyQt — тёмная тема](assets/screenshots/pyqt-processing-dark.png) |
+
+## Что умеет
+
+**Расшифровка**
+
+- Пакетная обработка файлов и целых папок (с подпапками), drag & drop,
+  загрузка по ссылке через `yt-dlp`.
+- Экспорт в `txt`, `txt` с таймкодами, `md`, `srt`, `vtt`, а с диаризацией —
+  текст с именами говорящих (с таймкодами и без).
+- Три движка на выбор: MLX на Apple Silicon (самый быстрый на Mac), ONNX
+  Runtime (без PyTorch, работает на CPU, CUDA, CoreML, DirectML) и PyTorch.
+- Умная подготовка звука: приложение само оценивает запись и при
+  необходимости нормализует громкость, убирает шум лёгким фильтром или
+  DeepFilterNet — только если это реально улучшает результат.
+
+**Говорящие и субтитры**
+
+- Диаризация тремя способами: pyannote, ONNX (PyAnnote + WeSpeaker) или
+  NVIDIA Streaming Sortformer v2.1.
+- SRT/VTT режутся на короткие фразы по пунктуации и таймстампам слов;
+  число строк и ширина строки настраиваются, не влияя на TXT/MD.
+
+**Реальное время**
+
+- Вкладка Live: микрофон, системный звук или оба сразу, отдельная дорожка
+  на каждый источник, диаризация «на лету» или после остановки, плавающий
+  оверлей с текстом и вопросами ассистенту.
+
+**LLM-постобработка**
+
+- Готовые режимы «Выжимка» и «Задачи» плюс свой промпт.
+- Провайдеры: любой OpenAI-совместимый или Anthropic API, а также локальные
+  CLI — Claude Code, Codex, OpenCode, Pi, oh-my-pi и произвольная команда.
+- CLI-инструменты находятся автоматически (в том числе из homebrew, npm,
+  bun, nvm — даже когда приложение запущено из Finder или Dock), их статус и
+  версия видны в настройках.
+
+**Прочее**
+
+- Русский и английский интерфейс, светлая и тёмная темы, журнал событий,
+  прогресс по стадиям, отмена очереди.
+- Веб-панель с авторизацией, прогрессом по SSE, восстановлением задач после
+  перезапуска и защищённым Docker-образом.
+
+## Установка готовых сборок
+
+Скачайте архив под свою систему со страницы
+[Releases](https://github.com/dubr1k/GigaAMGUI/releases). У каждого релиза
+две версии: **обычная** докачивает модели при первом запуске, **офлайн**
+(`*-offline*`) содержит базовый набор ONNX-моделей и не требует ни сети, ни
+токена Hugging Face — см. [Офлайн-сборки](#офлайн-сборки).
+
+| Система | Что скачать |
+|---|---|
+| macOS, Apple Silicon — нативное приложение | `GigaAMLiquid-macos-arm64-<версия>.zip` |
+| macOS, Apple Silicon — классическое PyQt | `GigaAMTranscriber-macos-app-<версия>.zip` |
+| macOS, Intel | `GigaAMTranscriber-macos-x86_64-app-offline-<версия>.zip` (только офлайн, ONNX + CoreML, macOS 13+) |
+| Windows x64 | `GigaAMTranscriber-windows-x64.exe` или `…-offline.zip` |
+| Linux x64 | `GigaAMTranscriber-linux-x64` или `…-offline.zip` |
+
+Сборки для macOS подписаны ad-hoc, поэтому при первом открытии Gatekeeper
+может отказать. Откройте приложение через правый клик → «Открыть», либо
+снимите карантин:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/GigaAMLiquid.app
+```
+
+Windows-сборка портативная: распакуйте и запустите `.exe`. Путь к папке с
+моделями не должен содержать кириллицу — некоторые нативные библиотеки с ней
+не работают.
+
+## GigaAM Liquid — нативное приложение для macOS
+
+**GigaAM Liquid** — отдельный клиент на Swift/AppKit с интерфейсом в стиле
+Liquid Glass (macOS 26; на macOS 13–15 используется обычное размытие).
+Внутри архива один `GigaAMLiquid.app`: вся обработка выполняется встроенным
+Python-движком, который лежит в `Contents/Resources` и запускается как
+фоновый процесс. Отдельно ставить Python не нужно.
+
+Что есть в приложении:
+
+- **Обработка** — перетащите файлы или вставьте ссылку на медиа; форматы
+  вывода, диаризация, число говорящих и настройки субтитров — на той же
+  странице. Готовый текст и файлы — на странице «Результат».
+- **Live** — микрофон и/или системный звук (ScreenCaptureKit), запись
+  дорожек, расшифровка по мере записи, вопросы ассистенту по текущей записи.
+- **LLM** — выжимка, задачи или свой промпт для любого транскрипта; рядом с
+  выбранным провайдером показывается его статус (`● 18.2.5`, `○ не найден`).
+- **Настройки → LLM** — таблица всех CLI-инструментов со статусом, версией и
+  путём; кнопки «Обзор…», «Проверить», «Пересканировать»; аргументы и
+  внутренний провайдер для каждого CLI; переключатель «Разрешить инструменты
+  и сессии агента».
+- **Журнал**, **API** (примеры запросов к REST-серверу), **Настройки**
+  (модель, движок, диаризация, аудио, пути, тема, язык).
+
+Разрешения: **Микрофон** — для записи голоса, **Запись экрана** — для
+системного звука (так устроен ScreenCaptureKit). Токен Hugging Face и ключ
+API хранятся в Связке ключей.
+
+Собрать самостоятельно:
+
+```bash
+# движок (PyInstaller, 5–20 минут)
+bash packaging/build_exe_mac.sh              # → dist/GigaAMTranscriber.app
+# нативный клиент
+swift build -c release --package-path macos/GigaAMLiquid
+```
+
+Точная сборка бандла (Info.plist, вложение движка, подпись) описана в
+`.github/workflows/build.yml`, шаг «Assemble and verify app bundle». Для
+разработки достаточно `swift run --package-path macos/GigaAMLiquid` из корня
+репозитория — клиент найдёт `.venv/bin/python` проекта сам.
+
+## Запуск из исходников
+
+Нужен Python 3.10+ и `ffmpeg` в `PATH`.
 
 ```bash
 git clone https://github.com/dubr1k/GigaAMGUI.git
 cd GigaAMGUI
 cp .env.example .env
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt
 ffmpeg -version
+python app.py
 ```
 
-### 2. Укажите Hugging Face token
+Для диаризации через pyannote укажите в `.env` токен Hugging Face
+(`HF_TOKEN=…`) и примите условия моделей `pyannote/speaker-diarization-3.1`
+и `pyannote/segmentation-3.0`. ONNX-диаризация и Sortformer токена не
+требуют.
 
-```env
-HF_TOKEN=your_huggingface_token_here
-```
-
-Для диаризации нужно принять условия моделей `pyannote/speaker-diarization-3.1` и `pyannote/segmentation-3.0`.
-
-### Опционально: захват в реальном времени
+Дополнительные наборы зависимостей:
 
 ```bash
-# macOS 13+: ScreenCaptureKit для системного звука, sounddevice для микрофона
-python -m pip install -r requirements-live-macos.txt
-
-# Linux: sounddevice; системный звук доступен только как monitor source PipeWire/PulseAudio
-sudo apt install libportaudio2 pulseaudio-utils   # PortAudio + pactl для перечисления мониторов
-python -m pip install -r requirements-live-linux.txt
+python -m pip install -r requirements-live-macos.txt     # Live на macOS 13+
+python -m pip install -r requirements-live-windows.txt   # Live на Windows (PyAudioWPatch)
+python -m pip install -r requirements-live-linux.txt     # Live на Linux (+ libportaudio2 pulseaudio-utils libasound2-plugins)
+python -m pip install -r requirements-sortformer.txt     # NVIDIA Sortformer (тянет NeMo)
+python -m pip install -r requirements-macos-mlx.txt      # MLX на Apple Silicon
 ```
 
-Портативные и офлайн-сборки уже содержат live-захват (включая PortAudio на Linux) —
-доставлять что-либо вручную не нужно; команды выше нужны только при запуске из исходников.
-
-macOS требует разрешения **Microphone** для микрофона и **Screen Recording** для
-системного звука. ScreenCaptureKit доступен с macOS 13. На Linux приложение не
-создаёт monitor source, а только находит существующие: список системных источников
-собирается через `pactl` (пакет `pulseaudio-utils`), потому что мониторы —
-виртуальные источники звукового сервера, и в перечислении PortAudio их нет. Поток
-для такого источника открывается на ALSA-агрегате `pulse` (пакет
-`libasound2-plugins`) и сразу перецепляется на выбранный монитор через
-`move-source-output`; если перецепить не удалось, сессия завершается ошибкой, а не
-пишет вместо системного звука микрофон. Устройства с `monitor` в имени, объявленные
-в `~/.asoundrc`, по-прежнему видны и работают. При отсутствии пакета, разрешения
-или monitor source захват сообщает ошибку и не создаёт дорожку.
-
-## Live desktop
-
-Вкладка Live в Desktop GUI захватывает микрофон, системный звук или оба источника
-одновременно; для каждого источника выбирается отдельное устройство. По выбору
-сохраняются `mic.wav` и `system.wav`, а при захвате обоих источников — также
-`mix.wav`. После остановки сессии доступны `txt`, `txt_timecodes`, `txt_diarize`,
-`txt_diarize_timecodes`, `md`, `srt` и `vtt`.
-
-Диаризация выбирается отдельно: выключена, анонимная оценка в реальном времени
-или обработка после остановки. Оценки в реальном времени могут изменяться в
-последние 10 секунд; если live-диаризация недоступна, сохраняются метки источников.
-Режим после остановки добавляет офлайн-метки спикеров к записанным дорожкам.
-
-Кнопка «Оверлей» открывает плавающее окно поверх других окон с финальным и
-частичным текстом. В нём можно задавать LLM вопросы по финальным событиям текущей
-сессии и отменять генерацию ответа.
-
-Live-захват поддерживается на Windows, macOS и Linux. В Windows установите
-`requirements-live-windows.txt` (PyAudioWPatch). В macOS 13+ для микрофона нужны
-`requirements-live-macos.txt` и разрешение Microphone; системный звук дополнительно
-требует разрешение Screen Recording и ScreenCaptureKit. В Linux установите
-`requirements-live-linux.txt` и системные `libportaudio2`, `pulseaudio-utils` и
-`libasound2-plugins`; системный звук доступен только через существующий monitor
-source PipeWire/PulseAudio, который приложение не создаёт. Вшить в сборку можно
-только PortAudio: `pactl` и ALSA-плагин pulse остаются системными пакетами.
-
-### Опционально: NVIDIA Sortformer
-
-В полной macOS `.app` Sortformer и NeMo уже включены. При запуске проекта из
-исходников Sortformer устанавливается отдельно, чтобы не добавлять тяжёлый NeMo
-в базовую установку:
-
-```bash
-python -m pip install -r requirements-sortformer.txt
-python cli.py --diarize --diarization-backend sortformer -f audio.wav
-```
-
-Используется `nvidia/diar_streaming_sortformer_4spk-v2.1` с официальными
-high-latency параметрами model card. Модель сама определяет активных
-спикеров, поддерживает максимум четыре голоса и не требует `HF_TOKEN`.
-Диаризация не зависит от ASR-модели: она проверена с `v3_e2e_rnnt`,
-`multilingual_ctc` (220M) и `multilingual_large_ctc` (600M). Обе CTC-модели
-работают через PyTorch backend.
-Рекомендуется CUDA; CPU работает значительно медленнее. На Apple Silicon
-Sortformer запускается на MPS; если конкретная операция NeMo не выполнится на
-MPS, приложение один раз повторит диаризацию на CPU и покажет причину fallback
-в журнале. Модель (~471 МБ) загружается после первого нажатия «Начать обработку»
-с выбранным Sortformer и затем остаётся в пользовательском кэше.
-NeMo из Space (`2.5.3`) намеренно не используется из-за исправленных в новых
-релизах уязвимостей; optional-файл фиксирует проверенную безопасную ветку 2.7.
-Для Web GUI соберите расширенный образ: `INSTALL_SORTFORMER=1 docker compose build gigaam-web`.
-
-## Интерфейсы
-
-| Интерфейс | Запуск | Для чего |
-|---|---|---|
-| Desktop GUI | `python app.py` | Обычная интерактивная работа |
-| CLI | `python cli.py -f audio.wav -o output` | Скрипты и автоматизация |
-| REST API | `python api.py` | Интеграции; docs: `http://127.0.0.1:8000/docs` |
-| Web GUI | `docker compose up -d --build gigaam-web` | Локальная web-панель: `http://127.0.0.1:8001/` |
-| TUI *(preview)* | `cd tui && cargo run --release` | Терминальная интерактивная очередь |
-
-### TUI
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/install_tui.sh | bash
-gigaam
-```
-
-### Настройки субтитров
-
-В Desktop GUI и Web UI параметры появляются рядом с форматами SRT/VTT. CLI
-принимает `--subtitle-sentence-split/--no-subtitle-sentence-split`,
-`--subtitle-max-lines` и `--subtitle-max-width`:
-
-```bash
-python cli.py -f audio.wav --format srt --format vtt \
-  --subtitle-sentence-split --subtitle-max-lines 2 --subtitle-max-width 64
-```
-
-В TUI доступны команды `/subtitle-split on|off`, `/subtitle-lines 1..4` и
-`/subtitle-width 20..100`. Настройки сохраняются между запусками. При наличии
-word timestamps cue получает точные границы; иначе используется детерминированное
-распределение внутри исходного ASR-сегмента. При диаризации SRT называет спикера
-только при смене говорящего, и лимит ширины учитывает метку лишь в этих cue —
-остальные используют всю заданную длину строки. VTT сохраняет стандартный voice
-span `<v Спикер №1>` на каждом cue: он невидим в плеере, но нужен для атрибуции
-и стилизации. При экстремально узкой строке длинная видимая метка сокращается
-с сохранением идентифицирующего суффикса; в VTT имя не обрезается.
-
-## Конфигурация
-
-### Папка данных и моделей
-
-Все крупные загрузки можно направить на выбранный диск единым параметром
-`GIGAAM_DATA_DIR`. Внутри автоматически создаются `runtimes` и отдельные
-подкаталоги `models/gigaam`, `models/huggingface`, `models/onnx`,
-`models/torch`, `models/nemo` и `models/deepfilter`. Это включает PyTorch
-runtime, GigaAM, ONNX/MLX, Pyannote/Sortformer, NeMo и DeepFilterNet.
-
-- **Desktop GUI:** `Настройки → Папка данных и моделей…`. Portable-сборка также
-  предлагает выбрать папку до первой загрузки. После смены папки нужен перезапуск;
-  уже загруженные модели намеренно не перемещаются автоматически.
-- **GUI/CLI:** `python app.py --data-dir /mnt/large/GigaAMData` или
-  `python cli.py --data-dir /mnt/large/GigaAMData ...`.
-- **TUI:** `gigaam --data-dir /mnt/large/GigaAMData`.
-- **REST API/Web:** задайте `GIGAAM_DATA_DIR` до запуска сервера. Для Docker
-  Compose эта переменная означает путь **на хосте**:
-
-```bash
-GIGAAM_DATA_DIR=/mnt/large/GigaAMData docker compose up -d --build gigaam-web
-```
-
-Узкие переменные (`HF_HOME`, `HUGGINGFACE_HUB_CACHE`, `TRANSFORMERS_CACHE`,
-`TORCH_HOME`, `NEMO_HOME`, `ONNX_MODEL_DIR`, `GIGAAM_RUNTIME_DIR`, `GIGAAM_CONFIG_DIR`,
-`GIGAAM_PYTORCH_MODEL_DIR`, `GIGAAM_DEEPFILTER_DIR`) сохраняют приоритет, если
-нужно разместить отдельный компонент иначе. В Windows путь моделей/runtime не
-должен содержать кириллицу из-за ограничений некоторых нативных DLL.
-
-Небольшие пользовательские настройки остаются в системном config-каталоге, чтобы
-смена диска не сбрасывала язык, токены и параметры обработки. Для полностью
-самостоятельной конфигурации её можно отдельно перенести через `GIGAAM_CONFIG_DIR`.
-
-Для Web UI задайте в `.env`:
-
-```env
-WEB_SECRET=change_me
-WEB_USERNAME=admin
-WEB_PASSWORD=replace_with_strong_password
-```
-
-### Развёртывание Web UI через Docker
-
-```bash
-cp .env.example .env
-mkdir -p uploads results logs cache
-docker compose up -d --build gigaam-web
-curl -fsS http://127.0.0.1:8001/health
-```
-
-Compose монтирует выбранный на хосте `GIGAAM_DATA_DIR` внутрь контейнера как
-`/data`. Не подставляйте хостовый абсолютный путь в `HF_HOME`, `TORCH_HOME`,
-`NEMO_HOME`, `ONNX_MODEL_DIR` или `GIGAAM_RUNTIME_DIR`: внутри контейнера эти
-кэши должны оставаться под `/data`. Корневая файловая система контейнера
-работает в режиме read-only, поэтому перенос кэшей обратно в `/home` приведёт к
-ошибке загрузки VAD или модели диаризации.
-
-При обновлении пересобирайте контейнер, но сохраняйте `GIGAAM_DATA_DIR`,
-`uploads`, `results` и `logs`: модели и пользовательские файлы находятся в этих
-томах и новый контейнер подхватит их автоматически. Не нужно копировать их внутрь
-резервной копии самого контейнера. Если каталоги bind mount создавались от root,
-дайте UID `1000` права записи до запуска сервиса.
-
-После обновления проверяйте не только статус контейнера, но и `/health` и журнал:
-
-```bash
-docker compose ps gigaam-web
-docker compose logs --tail=200 gigaam-web
-curl -fsS http://127.0.0.1:8001/health
-```
-
-Для задач с диаризацией дополнительно убедитесь, что в логе нет `Read-only file
-system` или `VAD недоступен`, а сегментация ASR работает в режиме VAD, а не через
-аварийный `overlap_chunks` fallback. Перед обновлением можно сохранить тег
-предыдущего образа для быстрого rollback; nginx или другой reverse proxy к
-контейнеру на `127.0.0.1:8001` настраивается отдельно.
-
-Для RTX 50xx / Blackwell сначала установите совместимый PyTorch:
+Для видеокарт RTX 50xx (Blackwell) сначала поставьте совместимый PyTorch:
 
 ```bash
 python -m pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt
 ```
 
-## Интеллектуальная подготовка аудио
+## Интерфейсы
 
-По умолчанию `AUDIO_PREPROCESSING_MODE=auto`. Перед ASR приложение измеряет
-громкость, noise floor, приблизительный SNR, clipping, тишину, DC offset,
-spectral flatness и низкочастотный шум. Детерминированная policy выбирает одно
-из действий:
+| Интерфейс | Запуск | Когда удобен |
+|---|---|---|
+| GigaAM Liquid (macOS) | `GigaAMLiquid.app` | Повседневная работа на Mac |
+| Классический GUI (PyQt) | `python app.py` | Windows, Linux, macOS |
+| CLI | `python cli.py -f audio.wav -o output` | Скрипты и пакетная автоматизация |
+| REST API | `python api.py` | Интеграции; документация на `http://127.0.0.1:8000/docs` |
+| Веб-панель | `docker compose up -d --build gigaam-web` | Сервер в локальной сети: `http://127.0.0.1:8001/` |
+| TUI *(preview)* | `cd tui && cargo run --release` | Очередь задач в терминале |
 
-- pass-through для уже качественной записи;
-- только нормализацию для тихой записи;
-- мягкий FFmpeg high-pass/denoise для умеренного шума;
-- DeepFilterNet для сильного широкополосного шума;
-- отказ от enhancement при клиппинге, почти пустой записи или неуверенном результате.
-
-После обработки кандидат измеряется повторно. Он используется только если
-quality gate подтверждает улучшение без роста клиппинга, потери речи и изменения
-длительности. ASR получает выбранную дорожку, а диаризация — исходный canonical
-WAV: это сохраняет тембр спикеров, границы реплик и таймкоды. Паузы физически не
-удаляются.
-
-DeepFilterNet запускается официальным self-contained Rust binary версии `0.5.6`.
-Он скачивается с GitHub Releases только при первом обнаружении тяжёлого шума,
-проверяется по закреплённому SHA-256 и хранится в runtime cache. Python-пакет
-DeepFilterNet не устанавливается и не конфликтует с NumPy 2. Поддерживаются
-Windows x64, macOS Intel/Apple Silicon и Linux x64/arm64. При недоступной сети,
-неподдерживаемой платформе или любой ошибке транскрибация продолжится с исходной
-дорожкой.
-
-```env
-AUDIO_PREPROCESSING_MODE=auto  # off | auto | light | denoise
-# GIGAAM_DEEPFILTER_DIR=/writable/executable/cache
-```
+Установить TUI одной командой:
 
 ```bash
-python cli.py --audio-preprocessing auto -f noisy.wav
-python cli.py --audio-preprocessing off -f studio.wav
+curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/install_tui.sh | bash
+gigaam
 ```
 
-## ASR backend
+## Live: запись и расшифровка в реальном времени
 
-`auto` на macOS Apple Silicon использует [gigaam-mlx](https://github.com/aystream/gigaam-mlx), затем при необходимости переключается на PyTorch. На macOS x86_64 (Intel) `auto` выбирает `onnx`: колёс torch>=2.6 под эту платформу не существует, последнее — 2.2.2. На остальных платформах `auto` пока сохраняет PyTorch как проверенный default. Новый backend `onnx` использует `onnx-asr==0.12.0`, не импортирует PyTorch и поддерживает CPU, CUDA, TensorRT, CoreML и DirectML.
+Вкладка Live есть в Liquid и в PyQt. Источники — микрофон, системный звук
+или оба одновременно, для каждого выбирается своё устройство. По желанию
+сохраняются `mic.wav`, `system.wav` и, при двух источниках, `mix.wav`.
+После остановки доступны те же форматы экспорта, что и при обычной
+обработке.
 
-### macOS Intel (x86_64)
+Диаризация в Live работает в трёх режимах: выключена, анонимная оценка в
+реальном времени (метки могут уточняться в последние 10 секунд) или полная
+обработка после остановки. Кнопка «Оверлей» открывает плавающее окно поверх
+других приложений с финальным и промежуточным текстом; там же можно задать
+LLM вопрос по уже расшифрованному.
 
-Для Intel-маков публикуется отдельный ассет
-`GigaAMTranscriber-macos-x86_64-app-offline-<тег>.zip`: `.app` плюс папка
-`models` рядом с ним. Сборка идёт без torch и без mlx — распознавание, VAD и
-диаризация целиком работают через ONNX Runtime (CoreML и CPU). arm64-ассеты на
-Intel не запускаются в принципе: Rosetta переводит в обратную сторону.
+Платформы:
 
-**Требуется macOS 13 и новее** — ограничение колёс `onnxruntime` под x86_64.
+- **macOS 13+** — микрофон через `sounddevice` (разрешение Microphone),
+  системный звук через ScreenCaptureKit (разрешение Screen Recording).
+- **Windows** — `requirements-live-windows.txt` (PyAudioWPatch, loopback
+  WASAPI).
+- **Linux** — `requirements-live-linux.txt` плюс системные `libportaudio2`,
+  `pulseaudio-utils`, `libasound2-plugins`. Системный звук берётся только из
+  существующего monitor-источника PipeWire/PulseAudio: приложение находит
+  его через `pactl`, открывает поток на ALSA-агрегате `pulse` и переключает
+  на выбранный монитор через `move-source-output`. Если переключить не
+  удалось, сессия завершается ошибкой, а не пишет микрофон вместо системного
+  звука.
 
-Локальная сборка:
+Портативные и офлайн-сборки уже содержат всё для Live (включая PortAudio на
+Linux); команды выше нужны только при запуске из исходников.
+
+## LLM: выжимки, задачи и свои промпты
+
+Страница LLM принимает готовые транскрипты (файлы или вставленный текст) и
+прогоняет их через выбранную модель в одном из режимов: **Выжимка**,
+**Задачи** или **Свой промпт**. Результат сохраняется в `txt`, `md` или
+`docx` рядом с транскриптом или в выбранную папку.
+
+### Провайдеры
+
+| Провайдер | Как работает |
+|---|---|
+| **API** | Любой OpenAI-совместимый endpoint или Anthropic Messages API. Тип определяется по URL. Ретраи на 429/5xx с учётом `Retry-After`. Google Gemini подключается через `https://generativelanguage.googleapis.com/v1beta/openai/`. |
+| **Claude Code** | `claude -p` — локальный CLI Anthropic. |
+| **Codex** | `codex exec` — CLI OpenAI. Модель выбирает сам клиент. |
+| **OpenCode** | `opencode run`, модель в формате `provider/model`. |
+| **Pi** | `pi -p`; можно задать внутренний provider (anthropic, openai, google…). |
+| **oh-my-pi** | `omp -p` — форк pi с 60+ провайдерами; модель задаётся нечётко (`opus`, `gpt-5.2`, `openai/gpt-5.2`). |
+| **Другое** | Своя команда: промпт передаётся последним аргументом и в stdin; напишите `{stdin}` в аргументах, чтобы передавать только через stdin. |
+
+### Как находятся CLI
+
+Приложение, запущенное из Finder, Dock или ярлыка, получает «пустой» системный
+`PATH` и не видит `claude`, `omp` или `codex`, установленные через homebrew,
+npm, bun или nvm. Поэтому поиск устроен так:
+
+1. проверяется `PATH` процесса и типичные каталоги установки —
+   `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.bun/bin`,
+   `~/.npm-global/bin`, `~/.volta/bin`, `~/.cargo/bin`, все версии nvm, pnpm;
+   на Windows — `%APPDATA%\npm`, scoop, bun, pnpm;
+2. найденный бинарь запускается с `--version`; в настройках видны статус
+   (`●` найден, `○` не найден, `⚠` не запускается) и версия;
+3. тот же расширенный `PATH` получает и сам CLI, поэтому npm-обёртки
+   `claude`/`opencode` находят `node`.
+
+Пустое поле пути означает автопоиск. Кнопка «Обзор…» позволяет указать
+бинарь вручную, «Проверить» — перепроверить один инструмент, «Пересканировать»
+— все сразу. Для ненайденного инструмента показывается команда установки.
+
+### Безопасный запуск
+
+По умолчанию агентные CLI запускаются как обычный запрос к модели: без
+инструментов и без сохранения сессии (`--no-tools --no-session` у pi/omp,
+`--tools "" --no-session-persistence` у Claude Code, `run --pure` у
+OpenCode). Выжимка транскрипта — не задача для coding-агента, и она не
+должна засорять его историю. Переключатель **«Разрешить инструменты и сессии
+агента»** снимает это ограничение.
+
+Промпт передаётся через stdin, а не аргументом командной строки: длинные
+транскрипты не упираются в лимит аргумента (128 КиБ на Linux).
+
+**Аргументы** в настройках — дополнительные флаги командной строки, которые
+добавляются к запуску как есть, например `--thinking low`. Обычно они не
+нужны. **Provider** у Pi и oh-my-pi — внутренний поставщик модели, если нужно
+переопределить настроенный в самом CLI.
+
+## Субтитры
+
+Настройки SRT/VTT находятся рядом с выбором форматов: число строк в блоке,
+максимальная ширина строки и разбиение по предложениям. Они не влияют на
+TXT и MD. CLI принимает те же параметры:
 
 ```bash
-python -m pip install -r requirements-macos-x86_64.txt -r requirements-live-macos.txt
-bash packaging/build_exe_mac_x86_64.sh
+python cli.py -f audio.wav --format srt --format vtt \
+  --subtitle-sentence-split --subtitle-max-lines 2 --subtitle-max-width 64
 ```
 
-В portable-сборках 1.3.1 ускорение ONNX согласовано с выбранным устройством:
+В TUI — команды `/subtitle-split on|off`, `/subtitle-lines 1..4`,
+`/subtitle-width 20..100`.
 
-- Windows/Linux содержат один `onnxruntime-gpu`; его `auto` использует
-  `CUDAExecutionProvider → CPUExecutionProvider`. CUDA/cuDNN берутся из
-  выбранного сменного PyTorch runtime (`cu124`/`cu128`), поэтому ASR и
-  Sortformer не расходятся по устройствам. CPU остаётся встроенным fallback;
-- macOS содержит обычный `onnxruntime`; `auto` использует
-  `CoreMLExecutionProvider → CPUExecutionProvider`;
-- DirectML и TensorRT остаются явными advanced-настройками и используются
-  только когда установленный ORT действительно предоставляет такой provider.
+При наличии таймстампов слов каждый cue получает точные границы; иначе время
+распределяется внутри исходного сегмента распознавания. С диаризацией SRT
+подписывает говорящего только при его смене (`Спикер №1:`), а VTT добавляет
+стандартный `<v Спикер №1>` в каждый cue — в плеере он невидим, но нужен для
+атрибуции и стилей.
 
-Выбор CPU не скачивает CUDA runtime. Если CUDA runtime уже выбран и установлен,
-приложение активирует его до обнаружения providers и вызывает preload
-CUDA/cuDNN. Фактическая provider chain отображается в журнале подготовки.
+## Диаризация — кто говорит
 
-```bash
-python cli.py --backend auto -f audio.wav
-python cli.py --backend mlx -f audio.wav
-python cli.py --backend onnx --onnx-provider auto -f audio.wav
-python cli.py --backend pytorch -f audio.wav
-```
+| Движок | Особенности |
+|---|---|
+| **pyannote** | Проверенный вариант; нужен `HF_TOKEN` и принятые условия моделей. |
+| **ONNX** (PyAnnote + WeSpeaker) | Без PyTorch и токена; сохраняет перекрывающуюся речь, кластеризует embeddings. Используется в офлайн-сборках. |
+| **NVIDIA Sortformer v2.1** | Сам определяет число говорящих (до четырёх); токен не нужен. Лучше на CUDA, на Apple Silicon работает через MPS с автоматическим откатом на CPU. Модель ~470 МБ скачивается при первом использовании. |
 
-Те же настройки доступны в Desktop GUI и Web UI. REST API принимает их как
-необязательные query-параметры; без них используется серверная конфигурация:
+Sortformer в полной macOS-сборке уже включён; из исходников ставится через
+`requirements-sortformer.txt` (NeMo 2.7 — версии из Space намеренно не
+используются из-за исправленных позже уязвимостей). На Windows Sortformer
+работает через ONNX Runtime без NeMo. Для веб-панели соберите расширенный
+образ: `INSTALL_SORTFORMER=1 docker compose build gigaam-web`.
 
 ```bash
-curl -H "X-API-Key: $GIGAAM_API_KEY" \
-  -F "file=@audio.wav" \
-  "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=onnx&asr_model=v3_e2e_rnnt&onnx_provider=coreml"
-```
-
-Список допустимых значений и активная конфигурация: `GET /api/v1/asr/options`.
-Настройка, отличающаяся от серверного default, получает изолированный loader
-задачи и не перенастраивает backend параллельных запросов.
-
-ONNX-диаризация также доступна без PyTorch и HF_TOKEN:
-
-```bash
+python cli.py --diarize --diarization-backend sortformer -f audio.wav
 python cli.py --backend onnx --diarize --diarization-backend onnx -f audio.wav
 ```
 
-Она сохраняет powerset-классы перекрывающейся речи, извлекает WeSpeaker embeddings и выполняет constrained clustering. Pyannote и Sortformer оставлены как проверяемые fallback-backend-ы: ONNX станет default только после прохождения локальных WER/CER и DER/JER ворот качества. На native Windows Sortformer запускается через ONNX Runtime без NeMo; на Linux/macOS официальный NeMo backend используется, когда он установлен, иначе автоматически выбирается тот же portable ONNX runtime. На Windows/Linux ONNX Sortformer использует CUDA выбранного runtime и CPU fallback; на macOS — CoreML и CPU fallback.
+Диаризация всегда получает исходную дорожку (без шумоподавления), поэтому
+тембр говорящих и таймкоды не искажаются.
 
-Сравнение на локальном лицензированном корпусе:
+## Подготовка аудио и шумоподавление
+
+Режим `AUDIO_PREPROCESSING_MODE=auto` (по умолчанию) перед распознаванием
+измеряет громкость, уровень шума, SNR, клиппинг, тишину, DC-смещение и
+спектральные признаки и выбирает одно из действий: ничего не менять,
+нормализовать громкость, применить мягкий фильтр FFmpeg или включить
+DeepFilterNet для сильного широкополосного шума. Обработанный вариант
+проверяется повторно и берётся только если он действительно лучше — без
+роста клиппинга, потерь речи и изменения длительности. Паузы не вырезаются.
+
+DeepFilterNet — официальный Rust-бинарь `0.5.6`, который скачивается с
+GitHub Releases при первом тяжёлом шуме, проверяется по SHA-256 и хранится в
+кэше. Python-пакет DeepFilterNet не нужен. Если сети нет или платформа не
+поддерживается, распознавание идёт по исходной дорожке.
+
+```env
+AUDIO_PREPROCESSING_MODE=auto   # off | auto | light | denoise
+```
+
+```bash
+python cli.py --audio-preprocessing off -f studio.wav
+```
+
+## Движок распознавания (ASR backend)
+
+| Backend | Где и зачем |
+|---|---|
+| `auto` | На Apple Silicon — MLX, на macOS Intel — ONNX, на остальных — PyTorch. |
+| `mlx` | [gigaam-mlx](https://github.com/aystream/gigaam-mlx), самый быстрый вариант на Mac. |
+| `onnx` | `onnx-asr`, без PyTorch. Провайдеры: CPU, CUDA, TensorRT, CoreML, DirectML. |
+| `pytorch` | Классический движок; CPU, CUDA, Intel XPU, MPS. |
+
+```bash
+python cli.py --backend auto -f audio.wav
+python cli.py --backend onnx --onnx-provider coreml -f audio.wav
+```
+
+В портативных сборках Windows/Linux ONNX использует CUDA выбранного
+PyTorch-runtime (`cu124`/`cu128`) с откатом на CPU; macOS — CoreML → CPU.
+DirectML и TensorRT включаются вручную и только если установленный ONNX
+Runtime их предоставляет. Реальная цепочка провайдеров пишется в журнал.
+
+REST API принимает те же параметры как query-строку, а список допустимых
+значений отдаёт `GET /api/v1/asr/options`:
+
+```bash
+curl -H "X-API-Key: $GIGAAM_API_KEY" -F "file=@audio.wav" \
+  "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=onnx&asr_model=v3_e2e_rnnt&onnx_provider=coreml"
+```
+
+Сравнить движки на своём корпусе:
 
 ```bash
 python scripts/benchmark_asr_backends.py corpus/asr.json --backend onnx --backend pytorch --output asr-metrics.json
 python scripts/benchmark_diarization_backends.py corpus/diarization.json --backend onnx --backend pyannote --output diarization-metrics.json
 ```
 
+### macOS Intel
+
+Для Intel-маков публикуется отдельный офлайн-ассет: `.app` плюс папка
+`models`. Сборка без torch и mlx — распознавание, VAD и диаризация целиком
+на ONNX Runtime (CoreML/CPU). Нужна macOS 13+. arm64-сборки на Intel не
+запускаются: Rosetta работает в обратную сторону.
+
+```bash
+python -m pip install -r requirements-macos-x86_64.txt -r requirements-live-macos.txt
+bash packaging/build_exe_mac_x86_64.sh
+```
+
+## Где хранятся модели и данные
+
+Все крупные загрузки — PyTorch runtime, GigaAM, ONNX/MLX, pyannote,
+Sortformer, NeMo, DeepFilterNet — можно направить на выбранный диск одним
+параметром `GIGAAM_DATA_DIR`. Внутри создаются `runtimes` и
+`models/{gigaam,huggingface,onnx,torch,nemo,deepfilter}`.
+
+- **PyQt:** Настройки → «Папка данных и моделей…». Портативная сборка
+  предлагает выбрать папку до первой загрузки. После смены нужен перезапуск;
+  уже скачанные модели не переносятся автоматически.
+- **Liquid:** переменная окружения `GIGAAM_DATA_DIR` (например, через
+  `launchctl setenv GIGAAM_DATA_DIR /Volumes/Data/GigaAM`); встроенный движок
+  читает её так же, как CLI.
+- **CLI/GUI:** `python app.py --data-dir /mnt/large/GigaAMData`,
+  `python cli.py --data-dir …`.
+- **TUI:** `gigaam --data-dir …`.
+- **REST API / Web:** задайте `GIGAAM_DATA_DIR` до запуска сервера.
+
+Узкие переменные (`HF_HOME`, `HUGGINGFACE_HUB_CACHE`, `TRANSFORMERS_CACHE`,
+`TORCH_HOME`, `NEMO_HOME`, `ONNX_MODEL_DIR`, `GIGAAM_RUNTIME_DIR`,
+`GIGAAM_CONFIG_DIR`, `GIGAAM_PYTORCH_MODEL_DIR`, `GIGAAM_DEEPFILTER_DIR`)
+имеют приоритет, если отдельный компонент нужно положить в другое место.
+Небольшие пользовательские настройки (язык, токены, параметры обработки)
+живут в системном config-каталоге и при смене диска не сбрасываются.
+
 ## Офлайн-сборки
 
-Каждый релиз выходит в двух вариантах:
+Архивы `*-offline*` содержат рядом с исполняемым файлом папку `models` с
+базовой ONNX-цепочкой: распознавание, VAD и диаризация PyAnnote + WeSpeaker.
+Такой сборке не нужны сеть, токен Hugging Face и PyTorch. Распакуйте архив
+целиком и запускайте из распакованной папки — модели ищутся рядом. Папка
+офлайн-моделей только читается; всё, что скачивается позже (multilingual,
+MLX, pyannote, Sortformer), попадает в обычный кэш приложения.
 
-- **обычный** — после нажатия «Начать обработку» проверяет выбранную цепочку,
-  показывает скачивание/загрузку, device/provider и fallback в журнале и
-  докачивает недостающие модели (и PyTorch runtime, если он нужен выбранному
-  PyTorch/NeMo/CUDA-сценарию);
-- **офлайн** (`*-offline.zip`) — рядом с исполняемым файлом лежит папка
-  `models` с базовой ONNX-цепочкой: распознавание, VAD и
-  Pyannote+WeSpeaker-диаризация.
-  Такой сборке не нужны ни сеть, ни токен Hugging Face, ни PyTorch.
-
-Распакуйте архив целиком и запускайте бинарник из распакованной папки: модели
-ищутся рядом с ним. Приложение само выбирает `onnx` и для распознавания, и для
-диаризации — явная настройка в `.env` или переменной окружения по-прежнему
-имеет приоритет. Папка офлайн-моделей используется только для чтения, а
-докачанные позже модели (multilingual, MLX, Pyannote, Sortformer) попадают в доступный для
-записи кэш приложения. Выбор `GIGAAM_DATA_DIR` не заменяет встроенные snapshots:
-офлайн-модели по-прежнему читаются рядом с бинарником, а writable-данные
-размещаются на выбранном диске.
-
-Собрать такой набор самостоятельно:
+Собрать набор моделей самостоятельно:
 
 ```bash
 python scripts/build_offline_models.py --output offline/models/hf
 ```
 
-## Структура
+## Веб-панель в Docker
+
+```bash
+cp .env.example .env            # WEB_SECRET, WEB_USERNAME, WEB_PASSWORD
+mkdir -p uploads results logs cache
+docker compose up -d --build gigaam-web
+curl -fsS http://127.0.0.1:8001/health
+```
+
+`GIGAAM_DATA_DIR` для Compose — путь **на хосте**; внутри контейнера он
+монтируется как `/data`. Корневая файловая система контейнера read-only,
+поэтому кэши (`HF_HOME`, `TORCH_HOME`, `NEMO_HOME`, `ONNX_MODEL_DIR`,
+`GIGAAM_RUNTIME_DIR`) должны оставаться под `/data`.
+
+При обновлении пересобирайте контейнер, но сохраняйте `GIGAAM_DATA_DIR`,
+`uploads`, `results` и `logs` — модели и файлы пользователей лежат в этих
+томах. Если каталоги создавались от root, дайте UID `1000` права на запись.
+После обновления проверяйте `/health` и журнал:
+
+```bash
+docker compose ps gigaam-web
+docker compose logs --tail=200 gigaam-web
+```
+
+В логе не должно быть `Read-only file system` или `VAD недоступен`.
+Reverse proxy к `127.0.0.1:8001` настраивается отдельно.
+
+## Структура репозитория
 
 ```text
 GigaAMGUI/
-├── app.py                 # PyQt desktop app
-├── cli.py                 # scripting CLI
-├── api.py                 # REST API
-├── src/                   # core, services, GUI mixins, utilities
-├── tui/                   # Ratatui frontend
-├── web/                   # FastAPI Web UI
+├── app.py                 # классический PyQt-клиент
+├── cli.py                 # командная строка
+├── api.py                 # REST API (FastAPI)
+├── src/
+│   ├── core/              # распознавание, диаризация, субтитры
+│   ├── services/          # общий слой: транскрипция, LLM, реестр CLI (cli_tools.py)
+│   ├── gui/               # PyQt-миксины
+│   ├── live/              # захват и live-сессии
+│   └── utils/             # ffmpeg, подготовка аудио, HTTP-клиент LLM
+├── macos/GigaAMLiquid/    # нативный Swift-клиент для macOS
+├── tui/                   # Ratatui-клиент
+├── web/                   # веб-панель
+├── packaging/             # PyInstaller-спеки и скрипты сборки
 ├── tests/
-├── packaging/
-├── assets/
-├── Dockerfile
-└── docker-compose.yml
+└── docs/                  # CHANGELOG, release notes, инструкции
 ```
 
-## Скриншоты
-
-| Обработка | LLM | Настройки LLM |
-|---|---|---|
-| ![Обработка](assets/screenshots/processing.png) | ![LLM](assets/screenshots/llm.png) | ![Настройки LLM](assets/screenshots/llm-settings.png) |
+Для разработчиков: правила проекта — в [AGENTS.md](AGENTS.md); список
+изменений — в [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 ## Благодарности
 
-- [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM)
-- [GigaAM-v3 on Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
-- [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
-- [istupakov / onnx-asr](https://github.com/istupakov/onnx-asr) — за лёгкую кроссплатформенную реализацию распознавания речи на ONNX
+- [SaluteDevices / GigaAM](https://github.com/salute-developers/GigaAM) и
+  [GigaAM-v3 на Hugging Face](https://huggingface.co/ai-sage/GigaAM-v3)
+- [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx) — MLX-порт
+  для Apple Silicon
+- [istupakov / onnx-asr](https://github.com/istupakov/onnx-asr) — лёгкое
+  кроссплатформенное распознавание на ONNX
 - [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
-- [Scrybl / Sortformer v2.1 ONNX](https://huggingface.co/Scrybl/diar_streaming_sortformer_4spk-v2.1) — закреплённый ONNX-экспорт для native Windows
-- [parakeet-rs](https://github.com/altunenes/parakeet-rs) — MIT, референс потокового Sortformer ONNX
-- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT, optional neural noise suppression
+  и [Scrybl / ONNX-экспорт](https://huggingface.co/Scrybl/diar_streaming_sortformer_4spk-v2.1)
+- [parakeet-rs](https://github.com/altunenes/parakeet-rs) — MIT, референс
+  потокового Sortformer на ONNX
+- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT,
+  нейросетевое шумоподавление
+- [oh-my-pi](https://github.com/can1357/oh-my-pi) и
+  [pi](https://github.com/mariozechner/pi-coding-agent) — CLI-агенты,
+  которые здесь работают как LLM-провайдеры

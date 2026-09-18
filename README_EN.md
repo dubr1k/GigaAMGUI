@@ -374,9 +374,32 @@ GigaAMGUI/
 
 ## Screenshots
 
-| Processing | LLM | LLM settings |
-|---|---|---|
-| ![Processing](assets/screenshots/processing-en.png) | ![LLM](assets/screenshots/llm-en.png) | ![LLM settings](assets/screenshots/llm-settings-en.png) |
+The Russian README carries the full gallery; the UI is bilingual (RU/EN toggle
+in the header).
+
+**GigaAM Liquid (native macOS app)**
+
+| Processing | Settings → LLM: discovered CLI tools |
+|---|---|
+| ![Liquid — processing](assets/screenshots/liquid-processing-light.png) | ![Liquid — LLM tools](assets/screenshots/liquid-settings-llm-light.png) |
+
+**Classic PyQt app (Windows / macOS / Linux)**
+
+| Processing | LLM settings: tools table |
+|---|---|
+| ![PyQt — processing](assets/screenshots/pyqt-processing-light.png) | ![PyQt — LLM settings](assets/screenshots/pyqt-llm-settings-light.png) |
+
+### GigaAM Liquid
+
+`GigaAMLiquid-macos-arm64-<version>.zip` is a native Swift/AppKit client with a
+Liquid Glass look on macOS 26 (plain blur on 13–15). The archive holds a single
+`GigaAMLiquid.app`; the frozen Python engine lives in `Contents/Resources` and
+runs as a background worker, so no separate Python install is needed. Pages:
+Processing, Result, Live (microphone and/or system audio via ScreenCaptureKit),
+LLM with a provider status badge, API examples, Journal and Settings, where
+Settings → LLM lists every CLI tool with status, version, path, Browse…, Check
+and Rescan. The build is ad-hoc signed: open it via right-click → Open or run
+`xattr -dr com.apple.quarantine /Applications/GigaAMLiquid.app`.
 
 ## Credits
 
