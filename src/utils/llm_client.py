@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -47,6 +48,10 @@ class LLMClient:
         url = cls._normalize_url(api_url)
         if url.endswith("/chat/completions"):
             return url
+        # Google Gemini's OpenAI-compatible base URL is /v1beta/openai/;
+        # unlike ordinary providers it already contains the API version.
+        if url.endswith("/openai"):
+            return f"{url}/chat/completions"
         if url.endswith("/v1"):
             return f"{url}/chat/completions"
         if "/v1/" in url:
@@ -63,6 +68,28 @@ class LLMClient:
         if "/v1/" in url:
             return url
         return f"{url}/v1/messages"
+
+    def _post_with_retry(self, endpoint: str, *, headers: dict, payload: dict, stream: bool = False):
+        last_response = None
+        for attempt in range(3):
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.settings.timeout,
+                stream=stream,
+            )
+            if response.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+                return response
+            last_response = response
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = min(float(retry_after), 15.0) if retry_after else 2**attempt
+            except ValueError:
+                delay = 2**attempt
+            response.close()
+            time.sleep(delay)
+        return last_response
 
     def process_transcript(
         self,
@@ -117,9 +144,7 @@ class LLMClient:
         }
         if stream_callback:
             payload["stream"] = True
-            response = requests.post(
-                endpoint, headers=headers, json=payload, timeout=self.settings.timeout, stream=True
-            )
+            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True)
             response.raise_for_status()
             parts = []
             for line in response.iter_lines(decode_unicode=True):
@@ -138,7 +163,7 @@ class LLMClient:
                     stream_callback(delta)
             return self._extract_text_content("".join(parts))
 
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=self.settings.timeout)
+        response = self._post_with_retry(endpoint, headers=headers, payload=payload)
         response.raise_for_status()
         data = response.json()
         choices = data.get("choices") or []
@@ -179,9 +204,7 @@ class LLMClient:
         }
         if stream_callback:
             payload["stream"] = True
-            response = requests.post(
-                endpoint, headers=headers, json=payload, timeout=self.settings.timeout, stream=True
-            )
+            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True)
             response.raise_for_status()
             parts = []
             for line in response.iter_lines(decode_unicode=True):
@@ -198,7 +221,7 @@ class LLMClient:
                     stream_callback(text)
             return self._extract_text_content("".join(parts))
 
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=self.settings.timeout)
+        response = self._post_with_retry(endpoint, headers=headers, payload=payload)
         response.raise_for_status()
         data = response.json()
         content = data.get("content", "")
