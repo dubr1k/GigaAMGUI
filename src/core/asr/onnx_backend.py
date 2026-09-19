@@ -212,7 +212,7 @@ class OnnxBackend:
             fallback_reason=reason,
         )
         if self._logger:
-            self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {reason}")
+            self._logger(f"Внимание: {reason}")
         self.model = self._create_model(cpu_selection)
         self.provider_selection = cpu_selection
         self.device = "cpu"
@@ -306,7 +306,7 @@ class OnnxBackend:
                         "использовано полное разбиение по тихим точкам с перекрытием"
                     )
                     if self._logger:
-                        self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                        self._logger(f"Внимание: {self.segmentation_fallback_reason}")
                 else:
                     chunks = plan_audio_chunks(
                         audio,
@@ -329,7 +329,7 @@ class OnnxBackend:
                     "использовано разбиение по тихим точкам с перекрытием"
                 )
                 if self._logger:
-                    self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                    self._logger(f"Внимание: {self.segmentation_fallback_reason}")
         else:
             chunks = plan_audio_chunks(
                 audio,

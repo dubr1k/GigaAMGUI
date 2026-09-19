@@ -348,7 +348,7 @@ class PyTorchBackend:
                         "использовано полное разбиение по тихим точкам с перекрытием"
                     )
                     if self._logger is not None:
-                        self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                        self._logger(f"Внимание: {self.segmentation_fallback_reason}")
                     chunks = safe_overlap_chunks(
                         [(0.0, total_seconds)],
                         max_chunk_seconds=20.0,
@@ -385,7 +385,7 @@ class PyTorchBackend:
                     "по тихим точкам с перекрытием"
                 )
                 if self._logger is not None:
-                    self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                    self._logger(f"Внимание: {self.segmentation_fallback_reason}")
                 chunks = safe_overlap_chunks(
                     [(0.0, total_seconds)],
                     max_chunk_seconds=20.0,
@@ -397,7 +397,7 @@ class PyTorchBackend:
                 "использовано разбиение по тихим точкам с перекрытием"
             )
             if self._logger is not None:
-                self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                self._logger(f"Внимание: {self.segmentation_fallback_reason}")
             chunks = safe_overlap_chunks(
                 [(0.0, total_seconds)],
                 max_chunk_seconds=20.0,
@@ -409,7 +409,7 @@ class PyTorchBackend:
                 "использовано legacy-разбиение по 20 секунд без перекрытия"
             )
             if self._logger is not None:
-                self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                self._logger(f"Внимание: {self.segmentation_fallback_reason}")
             chunks = legacy_fixed_chunks()
 
         try:

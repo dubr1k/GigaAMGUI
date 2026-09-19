@@ -2653,9 +2653,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     /// The worker already logs in plain Russian (src.core.processor); the English
-    /// UI translates the static lines it knows and shows the rest as is.
+    /// UI translates it with the table shared with PyQt (LogTranslation.swift,
+    /// generated from src/core/log_i18n.py).
     private func appendProcessingLog(_ message: String) {
-        transcriptionLog += L10n.text(message) + "\n"
+        transcriptionLog += (L10n.isEnglish ? LogTranslation.englishText(message) : message) + "\n"
         if transcriptionLog.utf8.count > 131_072 { transcriptionLog = String(transcriptionLog.suffix(65_536)) }
     }
 

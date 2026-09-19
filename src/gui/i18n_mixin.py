@@ -8,6 +8,7 @@ from PyQt6.QtCore import QLibraryInfo, QTranslator
 from PyQt6.QtWidgets import QApplication, QDialogButtonBox
 
 from ..config import APP_TITLE
+from ..core.log_i18n import translate_log
 from ..services import cli_tools
 
 
@@ -312,7 +313,9 @@ class I18nMixin:
     def _translate_runtime_text(self, message: str) -> str:
         if self._lang == "ru" or not message:
             return message
-        translated = str(message)
+        # Строки журнала обработки переводятся общей таблицей (src.core.log_i18n);
+        # ниже — только статусы и подписи самого PyQt-окна.
+        translated = translate_log(str(message))
         replacements = [
             ("Подробности — на вкладке «Журнал обработки».", "See details in the 'Processing log' tab."),
             ("Не удалось сохранить журнал:\n", "Failed to save the log:\n"),
@@ -337,40 +340,15 @@ class I18nMixin:
             ("Не удалось: ", "Failed: "),
             (" и ещё ", " and "),
             ("Критическая ошибка: ", "Critical error: "),
-            ("Ошибка: ", "Error: "),
-            ("Не удалось загрузить модель", "Failed to load model"),
             ("Анализ файлов и оценка времени обработки...", "Analyzing files and estimating processing time..."),
             ("Обработка ", "Processing "),
             (" файлов…", " files…"),
-            ("Файл ", "File "),
             ("Подготовка…", "Preparing…"),
             ("Конвертация…", "Converting…"),
-            ("Распознавание речи…", "Speech recognition…"),
-            ("Распознавание речи (GigaAM-v3)...", "Speech recognition (GigaAM-v3)..."),
-            ("Транскрибация завершена. Получено сегментов: ", "Transcription finished. Segments received: "),
-            ("Пример структуры сегмента: keys=", "Example segment structure: keys="),
-            ("Применение диаризации спикеров...", "Applying speaker diarization..."),
-            ("Диаризация завершена. Найдено спикеров: ", "Diarization finished. Speakers found: "),
-            ("Найдено сегментов речи: ", "Speech segments found: "),
-            ("Сохранено символов: ", "Characters saved: "),
-            ("Сохранено: ", "Saved: "),
-            ("Время обработки: ", "Processing time: "),
-            ("Конверсия: ", "Conversion: "),
-            ("Транскрибация: ", "Transcription: "),
-            ("Длительность: ", "Duration: "),
             ("неизвестна", "unknown"),
             ("ошибка определения длительности", "duration detection error"),
             ("длительность неизвестна", "duration unknown"),
-            ("Ошибка при обработке файла ", "Error while processing file "),
-            ("ОШИБКА при транскрибации: ", "TRANSCRIPTION ERROR: "),
-            ("ОШИБКА VAD: ", "VAD ERROR: "),
-            ("ПРЕДУПРЕЖДЕНИЕ: ", "WARNING: "),
-            ("Ошибка при обработке ", "Error while processing "),
-            ("Возможные причины:", "Possible reasons:"),
-            ("Проверьте токен HF_TOKEN в .env файле и убедитесь, что приняли условия доступа:", "Check the HF_TOKEN in the .env file and make sure you accepted the access terms:"),
-            ("Проверьте токен HF_TOKEN в src/config.py и убедитесь, что приняли условия доступа:", "Check the HF_TOKEN in src/config.py and make sure you accepted the access terms:"),
             ("Диаризация требует токен HuggingFace.", "Diarization requires a HuggingFace token."),
-            ("Установите токен через чекбокс 'Диаризация' в интерфейсе.", "Set the token via the 'Diarization' checkbox in the interface."),
             ("Продолжаем без диаризации...", "Continuing without diarization..."),
             ("Спикер №", "Speaker №"),
         ]

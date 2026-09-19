@@ -462,7 +462,7 @@ def test_swift_processing_log_shows_worker_lines_and_keeps_stderr_in_diagnostics
     main = MAIN_SWIFT.read_text(encoding="utf-8")
     assert "import GigaAMLiquidCore" in main
     helper = _swift_block(main, "private func appendProcessingLog(_ message: String) {")
-    assert "transcriptionLog += L10n.text(message)" in helper
+    assert "L10n.isEnglish ? LogTranslation.englishText(message) : message" in helper
     assert main.count("appendProcessingLog(message)") == 3, "batch, live and LLM logs share the sheet"
     job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
     assert "onStderr: { self.recordDiagnostic($0) }" in job

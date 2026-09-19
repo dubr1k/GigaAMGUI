@@ -221,7 +221,7 @@ class MLXBackend:
         self.segmentation_mode = "fixed_chunks"
         self.segmentation_fallback_reason = reason
         if self._logger is not None:
-            self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {reason}")
+            self._logger(f"Внимание: {reason}")
         return self._legacy_chunks(audio)
 
     def _use_overlap_chunks(self, audio, reason: str) -> list[AudioChunk]:
@@ -231,7 +231,7 @@ class MLXBackend:
         self.segmentation_mode = "overlap_chunks"
         self.segmentation_fallback_reason = reason
         if self._logger is not None:
-            self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {reason}")
+            self._logger(f"Внимание: {reason}")
         total_seconds = float(len(audio)) / gm.audio.SAMPLE_RATE if len(audio) else 0.0
         return plan_audio_chunks(
             audio,
