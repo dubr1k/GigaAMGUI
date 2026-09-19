@@ -24,7 +24,7 @@ def test_spec_includes_mlx_packages():
     # tests/test_macos_x86_64_packaging.py).
     assert '"CFBundleShortVersionString": APP_VERSION' in text
     assert '"CFBundleVersion": APP_VERSION' in text
-    assert 'APP_VERSION = "2.2.0"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
+    assert 'APP_VERSION = "2.2.1"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
 
 
 def test_spec_can_bundle_sortformer_runtime():
