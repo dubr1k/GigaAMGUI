@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/build.yml")
@@ -479,9 +480,13 @@ def test_swift_dropped_folders_are_scanned_like_the_pyqt_client() -> None:
     assert "panel.canChooseDirectories = true" in chooser
     assert "MediaScan.expand(panel.urls)" in chooser
     scan = Path("macos/GigaAMLiquid/Sources/GigaAMLiquidCore/MediaScan.swift").read_text(encoding="utf-8")
-    import src.config as config
-    for extension in config.MEDIA_EXTENSIONS:
-        assert f'"{extension[1:]}"' in scan, extension
+    # src.config imports dotenv, which the lightweight CI job does not install.
+    config = Path("src/config.py").read_text(encoding="utf-8")
+    block = config.split("MEDIA_EXTENSIONS = (", 1)[1].split(")", 1)[0]
+    extensions = re.findall(r"'\.([a-z0-9]+)'", block)
+    assert len(extensions) >= 14
+    for extension in extensions:
+        assert f'"{extension}"' in scan, extension
 
 
 def test_swift_progress_row_keeps_the_log_button_still() -> None:
