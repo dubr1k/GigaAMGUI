@@ -81,3 +81,49 @@
 3. Liquid: перетащить папку с записями — все файлы (включая подпапки) в списке.
 4. Любой интерфейс: открыть журнал обработки — без `DEBUG:`, кодов и английских
    технических фраз; переключить язык на English — журнал по-английски.
+
+---
+
+## English
+
+A fix release for GigaAM Liquid and the processing log.
+
+**Fixed**
+
+- **A second application launched during transcription in Liquid.** The frozen
+  companion started another "GigaAM Transcriber" for every file; it bounced in
+  the Dock and crashed with `No module named src.utils.logger` even though the
+  transcription itself finished. `multiprocessing.resource_tracker` (started by
+  torch/pyannote) re-executed `app.py` without `--native-worker`, and
+  `multiprocessing.freeze_support()` — the only hook PyInstaller uses to
+  intercept such relaunches — was never called. It is now the first thing
+  `app.py` does. PyQt builds masked the bug behind the instance lock.
+- **Liquid: output folder.** An empty field is no longer replaced with
+  `~/Documents/GigaAM`; empty means "next to the source file", as in PyQt. A
+  folder you typed or picked is kept as before.
+- **Liquid: the "Processing log" button** no longer shifts when the progress
+  percentage changes width.
+
+**Changed**
+
+- **The processing log is written in plain language, everywhere.** Lines are
+  produced at the source (processor, model loader, ASR backends, converter,
+  worker), so PyQt, web, CLI, TUI and Liquid show the same thing: no more
+  `DEBUG:` paths, `ASR segmentation: VAD, decoder windows`, `MLX backend load
+  requested`, `CRITICAL ERROR` or bare FFmpeg return codes. Nothing is dropped —
+  paths, device, engine, cleanup reasons and FFmpeg details stay; library
+  deprecation warnings no longer reach the log.
+- **The English UI translates the whole log**, including lines with file
+  names, numbers and durations, from one shared table (`src/core/log_i18n.py`)
+  used by PyQt and Liquid.
+
+**Added**
+
+- **Liquid: drag & drop folders.** A dropped (or chosen) folder is scanned
+  recursively with the same extension list as PyQt.
+- `swift test` for Liquid's UI-free logic (`GigaAMLiquidCore`) in CI.
+
+**What to check after updating:** start a transcription in Liquid — no second
+app in the Dock; leave the folder field empty — results land next to the
+source; drop a folder — every file is listed; open the processing log in
+English — it reads in English.
