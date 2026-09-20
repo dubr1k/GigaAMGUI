@@ -19,12 +19,16 @@ EOF
 
 # --help must work even without an installation (no GIGAAM_TUI_PREFIX), so it
 # is handled before the prefix check below; with an installation the binary
-# appends the transcribe / llm option list.
+# appends the transcribe / llm option list (minus its own first "Usage" lines,
+# which repeat the ones above).
 case "${1:-}" in
   --help|-h)
     usage
     binary="${GIGAAM_TUI_PREFIX:-}/repo/tui/target/release/gigaam-tui"
-    if [[ -n "${GIGAAM_TUI_PREFIX:-}" && -x "$binary" ]]; then echo; "$binary" --help; fi
+    if [[ -n "${GIGAAM_TUI_PREFIX:-}" && -x "$binary" ]]; then
+      echo
+      "$binary" --help | sed -n '/^transcribe options/,$p'
+    fi
     exit 0 ;;
 esac
 
@@ -60,10 +64,15 @@ case "${1:-}" in
     bash "$installer" --prefix "$PREFIX" "$@" || status=$?
     exit "$status" ;;
   --install-skill)
+    skill="$REPO_DIR/skills/gigaam/SKILL.md"
+    if [[ ! -f "$skill" ]]; then
+      echo "Skill file not found: $skill (run gigaam --update to refresh the checkout)" >&2
+      exit 1
+    fi
     installed=0
     for target in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.agents/skills"; do
       [[ -d "$target" ]] || continue
-      mkdir -p "$target/gigaam" && cp "$REPO_DIR/skills/gigaam/SKILL.md" "$target/gigaam/SKILL.md" \
+      mkdir -p "$target/gigaam" && cp "$skill" "$target/gigaam/SKILL.md" \
         && echo "Installed skill: $target/gigaam/SKILL.md" && installed=$((installed + 1))
     done
     [[ $installed -gt 0 ]] || echo "No agent skill directories found (~/.claude/skills, ~/.codex/skills, ~/.agents/skills)." >&2

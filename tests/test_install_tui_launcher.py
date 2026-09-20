@@ -174,3 +174,13 @@ def test_launcher_forwards_headless_subcommands_to_the_binary(tmp_path):
     result = _run(prefix, "transcribe", "/tmp/a.wav", "--json")
     assert result.returncode == 0, result.stderr
     assert "tui:transcribe /tmp/a.wav --json" in result.stdout
+
+
+def test_launcher_install_skill_fails_clearly_when_the_skill_file_is_missing(tmp_path):
+    prefix = _fake_install(tmp_path)
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    result = _run(prefix, "--install-skill", env={"HOME": str(home)})
+    assert result.returncode == 1
+    assert str(prefix / "repo" / "skills" / "gigaam" / "SKILL.md") in result.stderr
+    assert not (home / ".claude" / "skills" / "gigaam").exists()

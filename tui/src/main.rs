@@ -2116,6 +2116,12 @@ fn bundled_worker() -> Option<PathBuf> {
 }
 
 fn spawn_worker() -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
+    spawn_worker_with(Stdio::inherit())
+}
+
+/// `stderr` is what the worker's diagnostics (Python warnings, model downloads)
+/// go to: the terminal for the TUI and human headless output, nowhere for `--json`.
+fn spawn_worker_with(stderr: Stdio) -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
     let module = std::env::var("GIGAAM_TUI_WORKER").unwrap_or_else(|_| "src.tui_worker".into());
     let project_root = std::env::var("GIGAAM_PROJECT_ROOT")
         .map(std::path::PathBuf::from)
@@ -2137,7 +2143,7 @@ fn spawn_worker() -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
         .current_dir(project_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(stderr)
         .spawn()?;
     let stdin = child.stdin.take().expect("worker stdin");
     let stdout = child.stdout.take().expect("worker stdout");
@@ -2181,14 +2187,15 @@ transcribe options (defaults come from the saved settings):
   --backend NAME               auto|pytorch|mlx|onnx (mlx: macOS only)
   --model ID                   v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc
   --audio-mode MODE            auto|off|light|denoise
-  --json                       one JSON worker event per line on stdout, nothing on stderr
-  --quiet                      no progress or log lines on stderr
+  --json                       one JSON worker event per line on stdout; the worker's stderr is
+                               silenced (use human mode without --quiet to see model/download diagnostics)
+  --quiet                      no progress or log lines, worker stderr silenced
 
 llm options:
   --mode MODE                  summary|tasks|terms|custom (repeatable)
   --prompt TEXT                the prompt for --mode custom
   --output DIR                 where session_llm_<mode>.txt is saved (default: next to the last file)
-  --json                       one JSON worker event per line on stdout
+  --json                       one JSON worker event per line on stdout; worker stderr silenced
 
 exit codes: 0 all files succeeded, 1 at least one file failed, 2 bad arguments,
             3 worker unavailable (run `gigaam --update`)";
@@ -2327,8 +2334,12 @@ fn parse_headless_args(argv: &[String]) -> Result<HeadlessCommand, String> {
         if args.modes.is_empty() {
             return Err("llm needs at least one --mode (summary|tasks|terms|custom)".into());
         }
-        if args.modes.iter().any(|mode| mode == "custom") && args.prompt.trim().is_empty() {
+        let custom = args.modes.iter().any(|mode| mode == "custom");
+        if custom && args.prompt.trim().is_empty() {
             return Err("--mode custom requires --prompt TEXT".into());
+        }
+        if !custom && !args.prompt.is_empty() {
+            return Err("--prompt requires --mode custom".into());
         }
         return Ok(HeadlessCommand::Llm(args));
     }
@@ -2513,31 +2524,48 @@ fn format_headless_line(event: &Value) -> Option<String> {
     }
 }
 
+/// The worker runs with cwd = the repo checkout, so every path must be made
+/// absolute against the caller's cwd before it is sent. Output directories are
+/// created here (as `/output` does in the TUI) and canonicalised.
+fn resolve_headless_paths(command: &mut HeadlessCommand) -> Result<(), String> {
+    let (files, output_dir) = match command {
+        HeadlessCommand::Transcribe(args) => (&mut args.files, &mut args.output_dir),
+        HeadlessCommand::Llm(args) => (&mut args.files, &mut args.output_dir),
+    };
+    for file in files.iter_mut() {
+        *file = normalize_path(file)?;
+    }
+    if let Some(directory) = output_dir.as_mut() {
+        fs::create_dir_all(&*directory)
+            .map_err(|error| format!("cannot create output directory {directory}: {error}"))?;
+        let canonical = fs::canonicalize(&*directory)
+            .map_err(|error| format!("cannot resolve output directory {directory}: {error}"))?;
+        *directory = canonical.to_string_lossy().into_owned();
+    }
+    Ok(())
+}
+
 fn run_headless(argv: &[String]) -> io::Result<i32> {
-    let command = match parse_headless_args(argv) {
+    let mut command = match parse_headless_args(argv) {
         Ok(command) => command,
         Err(message) => {
             eprintln!("gigaam: {message}\n\n{HEADLESS_USAGE}");
             return Ok(2);
         }
     };
+    if let Err(message) = resolve_headless_paths(&mut command) {
+        eprintln!("gigaam: {message}");
+        return Ok(2);
+    }
     let settings = load_settings();
     let (payload, json_output, quiet, started_type, terminal_type) = match &command {
-        HeadlessCommand::Transcribe(args) => {
-            if let Some(directory) = &args.output_dir {
-                if let Err(error) = fs::create_dir_all(directory) {
-                    eprintln!("gigaam: cannot create output directory {directory}: {error}");
-                    return Ok(2);
-                }
-            }
-            (
-                headless_start_payload(&settings, args),
-                args.json,
-                args.quiet,
-                "started",
-                "completed",
-            )
-        }
+        HeadlessCommand::Transcribe(args) => (
+            headless_start_payload(&settings, args),
+            args.json,
+            args.quiet,
+            "started",
+            "completed",
+        ),
         HeadlessCommand::Llm(args) => (
             headless_llm_payload(&settings, args),
             args.json,
@@ -2546,7 +2574,14 @@ fn run_headless(argv: &[String]) -> io::Result<i32> {
             "llm_completed",
         ),
     };
-    let (mut child, mut worker, events) = match spawn_worker() {
+    // `--json` promises a clean stderr and `--quiet` a silent run; the worker's own
+    // diagnostics (Python warnings, download progress) would break both.
+    let worker_stderr = if json_output || quiet {
+        Stdio::null()
+    } else {
+        Stdio::inherit()
+    };
+    let (mut child, mut worker, events) = match spawn_worker_with(worker_stderr) {
         Ok(parts) => parts,
         Err(error) => {
             eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
@@ -2558,6 +2593,26 @@ fn run_headless(argv: &[String]) -> io::Result<i32> {
         let _ = child.kill();
         return Ok(3);
     }
+    let result = headless_event_loop(&events, json_output, quiet, started_type, terminal_type);
+    let _ = child.kill();
+    let _ = child.wait();
+    match result {
+        Ok(code) => Ok(code),
+        // `gigaam transcribe … | head -1`: the reader went away; nothing to report.
+        Err((code, error)) if error.kind() == io::ErrorKind::BrokenPipe => Ok(code),
+        Err((_, error)) => Err(error),
+    }
+}
+
+/// Consumes worker events until the terminal one; on a write failure returns the
+/// exit code computed so far together with the error.
+fn headless_event_loop(
+    events: &Receiver<Value>,
+    json_output: bool,
+    quiet: bool,
+    started_type: &str,
+    terminal_type: &str,
+) -> Result<i32, (i32, io::Error)> {
     let mut exit_code = 1;
     let mut batch_started = false;
     let mut progress_line_open = false;
@@ -2577,15 +2632,27 @@ fn run_headless(argv: &[String]) -> io::Result<i32> {
             }
         };
         let kind = event["type"].as_str().unwrap_or("").to_string();
-        if json_output {
+        if kind == started_type {
+            batch_started = true;
+        }
+        let terminal = kind == terminal_type;
+        if terminal {
+            exit_code = if event["success"].as_bool().unwrap_or(false) {
+                0
+            } else {
+                1
+            };
+        }
+        let written = if json_output {
             let mut out = stdout.lock();
-            writeln!(out, "{}", serde_json::to_string(&event).unwrap_or_default())?;
+            writeln!(out, "{}", serde_json::to_string(&event).unwrap_or_default())
         } else {
             if progress_line_open && kind != "progress" {
                 eprint!("\r\x1b[K");
                 progress_line_open = false;
             }
-            match kind.as_str() {
+            let mut out = stdout.lock();
+            let written = match kind.as_str() {
                 "progress" if !quiet => {
                     let percent = (event["file_progress"].as_f64().unwrap_or(0.0) * 100.0) as u16;
                     eprint!(
@@ -2594,32 +2661,36 @@ fn run_headless(argv: &[String]) -> io::Result<i32> {
                         percent.min(100)
                     );
                     progress_line_open = true;
+                    Ok(())
                 }
-                "progress" => {}
-                "log" if !quiet => eprintln!("{}", event["message"].as_str().unwrap_or("")),
-                "log" => {}
+                "log" if !quiet => {
+                    eprintln!("{}", event["message"].as_str().unwrap_or(""));
+                    Ok(())
+                }
                 "llm_chunk" => {
                     // Streaming providers (API) deliver the text here; CLI providers
                     // only deliver it in `llm_completed.results`, so the heading is
                     // printed lazily, right before the first text of each mode.
                     let mode = event["mode"].as_str().unwrap_or("").to_string();
-                    let mut out = stdout.lock();
+                    let mut heading = Ok(());
                     if !streamed_modes.contains(&mode) {
                         if !streamed_modes.is_empty() {
-                            writeln!(out)?;
+                            heading = writeln!(out);
                         }
-                        writeln!(out, "## {mode}")?;
+                        heading = heading.and_then(|_| writeln!(out, "## {mode}"));
                         streamed_modes.insert(mode);
                     }
-                    write!(out, "{}", event["text"].as_str().unwrap_or(""))?;
-                    out.flush()?;
+                    heading
+                        .and_then(|_| write!(out, "{}", event["text"].as_str().unwrap_or("")))
+                        .and_then(|_| out.flush())
                 }
                 "llm_completed" => {
                     let results = event["results"].as_array().cloned().unwrap_or_default();
-                    let mut out = stdout.lock();
-                    if !streamed_modes.is_empty() {
-                        writeln!(out)?; // streamed text ends without a newline
-                    }
+                    let mut written = if streamed_modes.is_empty() {
+                        Ok(())
+                    } else {
+                        writeln!(out) // streamed text ends without a newline
+                    };
                     let mut printed = streamed_modes.len();
                     for result in &results {
                         let mode = result["mode"].as_str().unwrap_or("");
@@ -2627,36 +2698,36 @@ fn run_headless(argv: &[String]) -> io::Result<i32> {
                             continue;
                         }
                         if printed > 0 {
-                            writeln!(out)?;
+                            written = written.and_then(|_| writeln!(out));
                         }
-                        writeln!(
-                            out,
-                            "## {mode}\n{}",
-                            result["text"].as_str().unwrap_or("").trim_end()
-                        )?;
+                        written = written.and_then(|_| {
+                            writeln!(
+                                out,
+                                "## {mode}\n{}",
+                                result["text"].as_str().unwrap_or("").trim_end()
+                            )
+                        });
                         printed += 1;
                     }
-                    out.flush()?;
+                    written.and_then(|_| out.flush())
                 }
-                _ => {}
-            }
-            if let Some(line) = format_headless_line(&event) {
-                if kind == "file_completed" {
-                    println!("{line}");
-                } else {
-                    eprintln!("{line}");
-                }
-            }
-        }
-        if kind == started_type {
-            batch_started = true;
-        }
-        if kind == terminal_type {
-            exit_code = if event["success"].as_bool().unwrap_or(false) {
-                0
-            } else {
-                1
+                _ => Ok(()),
             };
+            match format_headless_line(&event) {
+                Some(line) if kind == "file_completed" => {
+                    written.and_then(|_| writeln!(out, "{line}"))
+                }
+                Some(line) => {
+                    eprintln!("{line}");
+                    written
+                }
+                None => written,
+            }
+        };
+        if let Err(error) = written {
+            return Err((exit_code, error));
+        }
+        if terminal {
             break;
         }
         if kind == "error" && !batch_started {
@@ -2665,8 +2736,6 @@ fn run_headless(argv: &[String]) -> io::Result<i32> {
             break;
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
     Ok(exit_code)
 }
 
@@ -4145,5 +4214,73 @@ mod tests {
             "error: Input file does not exist: /tmp/c.wav"
         );
         assert!(format_headless_line(&json!({"type":"progress","stage":"asr"})).is_none());
+    }
+
+    #[test]
+    fn headless_paths_become_absolute_before_the_worker_sees_them() {
+        // The worker runs with cwd = the repo checkout, so relative paths must be
+        // resolved by the binary against the caller's cwd.
+        let directory =
+            std::env::temp_dir().join(format!("gigaam-headless-paths-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("a.wav"), b"").unwrap();
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let relative_file = format!("{}/./a.wav", directory.display());
+        let relative_out = format!("{}/./out", directory.display());
+        let mut command = parse_headless_args(&args(&[
+            "transcribe",
+            &relative_file,
+            "--output",
+            &relative_out,
+        ]))
+        .unwrap();
+        resolve_headless_paths(&mut command).unwrap();
+        let HeadlessCommand::Transcribe(parsed) = &command else {
+            panic!("transcribe")
+        };
+        let canonical = fs::canonicalize(&directory).unwrap();
+        assert_eq!(
+            parsed.files,
+            vec![canonical.join("a.wav").to_string_lossy().into_owned()]
+        );
+        assert_eq!(
+            parsed.output_dir.as_deref(),
+            Some(canonical.join("out").to_string_lossy().as_ref()),
+            "output directory is created and canonicalised"
+        );
+        let mut llm =
+            parse_headless_args(&args(&["llm", &relative_file, "--mode", "summary"])).unwrap();
+        resolve_headless_paths(&mut llm).unwrap();
+        let HeadlessCommand::Llm(parsed) = &llm else {
+            panic!("llm")
+        };
+        assert_eq!(
+            parsed.files,
+            vec![canonical.join("a.wav").to_string_lossy().into_owned()]
+        );
+        let mut missing = parse_headless_args(&args(&[
+            "transcribe",
+            &format!("{}/missing.wav", directory.display()),
+        ]))
+        .unwrap();
+        assert!(resolve_headless_paths(&mut missing)
+            .unwrap_err()
+            .contains("missing.wav"));
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn headless_prompt_requires_custom_mode() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let error = parse_headless_args(&args(&[
+            "llm", "a.txt", "--mode", "summary", "--prompt", "x",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("--prompt requires --mode custom"), "{error}");
+        assert!(parse_headless_args(&args(&[
+            "llm", "a.txt", "--mode", "custom", "--prompt", "x"
+        ]))
+        .is_ok());
     }
 }

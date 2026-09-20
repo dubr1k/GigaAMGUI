@@ -13,7 +13,8 @@ description: Transcribe audio/video to text or subtitles and summarise transcrip
 
 - Defaults come from the user's saved settings (shared with the desktop app); flags override them.
 - Results are written next to each input file unless `--output DIR` is given. Output: `✓ name.wav → /path/name.txt, /path/name.srt`.
-- `--json`: one JSON object per line on stdout (`started`, `file_started`, `progress`, `file_completed{result.saved_files}`, `completed{success}`); stderr stays empty. Prefer this when you need to parse results.
+- `--speakers` and `--diarization-backend` only take effect together with `--diarize`; the `sortformer` backend always detects the speaker count itself.
+- `--json`: one JSON object per line on stdout (`started`, `file_started`, `progress`, `file_completed{result.saved_files}`, `completed{success}`); the worker's stderr is silenced (use human mode without `--quiet` to see model/download diagnostics). Prefer this when you need to parse results.
 - The first run downloads the model (hundreds of MB); allow several minutes.
 
 ## Summarise / extract tasks with an LLM
