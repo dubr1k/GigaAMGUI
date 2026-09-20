@@ -8,6 +8,8 @@ scripts/
 scripts/*
 !scripts/verify_macos_bundle.py
 !scripts/install_tui.sh
+!scripts/tui/
+!scripts/tui/gigaam-launcher.sh
 !scripts/__init__.py
 !scripts/benchmark_asr_backends.py
 !scripts/benchmark_diarization_backends.py

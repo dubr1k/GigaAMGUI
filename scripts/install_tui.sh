@@ -177,9 +177,8 @@ echo "Selected model: $MODEL (weights download on first transcription)."
 
 cat > "$BIN_DIR/gigaam" <<EOF
 #!/usr/bin/env bash
-export GIGAAM_PROJECT_ROOT="$REPO_DIR"
-export GIGAAM_PYTHON="$VENV/bin/python"
-exec "$REPO_DIR/tui/target/release/gigaam-tui" "\$@"
+export GIGAAM_TUI_PREFIX="$PREFIX"
+exec bash "$REPO_DIR/scripts/tui/gigaam-launcher.sh" "\$@"
 EOF
 chmod +x "$BIN_DIR/gigaam"
 
