@@ -152,6 +152,22 @@ curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/insta
 gigaam
 ```
 
+Update with `gigaam --update` (keeps the selected model, does not rebuild the
+environment; the installer's `--fresh` does a clean reinstall). Version:
+`gigaam --version`. When a PyQt or Liquid install is present on the same
+machine (`user_settings.json` found), settings — backend, model, LLM
+provider, formats, diarization, and more — are shared between the TUI and
+that app: whichever program saved last wins, and the other one picks up the
+change on its next start.
+
+**Headless / for agents.** `gigaam transcribe FILE... [options]` and
+`gigaam llm FILE... --mode summary [options]` run without the interactive UI:
+one line per file on stdout, `--json` for a line-delimited stream of worker
+events, exit codes `0`/`1`/`2`/`3` (`3` means the worker could not start —
+run `gigaam --update`). The agent contract lives in `skills/gigaam/SKILL.md`;
+`gigaam --install-skill` installs it into `~/.claude/skills`,
+`~/.codex/skills`, `~/.agents/skills`.
+
 ### Subtitle settings
 
 Desktop GUI and Web UI expose subtitle controls next to the SRT/VTT formats.
@@ -164,9 +180,13 @@ python cli.py -f audio.wav --format srt --format vtt \
 ```
 
 The TUI provides `/subtitle-split on|off`, `/subtitle-lines 1..4`, and
-`/subtitle-width 20..100`; these values persist between runs. Cue boundaries use
-word timestamps when available, with deterministic timing inside the original
-ASR segment as the fallback. With diarization, SRT names a speaker only when the
+`/subtitle-width 20..100`; these values persist between runs. It also has
+`/audio-mode auto|off|light|denoise`, `/llm-file <path>` (run the LLM on any
+saved transcript), `/llm-path`, `/llm-provider-name`, `/llm-args`,
+`/llm-tools on|off`, and the `r` hotkey to show or hide the last LLM result
+(Esc while the LLM is running cancels that request without killing the
+worker). Cue boundaries use word timestamps when available, with
+deterministic timing inside the original ASR segment as the fallback. With diarization, SRT names a speaker only when the
 speaker changes, and the width limit charges the label only to those cues — the
 rest use the full configured width. VTT keeps a standard `<v Спикер №1>` voice
 span on every cue: it is invisible in players but carries attribution and

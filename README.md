@@ -236,6 +236,21 @@ curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/insta
 gigaam
 ```
 
+Обновить: `gigaam --update` (сохраняет выбранную модель и не пересобирает
+окружение; `--fresh` у установщика — переустановить с нуля). Версия:
+`gigaam --version`. Если TUI запущен на машине, где уже установлен PyQt- или
+Liquid-клиент (найден `user_settings.json`), настройки (backend, модель,
+провайдер LLM, форматы, диаризация…) общие для обеих программ — выигрывает
+тот, кто сохранил последним, другая программа подхватывает изменения при
+следующем запуске.
+
+**Headless / для агентов.** `gigaam transcribe FILE... [опции]` и
+`gigaam llm FILE... --mode summary [опции]` работают без интерфейса: одна
+строка на файл на stdout, `--json` — построчный поток событий воркера, коды
+выхода `0`/`1`/`2`/`3` (`3` — воркер недоступен, см. `gigaam --update`).
+Контракт для агентов — `skills/gigaam/SKILL.md`; `gigaam --install-skill`
+ставит его в `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`.
+
 ## Live: запись и расшифровка в реальном времени
 
 Вкладка Live есть в Liquid и в PyQt. Источники — микрофон, системный звук
@@ -334,7 +349,11 @@ python cli.py -f audio.wav --format srt --format vtt \
 ```
 
 В TUI — команды `/subtitle-split on|off`, `/subtitle-lines 1..4`,
-`/subtitle-width 20..100`.
+`/subtitle-width 20..100`, а также `/audio-mode auto|off|light|denoise`,
+`/llm-file <путь>` (LLM по любому сохранённому транскрипту), `/llm-path`,
+`/llm-provider-name`, `/llm-args`, `/llm-tools on|off` и хоткей `r` — показать
+или скрыть последний результат LLM (Esc во время работы LLM отменяет запрос,
+не убивая воркер).
 
 При наличии таймстампов слов каждый cue получает точные границы; иначе время
 распределяется внутри исходного сегмента распознавания. С диаризацией SRT
