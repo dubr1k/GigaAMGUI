@@ -246,6 +246,11 @@ struct App {
     llm_tool_paths: HashMap<String, String>,
     llm_allow_tools: bool,
     llm_tool_check_requested: Option<(String, String)>,
+    llm_running: bool,
+    llm_stream: String,
+    llm_results: Vec<(String, String)>,
+    show_llm_result: bool,
+    llm_cancel_requested: bool,
 }
 
 impl Default for App {
@@ -303,6 +308,11 @@ impl Default for App {
             llm_tool_paths: HashMap::new(),
             llm_allow_tools: false,
             llm_tool_check_requested: None,
+            llm_running: false,
+            llm_stream: String::new(),
+            llm_results: Vec::new(),
+            show_llm_result: false,
+            llm_cancel_requested: false,
         }
     }
 }
@@ -410,20 +420,58 @@ impl App {
             }
             "llm_started" => {
                 self.running = true;
-                self.status = "LLM processing…".into();
+                self.llm_running = true;
+                self.llm_stream.clear();
+                self.status = format!(
+                    "LLM {} ({}/{})…",
+                    value["mode"].as_str().unwrap_or("summary"),
+                    value["index"].as_u64().unwrap_or(1),
+                    value["total"].as_u64().unwrap_or(1)
+                );
             }
-            "llm_completed" if value["success"].as_bool().unwrap_or(false) => {
-                self.running = false;
-                let saved = value["saved_files"].as_array().map_or(0, Vec::len);
-                self.status = format!("LLM saved {saved} result(s)");
-                self.log(self.status.clone());
+            "llm_chunk" => {
+                if let Some(text) = value["text"].as_str() {
+                    self.llm_stream.push_str(text);
+                    if self.llm_stream.len() > 8_000 {
+                        let cut = self.llm_stream.len() - 8_000;
+                        let boundary = self
+                            .llm_stream
+                            .char_indices()
+                            .map(|(index, _)| index)
+                            .find(|index| *index >= cut)
+                            .unwrap_or(cut);
+                        self.llm_stream.drain(..boundary);
+                    }
+                }
             }
             "llm_completed" => {
                 self.running = false;
-                self.status = format!(
-                    "LLM error: {}",
-                    value["message"].as_str().unwrap_or("unknown error")
-                );
+                self.llm_running = false;
+                self.llm_cancel_requested = false;
+                self.llm_stream.clear();
+                if let Some(results) = value["results"].as_array() {
+                    self.llm_results = results
+                        .iter()
+                        .filter_map(|item| {
+                            Some((
+                                item["mode"].as_str()?.to_owned(),
+                                item["text"].as_str()?.to_owned(),
+                            ))
+                        })
+                        .collect();
+                }
+                if value["cancelled"].as_bool().unwrap_or(false) {
+                    self.status = "LLM cancelled".into();
+                } else if value["success"].as_bool().unwrap_or(false) {
+                    let saved = value["saved_files"].as_array().map_or(0, Vec::len);
+                    self.status = format!("LLM saved {saved} result(s) · r to view");
+                    self.show_llm_result = !self.llm_results.is_empty();
+                } else {
+                    self.status = format!(
+                        "LLM error: {}",
+                        value["message"].as_str().unwrap_or("unknown error")
+                    );
+                }
                 self.log(self.status.clone());
             }
             "llm_tools" => {
@@ -1802,6 +1850,47 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             ));
         }
     }
+    if app.llm_running && !app.llm_stream.is_empty() {
+        body.push(Line::raw(""));
+        body.push(Line::styled(
+            "  LLM · streaming",
+            Style::default().fg(accent),
+        ));
+        for line in app
+            .llm_stream
+            .lines()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            body.push(Line::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::White),
+            ));
+        }
+    } else if app.show_llm_result {
+        for (mode, text) in &app.llm_results {
+            body.push(Line::raw(""));
+            body.push(Line::styled(
+                format!("  LLM · {mode}"),
+                Style::default().fg(Color::Green),
+            ));
+            for line in text.lines().take(12) {
+                body.push(Line::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::White),
+                ));
+            }
+            if text.lines().count() > 12 {
+                body.push(Line::styled(
+                    "  … (full text in the saved file)",
+                    Style::default().fg(Color::Gray),
+                ));
+            }
+        }
+    }
     if app.show_logs {
         body.push(Line::raw(""));
         body.push(Line::styled(
@@ -1943,7 +2032,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 }),
         ),
         Span::styled(
-            " · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs",
+            " · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs · r LLM result",
             Style::default().fg(Color::Gray),
         ),
     ]);
@@ -2097,6 +2186,13 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('l') if app.input.is_empty() => {
                             app.show_logs = !app.show_logs
                         }
+                        KeyCode::Char('r')
+                            if !app.running
+                                && app.input.is_empty()
+                                && !app.llm_results.is_empty() =>
+                        {
+                            app.show_llm_result = !app.show_llm_result;
+                        }
                         KeyCode::Char('d') if !app.running && app.input.is_empty() => {
                             app.diarization = !app.diarization;
                             app.log(format!(
@@ -2120,6 +2216,16 @@ fn main() -> io::Result<()> {
                                 json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model, "onnx_provider":app.onnx_provider, "subtitle_sentence_split":app.subtitle_sentence_split, "subtitle_max_lines":app.subtitle_max_lines, "subtitle_max_width":app.subtitle_max_width}),
                             ) {
                                 app.log(format!("Worker unavailable: {error}"));
+                            }
+                        }
+                        KeyCode::Esc if app.llm_running => {
+                            if !app.llm_cancel_requested {
+                                app.llm_cancel_requested = true;
+                                app.status = "Cancelling LLM…".into();
+                                if let Err(error) = send(&mut worker, json!({"type": "llm_cancel"}))
+                                {
+                                    app.status = format!("Worker unavailable: {error}");
+                                }
                             }
                         }
                         KeyCode::Esc if app.running => {
@@ -2562,6 +2668,41 @@ mod tests {
         assert_eq!(restored.llm_extra_args["claude"], "--verbose");
         assert_eq!(restored.llm_tool_paths["other"], "/x/llm");
         assert!(restored.llm_allow_tools);
+    }
+
+    #[test]
+    fn llm_chunks_stream_into_the_view_and_results_are_kept() {
+        let mut app = App::default();
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        assert!(app.llm_running && app.running);
+        app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "Итог: "}));
+        app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "всё хорошо"}));
+        assert_eq!(app.llm_stream, "Итог: всё хорошо");
+        app.handle_message(json!({
+            "type": "llm_completed", "success": true, "saved_files": ["/tmp/session_llm_summary.txt"],
+            "results": [{"mode": "summary", "text": "Итог: всё хорошо"}]
+        }));
+        assert!(!app.llm_running && !app.running);
+        assert_eq!(
+            app.llm_results,
+            vec![("summary".to_string(), "Итог: всё хорошо".to_string())]
+        );
+        assert!(app.show_llm_result);
+        assert!(app.llm_stream.is_empty());
+    }
+
+    #[test]
+    fn cancelled_llm_run_is_reported_without_an_error() {
+        let mut app = App::default();
+        app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 2}));
+        app.handle_message(
+            json!({"type": "llm_completed", "success": false, "cancelled": true,
+                                  "saved_files": [], "results": []}),
+        );
+        assert_eq!(app.status, "LLM cancelled");
+        assert!(!app.llm_running);
     }
 
     #[test]
