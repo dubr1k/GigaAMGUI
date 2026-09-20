@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 LAUNCHER = Path("scripts/tui/gigaam-launcher.sh").resolve()
+INSTALLER = Path("scripts/install_tui.sh").resolve()
 
 
 def _fake_install(tmp_path: Path) -> Path:
@@ -89,3 +90,49 @@ def test_launcher_update_via_download_failure_cleans_up_the_temp_file(tmp_path):
     assert result.returncode == 0, result.stderr
     assert f"installer:--prefix {prefix}" in result.stdout
     assert list(tmp_path.glob("install_tui.*")) == []
+
+
+def _ensure_path(tmp_path: Path, shell: str) -> subprocess.CompletedProcess:
+    home = tmp_path / "home"
+    (home / ".config" / "fish").mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "HOME": str(home), "SHELL": shell, "GIGAAM_INSTALL_STAGE": "path-only", "PATH": "/usr/bin:/bin"}
+    return subprocess.run(["bash", str(INSTALLER)], capture_output=True, text=True, env=env, timeout=30), home
+
+
+def test_installer_adds_local_bin_to_fish_config_once(tmp_path):
+    result, home = _ensure_path(tmp_path, "/opt/homebrew/bin/fish")
+    assert result.returncode == 0, result.stderr
+    conf = home / ".config" / "fish" / "conf.d" / "gigaam.fish"
+    assert "fish_add_path" in conf.read_text() and ".local/bin" in conf.read_text()
+    result, _ = _ensure_path(tmp_path, "/opt/homebrew/bin/fish")
+    assert conf.read_text().count("fish_add_path") == 1
+
+
+def test_installer_adds_local_bin_to_zsh_and_bash_rc_once(tmp_path):
+    for shell, rc in (("/bin/zsh", ".zshrc"), ("/bin/bash", ".bashrc")):
+        result, home = _ensure_path(tmp_path, shell)
+        assert result.returncode == 0, result.stderr
+        text = (home / rc).read_text()
+        assert '# gigaam-tui' in text and 'export PATH="$HOME/.local/bin:$PATH"' in text
+        _ensure_path(tmp_path, shell)
+        assert (home / rc).read_text().count("# gigaam-tui") == 1
+
+
+def test_installer_skips_rc_when_local_bin_already_in_path(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home), "SHELL": "/bin/zsh", "GIGAAM_INSTALL_STAGE": "path-only",
+           "PATH": f"{home}/.local/bin:/usr/bin:/bin"}
+    result = subprocess.run(["bash", str(INSTALLER)], capture_output=True, text=True, env=env, timeout=30)
+    assert result.returncode == 0
+    assert not (home / ".zshrc").exists()
+
+
+def test_installer_keeps_the_previously_selected_model(tmp_path):
+    home = tmp_path / "home"
+    settings_dir = home / ".config" / "GigaAMTranscriber"
+    settings_dir.mkdir(parents=True)
+    (settings_dir / "tui_settings.json").write_text('{"model": "multilingual_ctc"}')
+    env = {**os.environ, "HOME": str(home), "GIGAAM_INSTALL_STAGE": "print-model", "XDG_CONFIG_HOME": str(home / ".config")}
+    result = subprocess.run(["bash", str(INSTALLER)], capture_output=True, text=True, env=env, timeout=30, stdin=subprocess.DEVNULL)
+    assert result.stdout.strip() == "multilingual_ctc"

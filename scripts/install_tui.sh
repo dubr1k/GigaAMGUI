@@ -8,26 +8,47 @@ BIN_DIR="${HOME}/.local/bin"
 
 usage() {
   cat <<'EOF'
-Usage: install_tui.sh [--prefix PATH] [--ref GIT_REF] [--model MODEL]
+Usage: install_tui.sh [--prefix PATH] [--ref GIT_REF] [--model MODEL] [--no-path] [--fresh]
 
 Installs the Rust TUI, an isolated Python worker environment, and ~/.local/bin/gigaam.
 Required tools: git, cargo, Python 3.10–3.12, ffmpeg, and a C/C++ build toolchain.
+
+  --no-path  do not touch shell rc files to add ~/.local/bin to PATH
+  --fresh    wipe the repo checkout and rebuild the venv from scratch
 EOF
 }
 
 REF="main"
 MODEL="${GIGAAM_MODEL:-v3_e2e_rnnt}"
 MODEL_EXPLICIT=false
+ADD_PATH=true
+FRESH=false
 while (($#)); do
   case "$1" in
     --prefix) PREFIX="$2"; shift ;;
     --ref) REF="$2"; shift ;;
     --model) MODEL="$2"; MODEL_EXPLICIT=true; shift ;;
+    --no-path) ADD_PATH=false ;;
+    --fresh) FRESH=true ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+if [[ "$(uname -s)" == "Darwin" && -z "${XDG_CONFIG_HOME:-}" ]]; then CONFIG_HOME="$HOME/Library/Application Support"; fi
+SETTINGS_DIR="$CONFIG_HOME/GigaAMTranscriber"
+SETTINGS_FILE="$SETTINGS_DIR/tui_settings.json"
+
+# Обновление (curl | bash, без TTY) не должно сбрасывать выбранную модель.
+if [[ "$MODEL_EXPLICIT" == false && -z "${GIGAAM_MODEL:-}" && -f "$SETTINGS_FILE" ]]; then
+  saved_model="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SETTINGS_FILE" | head -n1)"
+  case "$saved_model" in
+    v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc) MODEL="$saved_model"; MODEL_EXPLICIT=true ;;
+  esac
+fi
+if [[ "${GIGAAM_INSTALL_STAGE:-}" == "print-model" ]]; then echo "$MODEL"; exit 0; fi
 
 if [[ -t 0 && "$MODEL_EXPLICIT" == false && -z "${GIGAAM_MODEL:-}" ]]; then
   echo "Choose the model to download on first transcription:"
@@ -44,6 +65,30 @@ case "$MODEL" in
   v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc) ;;
   *) echo "Unknown model: $MODEL" >&2; exit 2 ;;
 esac
+
+ensure_path_in_shell() {
+  case ":$PATH:" in *":$HOME/.local/bin:"*) return 0 ;; esac
+  local shell_name; shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    fish)
+      local conf="$HOME/.config/fish/conf.d/gigaam.fish"
+      mkdir -p "$(dirname "$conf")"
+      if [[ ! -f "$conf" ]] || ! grep -q fish_add_path "$conf"; then
+        printf '# gigaam-tui: make ~/.local/bin/gigaam available\nfish_add_path --global --move "$HOME/.local/bin"\n' > "$conf"
+        echo "Added ~/.local/bin to PATH via $conf"
+      fi ;;
+    zsh|bash)
+      local rc="$HOME/.zshrc"; [[ "$shell_name" == bash ]] && rc="$HOME/.bashrc"
+      if [[ ! -f "$rc" ]] || ! grep -q '# gigaam-tui' "$rc"; then
+        printf '\n# gigaam-tui: make ~/.local/bin/gigaam available\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+        echo "Added ~/.local/bin to PATH via $rc"
+      fi ;;
+    *)
+      echo "Add $HOME/.local/bin to your PATH to run gigaam." ;;
+  esac
+  echo "Open a new terminal (or re-source your shell config) to pick it up."
+}
+if [[ "${GIGAAM_INSTALL_STAGE:-}" == "path-only" ]]; then ensure_path_in_shell; exit 0; fi
 
    install_prerequisites() {
      local os
@@ -141,27 +186,30 @@ mkdir -p "$PREFIX" "$BIN_DIR" "$TMPDIR"
 if [[ -d "$REPO_DIR/.git" ]]; then
   git -C "$REPO_DIR" fetch --depth 1 origin "$REF"
   git -C "$REPO_DIR" checkout --force FETCH_HEAD
-  # Remove stale source, binaries and venv files from prior installations.
   # User preferences live in ~/.config/GigaAMTranscriber and are untouched.
-  git -C "$REPO_DIR" clean -ffdx
+  if [[ "$FRESH" == true ]]; then
+    git -C "$REPO_DIR" clean -ffdx          # включая .venv и tui/target
+  else
+    # Держим venv и cargo-кэш: обновление не должно заново качать PyTorch.
+    git -C "$REPO_DIR" clean -ffdx -e .venv -e tui/target
+  fi
 else
   git clone --depth 1 --branch "$REF" "$REPOSITORY" "$REPO_DIR"
 fi
 
 cargo build --release --manifest-path "$REPO_DIR/tui/Cargo.toml"
-rm -rf "$VENV"
-"$PYTHON" -m venv "$VENV"
+if [[ "$FRESH" == true || ! -x "$VENV/bin/python" ]]; then
+  rm -rf "$VENV"
+  "$PYTHON" -m venv "$VENV"
+fi
 "$VENV/bin/python" -m pip install --upgrade pip 'setuptools<81' wheel
 "$VENV/bin/python" -m pip install -r "$REPO_DIR/requirements-tui.txt"
 "$VENV/bin/python" -m pip install --no-build-isolation \
   -e 'git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam'
 "$VENV/bin/python" -c 'import dotenv, gigaam'
 
-CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-if [[ "$(uname -s)" == "Darwin" ]]; then CONFIG_HOME="$HOME/Library/Application Support"; fi
-SETTINGS_DIR="$CONFIG_HOME/GigaAMTranscriber"
 mkdir -p "$SETTINGS_DIR"
-"$VENV/bin/python" - "$SETTINGS_DIR/tui_settings.json" "$MODEL" <<'PY'
+"$VENV/bin/python" - "$SETTINGS_FILE" "$MODEL" <<'PY'
 import json, sys
 from pathlib import Path
 path = Path(sys.argv[1])
@@ -183,4 +231,4 @@ EOF
 chmod +x "$BIN_DIR/gigaam"
 
 echo "Installed GigaAM TUI. Run: gigaam"
-echo "Ensure $BIN_DIR is in your PATH."
+if [[ "$ADD_PATH" == true ]]; then ensure_path_in_shell; fi
