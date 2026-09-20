@@ -2,7 +2,10 @@
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 LAUNCHER = Path("scripts/tui/gigaam-launcher.sh").resolve()
 INSTALLER = Path("scripts/install_tui.sh").resolve()
@@ -130,9 +133,22 @@ def test_installer_skips_rc_when_local_bin_already_in_path(tmp_path):
 
 def test_installer_keeps_the_previously_selected_model(tmp_path):
     home = tmp_path / "home"
-    settings_dir = home / ".config" / "GigaAMTranscriber"
+    settings_dir = home / "GigaAMTranscriber"
     settings_dir.mkdir(parents=True)
     (settings_dir / "tui_settings.json").write_text('{"model": "multilingual_ctc"}')
-    env = {**os.environ, "HOME": str(home), "GIGAAM_INSTALL_STAGE": "print-model", "XDG_CONFIG_HOME": str(home / ".config")}
+    env = {**os.environ, "HOME": str(home), "GIGAAM_INSTALL_STAGE": "print-model", "GIGAAM_CONFIG_DIR": str(settings_dir)}
+    result = subprocess.run(["bash", str(INSTALLER)], capture_output=True, text=True, env=env, timeout=30, stdin=subprocess.DEVNULL)
+    assert result.stdout.strip() == "multilingual_ctc"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin-specific XDG-ignoring settings path")
+def test_installer_settings_dir_ignores_xdg_on_darwin(tmp_path):
+    home = tmp_path / "home"
+    xdg = tmp_path / "xdg"
+    settings_dir = home / "Library" / "Application Support" / "GigaAMTranscriber"
+    settings_dir.mkdir(parents=True)
+    (settings_dir / "tui_settings.json").write_text('{"model": "multilingual_ctc"}')
+    env = {**os.environ, "HOME": str(home), "GIGAAM_INSTALL_STAGE": "print-model", "XDG_CONFIG_HOME": str(xdg)}
+    env.pop("GIGAAM_CONFIG_DIR", None)
     result = subprocess.run(["bash", str(INSTALLER)], capture_output=True, text=True, env=env, timeout=30, stdin=subprocess.DEVNULL)
     assert result.stdout.strip() == "multilingual_ctc"

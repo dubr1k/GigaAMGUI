@@ -36,9 +36,14 @@ while (($#)); do
   shift
 done
 
-CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-if [[ "$(uname -s)" == "Darwin" && -z "${XDG_CONFIG_HOME:-}" ]]; then CONFIG_HOME="$HOME/Library/Application Support"; fi
-SETTINGS_DIR="$CONFIG_HOME/GigaAMTranscriber"
+# Должно совпадать с src/config.py:user_config_dir() и tui/src/main.rs:settings_path().
+if [[ -n "${GIGAAM_CONFIG_DIR:-}" ]]; then
+  SETTINGS_DIR="$GIGAAM_CONFIG_DIR"
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  SETTINGS_DIR="$HOME/Library/Application Support/GigaAMTranscriber"
+else
+  SETTINGS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/GigaAMTranscriber"
+fi
 SETTINGS_FILE="$SETTINGS_DIR/tui_settings.json"
 
 # Обновление (curl | bash, без TTY) не должно сбрасывать выбранную модель.
