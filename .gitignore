@@ -2,6 +2,7 @@
 __pycache__/
 icns/
 GigaAM/
+!skills/gigaam/
 GigaAMv3.workflow/
 scripts/
 !scripts/

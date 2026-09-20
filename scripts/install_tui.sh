@@ -8,12 +8,13 @@ BIN_DIR="${HOME}/.local/bin"
 
 usage() {
   cat <<'EOF'
-Usage: install_tui.sh [--prefix PATH] [--ref GIT_REF] [--model MODEL] [--no-path] [--fresh]
+Usage: install_tui.sh [--prefix PATH] [--ref GIT_REF] [--model MODEL] [--no-path] [--no-skill] [--fresh]
 
 Installs the Rust TUI, an isolated Python worker environment, and ~/.local/bin/gigaam.
 Required tools: git, cargo, Python 3.10–3.12, ffmpeg, and a C/C++ build toolchain.
 
   --no-path  do not touch shell rc files to add ~/.local/bin to PATH
+  --no-skill do not copy the agent skill into ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
   --fresh    wipe the repo checkout and rebuild the venv from scratch
 EOF
 }
@@ -22,6 +23,7 @@ REF="main"
 MODEL="${GIGAAM_MODEL:-v3_e2e_rnnt}"
 MODEL_EXPLICIT=false
 ADD_PATH=true
+INSTALL_SKILL=true
 FRESH=false
 while (($#)); do
   case "$1" in
@@ -29,6 +31,7 @@ while (($#)); do
     --ref) REF="$2"; shift ;;
     --model) MODEL="$2"; MODEL_EXPLICIT=true; shift ;;
     --no-path) ADD_PATH=false ;;
+    --no-skill) INSTALL_SKILL=false ;;
     --fresh) FRESH=true ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -236,4 +239,9 @@ EOF
 chmod +x "$BIN_DIR/gigaam"
 
 echo "Installed GigaAM TUI. Run: gigaam"
+# Agents (Claude Code, Codex, ...) learn `gigaam transcribe` / `gigaam llm` from
+# the skill file; it only goes into skill directories that already exist.
+if [[ "$INSTALL_SKILL" == true ]]; then
+  GIGAAM_TUI_PREFIX="$PREFIX" bash "$REPO_DIR/scripts/tui/gigaam-launcher.sh" --install-skill
+fi
 if [[ "$ADD_PATH" == true ]]; then ensure_path_in_shell; fi

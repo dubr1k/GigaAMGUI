@@ -152,3 +152,25 @@ def test_installer_settings_dir_ignores_xdg_on_darwin(tmp_path):
     env.pop("GIGAAM_CONFIG_DIR", None)
     result = subprocess.run(["bash", str(INSTALLER)], capture_output=True, text=True, env=env, timeout=30, stdin=subprocess.DEVNULL)
     assert result.stdout.strip() == "multilingual_ctc"
+
+
+def test_launcher_installs_the_skill_into_existing_agent_dirs(tmp_path):
+    prefix = _fake_install(tmp_path)
+    skill = prefix / "repo" / "skills" / "gigaam" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: gigaam\n---\nbody\n")
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills").mkdir(parents=True)
+    result = _run(prefix, "--install-skill", env={"HOME": str(home)})
+    assert result.returncode == 0, result.stderr
+    assert (home / ".claude" / "skills" / "gigaam" / "SKILL.md").read_text() == skill.read_text()
+    assert (home / ".agents" / "skills" / "gigaam" / "SKILL.md").exists()
+    assert not (home / ".codex").exists(), "directories that do not exist are not created"
+
+
+def test_launcher_forwards_headless_subcommands_to_the_binary(tmp_path):
+    prefix = _fake_install(tmp_path)
+    result = _run(prefix, "transcribe", "/tmp/a.wav", "--json")
+    assert result.returncode == 0, result.stderr
+    assert "tui:transcribe /tmp/a.wav --json" in result.stdout
