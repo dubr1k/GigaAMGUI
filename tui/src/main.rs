@@ -693,6 +693,12 @@ fn env_file_path() -> Option<PathBuf> {
     config_dir().map(|directory| directory.join(".env"))
 }
 
+/// The single "desktop app is installed" predicate shared by load and save: the
+/// file exists, whether or not it currently parses.
+fn main_app_installed() -> bool {
+    main_app_settings_path().is_some_and(|path| path.is_file())
+}
+
 const FORMAT_KEYS: [&str; 7] = [
     "txt",
     "txt_timecodes",
@@ -931,24 +937,38 @@ fn write_env_value(path: &Path, key: &str, value: &str) -> Result<(), String> {
     if !text.is_empty() {
         text.push('\n');
     }
-    write_text_atomic(path, &text, "env.tmp")
+    write_text_atomic(path, &text)
 }
 
 /// Same temp-file-then-rename scheme as `save_json_atomic` in the Python side.
 fn write_json_atomic(path: &Path, value: &Value) -> Result<(), String> {
     let contents = serde_json::to_string_pretty(value)
         .map_err(|error| format!("Cannot encode settings: {error}"))?;
-    write_text_atomic(path, &format!("{contents}\n"), "json.tmp")
+    write_text_atomic(path, &format!("{contents}\n"))
 }
 
-fn write_text_atomic(path: &Path, contents: &str, temp_extension: &str) -> Result<(), String> {
-    let temp = path.with_extension(temp_extension);
-    fs::write(&temp, contents)
-        .map_err(|error| format!("Cannot write {}: {error}", temp.display()))?;
-    fs::rename(&temp, path).map_err(|error| {
+/// Per-process temp name so two TUI instances never rename over each other's file;
+/// `sync_all` before the rename so a crash cannot leave a truncated settings file.
+fn write_text_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Cannot save {}: no file name", path.display()))?;
+    let temp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
+    let written = fs::File::create(&temp)
+        .and_then(|mut file| {
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()
+        })
+        .map_err(|error| format!("Cannot write {}: {error}", temp.display()))
+        .and_then(|_| {
+            fs::rename(&temp, path)
+                .map_err(|error| format!("Cannot save {}: {error}", path.display()))
+        });
+    if written.is_err() {
         let _ = fs::remove_file(&temp);
-        format!("Cannot save {}: {error}", path.display())
-    })
+    }
+    written
 }
 
 fn load_settings() -> TuiSettings {
@@ -956,13 +976,17 @@ fn load_settings() -> TuiSettings {
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|contents| serde_json::from_str(&contents).ok())
         .unwrap_or_default();
-    // The desktop app is installed: its file wins for the shared keys, its .env for the key.
-    if let Some(map) = main_app_settings_path()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .and_then(|value| value.as_object().cloned())
-    {
-        shared_settings_from_main_app(&map, &mut settings);
+    if main_app_installed() {
+        // The desktop app is installed: its file wins for the shared keys, its .env for
+        // the key. The key is read even when the JSON is corrupt, so that the next save
+        // never treats "could not read" as "the user cleared it".
+        if let Some(map) = main_app_settings_path()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+            .and_then(|value| value.as_object().cloned())
+        {
+            shared_settings_from_main_app(&map, &mut settings);
+        }
         if let Some(key) = env_file_path().and_then(|path| read_env_value(&path, "LLM_API_KEY")) {
             settings.llm_api_key = key;
         }
@@ -977,21 +1001,33 @@ fn save_settings(settings: &TuiSettings) -> Result<(), String> {
         .ok_or("Cannot determine the settings directory")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Cannot create settings directory: {error}"))?;
-    let main_path = main_app_settings_path().filter(|p| p.is_file());
     let mut own = serde_json::to_value(settings)
         .map_err(|error| format!("Cannot encode settings: {error}"))?;
-    if let Some(main_path) = main_path {
+    if main_app_installed() {
         // The main app is installed: shared keys live in its file, the key in its .env.
+        let main_path =
+            main_app_settings_path().ok_or("Cannot determine the settings directory")?;
         let contents = fs::read_to_string(&main_path)
             .map_err(|error| format!("Cannot read {}: {error}", main_path.display()))?;
-        let mut map = serde_json::from_str::<Value>(&contents)
+        match serde_json::from_str::<Value>(&contents)
             .ok()
             .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
-        shared_settings_into_main_app(settings, &mut map);
-        write_json_atomic(&main_path, &Value::Object(map))?;
-        if let Some(env_path) = env_file_path() {
-            write_env_value(&env_path, "LLM_API_KEY", &settings.llm_api_key)?;
+        {
+            Some(mut map) => {
+                shared_settings_into_main_app(settings, &mut map);
+                write_json_atomic(&main_path, &Value::Object(map))?;
+            }
+            // Corrupt or empty: leave the user's file for inspection rather than replace
+            // it with a bare object of TUI keys; the shared values still reach
+            // tui_settings.json below.
+            None => {}
+        }
+        // Like config.save_env_value, only a non-empty key is ever written: an empty one
+        // means "not loaded", never "delete the desktop app's key".
+        if !settings.llm_api_key.is_empty() {
+            if let Some(env_path) = env_file_path() {
+                write_env_value(&env_path, "LLM_API_KEY", &settings.llm_api_key)?;
+            }
         }
         if let Some(object) = own.as_object_mut() {
             object.remove("llm_api_key"); // never duplicate the secret into tui_settings.json
@@ -3406,5 +3442,34 @@ mod tests {
         let restored = load_settings();
         assert_eq!(restored.backend, "onnx");
         assert_eq!(restored.llm_api_key, "sk-only");
+    }
+
+    #[test]
+    fn corrupt_main_settings_file_never_wipes_the_desktop_api_key() {
+        let directory = isolated_config_dir();
+        fs::write(directory.join("user_settings.json"), "{not json").unwrap();
+        fs::write(
+            directory.join(".env"),
+            "HF_TOKEN=hf_x\nLLM_API_KEY=sk-keep\n",
+        )
+        .unwrap();
+
+        let loaded = load_settings();
+        assert_eq!(loaded.llm_api_key, "sk-keep");
+
+        save_settings(&TuiSettings::default()).unwrap();
+
+        let env = fs::read_to_string(directory.join(".env")).unwrap();
+        assert!(env.contains("LLM_API_KEY=sk-keep\n"));
+        assert!(env.contains("HF_TOKEN=hf_x\n"));
+        assert_eq!(
+            fs::read_to_string(directory.join("user_settings.json")).unwrap(),
+            "{not json",
+            "a corrupt desktop file is left alone, not replaced by an empty object"
+        );
+        let tui: Value =
+            serde_json::from_str(&fs::read_to_string(directory.join("tui_settings.json")).unwrap())
+                .unwrap();
+        assert!(tui.get("llm_api_key").is_none());
     }
 }
