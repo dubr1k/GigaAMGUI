@@ -59,3 +59,33 @@ def test_launcher_refuses_to_run_without_prefix(tmp_path):
     result = subprocess.run(["bash", str(LAUNCHER)], capture_output=True, text=True, env={**os.environ, "GIGAAM_TUI_PREFIX": ""})
     assert result.returncode == 2
     assert "GIGAAM_TUI_PREFIX" in result.stderr
+
+
+def test_launcher_help_works_without_prefix():
+    result = subprocess.run(
+        ["bash", str(LAUNCHER), "--help"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GIGAAM_TUI_PREFIX": ""},
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Usage:" in result.stdout
+
+
+def test_launcher_update_via_download_failure_cleans_up_the_temp_file(tmp_path):
+    prefix = _fake_install(tmp_path)
+    local_installer = prefix / "repo" / "scripts" / "install_tui.sh"
+    local_installer.parent.mkdir(parents=True, exist_ok=True)
+    local_installer.write_text('#!/usr/bin/env bash\necho "installer:$*"\n')
+    result = _run(
+        prefix,
+        "--update",
+        env={
+            "TMPDIR": str(tmp_path),
+            "GIGAAM_REPOSITORY_RAW": "http://127.0.0.1:9",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"installer:--prefix {prefix}" in result.stdout
+    assert list(tmp_path.glob("install_tui.*")) == []
