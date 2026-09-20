@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{self, BufRead, BufReader, Cursor, Write},
     path::{Path, PathBuf},
@@ -251,6 +251,7 @@ struct App {
     llm_results: Vec<(String, String)>,
     show_llm_result: bool,
     llm_cancel_requested: bool,
+    llm_extra_files: Vec<String>,
 }
 
 impl Default for App {
@@ -313,6 +314,7 @@ impl Default for App {
             llm_results: Vec::new(),
             show_llm_result: false,
             llm_cancel_requested: false,
+            llm_extra_files: Vec::new(),
         }
     }
 }
@@ -530,14 +532,17 @@ impl App {
 }
 
 fn llm_input_files(app: &App) -> Vec<String> {
+    let mut seen = HashSet::new();
     app.result_files
         .iter()
+        .chain(app.llm_extra_files.iter())
         .filter(|path| {
             matches!(
                 Path::new(path).extension().and_then(|value| value.to_str()),
                 Some("txt" | "md" | "srt" | "vtt")
             )
         })
+        .filter(|path| seen.insert((*path).clone()))
         .cloned()
         .collect()
 }
@@ -550,7 +555,7 @@ fn llm_can_run(app: &App) -> bool {
 
 fn request_llm(app: &mut App) {
     if llm_input_files(app).is_empty() {
-        app.status = "No saved text results in this session".into();
+        app.status = "No transcripts: run a transcription or /llm-file <path>".into();
     } else if app.llm_modes.is_empty() {
         app.status = "Select at least one LLM mode first".into();
     } else if app.llm_modes.iter().any(|mode| mode == "custom") && app.llm_prompt.is_empty() {
@@ -871,7 +876,7 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 27] = [
+const COMMANDS: [(&str, &str); 28] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -888,6 +893,10 @@ const COMMANDS: [(&str, &str); 27] = [
     ("/speakers", "auto or a fixed speaker count"),
     ("/remove", "remove a file from the queue by number"),
     ("/clear", "clear the queue and result list"),
+    (
+        "/llm-file",
+        "add a transcript file (.txt/.md/.srt/.vtt) for the LLM",
+    ),
     ("/settings", "show current processing settings"),
     ("/pets", "toggle the animated unicorn companion"),
     ("/llm-mode", "summary, tasks, terms, or custom"),
@@ -1360,6 +1369,21 @@ fn run_command(app: &mut App) {
         }
         "/llm-prompt" => app.status = "Usage: /llm-prompt <instruction>".into(),
         "/llm-run" => request_llm(app),
+        "/llm-file" => match normalize_path(argument) {
+            Ok(path)
+                if matches!(
+                    Path::new(&path)
+                        .extension()
+                        .and_then(|value| value.to_str()),
+                    Some("txt" | "md" | "srt" | "vtt")
+                ) =>
+            {
+                app.llm_extra_files.push(path);
+                app.status = format!("LLM inputs: {}", llm_input_files(app).len());
+            }
+            Ok(_) => app.status = "LLM input must be .txt, .md, .srt or .vtt".into(),
+            Err(error) => app.status = error,
+        },
         "/llm-api-url" if !argument.is_empty() => {
             app.llm_api_url = argument.into();
             app.status = "LLM API URL saved".into();
@@ -1572,6 +1596,9 @@ fn run_command(app: &mut App) {
             app.files.clear();
             app.selected_file = None;
             app.result_files.clear();
+            app.llm_extra_files.clear();
+            app.llm_results.clear();
+            app.show_llm_result = false;
             app.status = "Queue cleared".into();
         }
         "/remove" => match argument.parse::<usize>() {
@@ -2771,6 +2798,33 @@ mod tests {
             .files
             .iter()
             .any(|path| path.ends_with("second file.mp3")));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn llm_file_command_adds_text_inputs_and_rejects_media() {
+        let directory =
+            std::env::temp_dir().join(format!("gigaam-tui-llm-file-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let transcript = directory.join("meeting.txt");
+        let audio = directory.join("meeting.wav");
+        fs::write(&transcript, "hello").unwrap();
+        fs::write(&audio, []).unwrap();
+
+        let mut app = App::default();
+        app.input = format!("/llm-file {}", transcript.display());
+        run_command(&mut app);
+        assert_eq!(llm_input_files(&app).len(), 1);
+        assert!(llm_can_run(&app));
+
+        app.input = format!("/llm-file {}", audio.display());
+        run_command(&mut app);
+        assert_eq!(app.status, "LLM input must be .txt, .md, .srt or .vtt");
+        assert_eq!(llm_input_files(&app).len(), 1);
+
+        app.input = "/clear".into();
+        run_command(&mut app);
+        assert!(llm_input_files(&app).is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
 }
