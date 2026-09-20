@@ -442,6 +442,10 @@ impl App {
                 self.running = true;
                 self.llm_running = true;
                 self.llm_stream.clear();
+                // A new run must never show the previous run's results: `llm_completed`
+                // without `results` (worker failure, cancel) leaves `llm_results` alone.
+                self.llm_results.clear();
+                self.show_llm_result = false;
                 self.status = format!(
                     "LLM {} ({}/{})…",
                     value["mode"].as_str().unwrap_or("summary"),
@@ -1002,6 +1006,26 @@ fn load_settings() -> TuiSettings {
     settings
 }
 
+/// The first Esc during an LLM run asks the worker to stop politely; once that request is
+/// pending, Esc must fall through to the double-Esc kill/restart path, otherwise a CLI
+/// provider that ignores the cancel (up to the worker's 600 s timeout) or a dead worker
+/// locks the UI: `running` only clears on `llm_completed`, and `q`/Ctrl+C wait for it.
+fn esc_should_soft_cancel(app: &App) -> bool {
+    app.llm_running && !app.llm_cancel_requested
+}
+
+/// After the worker is killed and respawned nothing it was doing survives, so every
+/// "in flight" flag and buffer of both the transcription and the LLM run must go back to
+/// idle; the fresh worker will never send the `completed`/`llm_completed` that would.
+fn reset_after_worker_restart(app: &mut App) {
+    app.running = false;
+    app.cancelled = true;
+    app.llm_running = false;
+    app.llm_cancel_requested = false;
+    app.llm_requested = false;
+    app.llm_stream.clear();
+}
+
 fn save_settings(settings: &TuiSettings) -> Result<(), String> {
     let path = settings_path().ok_or("Cannot determine the settings directory")?;
     let parent = path
@@ -1031,10 +1055,18 @@ fn save_settings(settings: &TuiSettings) -> Result<(), String> {
             None => {}
         }
         // Like config.save_env_value, only a non-empty key is ever written: an empty one
-        // means "not loaded", never "delete the desktop app's key".
+        // means "not loaded", never "delete the desktop app's key". And only a key that
+        // differs from the stored one: `TuiSettings::default()` seeds the key from the
+        // shell's LLM_API_KEY, so an unconditional write would copy a shell secret into
+        // the desktop app's .env on any unrelated save and rewrite the file when nothing
+        // changed.
         if !settings.llm_api_key.is_empty() {
             if let Some(env_path) = env_file_path() {
-                write_env_value(&env_path, "LLM_API_KEY", &settings.llm_api_key)?;
+                if read_env_value(&env_path, "LLM_API_KEY").as_deref()
+                    != Some(settings.llm_api_key.as_str())
+                {
+                    write_env_value(&env_path, "LLM_API_KEY", &settings.llm_api_key)?;
+                }
             }
         }
         if let Some(object) = own.as_object_mut() {
@@ -2197,7 +2229,9 @@ llm options:
   --output DIR                 where session_llm_<mode>.txt is saved (default: next to the last file)
   --json                       one JSON worker event per line on stdout; worker stderr silenced
 
-exit codes: 0 all files succeeded, 1 at least one file failed, 2 bad arguments,
+exit codes: 0 all files succeeded, 1 at least one file failed,
+            2 bad arguments or an input file that does not exist
+              (message on stderr; nothing on stdout even with --json),
             3 worker unavailable (run `gigaam --update`)";
 
 #[derive(Debug)]
@@ -3263,14 +3297,11 @@ fn main() -> io::Result<()> {
                                 app.log(format!("Worker unavailable: {error}"));
                             }
                         }
-                        KeyCode::Esc if app.llm_running => {
-                            if !app.llm_cancel_requested {
-                                app.llm_cancel_requested = true;
-                                app.status = "Cancelling LLM…".into();
-                                if let Err(error) = send(&mut worker, json!({"type": "llm_cancel"}))
-                                {
-                                    app.status = format!("Worker unavailable: {error}");
-                                }
+                        KeyCode::Esc if esc_should_soft_cancel(&app) => {
+                            app.llm_cancel_requested = true;
+                            app.status = "Cancelling LLM… Esc again to kill the worker".into();
+                            if let Err(error) = send(&mut worker, json!({"type": "llm_cancel"})) {
+                                app.status = format!("Worker unavailable: {error}");
                             }
                         }
                         KeyCode::Esc if app.running => {
@@ -3287,9 +3318,8 @@ fn main() -> io::Result<()> {
                                             &mut worker,
                                             json!({"type": "llm_tools", "overrides": app.llm_tool_paths}),
                                         );
-                                        app.running = false;
-                                        app.cancelled = true;
-                                        app.status = "Transcription cancelled immediately".into();
+                                        reset_after_worker_restart(&mut app);
+                                        app.status = "Worker restarted, run cancelled".into();
                                         app.log(app.status.clone());
                                     }
                                     Err(error) => {
@@ -3300,7 +3330,11 @@ fn main() -> io::Result<()> {
                                 last_exit_request = None;
                             } else {
                                 last_exit_request = Some(("cancel", Instant::now()));
-                                app.status = "Press Esc again to cancel transcription".into();
+                                app.status = if app.llm_running {
+                                    "Press Esc again to kill the worker".into()
+                                } else {
+                                    "Press Esc again to cancel transcription".into()
+                                };
                             }
                         }
                         KeyCode::Esc if app.command_menu.is_some() => {
@@ -3786,6 +3820,69 @@ mod tests {
     }
 
     #[test]
+    fn a_new_llm_run_clears_the_previous_results() {
+        let mut app = App::default();
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        app.handle_message(json!({
+            "type": "llm_completed", "success": true, "saved_files": [],
+            "results": [{"mode": "summary", "text": "old"}]
+        }));
+        assert!(app.show_llm_result && !app.llm_results.is_empty());
+
+        app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 1}));
+        assert!(app.llm_results.is_empty());
+        assert!(!app.show_llm_result);
+        // A completion without `results` (worker failure) must not resurrect the old run.
+        app.handle_message(json!({"type": "llm_completed", "success": false, "error": "boom"}));
+        assert!(app.llm_results.is_empty());
+        assert!(!app.show_llm_result);
+    }
+
+    #[test]
+    fn esc_soft_cancels_an_llm_run_only_once_then_falls_through_to_the_kill_path() {
+        let mut app = App::default();
+        assert!(
+            !esc_should_soft_cancel(&app),
+            "idle: Esc is not an LLM cancel"
+        );
+
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        assert!(esc_should_soft_cancel(&app), "first Esc sends llm_cancel");
+
+        app.llm_cancel_requested = true; // what the first Esc arm sets
+        assert!(app.llm_running && app.running);
+        assert!(
+            !esc_should_soft_cancel(&app),
+            "second Esc must reach the `running` double-Esc kill/restart arm"
+        );
+    }
+
+    #[test]
+    fn worker_restart_resets_every_in_flight_flag() {
+        let mut app = App::default();
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "partial"}));
+        app.llm_cancel_requested = true;
+        app.llm_requested = true;
+        app.cancelled = false;
+
+        reset_after_worker_restart(&mut app);
+
+        assert!(!app.running);
+        assert!(app.cancelled);
+        assert!(!app.llm_running);
+        assert!(!app.llm_cancel_requested);
+        assert!(!app.llm_requested);
+        assert!(app.llm_stream.is_empty());
+    }
+
+    #[test]
     fn cancelled_llm_run_is_reported_without_an_error() {
         let mut app = App::default();
         app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 2}));
@@ -4046,6 +4143,50 @@ mod tests {
         let restored = load_settings();
         assert_eq!(restored.backend, "onnx");
         assert_eq!(restored.llm_api_key, "sk-only");
+    }
+
+    #[test]
+    fn unchanged_api_key_leaves_the_desktop_env_file_untouched() {
+        let directory = isolated_config_dir();
+        fs::write(
+            directory.join("user_settings.json"),
+            "{\"theme\": \"dark\"}\n",
+        )
+        .unwrap();
+        let original = "HF_TOKEN=hf_x\nLLM_API_KEY=sk-same\n";
+        fs::write(directory.join(".env"), original).unwrap();
+        let before = fs::metadata(directory.join(".env"))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        let settings = TuiSettings {
+            llm_api_key: "sk-same".into(),
+            ..TuiSettings::default()
+        };
+        save_settings(&settings).unwrap();
+
+        assert_eq!(
+            fs::read(directory.join(".env")).unwrap(),
+            original.as_bytes()
+        );
+        assert_eq!(
+            fs::metadata(directory.join(".env"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before,
+            "an unchanged key must not rewrite .env"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&*directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp file may be left behind: {leftovers:?}"
+        );
     }
 
     #[test]
