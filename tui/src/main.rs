@@ -70,6 +70,110 @@ impl Default for TuiSettings {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+struct LlmTool {
+    id: String,
+    provider: String,
+    status: String, // found | missing | broken | not_applicable
+    path: Option<String>,
+    version: Option<String>,
+    install_hint: String,
+}
+
+impl Default for LlmTool {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            provider: String::new(),
+            status: "missing".into(),
+            path: None,
+            version: None,
+            install_hint: String::new(),
+        }
+    }
+}
+
+/// Запасной список на случай, если воркер ещё не ответил на `llm_tools`.
+const FALLBACK_PROVIDERS: [&str; 7] = [
+    "API",
+    "Claude Code",
+    "Codex",
+    "OpenCode",
+    "Pi",
+    "oh-my-pi",
+    "Other",
+];
+
+/// Префикс ключей settings для провайдера — совпадает с `cli_tools.PROVIDERS`.
+fn provider_prefix(provider: &str) -> &'static str {
+    match provider {
+        "Claude Code" => "claude",
+        "Codex" => "codex",
+        "OpenCode" => "opencode",
+        "Pi" => "pi",
+        "oh-my-pi" => "omp",
+        "Other" => "other",
+        _ => "api",
+    }
+}
+
+fn llm_tool_for<'a>(app: &'a App, provider: &str) -> Option<&'a LlmTool> {
+    app.llm_tools.iter().find(|tool| tool.provider == provider)
+}
+
+fn provider_menu_options(app: &App) -> Vec<String> {
+    let providers: Vec<String> = if app.llm_providers.is_empty() {
+        FALLBACK_PROVIDERS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    } else {
+        app.llm_providers.clone()
+    };
+    providers
+        .into_iter()
+        .map(|provider| match llm_tool_for(app, &provider) {
+            Some(tool) if tool.status == "found" => format!(
+                "{provider} · {}",
+                tool.version.as_deref().unwrap_or("found")
+            ),
+            Some(tool) if tool.status == "broken" => format!("{provider} · broken"),
+            Some(tool) if tool.status == "missing" => format!("{provider} · not installed"),
+            _ => provider,
+        })
+        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+        .collect()
+}
+
+fn provider_from_menu_option(option: &str) -> &str {
+    option.split(" · ").next().unwrap_or(option).trim()
+}
+
+fn llm_settings_payload(app: &App) -> Value {
+    let mut settings = json!({
+        "provider": app.llm_provider,
+        "api_url": app.llm_api_url,
+        "api_key": app.llm_api_key,
+        "model": if app.llm_provider == "Codex" { String::new() } else { app.llm_model.clone() },
+        "temperature": app.llm_temperature,
+    });
+    for (provider, binary) in [
+        ("Claude Code", "claude"),
+        ("Codex", "codex"),
+        ("OpenCode", "opencode"),
+        ("Pi", "pi"),
+        ("oh-my-pi", "omp"),
+    ] {
+        let path = llm_tool_for(app, provider)
+            .and_then(|tool| tool.path.clone())
+            .unwrap_or_else(|| binary.to_owned());
+        settings[format!("{}_path", provider_prefix(provider))] = Value::String(path);
+    }
+    settings["other_path"] = Value::String(String::new());
+    settings
+}
+
 struct App {
     input: String,
     files: Vec<String>,
@@ -116,6 +220,8 @@ struct App {
     llm_api_key: String,
     llm_model: String,
     llm_temperature: f64,
+    llm_providers: Vec<String>,
+    llm_tools: Vec<LlmTool>,
 }
 
 impl Default for App {
@@ -166,6 +272,8 @@ impl Default for App {
             llm_api_key: String::new(),
             llm_model: String::new(),
             llm_temperature: 0.2,
+            llm_providers: Vec::new(),
+            llm_tools: Vec::new(),
         }
     }
 }
@@ -288,6 +396,26 @@ impl App {
                     value["message"].as_str().unwrap_or("unknown error")
                 );
                 self.log(self.status.clone());
+            }
+            "llm_tools" => {
+                self.llm_providers = value["providers"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.llm_tools = value["tools"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| serde_json::from_value::<LlmTool>(v.clone()).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
             }
             "error" => {
                 self.status = value["message"].as_str().unwrap_or("Worker error").into();
@@ -807,19 +935,7 @@ fn command_menu_options(app: &App) -> Vec<String> {
             format!("Temperature · {}", app.llm_temperature),
             BACK_MENU_OPTION.into(),
         ],
-        Some("/settings-provider") => [
-            "API",
-            "Claude Code",
-            "Codex",
-            "OpenCode",
-            "Pi",
-            "oh-my-pi",
-            "Other",
-            BACK_MENU_OPTION,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect(),
+        Some("/settings-provider") => provider_menu_options(app),
         Some("/settings-model") => llm_model_options(&app.llm_provider),
         Some("/llm-mode") => ["summary", "tasks", "terms", "custom"]
             .into_iter()
@@ -977,7 +1093,7 @@ fn apply_command_menu(app: &mut App) {
             app.status = "Enter value and press Enter".into();
         }
         "/settings-provider" => {
-            app.llm_provider = option.clone();
+            app.llm_provider = provider_from_menu_option(option).to_owned();
             app.command_menu = Some("/settings".into());
             app.command_menu_index = 0;
             app.status = format!("LLM provider: {}", app.llm_provider);
@@ -1678,6 +1794,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 fn main() -> io::Result<()> {
     apply_data_dir_argument()?;
     let (mut child, mut worker, mut events) = spawn_worker()?;
+    let _ = send(&mut worker, json!({"type": "llm_tools"}));
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -1731,19 +1848,7 @@ fn main() -> io::Result<()> {
         }
         if app.llm_requested {
             app.llm_requested = false;
-            let settings = json!({
-                "provider": app.llm_provider,
-                "api_url": app.llm_api_url,
-                "api_key": app.llm_api_key,
-                "model": if app.llm_provider == "Codex" { String::new() } else { app.llm_model.clone() },
-                "temperature": app.llm_temperature,
-                "claude_path": "claude",
-                "codex_path": "codex",
-                "opencode_path": "opencode",
-                "pi_path": "pi",
-                "omp_path": "omp",
-                "other_path": "",
-            });
+            let settings = llm_settings_payload(&app);
             if let Err(error) = send(
                 &mut worker,
                 json!({"type":"llm_start", "files":llm_input_files(&app), "modes":app.llm_modes, "prompt":app.llm_prompt, "settings":settings, "output_dir":app.output_dir}),
@@ -1855,6 +1960,7 @@ fn main() -> io::Result<()> {
                                         child = new_child;
                                         worker = new_worker;
                                         events = new_events;
+                                        let _ = send(&mut worker, json!({"type": "llm_tools"}));
                                         app.running = false;
                                         app.cancelled = true;
                                         app.status = "Transcription cancelled immediately".into();
@@ -2162,6 +2268,57 @@ mod tests {
                 BACK_MENU_OPTION
             ]
         );
+    }
+
+    #[test]
+    fn llm_tools_message_fills_providers_and_menu_shows_status() {
+        let mut app = App::default();
+        app.handle_message(json!({
+            "type": "llm_tools",
+            "providers": ["API", "Claude Code", "Other"],
+            "tools": [
+                {"id": "claude", "provider": "Claude Code", "status": "found",
+                 "path": "/opt/homebrew/bin/claude", "version": "2.1.275",
+                 "detail": null, "install_hint": "npm install -g @anthropic-ai/claude-code"},
+                {"id": "codex", "provider": "Codex", "status": "missing",
+                 "path": null, "version": null, "detail": null,
+                 "install_hint": "npm install -g @openai/codex"}
+            ]
+        }));
+
+        assert_eq!(app.llm_providers, vec!["API", "Claude Code", "Other"]);
+        assert_eq!(app.llm_tools.len(), 2);
+        app.command_menu = Some("/settings-provider".into());
+        assert_eq!(
+            command_menu_options(&app),
+            vec!["API", "Claude Code · 2.1.275", "Other", BACK_MENU_OPTION]
+        );
+        assert_eq!(
+            provider_from_menu_option("Claude Code · 2.1.275"),
+            "Claude Code"
+        );
+        assert_eq!(provider_from_menu_option("Codex · not installed"), "Codex");
+    }
+
+    #[test]
+    fn llm_settings_payload_uses_discovered_tool_paths() {
+        let mut app = App::default();
+        app.llm_provider = "Claude Code".into();
+        app.llm_tools.push(LlmTool {
+            id: "claude".into(),
+            provider: "Claude Code".into(),
+            status: "found".into(),
+            path: Some("/opt/homebrew/bin/claude".into()),
+            version: Some("2.1.275".into()),
+            install_hint: String::new(),
+        });
+
+        let payload = llm_settings_payload(&app);
+
+        assert_eq!(payload["provider"], "Claude Code");
+        assert_eq!(payload["claude_path"], "/opt/homebrew/bin/claude");
+        assert_eq!(payload["codex_path"], "codex");
+        assert_eq!(payload["temperature"], 0.2);
     }
 
     #[test]
