@@ -51,10 +51,19 @@ else
   SETTINGS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/GigaAMTranscriber"
 fi
 SETTINGS_FILE="$SETTINGS_DIR/tui_settings.json"
+DESKTOP_SETTINGS_FILE="$SETTINGS_DIR/user_settings.json"
 
 # Обновление (curl | bash, без TTY) не должно сбрасывать выбранную модель.
-if [[ "$MODEL_EXPLICIT" == false && -z "${GIGAAM_MODEL:-}" && -f "$SETTINGS_FILE" ]]; then
-  saved_model="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SETTINGS_FILE" | head -n1)"
+# Когда установлено десктопное приложение, TUI берёт модель из его
+# user_settings.json ("asr_model"), а не из tui_settings.json — читаем оттуда первым.
+if [[ "$MODEL_EXPLICIT" == false && -z "${GIGAAM_MODEL:-}" ]]; then
+  saved_model=""
+  if [[ -f "$DESKTOP_SETTINGS_FILE" ]]; then
+    saved_model="$(sed -n 's/.*"asr_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DESKTOP_SETTINGS_FILE" | head -n1)"
+  fi
+  if [[ -z "$saved_model" && -f "$SETTINGS_FILE" ]]; then
+    saved_model="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SETTINGS_FILE" | head -n1)"
+  fi
   case "$saved_model" in
     v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc) MODEL="$saved_model"; MODEL_EXPLICIT=true ;;
   esac
@@ -242,6 +251,9 @@ path.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encod
 PY
 
 echo "Selected model: $MODEL (weights download on first transcription)."
+if [[ -f "$DESKTOP_SETTINGS_FILE" ]]; then
+  echo "(the desktop app is installed: its asr_model setting takes precedence in the TUI)"
+fi
 
 cat > "$BIN_DIR/gigaam" <<EOF
 #!/usr/bin/env bash

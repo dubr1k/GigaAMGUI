@@ -25,4 +25,4 @@ Prints each mode's text under a `## <mode>` heading; also saves `session_llm_<mo
 
 ## Exit codes
 
-0 success · 1 at least one file failed (see lines starting with `×` or `error:`) · 2 bad arguments (usage on stderr) · 3 worker unavailable → run `gigaam --update` and retry.
+0 success · 1 at least one file failed (see lines starting with `×` or `error:`) · 2 bad arguments or an input file that does not exist (message on stderr; nothing on stdout even with `--json`) · 3 worker unavailable → run `gigaam --update` and retry.
