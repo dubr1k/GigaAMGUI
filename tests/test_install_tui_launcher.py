@@ -176,6 +176,25 @@ def test_launcher_forwards_headless_subcommands_to_the_binary(tmp_path):
     assert "tui:transcribe /tmp/a.wav --json" in result.stdout
 
 
+def test_installer_installs_mlx_requirements_on_apple_silicon_and_supports_no_mlx():
+    """The TUI's /backend mlx syncs from the desktop app; the worker venv needs
+    requirements-macos-mlx.txt on Apple Silicon or that backend fails at runtime."""
+    text = INSTALLER.read_text(encoding="utf-8")
+
+    tui_idx = text.index("pip install -r \"$REPO_DIR/requirements-tui.txt\"")
+    mlx_idx = text.index("requirements-macos-mlx.txt", tui_idx)
+    assert mlx_idx > tui_idx, "MLX requirements must be installed after the base TUI requirements"
+
+    # The MLX install must be guarded by a Darwin/arm64 check, not run unconditionally.
+    guard_start = text.rfind("if", 0, mlx_idx)
+    guard_block = text[guard_start:mlx_idx]
+    assert "uname -m" in guard_block and "arm64" in guard_block
+    assert "Darwin" in guard_block
+
+    assert "--no-mlx" in text
+    assert "INSTALL_MLX=false" in text
+
+
 def test_launcher_install_skill_fails_clearly_when_the_skill_file_is_missing(tmp_path):
     prefix = _fake_install(tmp_path)
     home = tmp_path / "home"

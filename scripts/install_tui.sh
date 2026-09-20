@@ -15,6 +15,7 @@ Required tools: git, cargo, Python 3.10–3.12, ffmpeg, and a C/C++ build toolch
 
   --no-path  do not touch shell rc files to add ~/.local/bin to PATH
   --no-skill do not copy the agent skill into ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
+  --no-mlx   skip requirements-macos-mlx.txt on Apple Silicon (the TUI's "mlx" backend will be unavailable)
   --fresh    wipe the repo checkout and rebuild the venv from scratch
 EOF
 }
@@ -24,6 +25,7 @@ MODEL="${GIGAAM_MODEL:-v3_e2e_rnnt}"
 MODEL_EXPLICIT=false
 ADD_PATH=true
 INSTALL_SKILL=true
+INSTALL_MLX=true
 FRESH=false
 while (($#)); do
   case "$1" in
@@ -32,6 +34,7 @@ while (($#)); do
     --model) MODEL="$2"; MODEL_EXPLICIT=true; shift ;;
     --no-path) ADD_PATH=false ;;
     --no-skill) INSTALL_SKILL=false ;;
+    --no-mlx) INSTALL_MLX=false ;;
     --fresh) FRESH=true ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -212,9 +215,18 @@ if [[ "$FRESH" == true || ! -x "$VENV/bin/python" ]]; then
 fi
 "$VENV/bin/python" -m pip install --upgrade pip 'setuptools<81' wheel
 "$VENV/bin/python" -m pip install -r "$REPO_DIR/requirements-tui.txt"
+# The TUI offers /backend mlx on macOS and the desktop app's saved backend syncs
+# into it, so Apple Silicon installs need the MLX runtime in the worker venv too.
+if [[ "$INSTALL_MLX" == true && "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+  "$VENV/bin/python" -m pip install -r "$REPO_DIR/requirements-macos-mlx.txt"
+fi
 "$VENV/bin/python" -m pip install --no-build-isolation \
   -e 'git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam'
-"$VENV/bin/python" -c 'import dotenv, gigaam'
+if [[ "$INSTALL_MLX" == true && "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+  "$VENV/bin/python" -c 'import dotenv, gigaam, mlx, gigaam_mlx'
+else
+  "$VENV/bin/python" -c 'import dotenv, gigaam'
+fi
 
 mkdir -p "$SETTINGS_DIR"
 "$VENV/bin/python" - "$SETTINGS_FILE" "$MODEL" <<'PY'
