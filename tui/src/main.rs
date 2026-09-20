@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     io::{self, BufRead, BufReader, Cursor, Write},
     path::{Path, PathBuf},
@@ -45,6 +46,10 @@ struct TuiSettings {
     llm_api_key: String,
     llm_model: String,
     llm_temperature: f64,
+    llm_internal_providers: HashMap<String, String>,
+    llm_extra_args: HashMap<String, String>,
+    llm_tool_paths: HashMap<String, String>,
+    llm_allow_tools: bool,
 }
 
 impl Default for TuiSettings {
@@ -66,6 +71,10 @@ impl Default for TuiSettings {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0.2),
+            llm_internal_providers: HashMap::new(),
+            llm_extra_args: HashMap::new(),
+            llm_tool_paths: HashMap::new(),
+            llm_allow_tools: false,
         }
     }
 }
@@ -171,6 +180,16 @@ fn llm_settings_payload(app: &App) -> Value {
         settings[format!("{}_path", provider_prefix(provider))] = Value::String(path);
     }
     settings["other_path"] = Value::String(String::new());
+    for (prefix, path) in &app.llm_tool_paths {
+        settings[format!("{prefix}_path")] = Value::String(path.clone());
+    }
+    for (prefix, provider) in &app.llm_internal_providers {
+        settings[format!("{prefix}_provider")] = Value::String(provider.clone());
+    }
+    for (prefix, args) in &app.llm_extra_args {
+        settings[format!("{prefix}_args")] = Value::String(args.clone());
+    }
+    settings["llm_allow_tools"] = Value::Bool(app.llm_allow_tools);
     settings
 }
 
@@ -222,6 +241,11 @@ struct App {
     llm_temperature: f64,
     llm_providers: Vec<String>,
     llm_tools: Vec<LlmTool>,
+    llm_internal_providers: HashMap<String, String>,
+    llm_extra_args: HashMap<String, String>,
+    llm_tool_paths: HashMap<String, String>,
+    llm_allow_tools: bool,
+    llm_tool_check_requested: Option<(String, String)>,
 }
 
 impl Default for App {
@@ -274,6 +298,11 @@ impl Default for App {
             llm_temperature: 0.2,
             llm_providers: Vec::new(),
             llm_tools: Vec::new(),
+            llm_internal_providers: HashMap::new(),
+            llm_extra_args: HashMap::new(),
+            llm_tool_paths: HashMap::new(),
+            llm_allow_tools: false,
+            llm_tool_check_requested: None,
         }
     }
 }
@@ -416,6 +445,32 @@ impl App {
                             .collect()
                     })
                     .unwrap_or_default();
+            }
+            "llm_tool_check" => {
+                if let Ok(tool) = serde_json::from_value::<LlmTool>(value["tool"].clone()) {
+                    self.status = match tool.status.as_str() {
+                        "found" => format!(
+                            "{} · {} at {}",
+                            tool.provider,
+                            tool.version.as_deref().unwrap_or("found"),
+                            tool.path.as_deref().unwrap_or("?")
+                        ),
+                        _ => format!(
+                            "{} · {} · {}",
+                            tool.provider, tool.status, tool.install_hint
+                        ),
+                    };
+                    self.log(self.status.clone());
+                    if let Some(slot) = self
+                        .llm_tools
+                        .iter_mut()
+                        .find(|t| t.provider == tool.provider)
+                    {
+                        *slot = tool;
+                    } else {
+                        self.llm_tools.push(tool);
+                    }
+                }
             }
             "error" => {
                 self.status = value["message"].as_str().unwrap_or("Worker error").into();
@@ -584,6 +639,10 @@ fn save_app_settings(app: &mut App) {
         llm_api_key: app.llm_api_key.clone(),
         llm_model: app.llm_model.clone(),
         llm_temperature: app.llm_temperature,
+        llm_internal_providers: app.llm_internal_providers.clone(),
+        llm_extra_args: app.llm_extra_args.clone(),
+        llm_tool_paths: app.llm_tool_paths.clone(),
+        llm_allow_tools: app.llm_allow_tools,
     }) {
         app.status = error;
         app.log(app.status.clone());
@@ -764,7 +823,7 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 23] = [
+const COMMANDS: [(&str, &str); 27] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -790,6 +849,19 @@ const COMMANDS: [(&str, &str); 23] = [
     ("/llm-api-key", "set LLM API key"),
     ("/llm-model", "set LLM model"),
     ("/llm-temperature", "set LLM temperature"),
+    (
+        "/llm-provider-name",
+        "Pi/oh-my-pi internal provider, e.g. anthropic",
+    ),
+    (
+        "/llm-args",
+        "extra CLI arguments for the current LLM provider",
+    ),
+    ("/llm-path", "path to the current provider's CLI binary"),
+    (
+        "/llm-tools",
+        "on|off · let the CLI agent use tools and sessions",
+    ),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -933,6 +1005,28 @@ fn command_menu_options(app: &App) -> Vec<String> {
                 }
             ),
             format!("Temperature · {}", app.llm_temperature),
+            format!(
+                "Binary path · {}",
+                app.llm_tool_paths
+                    .get(provider_prefix(&app.llm_provider))
+                    .map_or("auto", String::as_str)
+            ),
+            format!(
+                "Internal provider · {}",
+                app.llm_internal_providers
+                    .get(provider_prefix(&app.llm_provider))
+                    .map_or("default", String::as_str)
+            ),
+            format!(
+                "Extra args · {}",
+                app.llm_extra_args
+                    .get(provider_prefix(&app.llm_provider))
+                    .map_or("none", String::as_str)
+            ),
+            format!(
+                "Agent tools · {}",
+                if app.llm_allow_tools { "on" } else { "off" }
+            ),
             BACK_MENU_OPTION.into(),
         ],
         Some("/settings-provider") => provider_menu_options(app),
@@ -1088,6 +1182,20 @@ fn apply_command_menu(app: &mut App) {
                     return;
                 }
                 4 => "/llm-temperature ".into(),
+                5 => "/llm-path ".into(),
+                6 => "/llm-provider-name ".into(),
+                7 => "/llm-args ".into(),
+                8 => {
+                    app.llm_allow_tools = !app.llm_allow_tools;
+                    save_app_settings(app);
+                    app.command_menu = Some("/settings".into());
+                    app.command_menu_index = 8;
+                    app.status = format!(
+                        "Agent tools {}",
+                        if app.llm_allow_tools { "on" } else { "off" }
+                    );
+                    return;
+                }
                 _ => String::new(),
             };
             app.status = "Enter value and press Enter".into();
@@ -1230,6 +1338,57 @@ fn run_command(app: &mut App) {
             }
             _ => app.status = "Temperature must be between 0 and 2".into(),
         },
+        "/llm-provider-name" if !matches!(provider_prefix(&app.llm_provider), "pi" | "omp") => {
+            app.status = "Internal provider applies to Pi and oh-my-pi only".into();
+        }
+        "/llm-provider-name" => {
+            let prefix = provider_prefix(&app.llm_provider).to_owned();
+            if argument.is_empty() {
+                app.llm_internal_providers.remove(&prefix);
+                app.status = "Internal provider cleared (CLI default)".into();
+            } else {
+                app.llm_internal_providers.insert(prefix, argument.into());
+                app.status = format!("Internal provider: {argument}");
+            }
+            save_app_settings(app);
+        }
+        "/llm-args" if app.llm_provider == "API" => {
+            app.status = "Extra arguments apply to CLI providers only".into();
+        }
+        "/llm-args" => {
+            let prefix = provider_prefix(&app.llm_provider).to_owned();
+            if argument.is_empty() {
+                app.llm_extra_args.remove(&prefix);
+                app.status = "Extra arguments cleared".into();
+            } else {
+                app.llm_extra_args.insert(prefix, argument.into());
+                app.status = format!("Extra arguments: {argument}");
+            }
+            save_app_settings(app);
+        }
+        "/llm-path" if app.llm_provider == "API" => {
+            app.status = "Binary path applies to CLI providers only".into();
+        }
+        "/llm-path" => {
+            let prefix = provider_prefix(&app.llm_provider).to_owned();
+            if argument.is_empty() {
+                app.llm_tool_paths.remove(&prefix);
+                app.status = "Binary path reset to auto-discovery".into();
+            } else {
+                app.llm_tool_paths.insert(prefix, argument.into());
+                app.status = format!("Binary path: {argument} · checking…");
+            }
+            if app.llm_provider != "Other" {
+                app.llm_tool_check_requested = Some((app.llm_provider.clone(), argument.into()));
+            }
+            save_app_settings(app);
+        }
+        "/llm-tools" if matches!(argument, "on" | "off") => {
+            app.llm_allow_tools = argument == "on";
+            app.status = format!("Agent tools and sessions {argument}");
+            save_app_settings(app);
+        }
+        "/llm-tools" => app.status = "Usage: /llm-tools on|off".into(),
         "/pets" => {
             if app.pet_enabled {
                 app.clear_pet_layer();
@@ -1794,7 +1953,6 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 fn main() -> io::Result<()> {
     apply_data_dir_argument()?;
     let (mut child, mut worker, mut events) = spawn_worker()?;
-    let _ = send(&mut worker, json!({"type": "llm_tools"}));
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -1826,6 +1984,14 @@ fn main() -> io::Result<()> {
     app.llm_api_key = settings.llm_api_key;
     app.llm_model = settings.llm_model;
     app.llm_temperature = settings.llm_temperature;
+    app.llm_internal_providers = settings.llm_internal_providers;
+    app.llm_extra_args = settings.llm_extra_args;
+    app.llm_tool_paths = settings.llm_tool_paths;
+    app.llm_allow_tools = settings.llm_allow_tools;
+    let _ = send(
+        &mut worker,
+        json!({"type": "llm_tools", "overrides": app.llm_tool_paths}),
+    );
     app.subtitle_sentence_split = settings.subtitle_sentence_split;
     app.subtitle_max_lines = settings.subtitle_max_lines.clamp(1, 4);
     app.subtitle_max_width = settings.subtitle_max_width.clamp(20, 100);
@@ -1855,6 +2021,12 @@ fn main() -> io::Result<()> {
             ) {
                 app.status = format!("Worker unavailable: {error}");
             }
+        }
+        if let Some((provider, path)) = app.llm_tool_check_requested.take() {
+            let _ = send(
+                &mut worker,
+                json!({"type": "llm_tool_check", "provider": provider, "path": path}),
+            );
         }
         // Animated image frames are safe for Kitty after explicitly deleting the
         // prior layer. Other protocols remain stable rather than leaving pixels.
@@ -1960,7 +2132,10 @@ fn main() -> io::Result<()> {
                                         child = new_child;
                                         worker = new_worker;
                                         events = new_events;
-                                        let _ = send(&mut worker, json!({"type": "llm_tools"}));
+                                        let _ = send(
+                                            &mut worker,
+                                            json!({"type": "llm_tools", "overrides": app.llm_tool_paths}),
+                                        );
                                         app.running = false;
                                         app.cancelled = true;
                                         app.status = "Transcription cancelled immediately".into();
@@ -2319,6 +2494,74 @@ mod tests {
         assert_eq!(payload["claude_path"], "/opt/homebrew/bin/claude");
         assert_eq!(payload["codex_path"], "codex");
         assert_eq!(payload["temperature"], 0.2);
+    }
+
+    #[test]
+    fn provider_extras_reach_the_worker_settings_payload() {
+        let mut app = App::default();
+        app.llm_provider = "oh-my-pi".into();
+        app.input = "/llm-provider-name anthropic".into();
+        run_command(&mut app);
+        app.input = "/llm-args --thinking low".into();
+        run_command(&mut app);
+        app.input = "/llm-tools on".into();
+        run_command(&mut app);
+        app.input = "/llm-path /opt/homebrew/bin/omp".into();
+        run_command(&mut app);
+
+        let payload = llm_settings_payload(&app);
+        assert_eq!(payload["omp_provider"], "anthropic");
+        assert_eq!(payload["omp_args"], "--thinking low");
+        assert_eq!(payload["omp_path"], "/opt/homebrew/bin/omp");
+        assert_eq!(payload["llm_allow_tools"], true);
+        assert!(app.llm_tool_check_requested.is_some());
+    }
+
+    #[test]
+    fn other_provider_uses_its_path_and_args() {
+        let mut app = App::default();
+        app.llm_provider = "Other".into();
+        app.input = "/llm-path /usr/local/bin/my-llm".into();
+        run_command(&mut app);
+        app.input = "/llm-args --stdin {stdin}".into();
+        run_command(&mut app);
+
+        let payload = llm_settings_payload(&app);
+        assert_eq!(payload["other_path"], "/usr/local/bin/my-llm");
+        assert_eq!(payload["other_args"], "--stdin {stdin}");
+    }
+
+    #[test]
+    fn provider_name_command_is_only_for_pi_like_providers() {
+        let mut app = App::default();
+        app.llm_provider = "Claude Code".into();
+        app.input = "/llm-provider-name openai".into();
+        run_command(&mut app);
+        assert_eq!(
+            app.status,
+            "Internal provider applies to Pi and oh-my-pi only"
+        );
+    }
+
+    #[test]
+    fn provider_extras_survive_settings_roundtrip() {
+        let mut settings = TuiSettings::default();
+        settings
+            .llm_internal_providers
+            .insert("pi".into(), "google".into());
+        settings
+            .llm_extra_args
+            .insert("claude".into(), "--verbose".into());
+        settings
+            .llm_tool_paths
+            .insert("other".into(), "/x/llm".into());
+        settings.llm_allow_tools = true;
+        let restored: TuiSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.llm_internal_providers["pi"], "google");
+        assert_eq!(restored.llm_extra_args["claude"], "--verbose");
+        assert_eq!(restored.llm_tool_paths["other"], "/x/llm");
+        assert!(restored.llm_allow_tools);
     }
 
     #[test]
