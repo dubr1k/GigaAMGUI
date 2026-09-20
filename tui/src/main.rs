@@ -50,6 +50,7 @@ struct TuiSettings {
     llm_extra_args: HashMap<String, String>,
     llm_tool_paths: HashMap<String, String>,
     llm_allow_tools: bool,
+    audio_preprocessing_mode: String,
 }
 
 impl Default for TuiSettings {
@@ -75,6 +76,7 @@ impl Default for TuiSettings {
             llm_extra_args: HashMap::new(),
             llm_tool_paths: HashMap::new(),
             llm_allow_tools: false,
+            audio_preprocessing_mode: "auto".into(),
         }
     }
 }
@@ -252,6 +254,7 @@ struct App {
     show_llm_result: bool,
     llm_cancel_requested: bool,
     llm_extra_files: Vec<String>,
+    audio_preprocessing_mode: String,
 }
 
 impl Default for App {
@@ -315,6 +318,7 @@ impl Default for App {
             show_llm_result: false,
             llm_cancel_requested: false,
             llm_extra_files: Vec::new(),
+            audio_preprocessing_mode: "auto".into(),
         }
     }
 }
@@ -569,6 +573,25 @@ fn request_llm(app: &mut App) {
     }
 }
 
+fn start_payload(app: &App) -> Value {
+    json!({
+        "type": "start",
+        "files": app.files,
+        "output_dir": app.output_dir,
+        "formats": app.formats,
+        "diarization": app.diarization,
+        "diarization_backend": app.diarization_backend,
+        "num_speakers": app.num_speakers,
+        "backend": app.backend,
+        "model": app.model,
+        "onnx_provider": app.onnx_provider,
+        "audio_preprocessing_mode": app.audio_preprocessing_mode,
+        "subtitle_sentence_split": app.subtitle_sentence_split,
+        "subtitle_max_lines": app.subtitle_max_lines,
+        "subtitle_max_width": app.subtitle_max_width,
+    })
+}
+
 fn data_dir_from_args<I, S>(args: I) -> Result<Option<String>, String>
 where
     I: IntoIterator<Item = S>,
@@ -696,6 +719,7 @@ fn save_app_settings(app: &mut App) {
         llm_extra_args: app.llm_extra_args.clone(),
         llm_tool_paths: app.llm_tool_paths.clone(),
         llm_allow_tools: app.llm_allow_tools,
+        audio_preprocessing_mode: app.audio_preprocessing_mode.clone(),
     }) {
         app.status = error;
         app.log(app.status.clone());
@@ -876,7 +900,7 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 28] = [
+const COMMANDS: [(&str, &str); 29] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -886,6 +910,10 @@ const COMMANDS: [(&str, &str); 28] = [
     ("/subtitle-lines", "set 1-4 lines per subtitle cue"),
     ("/subtitle-width", "set 20-100 characters per subtitle line"),
     ("/diarize", "turn speaker diarization on or off"),
+    (
+        "/audio-mode",
+        "audio preprocessing: auto, off, light, denoise",
+    ),
     (
         "/diarization-backend",
         "select ONNX, pyannote, or NVIDIA Sortformer",
@@ -1013,6 +1041,10 @@ fn command_menu_options(app: &App) -> Vec<String> {
             .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
             .collect(),
         Some("/diarize") => ["on", "off", BACK_MENU_OPTION]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        Some("/audio-mode") => ["auto", "off", "light", "denoise", BACK_MENU_OPTION]
             .into_iter()
             .map(str::to_owned)
             .collect(),
@@ -1155,6 +1187,7 @@ fn open_command_menu(app: &mut App, command: &str) -> bool {
             | "/model"
             | "/diarize"
             | "/diarization-backend"
+            | "/audio-mode"
             | "/formats"
             | "/speakers"
             | "/llm-mode"
@@ -1172,6 +1205,11 @@ fn open_command_menu(app: &mut App, command: &str) -> bool {
             command_menu_options(app)
                 .iter()
                 .position(|option| option == &app.onnx_provider)
+                .unwrap_or(0)
+        } else if command == "/audio-mode" {
+            command_menu_options(app)
+                .iter()
+                .position(|option| option == &app.audio_preprocessing_mode)
                 .unwrap_or(0)
         } else {
             0
@@ -1300,6 +1338,13 @@ fn apply_command_menu(app: &mut App) {
             app.status = format!("Diarization {option}");
             app.command_menu = None;
             app.input.clear();
+        }
+        "/audio-mode" => {
+            app.audio_preprocessing_mode = option.clone();
+            app.status = format!("Audio preprocessing: {option}");
+            app.command_menu = None;
+            app.input.clear();
+            save_app_settings(app);
         }
         "/diarization-backend" => {
             app.diarization_backend = option.clone();
@@ -1566,6 +1611,12 @@ fn run_command(app: &mut App) {
             app.status = format!("Diarization {}", argument);
         }
         "/diarize" => app.status = "Usage: /diarize on|off".into(),
+        "/audio-mode" if matches!(argument, "auto" | "off" | "light" | "denoise") => {
+            app.audio_preprocessing_mode = argument.into();
+            app.status = format!("Audio preprocessing: {argument}");
+            save_app_settings(app);
+        }
+        "/audio-mode" => app.status = "Usage: /audio-mode auto|off|light|denoise".into(),
         "/diarization-backend" if matches!(argument, "pyannote" | "onnx" | "sortformer") => {
             app.diarization_backend = argument.into();
             if app.diarization_backend == "sortformer" {
@@ -1790,7 +1841,12 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             Style::default().fg(if app.running { Color::Green } else { secondary }),
         ),
         Span::styled(
-            format!("   {} · {}", app.backend, app.formats.join(",")),
+            format!(
+                "   {} · {} · audio {}",
+                app.backend,
+                app.formats.join(","),
+                app.audio_preprocessing_mode
+            ),
             Style::default().fg(secondary),
         ),
     ]);
@@ -2095,6 +2151,12 @@ fn main() -> io::Result<()> {
     if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
         app.model = settings.model;
     }
+    if matches!(
+        settings.audio_preprocessing_mode.as_str(),
+        "auto" | "off" | "light" | "denoise"
+    ) {
+        app.audio_preprocessing_mode = settings.audio_preprocessing_mode;
+    }
     app.llm_provider = settings.llm_provider;
     app.llm_api_url = settings.llm_api_url;
     app.llm_api_key = settings.llm_api_key;
@@ -2238,10 +2300,7 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('s')
                             if !app.running && app.input.is_empty() && !app.files.is_empty() =>
                         {
-                            if let Err(error) = send(
-                                &mut worker,
-                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model, "onnx_provider":app.onnx_provider, "subtitle_sentence_split":app.subtitle_sentence_split, "subtitle_max_lines":app.subtitle_max_lines, "subtitle_max_width":app.subtitle_max_width}),
-                            ) {
+                            if let Err(error) = send(&mut worker, start_payload(&app)) {
                                 app.log(format!("Worker unavailable: {error}"));
                             }
                         }
@@ -2826,5 +2885,33 @@ mod tests {
         run_command(&mut app);
         assert!(llm_input_files(&app).is_empty());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn audio_mode_is_selectable_persisted_and_sent_to_the_worker() {
+        let mut app = App::default();
+        assert!(open_command_menu(&mut app, "/audio-mode"));
+        assert_eq!(
+            command_menu_options(&app),
+            vec!["auto", "off", "light", "denoise", BACK_MENU_OPTION]
+        );
+        app.input = "/audio-mode denoise".into();
+        run_command(&mut app);
+        assert_eq!(app.audio_preprocessing_mode, "denoise");
+        app.input = "/audio-mode loud".into();
+        run_command(&mut app);
+        assert_eq!(app.status, "Usage: /audio-mode auto|off|light|denoise");
+
+        let payload = start_payload(&app);
+        assert_eq!(payload["audio_preprocessing_mode"], "denoise");
+        let restored: TuiSettings = serde_json::from_str(
+            &serde_json::to_string(&TuiSettings {
+                audio_preprocessing_mode: "light".into(),
+                ..TuiSettings::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored.audio_preprocessing_mode, "light");
     }
 }
