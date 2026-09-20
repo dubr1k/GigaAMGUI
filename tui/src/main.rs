@@ -168,12 +168,18 @@ fn provider_from_menu_option(option: &str) -> &str {
 }
 
 fn llm_settings_payload(app: &App) -> Value {
-    let mut settings = json!({
-        "provider": app.llm_provider,
-        "api_url": app.llm_api_url,
-        "api_key": app.llm_api_key,
-        "model": if app.llm_provider == "Codex" { String::new() } else { app.llm_model.clone() },
-        "temperature": app.llm_temperature,
+    llm_settings_from(&TuiSettings::from(app), &app.llm_tools)
+}
+
+/// The `settings` object of `llm_start`, built from persisted settings plus the
+/// tool registry (empty in headless mode: the worker then locates binaries itself).
+fn llm_settings_from(settings: &TuiSettings, tools: &[LlmTool]) -> Value {
+    let mut payload = json!({
+        "provider": settings.llm_provider,
+        "api_url": settings.llm_api_url,
+        "api_key": settings.llm_api_key,
+        "model": if settings.llm_provider == "Codex" { String::new() } else { settings.llm_model.clone() },
+        "temperature": settings.llm_temperature,
     });
     for (provider, binary) in [
         ("Claude Code", "claude"),
@@ -182,23 +188,25 @@ fn llm_settings_payload(app: &App) -> Value {
         ("Pi", "pi"),
         ("oh-my-pi", "omp"),
     ] {
-        let path = llm_tool_for(app, provider)
+        let path = tools
+            .iter()
+            .find(|tool| tool.provider == provider)
             .and_then(|tool| tool.path.clone())
             .unwrap_or_else(|| binary.to_owned());
-        settings[format!("{}_path", provider_prefix(provider))] = Value::String(path);
+        payload[format!("{}_path", provider_prefix(provider))] = Value::String(path);
     }
-    settings["other_path"] = Value::String(String::new());
-    for (prefix, path) in &app.llm_tool_paths {
-        settings[format!("{prefix}_path")] = Value::String(path.clone());
+    payload["other_path"] = Value::String(String::new());
+    for (prefix, path) in &settings.llm_tool_paths {
+        payload[format!("{prefix}_path")] = Value::String(path.clone());
     }
-    for (prefix, provider) in &app.llm_internal_providers {
-        settings[format!("{prefix}_provider")] = Value::String(provider.clone());
+    for (prefix, provider) in &settings.llm_internal_providers {
+        payload[format!("{prefix}_provider")] = Value::String(provider.clone());
     }
-    for (prefix, args) in &app.llm_extra_args {
-        settings[format!("{prefix}_args")] = Value::String(args.clone());
+    for (prefix, args) in &settings.llm_extra_args {
+        payload[format!("{prefix}_args")] = Value::String(args.clone());
     }
-    settings["llm_allow_tools"] = Value::Bool(app.llm_allow_tools);
-    settings
+    payload["llm_allow_tools"] = Value::Bool(settings.llm_allow_tools);
+    payload
 }
 
 struct App {
@@ -1036,30 +1044,36 @@ fn save_settings(settings: &TuiSettings) -> Result<(), String> {
     write_json_atomic(&path, &own)
 }
 
+impl From<&App> for TuiSettings {
+    fn from(app: &App) -> Self {
+        Self {
+            pet_enabled: app.pet_enabled,
+            backend: app.backend.clone(),
+            onnx_provider: app.onnx_provider.clone(),
+            diarization_backend: app.diarization_backend.clone(),
+            model: app.model.clone(),
+            subtitle_sentence_split: app.subtitle_sentence_split,
+            subtitle_max_lines: app.subtitle_max_lines,
+            subtitle_max_width: app.subtitle_max_width,
+            formats: app.formats.clone(),
+            diarization: app.diarization,
+            num_speakers: app.num_speakers,
+            llm_provider: app.llm_provider.clone(),
+            llm_api_url: app.llm_api_url.clone(),
+            llm_api_key: app.llm_api_key.clone(),
+            llm_model: app.llm_model.clone(),
+            llm_temperature: app.llm_temperature,
+            llm_internal_providers: app.llm_internal_providers.clone(),
+            llm_extra_args: app.llm_extra_args.clone(),
+            llm_tool_paths: app.llm_tool_paths.clone(),
+            llm_allow_tools: app.llm_allow_tools,
+            audio_preprocessing_mode: app.audio_preprocessing_mode.clone(),
+        }
+    }
+}
+
 fn save_app_settings(app: &mut App) {
-    if let Err(error) = save_settings(&TuiSettings {
-        pet_enabled: app.pet_enabled,
-        backend: app.backend.clone(),
-        onnx_provider: app.onnx_provider.clone(),
-        diarization_backend: app.diarization_backend.clone(),
-        model: app.model.clone(),
-        subtitle_sentence_split: app.subtitle_sentence_split,
-        subtitle_max_lines: app.subtitle_max_lines,
-        subtitle_max_width: app.subtitle_max_width,
-        formats: app.formats.clone(),
-        diarization: app.diarization,
-        num_speakers: app.num_speakers,
-        llm_provider: app.llm_provider.clone(),
-        llm_api_url: app.llm_api_url.clone(),
-        llm_api_key: app.llm_api_key.clone(),
-        llm_model: app.llm_model.clone(),
-        llm_temperature: app.llm_temperature,
-        llm_internal_providers: app.llm_internal_providers.clone(),
-        llm_extra_args: app.llm_extra_args.clone(),
-        llm_tool_paths: app.llm_tool_paths.clone(),
-        llm_allow_tools: app.llm_allow_tools,
-        audio_preprocessing_mode: app.audio_preprocessing_mode.clone(),
-    }) {
+    if let Err(error) = save_settings(&TuiSettings::from(&*app)) {
         app.status = error;
         app.log(app.status.clone());
     }
@@ -2147,6 +2161,515 @@ fn send(stdin: &mut ChildStdin, message: Value) -> io::Result<()> {
     stdin.flush()
 }
 
+// ---------------------------------------------------------------------------
+// Headless mode: `gigaam transcribe …` / `gigaam llm …` for scripts and agents.
+// The same worker and the same persisted settings as the TUI, but with a
+// deterministic stdout, no terminal and exit codes instead of a status line.
+// ---------------------------------------------------------------------------
+
+const HEADLESS_USAGE: &str = "Usage:
+  gigaam                       launch the terminal UI
+  gigaam transcribe FILE... [options]
+  gigaam llm FILE... --mode MODE [--mode MODE ...] [options]
+
+transcribe options (defaults come from the saved settings):
+  --output DIR                 write results into DIR (default: next to each input)
+  --formats LIST               comma-separated: txt,txt_timecodes,srt,vtt,md,txt_diarize,txt_diarize_timecodes
+  --diarize                    enable speaker diarization
+  --speakers N|auto            fixed speaker count or automatic detection
+  --diarization-backend NAME   pyannote|onnx|sortformer
+  --backend NAME               auto|pytorch|mlx|onnx (mlx: macOS only)
+  --model ID                   v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc
+  --audio-mode MODE            auto|off|light|denoise
+  --json                       one JSON worker event per line on stdout, nothing on stderr
+  --quiet                      no progress or log lines on stderr
+
+llm options:
+  --mode MODE                  summary|tasks|terms|custom (repeatable)
+  --prompt TEXT                the prompt for --mode custom
+  --output DIR                 where session_llm_<mode>.txt is saved (default: next to the last file)
+  --json                       one JSON worker event per line on stdout
+
+exit codes: 0 all files succeeded, 1 at least one file failed, 2 bad arguments,
+            3 worker unavailable (run `gigaam --update`)";
+
+#[derive(Debug)]
+enum HeadlessCommand {
+    Transcribe(TranscribeArgs),
+    Llm(LlmArgs),
+}
+
+#[derive(Debug, Default)]
+struct TranscribeArgs {
+    files: Vec<String>,
+    output_dir: Option<String>,
+    formats: Option<Vec<String>>,
+    diarize: Option<bool>,
+    /// `None`: not given; `Some(None)`: `auto`; `Some(Some(n))`: fixed count.
+    num_speakers: Option<Option<u32>>,
+    diarization_backend: Option<String>,
+    backend: Option<String>,
+    model: Option<String>,
+    audio_mode: Option<String>,
+    json: bool,
+    quiet: bool,
+}
+
+#[derive(Debug, Default)]
+struct LlmArgs {
+    files: Vec<String>,
+    modes: Vec<String>,
+    prompt: String,
+    output_dir: Option<String>,
+    json: bool,
+}
+
+/// Removes `--data-dir X` / `--data-dir=X`, which `apply_data_dir_argument` has
+/// already consumed, so that the headless parser only sees its own arguments.
+fn strip_data_dir(args: Vec<String>) -> Vec<String> {
+    let mut result = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+        } else if arg == "--data-dir" {
+            skip_next = true;
+        } else if !arg.starts_with("--data-dir=") {
+            result.push(arg);
+        }
+    }
+    result
+}
+
+fn parse_headless_args(argv: &[String]) -> Result<HeadlessCommand, String> {
+    let (subcommand, rest) = argv
+        .split_first()
+        .ok_or_else(|| "expected `transcribe` or `llm`".to_string())?;
+    // Flags accept both `--flag value` and `--flag=value`.
+    let mut items = rest.iter().map(|arg| match arg.split_once('=') {
+        Some((flag, value)) if flag.starts_with("--") => {
+            (flag.to_string(), Some(value.to_string()))
+        }
+        _ => (arg.clone(), None),
+    });
+    let mut files = Vec::new();
+    let mut options: Vec<(String, String)> = Vec::new();
+    let mut switches: Vec<String> = Vec::new();
+    let value_flags: &[&str] = match subcommand.as_str() {
+        "transcribe" => &[
+            "--output",
+            "--formats",
+            "--speakers",
+            "--diarization-backend",
+            "--backend",
+            "--model",
+            "--audio-mode",
+        ],
+        "llm" => &["--mode", "--prompt", "--output"],
+        other => {
+            return Err(format!(
+                "unknown command `{other}`; expected `transcribe` or `llm`"
+            ))
+        }
+    };
+    let switch_flags: &[&str] = if subcommand == "transcribe" {
+        &["--diarize", "--json", "--quiet"]
+    } else {
+        &["--json"]
+    };
+    while let Some((flag, inline_value)) = items.next() {
+        if !flag.starts_with('-') || flag == "-" {
+            files.push(flag);
+        } else if switch_flags.contains(&flag.as_str()) {
+            if inline_value.is_some() {
+                return Err(format!("{flag} does not take a value"));
+            }
+            switches.push(flag);
+        } else if value_flags.contains(&flag.as_str()) {
+            let value = match inline_value {
+                Some(value) => value,
+                None => items
+                    .next()
+                    .map(|(value, _)| value)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("{flag} requires a value"))?,
+            };
+            options.push((flag, value));
+        } else {
+            return Err(format!("unknown option {flag}"));
+        }
+    }
+    if files.is_empty() {
+        return Err(format!("{subcommand} needs at least one file"));
+    }
+    if subcommand == "llm" {
+        let mut args = LlmArgs {
+            files,
+            json: switches.iter().any(|flag| flag == "--json"),
+            ..LlmArgs::default()
+        };
+        for (flag, value) in options {
+            match flag.as_str() {
+                "--mode" if matches!(value.as_str(), "summary" | "tasks" | "terms" | "custom") => {
+                    if !args.modes.contains(&value) {
+                        args.modes.push(value);
+                    }
+                }
+                "--mode" => {
+                    return Err(format!(
+                        "--mode must be summary|tasks|terms|custom, got `{value}`"
+                    ))
+                }
+                "--prompt" => args.prompt = value,
+                _ => args.output_dir = Some(value),
+            }
+        }
+        if args.modes.is_empty() {
+            return Err("llm needs at least one --mode (summary|tasks|terms|custom)".into());
+        }
+        if args.modes.iter().any(|mode| mode == "custom") && args.prompt.trim().is_empty() {
+            return Err("--mode custom requires --prompt TEXT".into());
+        }
+        return Ok(HeadlessCommand::Llm(args));
+    }
+    let mut args = TranscribeArgs {
+        files,
+        diarize: switches
+            .iter()
+            .any(|flag| flag == "--diarize")
+            .then_some(true),
+        json: switches.iter().any(|flag| flag == "--json"),
+        quiet: switches.iter().any(|flag| flag == "--quiet"),
+        ..TranscribeArgs::default()
+    };
+    for (flag, value) in options {
+        match flag.as_str() {
+            "--output" => args.output_dir = Some(value),
+            "--formats" => {
+                let formats: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|format| !format.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if let Some(unknown) = formats
+                    .iter()
+                    .find(|format| !FORMAT_KEYS.contains(&format.as_str()))
+                {
+                    return Err(format!(
+                        "--formats: unknown format `{unknown}` (expected {})",
+                        FORMAT_KEYS.join(",")
+                    ));
+                }
+                if formats.is_empty() {
+                    return Err("--formats requires at least one format".into());
+                }
+                args.formats = Some(formats);
+            }
+            "--speakers" if value == "auto" => args.num_speakers = Some(None),
+            "--speakers" => match value.parse::<u32>() {
+                Ok(count) if count > 0 => args.num_speakers = Some(Some(count)),
+                _ => {
+                    return Err(format!(
+                        "--speakers must be auto or a positive number, got `{value}`"
+                    ))
+                }
+            },
+            "--diarization-backend"
+                if matches!(value.as_str(), "pyannote" | "onnx" | "sortformer") =>
+            {
+                args.diarization_backend = Some(value)
+            }
+            "--diarization-backend" => {
+                return Err(format!(
+                    "--diarization-backend must be pyannote|onnx|sortformer, got `{value}`"
+                ))
+            }
+            "--backend" if backend_is_supported(&value.to_ascii_lowercase()) => {
+                args.backend = Some(value.to_ascii_lowercase())
+            }
+            "--backend" => {
+                return Err(format!(
+                    "--backend must be one of {}, got `{value}`",
+                    selectable_backends().join("|")
+                ))
+            }
+            "--model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == value) => {
+                args.model = Some(value)
+            }
+            "--model" => {
+                return Err(format!(
+                    "--model must be one of {}, got `{value}`",
+                    MODEL_OPTIONS
+                        .iter()
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>()
+                        .join("|")
+                ))
+            }
+            "--audio-mode" if matches!(value.as_str(), "auto" | "off" | "light" | "denoise") => {
+                args.audio_mode = Some(value)
+            }
+            _ => {
+                return Err(format!(
+                    "--audio-mode must be auto|off|light|denoise, got `{value}`"
+                ))
+            }
+        }
+    }
+    Ok(HeadlessCommand::Transcribe(args))
+}
+
+/// The same `start` command the TUI sends, from persisted settings plus flag overrides.
+fn headless_start_payload(settings: &TuiSettings, args: &TranscribeArgs) -> Value {
+    let backend = args
+        .backend
+        .clone()
+        .or_else(|| backend_is_supported(&settings.backend).then(|| settings.backend.clone()))
+        .unwrap_or_else(|| "auto".into());
+    let model = args
+        .model
+        .clone()
+        .or_else(|| {
+            MODEL_OPTIONS
+                .iter()
+                .any(|(id, _)| *id == settings.model)
+                .then(|| settings.model.clone())
+        })
+        .unwrap_or_else(|| "v3_e2e_rnnt".into());
+    let diarization_backend = args
+        .diarization_backend
+        .clone()
+        .unwrap_or_else(|| settings.diarization_backend.clone());
+    // Sortformer always detects the speaker count itself (mirrors `/speakers` in the TUI).
+    let num_speakers = if diarization_backend == "sortformer" {
+        None
+    } else {
+        args.num_speakers.unwrap_or(settings.num_speakers)
+    };
+    let formats = args.formats.clone().unwrap_or_else(|| {
+        if settings.formats.is_empty() {
+            vec!["txt".into()]
+        } else {
+            settings.formats.clone()
+        }
+    });
+    json!({
+        "type": "start",
+        "files": args.files,
+        "output_dir": args.output_dir,
+        "formats": formats,
+        "diarization": args.diarize.unwrap_or(settings.diarization),
+        "diarization_backend": diarization_backend,
+        "num_speakers": num_speakers,
+        "backend": backend,
+        "model": model,
+        "onnx_provider": settings.onnx_provider,
+        "audio_preprocessing_mode": args.audio_mode.clone().unwrap_or_else(|| settings.audio_preprocessing_mode.clone()),
+        "subtitle_sentence_split": settings.subtitle_sentence_split,
+        "subtitle_max_lines": settings.subtitle_max_lines.clamp(1, 4),
+        "subtitle_max_width": settings.subtitle_max_width.clamp(20, 100),
+    })
+}
+
+fn headless_llm_payload(settings: &TuiSettings, args: &LlmArgs) -> Value {
+    json!({
+        "type": "llm_start",
+        "files": args.files,
+        "modes": args.modes,
+        "prompt": args.prompt,
+        "output_dir": args.output_dir,
+        "settings": llm_settings_from(settings, &[]),
+    })
+}
+
+/// One human-readable line for the events that end a file or the run; `None` for the rest.
+fn format_headless_line(event: &Value) -> Option<String> {
+    let message = |value: &Value| value.as_str().unwrap_or("").to_string();
+    match event["type"].as_str()? {
+        "file_completed" => {
+            let name = short_name(event["file"].as_str().unwrap_or("?"));
+            let result = &event["result"];
+            if result["success"].as_bool().unwrap_or(false) {
+                let saved: Vec<&str> = result["saved_files"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                Some(format!("✓ {name} → {}", saved.join(", ")))
+            } else {
+                Some(format!("× {name}: {}", message(&result["error"])))
+            }
+        }
+        "error" => Some(format!("error: {}", message(&event["message"]))),
+        "completed" | "llm_completed" if event["cancelled"].as_bool().unwrap_or(false) => {
+            Some("cancelled".into())
+        }
+        "completed" | "llm_completed" if !event["success"].as_bool().unwrap_or(false) => event
+            ["message"]
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .map(|text| format!("error: {text}")),
+        _ => None,
+    }
+}
+
+fn run_headless(argv: &[String]) -> io::Result<i32> {
+    let command = match parse_headless_args(argv) {
+        Ok(command) => command,
+        Err(message) => {
+            eprintln!("gigaam: {message}\n\n{HEADLESS_USAGE}");
+            return Ok(2);
+        }
+    };
+    let settings = load_settings();
+    let (payload, json_output, quiet, started_type, terminal_type) = match &command {
+        HeadlessCommand::Transcribe(args) => {
+            if let Some(directory) = &args.output_dir {
+                if let Err(error) = fs::create_dir_all(directory) {
+                    eprintln!("gigaam: cannot create output directory {directory}: {error}");
+                    return Ok(2);
+                }
+            }
+            (
+                headless_start_payload(&settings, args),
+                args.json,
+                args.quiet,
+                "started",
+                "completed",
+            )
+        }
+        HeadlessCommand::Llm(args) => (
+            headless_llm_payload(&settings, args),
+            args.json,
+            false,
+            "llm_started",
+            "llm_completed",
+        ),
+    };
+    let (mut child, mut worker, events) = match spawn_worker() {
+        Ok(parts) => parts,
+        Err(error) => {
+            eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
+            return Ok(3);
+        }
+    };
+    if let Err(error) = send(&mut worker, payload) {
+        eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
+        let _ = child.kill();
+        return Ok(3);
+    }
+    let mut exit_code = 1;
+    let mut batch_started = false;
+    let mut progress_line_open = false;
+    let mut streamed_modes: HashSet<String> = HashSet::new();
+    let stdout = io::stdout();
+    loop {
+        let event = match events.recv_timeout(Duration::from_secs(3600)) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!("gigaam: worker stopped responding");
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                eprintln!("gigaam: worker exited unexpectedly (try `gigaam --update`)");
+                exit_code = 3;
+                break;
+            }
+        };
+        let kind = event["type"].as_str().unwrap_or("").to_string();
+        if json_output {
+            let mut out = stdout.lock();
+            writeln!(out, "{}", serde_json::to_string(&event).unwrap_or_default())?;
+        } else {
+            if progress_line_open && kind != "progress" {
+                eprint!("\r\x1b[K");
+                progress_line_open = false;
+            }
+            match kind.as_str() {
+                "progress" if !quiet => {
+                    let percent = (event["file_progress"].as_f64().unwrap_or(0.0) * 100.0) as u16;
+                    eprint!(
+                        "\r{:<12} {:>3}%",
+                        event["stage"].as_str().unwrap_or(""),
+                        percent.min(100)
+                    );
+                    progress_line_open = true;
+                }
+                "progress" => {}
+                "log" if !quiet => eprintln!("{}", event["message"].as_str().unwrap_or("")),
+                "log" => {}
+                "llm_chunk" => {
+                    // Streaming providers (API) deliver the text here; CLI providers
+                    // only deliver it in `llm_completed.results`, so the heading is
+                    // printed lazily, right before the first text of each mode.
+                    let mode = event["mode"].as_str().unwrap_or("").to_string();
+                    let mut out = stdout.lock();
+                    if !streamed_modes.contains(&mode) {
+                        if !streamed_modes.is_empty() {
+                            writeln!(out)?;
+                        }
+                        writeln!(out, "## {mode}")?;
+                        streamed_modes.insert(mode);
+                    }
+                    write!(out, "{}", event["text"].as_str().unwrap_or(""))?;
+                    out.flush()?;
+                }
+                "llm_completed" => {
+                    let results = event["results"].as_array().cloned().unwrap_or_default();
+                    let mut out = stdout.lock();
+                    if !streamed_modes.is_empty() {
+                        writeln!(out)?; // streamed text ends without a newline
+                    }
+                    let mut printed = streamed_modes.len();
+                    for result in &results {
+                        let mode = result["mode"].as_str().unwrap_or("");
+                        if streamed_modes.contains(mode) {
+                            continue;
+                        }
+                        if printed > 0 {
+                            writeln!(out)?;
+                        }
+                        writeln!(
+                            out,
+                            "## {mode}\n{}",
+                            result["text"].as_str().unwrap_or("").trim_end()
+                        )?;
+                        printed += 1;
+                    }
+                    out.flush()?;
+                }
+                _ => {}
+            }
+            if let Some(line) = format_headless_line(&event) {
+                if kind == "file_completed" {
+                    println!("{line}");
+                } else {
+                    eprintln!("{line}");
+                }
+            }
+        }
+        if kind == started_type {
+            batch_started = true;
+        }
+        if kind == terminal_type {
+            exit_code = if event["success"].as_bool().unwrap_or(false) {
+                0
+            } else {
+                1
+            };
+            break;
+        }
+        if kind == "error" && !batch_started {
+            // The worker rejected the request before starting (missing file, bad
+            // formats, …): no `completed` will follow, so the run ends here.
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(exit_code)
+}
+
 fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
     let menu_options = if app.running {
@@ -2472,6 +2995,18 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
 fn main() -> io::Result<()> {
     apply_data_dir_argument()?;
+    let argv = strip_data_dir(std::env::args().skip(1).collect());
+    match argv.first().map(String::as_str) {
+        Some("transcribe" | "llm") => {
+            let code = run_headless(&argv)?;
+            std::process::exit(code);
+        }
+        Some("--help" | "-h") => {
+            println!("{HEADLESS_USAGE}");
+            return Ok(());
+        }
+        _ => {}
+    }
     let (mut child, mut worker, mut events) = spawn_worker()?;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -3471,5 +4006,144 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(directory.join("tui_settings.json")).unwrap())
                 .unwrap();
         assert!(tui.get("llm_api_key").is_none());
+    }
+
+    #[test]
+    fn strip_data_dir_removes_both_argument_forms() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            strip_data_dir(args(&["--data-dir", "/x", "transcribe", "a.wav"])),
+            args(&["transcribe", "a.wav"])
+        );
+        assert_eq!(
+            strip_data_dir(args(&["transcribe", "--data-dir=/x", "a.wav"])),
+            args(&["transcribe", "a.wav"])
+        );
+    }
+
+    #[test]
+    fn headless_transcribe_args_override_settings() {
+        let args: Vec<String> = [
+            "transcribe",
+            "/tmp/a.wav",
+            "/tmp/b.mp3",
+            "--formats",
+            "txt,srt",
+            "--diarize",
+            "--speakers",
+            "2",
+            "--backend",
+            "onnx",
+            "--audio-mode",
+            "denoise",
+            "--output",
+            "/tmp/out",
+            "--json",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let HeadlessCommand::Transcribe(parsed) = parse_headless_args(&args).unwrap() else {
+            panic!("transcribe")
+        };
+        let settings = TuiSettings {
+            backend: "mlx".into(),
+            model: "multilingual_ctc".into(),
+            ..TuiSettings::default()
+        };
+        let payload = headless_start_payload(&settings, &parsed);
+        assert_eq!(payload["type"], "start");
+        assert_eq!(payload["files"], json!(["/tmp/a.wav", "/tmp/b.mp3"]));
+        assert_eq!(payload["formats"], json!(["txt", "srt"]));
+        assert_eq!(payload["diarization"], true);
+        assert_eq!(payload["num_speakers"], 2);
+        assert_eq!(payload["backend"], "onnx", "flag overrides settings");
+        assert_eq!(
+            payload["model"], "multilingual_ctc",
+            "settings fill what flags omit"
+        );
+        assert_eq!(payload["audio_preprocessing_mode"], "denoise");
+        assert_eq!(payload["output_dir"], "/tmp/out");
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn headless_args_reject_unknown_flags_and_missing_files() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(parse_headless_args(&args(&["transcribe"]))
+            .unwrap_err()
+            .contains("at least one file"));
+        assert!(
+            parse_headless_args(&args(&["transcribe", "a.wav", "--bogus"]))
+                .unwrap_err()
+                .contains("--bogus")
+        );
+        assert!(
+            parse_headless_args(&args(&["transcribe", "a.wav", "--audio-mode", "loud"]))
+                .unwrap_err()
+                .contains("audio-mode")
+        );
+        assert!(parse_headless_args(&args(&["llm", "a.txt"]))
+            .unwrap_err()
+            .contains("--mode"));
+        assert!(
+            parse_headless_args(&args(&["llm", "a.txt", "--mode", "custom"]))
+                .unwrap_err()
+                .contains("--prompt")
+        );
+        assert!(
+            parse_headless_args(&args(&["--data-dir", "/x"])).is_err(),
+            "not a headless command"
+        );
+    }
+
+    #[test]
+    fn headless_llm_payload_uses_saved_provider_settings() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let HeadlessCommand::Llm(parsed) = parse_headless_args(&args(&[
+            "llm",
+            "/tmp/a.txt",
+            "--mode",
+            "summary",
+            "--mode",
+            "custom",
+            "--prompt",
+            "Why?",
+        ]))
+        .unwrap() else {
+            panic!("llm")
+        };
+        let settings = TuiSettings {
+            llm_provider: "Other".into(),
+            llm_tool_paths: HashMap::from([("other".to_string(), "/bin/cat".to_string())]),
+            llm_extra_args: HashMap::from([("other".to_string(), "-".to_string())]),
+            ..TuiSettings::default()
+        };
+        let payload = headless_llm_payload(&settings, &parsed);
+        assert_eq!(payload["type"], "llm_start");
+        assert_eq!(payload["files"], json!(["/tmp/a.txt"]));
+        assert_eq!(payload["modes"], json!(["summary", "custom"]));
+        assert_eq!(payload["prompt"], "Why?");
+        assert_eq!(payload["settings"]["provider"], "Other");
+        assert_eq!(payload["settings"]["other_path"], "/bin/cat");
+        assert_eq!(payload["settings"]["other_args"], "-");
+        assert_eq!(payload["settings"]["claude_path"], "claude");
+    }
+
+    #[test]
+    fn headless_human_lines_name_saved_files_and_errors() {
+        let done = json!({"type":"file_completed","file":"/tmp/a.wav","result":{"success":true,"saved_files":["/tmp/a.txt","/tmp/a.srt"]}});
+        assert_eq!(
+            format_headless_line(&done).unwrap(),
+            "✓ a.wav → /tmp/a.txt, /tmp/a.srt"
+        );
+        let failed = json!({"type":"file_completed","file":"/tmp/b.mp3","result":{"success":false,"error":"boom","saved_files":[]}});
+        assert_eq!(format_headless_line(&failed).unwrap(), "× b.mp3: boom");
+        let error = json!({"type":"error","message":"Input file does not exist: /tmp/c.wav"});
+        assert_eq!(
+            format_headless_line(&error).unwrap(),
+            "error: Input file does not exist: /tmp/c.wav"
+        );
+        assert!(format_headless_line(&json!({"type":"progress","stage":"asr"})).is_none());
     }
 }
