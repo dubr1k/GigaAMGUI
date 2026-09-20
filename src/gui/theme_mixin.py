@@ -48,6 +48,9 @@ class ThemeMixin:
                 border: none;
                 background-color: {c["bg"]};
             }}
+            QTabWidget::tab-bar {{
+                alignment: center;
+            }}
             QTabBar::tab {{
                 background-color: {c["tab_bg"]};
                 color: {c["tab_text"]};
