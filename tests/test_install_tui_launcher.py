@@ -50,6 +50,22 @@ def test_launcher_version_prints_the_installed_commit(tmp_path):
     assert head in result.stdout and str(prefix / "repo") in result.stdout
 
 
+def test_launcher_version_prefers_the_release_tag(tmp_path):
+    prefix = _fake_install(tmp_path)
+    subprocess.run(["git", "-C", str(prefix / "repo"), "tag", "-a", "v9.9.9", "-m", "release"], check=True)
+    result = _run(prefix, "--version")
+    assert result.returncode == 0
+    assert "gigaam-tui v9.9.9 " in result.stdout
+
+
+def test_installer_fetches_tags_after_a_shallow_checkout():
+    """`fetch --depth 1 origin REF` brings no tags; without them --version only shows a hash."""
+    text = INSTALLER.read_text()
+    checkout = text.index('checkout --force FETCH_HEAD')
+    tags = text.index('fetch --depth 1 --tags origin')
+    assert checkout < tags < text.index("cargo build --release")
+
+
 def test_launcher_update_runs_the_installer_with_the_same_prefix(tmp_path):
     prefix = _fake_install(tmp_path)
     installer = tmp_path / "fake_install.sh"

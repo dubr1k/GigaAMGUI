@@ -216,6 +216,9 @@ if [[ -d "$REPO_DIR/.git" ]]; then
 else
   git clone --depth 1 --branch "$REF" "$REPOSITORY" "$REPO_DIR"
 fi
+# A depth-1 fetch of a branch brings no tags, so `gigaam --version` would only
+# ever show a commit hash. Tags are tiny; fetch them so the release tag shows.
+git -C "$REPO_DIR" fetch --depth 1 --tags origin >/dev/null 2>&1 || true
 
 cargo build --release --manifest-path "$REPO_DIR/tui/Cargo.toml"
 if [[ "$FRESH" == true || ! -x "$VENV/bin/python" ]]; then

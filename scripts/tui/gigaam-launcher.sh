@@ -43,7 +43,11 @@ RAW_BASE="${GIGAAM_REPOSITORY_RAW:-https://raw.githubusercontent.com/dubr1k/Giga
 
 case "${1:-}" in
   --version)
-    revision="$(git -C "$REPO_DIR" describe --tags --always 2>/dev/null || echo unknown)"
+    # Prefer the exact release tag; a shallow checkout cannot count commits
+    # since an older tag, so fall back to the plain hash rather than "unknown".
+    revision="$(git -C "$REPO_DIR" describe --tags --exact-match 2>/dev/null \
+      || git -C "$REPO_DIR" describe --tags --always 2>/dev/null \
+      || echo unknown)"
     echo "gigaam-tui $revision ($REPO_DIR)"
     exit 0 ;;
   --update)
