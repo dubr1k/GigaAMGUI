@@ -225,7 +225,7 @@ python -m pip install -r requirements.txt
 | GigaAM Liquid (macOS) | `GigaAMLiquid.app` | Повседневная работа на Mac |
 | Классический GUI (PyQt) | `python app.py` | Windows, Linux, macOS |
 | CLI | `python cli.py -f audio.wav -o output` | Скрипты и пакетная автоматизация |
-| REST API | `python api.py` | Интеграции; документация на `http://127.0.0.1:8000/docs` |
+| REST API | `python api.py` | Интеграции, совместим с OpenAI Audio API: [docs/API.md](docs/API.md) |
 | Веб-панель | `docker compose up -d --build gigaam-web` | Сервер в локальной сети: `http://127.0.0.1:8001/` |
 | TUI *(preview)* | `cd tui && cargo run --release` | Очередь задач в терминале |
 
@@ -425,13 +425,25 @@ PyTorch-runtime (`cu124`/`cu128`) с откатом на CPU; macOS — CoreML �
 DirectML и TensorRT включаются вручную и только если установленный ONNX
 Runtime их предоставляет. Реальная цепочка провайдеров пишется в журнал.
 
-REST API принимает те же параметры как query-строку, а список допустимых
-значений отдаёт `GET /api/v1/asr/options`:
+### REST API (совместим с OpenAI)
+
+`python api.py` поднимает сервер с контрактом OpenAI Audio API: клиенты
+OpenAI SDK работают, поменяв `base_url` и ключ (печатается при первом старте).
+Движок, провайдер и диаризация передаются полями формы (`asr_backend`,
+`onnx_provider`, `diarize`, …); список доступных значений — `GET /v1/models`.
 
 ```bash
-curl -H "X-API-Key: $GIGAAM_API_KEY" -F "file=@audio.wav" \
-  "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=onnx&asr_model=v3_e2e_rnnt&onnx_provider=coreml"
+curl http://127.0.0.1:8000/v1/audio/transcriptions -H "Authorization: Bearer $GIGAAM_API_KEY" \
+  -F "file=@audio.wav" -F "model=whisper-1" -F "response_format=srt" -F "asr_backend=onnx"
 ```
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
+print(client.audio.transcriptions.create(model="whisper-1", file=open("audio.wav", "rb")).text)
+```
+
+Форматы ответа, стрим, ошибки и расширения — в [docs/API.md](docs/API.md).
 
 Сравнить движки на своём корпусе:
 

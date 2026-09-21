@@ -7,7 +7,9 @@
 
 ## [Unreleased]
 
-Пока нет изменений.
+### Изменено (breaking)
+
+- REST API заменён на совместимый с OpenAI Audio API: `POST /v1/audio/transcriptions` (json/text/srt/vtt/verbose_json/diarized_json, SSE `stream=true`), `GET /v1/models`, авторизация `Authorization: Bearer`, ошибки в формате OpenAI. Старые маршруты `/api/v1/*`, очередь задач, batch и скачивание удалены. Документация — `docs/API.md`.
 
 ## [2.3.1] - 2026-09-21
 
