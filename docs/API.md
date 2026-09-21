@@ -448,7 +448,7 @@ curl http://127.0.0.1:8000/v1/audio/transcriptions \
 | `API_WORKERS` | `2` | Читается, но `python api.py` запускает один процесс; несколько воркеров — `uvicorn api:app --workers N` (лимит запросов и семафор тогда действуют на каждый процесс отдельно). |
 | `MAX_FILE_SIZE` | `2147483648` (2 ГБ) | Лимит размера загрузки в байтах; превышение → `413 file_too_large`. |
 | `MAX_CONCURRENT_TASKS` | `3` | Сколько файлов обрабатывается одновременно; остальные запросы ждут семафор. |
-| `RATE_LIMIT_UPLOAD` | `10/minute` | Лимит `POST /v1/audio/transcriptions` с одного IP в формате slowapi (`число/период`: `10/minute`, `100/hour`); превышение → `429 rate_limit_exceeded`. |
+| `RATE_LIMIT_UPLOAD` | `10/minute` | Лимит `POST /v1/audio/transcriptions` с одного IP в формате slowapi (`число/период`: `10/minute`, `100/hour`); превышение → `429 rate_limit_exceeded`. Неразборное значение (например, `abc`) останавливает сервер при старте, а не отключает лимит молча. |
 | `CORS_ORIGINS` | пусто | Разрешённые origin через запятую; пусто — кросс-доменные запросы из браузера запрещены. |
 | `UPLOAD_DIR` | `uploads` | Куда кладутся временные директории запросов `req_*` (удаляются после ответа). |
 | `API_KEYS_FILE` | `.api_keys` | Файл с SHA-256 хэшами ключей. |

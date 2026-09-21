@@ -3,6 +3,9 @@ import asyncio
 import gc
 import importlib
 import json
+import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -523,6 +526,22 @@ def test_rate_limit_comes_from_env():
     assert api.RATE_LIMIT_UPLOAD == "10/minute"
     limits = api.limiter._route_limits["api.create_transcription"]
     assert str(limits[0].limit) == "10 per 1 minute"
+
+
+def test_invalid_rate_limit_fails_at_import():
+    # slowapi сам глотает ValueError и молча отключает лимит — валидируем до декоратора
+    assert api._validated_rate_limit("10/minute") == "10/minute"
+    assert api._validated_rate_limit("  100/hour ") == "100/hour"
+    assert api._validated_rate_limit(None) == "10/minute" and api._validated_rate_limit("") == "10/minute"
+    with pytest.raises(ValueError, match="RATE_LIMIT_UPLOAD='abc' is not a valid rate limit"):
+        api._validated_rate_limit("abc")
+
+
+def test_invalid_rate_limit_stops_the_process():
+    env = {**os.environ, "RATE_LIMIT_UPLOAD": "abc"}
+    proc = subprocess.run([sys.executable, "-c", "import api"], cwd=Path(api.__file__).parent, env=env,
+                          capture_output=True, text=True)
+    assert proc.returncode != 0 and "RATE_LIMIT_UPLOAD='abc' is not a valid rate limit" in proc.stderr
 
 
 def test_stream_keeps_progress_comment_that_arrives_with_completion(client, fake_processor, monkeypatch):

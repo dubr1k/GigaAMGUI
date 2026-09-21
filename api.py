@@ -27,6 +27,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from limits import parse_many
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -86,8 +87,21 @@ API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 API_WORKERS = int(os.getenv("API_WORKERS", "2"))
 
+
+
+def _validated_rate_limit(value: str | None) -> str:
+    """Проверяет строку лимита при импорте: slowapi при неразборной строке молча
+    отключает лимит (ловит ValueError и пишет пустой список), а нам нужен громкий отказ."""
+    limit = (value or "").strip() or "10/minute"
+    try:
+        parse_many(limit)
+    except ValueError as exc:
+        raise ValueError(f"RATE_LIMIT_UPLOAD={limit!r} is not a valid rate limit (e.g. '10/minute').") from exc
+    return limit
+
+
 # Лимит запросов на транскрибацию с одного IP (формат slowapi: "10/minute", "100/hour")
-RATE_LIMIT_UPLOAD = os.getenv("RATE_LIMIT_UPLOAD", "10/minute").strip() or "10/minute"
+RATE_LIMIT_UPLOAD = _validated_rate_limit(os.getenv("RATE_LIMIT_UPLOAD"))
 
 # Запас над MAX_FILE_SIZE для multipart-обвязки при проверке Content-Length до чтения тела
 _CONTENT_LENGTH_SLACK = 1024 * 1024
