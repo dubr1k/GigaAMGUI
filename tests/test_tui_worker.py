@@ -3,7 +3,13 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from src.tui_worker import TuiWorker
+
+# fcntl/O_NONBLOCK and select() on pipes are POSIX-only; build.yml runs this file
+# on windows-latest too, where these two pipe-level regressions cannot be reproduced.
+posix_pipes_only = pytest.mark.skipif(sys.platform == "win32", reason="needs fcntl and select() on pipes")
 
 
 def test_frozen_native_worker_entrypoint_replies_to_ping():
@@ -22,6 +28,7 @@ def _messages(output):
     return [json.loads(line) for line in output.getvalue().splitlines()]
 
 
+@posix_pipes_only
 def test_worker_survives_a_child_that_makes_stdin_non_blocking(tmp_path):
     """`pi --version` (probed by llm_tools) sets O_NONBLOCK on its inherited stdin —
     the flag lives on the shared open-file description, so the worker's own pipe
@@ -53,6 +60,7 @@ def test_worker_survives_a_child_that_makes_stdin_non_blocking(tmp_path):
     assert json.loads(result.stdout.strip()) == ["ping", "ping"], result.stdout
 
 
+@posix_pipes_only
 def test_worker_answers_while_stdin_stays_open():
     """The TUI keeps the pipe open for the whole session; the worker must answer
     each line as it arrives (a BufferedReader.read(n) would wait for n bytes/EOF)."""
@@ -98,6 +106,42 @@ def test_cli_probe_does_not_share_the_worker_stdin(monkeypatch):
     status = cli_tools.resolve_tool(cli_tools.provider_by_name("Claude Code"))
     assert status.status == "found"
     assert captured["stdin"] == subprocess.DEVNULL
+
+
+def test_run_command_uses_devnull_without_input(monkeypatch):
+    """llm_service._run_command must never hand the worker's own stdin to a CLI:
+    /dev/null when there is no prompt, a private pipe when there is one."""
+    from src.services import llm_service
+
+    captured = []
+
+    def fake_run(command, **kwargs):
+        captured.append(("run", kwargs.get("stdin"), kwargs.get("input")))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            captured.append(("popen", kwargs.get("stdin"), None))
+
+        def communicate(self, input=None, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(llm_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(llm_service.subprocess, "Popen", FakePopen)
+
+    llm_service._run_command(["tool"])
+    llm_service._run_command(["tool"], input_text="prompt")
+    llm_service._run_command(["tool"], cancel_check=lambda: False)
+    llm_service._run_command(["tool"], input_text="prompt", cancel_check=lambda: False)
+
+    assert captured == [
+        ("run", subprocess.DEVNULL, None),
+        ("run", None, "prompt"),
+        ("popen", subprocess.DEVNULL, None),
+        ("popen", subprocess.PIPE, None),
+    ]
 
 
 def test_tui_worker_replies_to_ping():

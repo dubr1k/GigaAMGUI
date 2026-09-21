@@ -119,8 +119,8 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "hint.view_result",
-        "r — показать/скрыть ответ; вкладка Журнал — детали",
-        "r shows/hides the answer; the Log tab has the details",
+        "r — показать ответ; вкладка Журнал — детали",
+        "r shows the answer; the Log tab has the details",
     ),
     ("queue.title", "Очередь", "Queue"),
     (

@@ -15,7 +15,7 @@ use ratatui::{
 use crate::{
     app::{esc_should_soft_cancel, llm_can_run, llm_input_files, App},
     commands::short_name,
-    i18n::{t, tf},
+    i18n::{t, tf, Lang},
     ui::{processing::fit_middle, Action, AreaId, ButtonId, ACCENT, SECONDARY},
     worker::llm_tool_for,
 };
@@ -262,13 +262,48 @@ fn saved_file_for<'a>(app: &'a App, mode: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+/// The label of a worker mode id (`summary` → «Выжимка»); unknown ids show as-is.
+fn mode_label(lang: Lang, mode: &str) -> String {
+    MODES
+        .iter()
+        .find(|(id, _)| *id == mode)
+        .map_or_else(|| mode.to_owned(), |(_, key)| t(lang, key).to_owned())
+}
+
+/// Every finished answer, each under a `── {mode} ──` heading; one answer needs
+/// no heading because the pane title already names its mode.
+fn results_text(app: &App) -> String {
+    if let [(_, text)] = app.llm_results.as_slice() {
+        return text.clone();
+    }
+    let mut body = String::new();
+    for (mode, text) in &app.llm_results {
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        let mut heading = format!("── {} ──", mode_label(app.lang, mode));
+        if let Some(path) = saved_file_for(app, mode) {
+            heading.push_str(&format!(
+                " {}",
+                tf(app.lang, "llm.saved", &[("name", &short_name(path))])
+            ));
+        }
+        body.push_str(&heading);
+        body.push('\n');
+        body.push_str(text);
+    }
+    body
+}
+
 fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let (mode, body): (Option<&str>, &str) = if app.llm_running {
-        (Some(app.llm_stream_mode.as_str()), app.llm_stream.as_str())
-    } else if let Some((mode, text)) = app.llm_results.last() {
-        (Some(mode.as_str()), text.as_str())
+    // Streaming shows the mode in flight; a single answer shows its mode and file;
+    // several answers keep those per result inside the pane (see `results_text`).
+    let (mode, body): (Option<&str>, String) = if app.llm_running {
+        (Some(app.llm_stream_mode.as_str()), app.llm_stream.clone())
+    } else if let [(mode, _)] = app.llm_results.as_slice() {
+        (Some(mode.as_str()), results_text(app))
     } else {
-        (None, "")
+        (None, results_text(app))
     };
     let mut title = format!(" {}", t(app.lang, "llm.answer"));
     if let Some(mode) = mode {
@@ -308,7 +343,7 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         );
         return;
     }
-    let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(body.as_str()).wrap(Wrap { trim: false });
     let lines = paragraph.line_count(inner.width).min(usize::from(u16::MAX)) as u16;
     let max_offset = lines.saturating_sub(inner.height);
     let offset = app.scroll.entry(AreaId::LlmOutput).or_default();
@@ -374,6 +409,48 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0]["type"], "llm_start");
         assert_eq!(commands[0]["files"], serde_json::json!(["/tmp/a.txt"]));
+    }
+
+    #[test]
+    fn every_mode_gets_its_own_heading_when_several_answers_arrive() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.page = Page::Llm;
+        app.llm_results = vec![
+            ("summary".into(), "Коротко".into()),
+            ("tasks".into(), "1. Сделать".into()),
+        ];
+        app.llm_saved_files = vec![
+            "/tmp/session_llm_summary.txt".into(),
+            "/tmp/session_llm_tasks.txt".into(),
+        ];
+        let text = render(&mut app);
+        for needle in [
+            "── Выжимка ── сохранено: session_llm_summary.txt",
+            "Коротко",
+            "── Задачи ── сохранено: session_llm_tasks.txt",
+            "1. Сделать",
+        ] {
+            assert!(text.contains(needle), "{needle}\n{text}");
+        }
+        assert!(
+            text.contains(" Ответ ") && !text.contains("Ответ · "),
+            "the title names no single mode when there are several\n{text}"
+        );
+        assert!(
+            text.find("Коротко").unwrap() < text.find("── Задачи").unwrap(),
+            "answers keep the worker's order\n{text}"
+        );
+        // The wheel clamps over the combined text, not the last answer alone.
+        app.llm_results = vec![
+            ("summary".into(), "a\n".repeat(100)),
+            ("tasks".into(), "b\n".repeat(100)),
+        ];
+        dispatch(&mut app, Action::Scroll(AreaId::LlmOutput, 500));
+        let text = render(&mut app);
+        let offset = app.scroll[&AreaId::LlmOutput];
+        assert!(offset > 100 && offset < 210, "{offset}");
+        assert!(text.contains("b"), "{text}");
     }
 
     #[test]

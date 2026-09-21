@@ -199,7 +199,7 @@ The TUI provides `/subtitle-split on|off`, `/subtitle-lines 1..4`, and
 `/subtitle-width 20..100`; these values persist between runs. It also has
 `/audio-mode auto|off|light|denoise`, `/llm-file <path>` (run the LLM on any
 saved transcript), `/llm-path`, `/llm-provider-name`, `/llm-args`,
-`/llm-tools on|off`, and the `r` hotkey to show or hide the last LLM result
+`/llm-tools on|off`, and the `r` hotkey to open the LLM tab with the answers
 (Esc while the LLM is running cancels that request without killing the
 worker). Cue boundaries use word timestamps when available, with
 deterministic timing inside the original ASR segment as the fallback. With diarization, SRT names a speaker only when the

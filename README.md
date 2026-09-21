@@ -367,8 +367,8 @@ python cli.py -f audio.wav --format srt --format vtt \
 В TUI — команды `/subtitle-split on|off`, `/subtitle-lines 1..4`,
 `/subtitle-width 20..100`, а также `/audio-mode auto|off|light|denoise`,
 `/llm-file <путь>` (LLM по любому сохранённому транскрипту), `/llm-path`,
-`/llm-provider-name`, `/llm-args`, `/llm-tools on|off` и хоткей `r` — показать
-или скрыть последний результат LLM (Esc во время работы LLM отменяет запрос,
+`/llm-provider-name`, `/llm-args`, `/llm-tools on|off` и хоткей `r` — открыть
+вкладку LLM с ответами (Esc во время работы LLM отменяет запрос,
 не убивая воркер).
 
 При наличии таймстампов слов каждый cue получает точные границы; иначе время

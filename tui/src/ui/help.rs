@@ -115,10 +115,11 @@ fn overlay_rect(area: Rect) -> Rect {
 }
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    // Any click closes the overlay; the wheel over the box scrolls it.
+    // Any click closes the overlay; the wheel anywhere scrolls it (the page
+    // underneath is covered, so its scroll areas must not catch the wheel).
+    app.hits.add(area, Action::Scroll(AreaId::Help, 0));
     app.hits.add(area, Action::Help);
     let rect = overlay_rect(area);
-    app.hits.add(rect, Action::Scroll(AreaId::Help, 0));
     app.hits.add(rect, Action::Help);
     frame.render_widget(Clear, rect);
     let block = Block::bordered()
@@ -264,7 +265,11 @@ mod tests {
         assert_eq!(app.hits.hit(0, 0), Some(Action::Help));
         assert_eq!(app.hits.hit(60, 20), Some(Action::Help));
         assert_eq!(app.hits.hit_scroll(60, 20), Some(AreaId::Help));
-        assert_eq!(app.hits.hit_scroll(0, 0), None);
+        assert_eq!(
+            app.hits.hit_scroll(0, 0),
+            Some(AreaId::Help),
+            "the wheel outside the box must not reach the page underneath"
+        );
     }
 
     #[test]

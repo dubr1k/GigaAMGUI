@@ -1023,7 +1023,6 @@ pub(crate) fn clear_queue(app: &mut App) {
     app.result_files.clear();
     app.llm_extra_files.clear();
     app.llm_results.clear();
-    app.show_llm_result = false;
     app.status = t(app.lang, "status.queue_cleared").into();
 }
 

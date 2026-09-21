@@ -63,9 +63,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         KeyCode::Char('l') if idle && no_input && llm_can_run(app) => {
             return dispatch(app, Action::Button(ButtonId::RunLlm));
         }
-        KeyCode::Char('l') if no_input => app.show_logs = !app.show_logs,
         KeyCode::Char('r') if idle && no_input && !app.llm_results.is_empty() => {
-            app.show_llm_result = true;
             return dispatch(app, Action::Tab(Page::Llm));
         }
         KeyCode::PageUp if app.page == Page::Llm && !menu_open => {
@@ -147,7 +145,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         KeyCode::Char('s') if idle && no_input && !app.files.is_empty() => {
             return dispatch(app, Action::Button(ButtonId::Start));
         }
-        KeyCode::Char('?') if idle && no_input => return dispatch(app, Action::Help),
+        // Reachable during a run too: the overlay only reads, it never touches the worker.
+        KeyCode::Char('?') if no_input => return dispatch(app, Action::Help),
         KeyCode::Esc if esc_should_soft_cancel(app) => {
             return dispatch(app, Action::Button(ButtonId::CancelLlm));
         }
@@ -346,7 +345,6 @@ mod tests {
         app.llm_results.push(("summary".into(), "…".into()));
         press(&mut app, KeyCode::Char('r'));
         assert_eq!(app.page, Page::Llm);
-        assert!(app.show_llm_result);
         press(&mut app, KeyCode::PageDown);
         assert_eq!(
             app.scroll[&crate::ui::AreaId::LlmOutput],
@@ -429,6 +427,26 @@ mod tests {
         assert_eq!(app.settings_cursor, 0, "Up clamps at the first row");
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.command_menu.as_deref(), Some("/lang"));
+    }
+
+    #[test]
+    fn help_opens_during_a_run_and_l_is_plain_text_without_results() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.running = true;
+        press(&mut app, KeyCode::Char('?'));
+        assert!(
+            app.help_open,
+            "the help is read-only, so a run must not gate it"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.help_open);
+        app.running = false;
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(
+            app.input, "l",
+            "without results to summarise `l` is ordinary text"
+        );
     }
 
     #[test]

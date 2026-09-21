@@ -117,7 +117,6 @@ pub(crate) struct App {
     pub(crate) subtitle_sentence_split: bool,
     pub(crate) subtitle_max_lines: u8,
     pub(crate) subtitle_max_width: u16,
-    pub(crate) show_logs: bool,
     pub(crate) result_files: Vec<String>,
     pub(crate) selected_file: Option<usize>,
     pub(crate) selected_command: usize,
@@ -148,7 +147,6 @@ pub(crate) struct App {
     pub(crate) llm_running: bool,
     pub(crate) llm_stream: String,
     pub(crate) llm_results: Vec<(String, String)>,
-    pub(crate) show_llm_result: bool,
     pub(crate) llm_cancel_requested: bool,
     pub(crate) llm_extra_files: Vec<String>,
     /// The highlighted row of the «Транскрипты» table on the LLM page.
@@ -204,7 +202,6 @@ impl Default for App {
             subtitle_sentence_split: true,
             subtitle_max_lines: 2,
             subtitle_max_width: 64,
-            show_logs: true,
             result_files: Vec::new(),
             selected_file: None,
             selected_command: 0,
@@ -235,7 +232,6 @@ impl Default for App {
             llm_running: false,
             llm_stream: String::new(),
             llm_results: Vec::new(),
-            show_llm_result: false,
             llm_cancel_requested: false,
             llm_extra_files: Vec::new(),
             llm_input_cursor: 0,
@@ -382,7 +378,6 @@ impl App {
                 // without `results` (worker failure, cancel) leaves `llm_results` alone.
                 self.llm_results.clear();
                 self.llm_saved_files.clear();
-                self.show_llm_result = false;
                 self.llm_stream_mode = value["mode"].as_str().unwrap_or("summary").to_owned();
                 self.status = tf(
                     self.lang,
@@ -443,7 +438,6 @@ impl App {
                         "status.llm_saved",
                         &[("results", &tn(self.lang, saved, "plural.results"))],
                     );
-                    self.show_llm_result = !self.llm_results.is_empty();
                 } else {
                     self.status = tf(
                         self.lang,
@@ -1009,7 +1003,6 @@ mod tests {
             app.llm_results,
             vec![("summary".to_string(), "Итог: всё хорошо".to_string())]
         );
-        assert!(app.show_llm_result);
         assert!(app.llm_stream.is_empty());
     }
 
@@ -1023,15 +1016,13 @@ mod tests {
             "type": "llm_completed", "success": true, "saved_files": [],
             "results": [{"mode": "summary", "text": "old"}]
         }));
-        assert!(app.show_llm_result && !app.llm_results.is_empty());
+        assert!(!app.llm_results.is_empty());
 
         app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 1}));
         assert!(app.llm_results.is_empty());
-        assert!(!app.show_llm_result);
         // A completion without `results` (worker failure) must not resurrect the old run.
         app.handle_message(json!({"type": "llm_completed", "success": false, "error": "boom"}));
         assert!(app.llm_results.is_empty());
-        assert!(!app.show_llm_result);
     }
 
     #[test]
