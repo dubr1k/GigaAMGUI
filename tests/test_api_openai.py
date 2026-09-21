@@ -3,7 +3,7 @@ import asyncio
 import gc
 import importlib
 import json
-import time
+import threading
 from pathlib import Path
 
 import httpx
@@ -234,6 +234,7 @@ def test_transcription_verbose_with_words(client, fake_processor):
     assert body["task"] == "transcribe" and body["duration"] == 3.25 and len(body["segments"]) == 2
     assert body["words"][0] == {"word": "как", "start": 1.5, "end": 2.0}
     assert "speaker" not in body["segments"][0]
+    assert body["usage"] == {"type": "duration", "seconds": 4}
 
 
 def test_diarized_json_turns_diarization_on(client, fake_processor):
@@ -405,10 +406,12 @@ def test_stream_disconnect_cleans_up_after_task_completes(fake_processor, monkey
     monkeypatch.setattr(api, "model_loader", _FakeModelLoader())
     monkeypatch.setattr(api, "stats_manager", None)
 
+    client_gone = threading.Event()  # executor-поток ждёт обрыва, а не фиксированную паузу
+
     def slow_fail(self, filepath, output_dir, *a, **kw):
         _FakeProcessor.calls.append({"output_dir": output_dir})
         self.progress_callback("transcription", 0.1)
-        time.sleep(0.4)
+        assert client_gone.wait(10), "the response never delivered its first chunk"
         raise RuntimeError("client is long gone")
     monkeypatch.setattr(_FakeProcessor, "process_file", slow_fail)
 
@@ -443,6 +446,7 @@ def test_stream_disconnect_cleans_up_after_task_completes(fake_processor, monkey
         await api.app(scope, receive, send)
         work_dir = Path(_FakeProcessor.calls[0]["output_dir"])
         assert work_dir.exists(), "cleanup ran while the executor job was still running"
+        client_gone.set()  # ASGI-приложение отработало обрыв — теперь executor может завершиться
         for _ in range(60):
             if not work_dir.exists():
                 break
@@ -454,6 +458,71 @@ def test_stream_disconnect_cleans_up_after_task_completes(fake_processor, monkey
     asyncio.run(scenario())
     gc.collect()
     assert unhandled == []
+
+
+# ---------- header-only guard: runs before the multipart body is read ----------
+
+
+def _raw_post(monkeypatch, headers, body=b"", *, feed_body):
+    """POST /v1/audio/transcriptions через ASGI напрямую: receive считает обращения к телу."""
+    monkeypatch.setattr(api, "VALID_API_KEY_HASHES", {api._hash_key(VALID_KEY)})
+    monkeypatch.setattr(api.limiter, "enabled", False)
+    monkeypatch.setattr(api, "_save_upload", lambda *_: (_ for _ in ()).throw(AssertionError("body was spooled")))
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "scheme": "http",
+             "path": "/v1/audio/transcriptions", "raw_path": b"/v1/audio/transcriptions", "query_string": b"",
+             "root_path": "", "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+             "client": ("127.0.0.1", 1234), "server": ("test", 80)}
+    reads, sent = [], []
+
+    async def receive():
+        reads.append(1)
+        assert feed_body, "the guard must answer from headers alone, without reading the body"
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(api.app(scope, receive, send))
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    payload = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, json.loads(payload), reads
+
+
+def test_upload_without_key_is_rejected_before_body(monkeypatch):
+    huge = str(api.MAX_FILE_SIZE * 4)
+    status, body, reads = _raw_post(monkeypatch, {"Content-Type": "multipart/form-data; boundary=x", "Content-Length": huge},
+                                    feed_body=False)
+    assert status == 401 and reads == []
+    assert body["error"]["type"] == "authentication_error" and body["error"]["code"] == "invalid_api_key"
+
+
+def test_oversized_content_length_is_rejected_before_body(monkeypatch):
+    huge = str(api.MAX_FILE_SIZE + 2 * 1024 * 1024)
+    status, body, reads = _raw_post(monkeypatch, {**BEARER, "Content-Type": "multipart/form-data; boundary=x", "Content-Length": huge},
+                                    feed_body=False)
+    assert status == 413 and reads == []
+    assert body["error"]["code"] == "file_too_large" and body["error"]["param"] == "file"
+
+
+def test_guard_accepts_x_api_key_and_lets_verify_api_key_decide(monkeypatch):
+    # Присутствие ключа проверяет гард, верность — verify_api_key (сюда доходим с телом)
+    status, body, reads = _raw_post(monkeypatch, {"X-API-Key": "wrong", "Content-Type": "multipart/form-data; boundary=x", "Content-Length": "4"},
+                                    body=b"--x\r\n", feed_body=True)
+    assert status == 401 and body["error"]["message"] == "Incorrect API key provided."
+
+
+def test_guard_ignores_other_routes(client):
+    assert client.get("/v1/models").status_code == 401  # обычный Depends, а не гард
+    r = client.post("/v1/audio/transcriptions", data={"model": "whisper-1"})
+    assert r.status_code == 401 and _error(r)["code"] == "invalid_api_key"
+    r = client.post("/v1/audio/transcriptions", headers={"Content-Length": str(api.MAX_FILE_SIZE * 4)})
+    assert r.status_code == 401  # без ключа — 401 раньше 413
+
+
+def test_rate_limit_comes_from_env():
+    assert api.RATE_LIMIT_UPLOAD == "10/minute"
+    limits = api.limiter._route_limits["api.create_transcription"]
+    assert str(limits[0].limit) == "10 per 1 minute"
 
 
 def test_stream_keeps_progress_comment_that_arrives_with_completion(client, fake_processor, monkeypatch):

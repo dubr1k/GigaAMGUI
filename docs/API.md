@@ -105,7 +105,7 @@ printf 'gam_my_second_key' | shasum -a 256 | cut -d' ' -f1 >> .api_keys
 ## POST /v1/audio/transcriptions
 
 `multipart/form-data`, один файл за запрос, ответ синхронный (или SSE при
-`stream=true`). Лимит: 10 запросов в минуту с одного IP (см. [Ошибки](#ошибки)).
+`stream=true`). Лимит: `RATE_LIMIT_UPLOAD` (10 запросов в минуту) с одного IP (см. [Ошибки](#ошибки)).
 
 | Поле | Тип | Поведение |
 |---|---|---|
@@ -196,7 +196,8 @@ WEBVTT
   "words": [
     {"word": "как", "start": 1.5, "end": 2.0},
     {"word": "дела?", "start": 2.0, "end": 3.25}
-  ]
+  ],
+  "usage": {"type": "duration", "seconds": 4}
 }
 ```
 
@@ -354,13 +355,13 @@ curl -N http://127.0.0.1:8000/v1/audio/transcriptions \
 | 400 | `invalid_request_error` | `stream_not_supported` | `stream=true` с `text`/`srt`/`vtt`/`diarized_json` |
 | 400 | `invalid_request_error` | `unsupported_parameter` | `known_speaker_*`, неизвестная гранулярность, `diarization_backend`, `asr_backend`/`onnx_provider`, `num_speakers` + `sortformer` |
 | 400 | `invalid_request_error` | `translation_not_supported` | `POST /v1/audio/translations` |
-| 401 | `authentication_error` | `invalid_api_key` | нет ключа или ключ неверный |
+| 401 | `authentication_error` | `invalid_api_key` | нет ключа или ключ неверный. Для `POST /v1/audio/*` отсутствие заголовка `Authorization`/`X-API-Key` отклоняется по заголовкам, до чтения тела |
 | 404 | `invalid_request_error` | `model_not_found` | неизвестный `model` / `/v1/models/{id}` |
 | 404 | `invalid_request_error` | `null` | неизвестный путь (в том числе старые маршруты) |
 | 405 | `invalid_request_error` | `null` | неверный метод |
-| 413 | `invalid_request_error` | `file_too_large` | файл больше `MAX_FILE_SIZE` |
+| 413 | `invalid_request_error` | `file_too_large` | файл больше `MAX_FILE_SIZE`; если `Content-Length` превышает `MAX_FILE_SIZE` + 1 МиБ, ответ приходит по заголовкам, до чтения тела |
 | 422 | `invalid_request_error` | `null` | ошибка валидации формы: нет `file`/`model`, `num_speakers` < 1 …; `param` — имя поля |
-| 429 | `rate_limit_error` | `rate_limit_exceeded` | больше 10 запросов в минуту на транскрибацию с одного IP |
+| 429 | `rate_limit_error` | `rate_limit_exceeded` | больше `RATE_LIMIT_UPLOAD` (10 в минуту) запросов на транскрибацию с одного IP |
 | 500 | `server_error` | `processing_failed` | конвертация/распознавание упали; подробности в журнале сервера |
 | 500 | `server_error` | `internal_error` | необработанное исключение; при `API_DEBUG=true` в `message` добавляется текст исключения |
 | 503 | `server_error` | `diarization_unavailable` | диаризация `pyannote` без `HF_TOKEN` на сервере |
@@ -390,8 +391,9 @@ curl -N http://127.0.0.1:8000/v1/audio/transcriptions \
   идёт обработка. За прокси (nginx, Cloudflare) используйте `stream=true` —
   комментарии прогресса не дают соединению заснуть — или поднимайте таймауты
   клиента (`OpenAI(timeout=...)`).
-- Лимит 10 запросов в минуту на транскрибацию с одного IP; одновременно
-  обрабатываются `MAX_CONCURRENT_TASKS` файлов, остальные ждут внутри запроса.
+- Лимит `RATE_LIMIT_UPLOAD` (10 запросов в минуту) на транскрибацию с одного
+  IP; одновременно обрабатываются `MAX_CONCURRENT_TASKS` файлов, остальные
+  ждут внутри запроса.
 - Ключ можно передавать и заголовком `X-API-Key`.
 
 ## Расширения GigaAM
@@ -446,6 +448,7 @@ curl http://127.0.0.1:8000/v1/audio/transcriptions \
 | `API_WORKERS` | `2` | Читается, но `python api.py` запускает один процесс; несколько воркеров — `uvicorn api:app --workers N` (лимит запросов и семафор тогда действуют на каждый процесс отдельно). |
 | `MAX_FILE_SIZE` | `2147483648` (2 ГБ) | Лимит размера загрузки в байтах; превышение → `413 file_too_large`. |
 | `MAX_CONCURRENT_TASKS` | `3` | Сколько файлов обрабатывается одновременно; остальные запросы ждут семафор. |
+| `RATE_LIMIT_UPLOAD` | `10/minute` | Лимит `POST /v1/audio/transcriptions` с одного IP в формате slowapi (`число/период`: `10/minute`, `100/hour`); превышение → `429 rate_limit_exceeded`. |
 | `CORS_ORIGINS` | пусто | Разрешённые origin через запятую; пусто — кросс-доменные запросы из браузера запрещены. |
 | `UPLOAD_DIR` | `uploads` | Куда кладутся временные директории запросов `req_*` (удаляются после ответа). |
 | `API_KEYS_FILE` | `.api_keys` | Файл с SHA-256 хэшами ключей. |

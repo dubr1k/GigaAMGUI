@@ -86,6 +86,12 @@ API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 API_WORKERS = int(os.getenv("API_WORKERS", "2"))
 
+# Лимит запросов на транскрибацию с одного IP (формат slowapi: "10/minute", "100/hour")
+RATE_LIMIT_UPLOAD = os.getenv("RATE_LIMIT_UPLOAD", "10/minute").strip() or "10/minute"
+
+# Запас над MAX_FILE_SIZE для multipart-обвязки при проверке Content-Length до чтения тела
+_CONTENT_LENGTH_SLACK = 1024 * 1024
+
 # Глобальные переменные
 model_loader = None
 stats_manager = None
@@ -325,10 +331,51 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 
+
+class _UploadGuard:
+    """Отсекает загрузки по заголовкам ДО чтения тела (чистый ASGI, без BaseHTTPMiddleware —
+    тот ломает стриминг и обрыв соединения).
+
+    FastAPI разбирает multipart (и спулит файл во временную директорию) раньше,
+    чем выполняются Depends(verify_api_key) и лимитер, поэтому без этой проверки
+    клиент без ключа мог бы залить сколько угодно байт, а 401 не считались бы
+    лимитером. Здесь только наличие ключа и Content-Length; сам ключ проверяет
+    verify_api_key, точный размер — _save_upload по мере записи.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("method") == "POST" and scope.get("path", "").startswith("/v1/audio/"):
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+            error = _upload_guard_error(headers)
+            if error is not None:
+                await JSONResponse(error.payload(), status_code=error.status_code)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def _upload_guard_error(headers: dict[str, str]) -> OpenAIError | None:
+    auth = headers.get("authorization", "")
+    if not (auth.lower().startswith("bearer ") or headers.get("x-api-key")):
+        return openai_error(401, "Missing API key. Send 'Authorization: Bearer <key>'.",
+                            type_="authentication_error", code="invalid_api_key")
+    content_length = headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > MAX_FILE_SIZE + _CONTENT_LENGTH_SLACK:
+        return openai_error(413, f"File exceeds the maximum size of {MAX_FILE_SIZE} bytes.",
+                            param="file", code="file_too_large")
+    return None
+
+
+app.add_middleware(_UploadGuard)
+
 # CORS — список доменов задаётся через CORS_ORIGINS в .env (по умолчанию кросс-домен запрещён).
-# Аутентификация по заголовку (Authorization: Bearer / X-API-Key), поэтому credentials не нужны.
+# Аутентификация по заголовку (Authorization: Bearer <key> или X-API-Key), поэтому credentials не нужны.
+# Добавляется после _UploadGuard, т.е. снаружи него: ответы 401/413 из гарда тоже получают CORS-заголовки.
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=False,
-                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "X-API-Key", "Content-Type"])
+                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "X-API-Key", "Content-Type"],
+                   expose_headers=["Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"])
 
 
 # ==================== ОБРАБОТЧИКИ ОШИБОК ====================
@@ -495,7 +542,7 @@ def _sse(payload: dict[str, Any]) -> str:
 
 @app.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)],
           summary="Transcribe audio (OpenAI-compatible)")
-@limiter.limit("10/minute")
+@limiter.limit(RATE_LIMIT_UPLOAD)
 async def create_transcription(
     request: Request,
     file: UploadFile = File(..., description="Audio or video file"),

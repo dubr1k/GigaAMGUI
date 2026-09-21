@@ -99,6 +99,7 @@ def build_verbose(
         "duration": float(duration or 0.0),
         "text": full_text(utts),
         "segments": segments,
+        "usage": usage(duration),
     }
     if "word" in granularities:
         out["words"] = words

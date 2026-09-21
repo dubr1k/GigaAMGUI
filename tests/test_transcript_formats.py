@@ -36,6 +36,7 @@ def test_build_verbose_segments_have_openai_fields():
         "temperature": 0.0, "avg_logprob": 0.0, "compression_ratio": 0.0, "no_speech_prob": 0.0,
     }
     assert "words" not in out and "speaker" not in seg
+    assert out["usage"] == {"type": "duration", "seconds": 4}
 
 
 def test_build_verbose_words_and_speakers():

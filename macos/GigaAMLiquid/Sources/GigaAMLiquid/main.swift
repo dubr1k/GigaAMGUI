@@ -1872,7 +1872,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(label("Не подключён", size: 17, weight: .medium, color: Palette.body))
             body.addArrangedSubview(settingsField("Адрес в примерах · не настройка подключения", control: label("http://127.0.0.1:8000", size: 15, color: Palette.ink)))
             body.addArrangedSubview(horizontal([button("Скопировать URL", action: #selector(copyAPIURL(_:))), button("Открыть документацию", action: #selector(openDocumentation(_:)))], spacing: 12))
-            body.addArrangedSubview(wrappedLabel("Для запросов требуется заголовок X-API-Key. Примеры Python, cURL и JavaScript доступны в разделе API основного меню.", size: 13, color: Palette.body))
+            body.addArrangedSubview(wrappedLabel("Для запросов требуется заголовок Authorization: Bearer <ключ> (X-API-Key принимается как устаревший вариант). Примеры Python, cURL и JavaScript доступны в разделе API основного меню.", size: 13, color: Palette.body))
         case "Пути":
             body.addArrangedSubview(wrappedLabel("Хранение результатов и визуальные эффекты приложения.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
@@ -3551,7 +3551,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         case "Параметры":
             detail = "POST /v1/audio/transcriptions принимает multipart-поле file. Основные поля: model (whisper-1 и другие алиасы), response_format (json/text/srt/vtt/verbose_json/diarized_json), stream, timestamp_granularities[]. Расширения GigaAM: diarize, diarization_backend, num_speakers, asr_backend, onnx_provider, audio_preprocessing. Требуется заголовок Authorization: Bearer <ключ>."
         case "Форматы ответов":
-            detail = "Ответ возвращается синхронно, сразу в запросе. Формат задаётся response_format: json, text, srt, vtt, verbose_json или diarized_json. При stream=true json/verbose_json приходят по SSE — по мере распознавания."
+            detail = "Ответ возвращается синхронно, сразу в запросе. Формат задаётся response_format: json, text, srt, vtt, verbose_json или diarized_json. При stream=true json/verbose_json приходят по SSE: во время обработки — комментарии прогресса, дельты текста — после распознавания всего файла."
         case "Эндпоинты":
             detail = "POST /v1/audio/transcriptions — распознать файл.\nGET /v1/models — доступные модели.\nGET /health — состояние сервиса."
         case "Примеры":
