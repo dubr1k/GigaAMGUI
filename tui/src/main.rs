@@ -32,7 +32,7 @@ use headless::{apply_data_dir_argument, run_headless, strip_data_dir, HEADLESS_U
 use i18n::strip_lang;
 use keys::handle_key;
 use settings::{apply_settings, load_settings};
-use ui::{draw, Action};
+use ui::{draw, Action, ButtonId};
 use worker::{llm_start_payload, send, spawn_worker};
 
 /// The worker process and its two channels; `None` once it could not be started.
@@ -118,8 +118,11 @@ fn main() -> io::Result<()> {
                     Ok(message) => app.handle_message(message),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
+                        // Nothing in flight survives the worker: clear the run flags
+                        // so the idle-only keys work again, and keep the hint.
                         if !app.worker_down {
                             app.worker_down = true;
+                            reset_after_worker_restart(&mut app);
                             app.status = "Worker exited".into();
                             app.log(app.status.clone());
                         }
@@ -228,6 +231,10 @@ fn main() -> io::Result<()> {
                         app.log(app.status.clone());
                         app.last_exit_request = None;
                     } else {
+                        // The first Esc is the graceful cancel the hint promises
+                        // (finish the current file); the second kills the worker.
+                        let commands = dispatch(&mut app, Action::Button(ButtonId::Stop));
+                        deliver(&mut app, &mut worker, commands);
                         app.last_exit_request = Some(("cancel", Instant::now()));
                         app.status = if app.llm_running {
                             "Press Esc again to kill the worker".into()

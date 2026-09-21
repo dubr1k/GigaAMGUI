@@ -175,7 +175,9 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
                 return dispatch(app, Action::SelectFile(index));
             }
         }
-        KeyCode::Delete | KeyCode::Backspace if idle && no_input => remove_selected_file(app),
+        KeyCode::Delete | KeyCode::Backspace if idle && no_input && app.focus != Focus::Params => {
+            remove_selected_file(app)
+        }
         KeyCode::Backspace if idle => {
             app.input.pop();
         }

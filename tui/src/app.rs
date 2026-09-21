@@ -604,7 +604,11 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             }
         }
         Action::Button(ButtonId::Stop) => {
-            if app.running && !app.llm_running {
+            // One graceful cancel per batch: the worker answers `cancelling`, which
+            // also sets `cancelled`, so a repeated Esc within the double-press
+            // window does not queue more cancels behind the first.
+            if app.running && !app.llm_running && !app.cancelled {
+                app.cancelled = true;
                 return vec![json!({"type": "cancel"})];
             }
         }
@@ -725,7 +729,38 @@ mod tests {
         // The next batch starts from a clean slate.
         app.handle_message(json!({"type": "started", "total_files": 2, "backend": "auto"}));
         assert_eq!(app.file_state("/tmp/b.wav"), FileState::Pending);
-        dispatch(&mut app, Action::Tab(Page::Processing));
+    }
+
+    #[test]
+    fn stop_sends_one_graceful_cancel_per_batch() {
+        let mut app = App::default();
+        assert!(dispatch(&mut app, Action::Button(ButtonId::Stop)).is_empty());
+        app.handle_message(json!({"type": "started", "total_files": 1, "backend": "auto"}));
+        let commands = dispatch(&mut app, Action::Button(ButtonId::Stop));
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0]["type"], "cancel");
+        assert!(dispatch(&mut app, Action::Button(ButtonId::Stop)).is_empty());
+        app.handle_message(json!({"type": "cancelling", "message": "Cancelling…"}));
+        assert!(dispatch(&mut app, Action::Button(ButtonId::Stop)).is_empty());
+        app.handle_message(json!({"type": "completed", "success": false, "cancelled": true}));
+        app.handle_message(json!({"type": "started", "total_files": 1, "backend": "auto"}));
+        assert_eq!(
+            dispatch(&mut app, Action::Button(ButtonId::Stop)).len(),
+            1,
+            "a new batch can be cancelled again"
+        );
+    }
+
+    #[test]
+    fn removing_a_file_forgets_its_state() {
+        let mut app = App::default();
+        app.files = vec!["/tmp/a.wav".into()];
+        app.file_states
+            .insert("/tmp/a.wav".into(), FileState::Failed);
+        dispatch(&mut app, Action::RemoveFile(0));
+        assert!(app.files.is_empty());
+        app.files = vec!["/tmp/a.wav".into()];
+        assert_eq!(app.file_state("/tmp/a.wav"), FileState::Pending);
     }
 
     #[test]

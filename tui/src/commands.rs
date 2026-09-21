@@ -968,6 +968,7 @@ pub(crate) fn run_command(app: &mut App) {
         "/remove" => match argument.parse::<usize>() {
             Ok(index) if index > 0 && index <= app.files.len() => {
                 let file = app.files.remove(index - 1);
+                app.file_states.remove(&file);
                 app.selected_file = app
                     .files
                     .get(index - 1)
@@ -1000,6 +1001,7 @@ pub(crate) fn remove_selected_file(app: &mut App) {
         return;
     };
     let file = app.files.remove(index);
+    app.file_states.remove(&file);
     app.selected_file = app
         .files
         .get(index)
