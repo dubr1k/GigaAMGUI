@@ -215,8 +215,11 @@ def resolve_tool(spec: ProviderSpec, override: str | None = None) -> ToolStatus:
     if path is None:
         return ToolStatus(spec.id, spec.name, "missing", None, None, None, spec.install_hint)
     try:
+        # stdin=DEVNULL: унаследованный stdin — общее описание файла с нашим; `pi
+        # --version` выставляет на нём O_NONBLOCK, и JSONL-воркер получал «EOF».
         result = subprocess.run(
             [path, *spec.version_args],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=PROBE_TIMEOUT,

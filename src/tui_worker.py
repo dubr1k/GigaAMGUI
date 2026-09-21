@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -300,15 +301,59 @@ class TuiWorker:
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
 
 
+def read_commands(stream) -> Iterator[dict[str, Any]]:
+    """JSONL-команды из ``stream`` (двоичный, небуферизованный), устойчиво к
+    неблокирующему stdin.
+
+    Дочерние CLI (замечено у ``pi --version``) выставляют O_NONBLOCK на
+    унаследованный stdin; флаг живёт на общем описании открытого файла, так что
+    неблокирующим становится и наш конец трубы. ``for line in sys.stdin`` тогда
+    получает EAGAIN, Python отдаёт «EOF», и воркер молча завершается, пока TUI ещё
+    держит трубу («Worker exited»). Здесь EAGAIN — не конец: ждём данных через
+    select и читаем дальше. Невалидные строки отдаются как ``{"_invalid": …}``.
+    """
+    import errno
+    import select
+
+    fd = stream.fileno()
+    buffer = b""
+    while True:
+        try:
+            chunk = stream.read(65536)
+        except BlockingIOError:
+            select.select([fd], [], [], 1.0)
+            continue
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                select.select([fd], [], [], 1.0)
+                continue
+            raise
+        if chunk is None:  # BufferedReader на неблокирующем fd
+            select.select([fd], [], [], 1.0)
+            continue
+        if chunk == b"":
+            break
+        buffer += chunk
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            if not line.strip():
+                continue
+            try:
+                command = json.loads(line)
+                if not isinstance(command, dict):
+                    raise ValueError("Command must be a JSON object")
+            except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as exc:
+                yield {"_invalid": f"Invalid command: {exc}"}
+                continue
+            yield command
+
+
 def main() -> int:
     worker = TuiWorker()
-    for line in sys.stdin:
-        try:
-            command = json.loads(line)
-            if not isinstance(command, dict):
-                raise ValueError("Command must be a JSON object")
-        except (json.JSONDecodeError, ValueError) as exc:
-            worker.emit("error", message=f"Invalid command: {exc}")
+    stdin = getattr(sys.stdin, "buffer", sys.stdin)
+    for command in read_commands(stdin):
+        if "_invalid" in command:
+            worker.emit("error", message=command["_invalid"])
             continue
         worker.handle(command)
     return 0

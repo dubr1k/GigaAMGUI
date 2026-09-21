@@ -22,6 +22,55 @@ def _messages(output):
     return [json.loads(line) for line in output.getvalue().splitlines()]
 
 
+def test_worker_survives_a_child_that_makes_stdin_non_blocking(tmp_path):
+    """`pi --version` (probed by llm_tools) sets O_NONBLOCK on its inherited stdin —
+    the flag lives on the shared open-file description, so the worker's own pipe
+    turned non-blocking, `for line in sys.stdin` got EAGAIN, Python reported EOF and
+    the worker exited 0 while the TUI still held the pipe («Worker exited»)."""
+    import os
+
+    # Drive the worker's own reader with a pipe whose read end is flipped to
+    # non-blocking mid-stream, exactly what a probed CLI does to the shared fd.
+    reader = tmp_path / "reader.py"
+    reader.write_text(
+        "import fcntl, json, os, sys, threading, time\n"
+        "from src.tui_worker import read_commands\n"
+        "r, w = os.pipe()\n"
+        "def writer():\n"
+        "    os.write(w, b'{\"type\":\"ping\"}\\n')\n"
+        "    time.sleep(0.2)\n"
+        "    fl = fcntl.fcntl(r, fcntl.F_GETFL); fcntl.fcntl(r, fcntl.F_SETFL, fl | os.O_NONBLOCK)\n"
+        "    time.sleep(0.4)\n"
+        "    os.write(w, b'{\"type\":\"ping\"}\\n')\n"
+        "    time.sleep(0.2)\n"
+        "    os.close(w)\n"
+        "threading.Thread(target=writer, daemon=True).start()\n"
+        "got = [c['type'] for c in read_commands(os.fdopen(r, 'rb', buffering=0))]\n"
+        "print(json.dumps(got))\n"
+    )
+    result = subprocess.run([sys.executable, str(reader)], capture_output=True, text=True, timeout=30, env={**os.environ, "PYTHONPATH": "."})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == ["ping", "ping"], result.stdout
+
+
+def test_cli_probe_does_not_share_the_worker_stdin(monkeypatch):
+    """Children of the worker must get /dev/null as stdin: an inherited pipe lets a
+    CLI change the worker's own stdin flags (see the non-blocking test above)."""
+    from src.services import cli_tools
+
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["stdin"] = kwargs.get("stdin")
+        return subprocess.CompletedProcess(command, 0, "1.2.3", "")
+
+    monkeypatch.setattr(cli_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_tools, "locate_tool", lambda spec, override=None: "/x/claude")
+    status = cli_tools.resolve_tool(cli_tools.provider_by_name("Claude Code"))
+    assert status.status == "found"
+    assert captured["stdin"] == subprocess.DEVNULL
+
+
 def test_tui_worker_replies_to_ping():
     output = io.StringIO()
     worker = TuiWorker(output=output)
