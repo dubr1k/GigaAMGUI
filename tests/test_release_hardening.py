@@ -33,7 +33,7 @@ def test_tauri_api_examples_match_authenticated_v1_contract() -> None:
 def test_all_desktop_version_sources_match_release():
     import json
 
-    expected = "2.3.0"
+    expected = "2.3.1"
     assert f'__version__ = "{expected}"' in Path("src/__init__.py").read_text(encoding="utf-8")
     assert f'APP_VERSION = "{expected}"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
     assert json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))["version"] == expected
