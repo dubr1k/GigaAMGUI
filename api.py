@@ -8,8 +8,11 @@ POST /v1/audio/transcriptions, GET /v1/models, GET /health. Клиенты OpenA
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 import re
+import shutil
+import tempfile
 import uuid
 
 # Подавляем предупреждения
@@ -23,22 +26,24 @@ from typing import Any
 from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты проекта
 from src import __version__
-from src.config import HF_TOKEN, SUPPORTED_FORMATS
+from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, SUPPORTED_FORMATS
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
-from src.services import file_policy, transcription_service
+from src.services import file_policy, transcript_formats, transcription_service
 from src.services import health as health_service
 from src.utils.audio_converter import ffmpeg_available
+from src.utils.diarization import normalize_diarization_backend
 from src.utils.logger import setup_logger
 from src.utils.processing_stats import ProcessingStats
 
@@ -310,8 +315,8 @@ async def lifespan(app: FastAPI):
 
 # ==================== ПРИЛОЖЕНИЕ ====================
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiter; headers_enabled — Retry-After / X-RateLimit-* для backoff в OpenAI SDK
+limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
 
 app = FastAPI(
     title="GigaAM v3 Transcriber API",
@@ -351,9 +356,25 @@ async def _validation_handler(_: Request, exc: RequestValidationError):
 
 
 @app.exception_handler(RateLimitExceeded)
-async def _rate_limit_handler(_: Request, exc: RateLimitExceeded):
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
     err = openai_error(429, f"Rate limit exceeded: {exc.detail}", type_="rate_limit_error", code="rate_limit_exceeded")
-    return JSONResponse(err.payload(), status_code=429)
+    response = JSONResponse(err.payload(), status_code=429)
+    # Retry-After / X-RateLimit-* — по ним OpenAI SDK делает backoff
+    view_rate_limit = getattr(request.state, "view_rate_limit", None)
+    if view_rate_limit is not None:
+        response = request.app.state.limiter._inject_headers(response, view_rate_limit)
+    return response
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error_handler(_: Request, exc: Exception):
+    if logger:
+        logger.error(f"[api] unhandled error: {exc}", exc_info=True)
+    message = "Internal server error."
+    if API_DEBUG:
+        message = f"{message} {exc}"
+    err = openai_error(500, message, type_="server_error", code="internal_error")
+    return JSONResponse(err.payload(), status_code=500)
 
 
 # ==================== ЭНДПОИНТЫ ====================
@@ -397,10 +418,219 @@ async def create_translation():
                        code="translation_not_supported")
 
 
-@app.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
+_GRANULARITIES = {"segment", "word"}
+_STREAM_FORMATS = {"json", "verbose_json"}
+
+
+def _save_upload(file: UploadFile) -> tuple[Path, Path]:
+    """Кладёт загрузку в свою временную директорию под UPLOAD_DIR; лимит размера — по мере записи."""
+    filename = safe_filename(file.filename)
+    if not is_supported_format(filename):
+        raise openai_error(400, f"Unsupported file type: '{filename}'. Supported: {', '.join(SUPPORTED_FORMATS[1])}",
+                           param="file", code="unsupported_file")
+    work_dir = Path(tempfile.mkdtemp(prefix="req_", dir=UPLOAD_DIR))
+    target = work_dir / filename
+    written = 0
+    with open(target, "wb") as out:
+        while chunk := file.file.read(1024 * 1024):
+            written += len(chunk)
+            if written > MAX_FILE_SIZE:
+                shutil.rmtree(work_dir, ignore_errors=True)
+                raise openai_error(413, f"File exceeds the maximum size of {MAX_FILE_SIZE} bytes.",
+                                   param="file", code="file_too_large")
+            out.write(chunk)
+    return work_dir, target
+
+
+def _cleanup(work_dir: Path) -> None:
+    shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _parse_bool(value: str | bool | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _run_processor(request_loader, file_path: Path, work_dir: Path, *, enable_diarization: bool,
+                   diarization_backend: str, num_speakers: int | None, audio_preprocessing: str,
+                   progress_callback) -> dict[str, Any]:
+    """Синхронно: грузит модель под запрос (если нужна другая) и запускает процессор."""
+    processor = transcription_service.build_processor(
+        request_loader, stats_manager,
+        logger=lambda msg: logger.debug(f"[api] {msg}") if logger else None,
+        progress_callback=progress_callback,
+    )
+    result = processor.process_file(
+        str(file_path), str(work_dir), 0, 1, file_path.name,
+        enable_diarization=enable_diarization, num_speakers=num_speakers, output_formats=[],
+        diarization_backend=diarization_backend, audio_preprocessing_mode=audio_preprocessing,
+    )
+    if not result.get("success"):
+        raise RuntimeError("processing failed")
+    return result
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)],
+          summary="Transcribe audio (OpenAI-compatible)")
 @limiter.limit("10/minute")
-async def create_transcription(request: Request, file: UploadFile = File(...), model: str = Form(...)):
-    raise openai_error(501, "not implemented yet", type_="server_error")  # Task 4
+async def create_transcription(
+    request: Request,
+    file: UploadFile = File(..., description="Audio or video file"),
+    model: str = Form(..., description="GigaAM model id or an OpenAI alias (whisper-1, gpt-4o-transcribe)"),
+    language: str | None = Form(None),
+    prompt: str | None = Form(None, description="Accepted and ignored"),
+    response_format: str = Form("json"),
+    temperature: float | None = Form(None, description="Accepted and ignored"),
+    stream: str | None = Form(None),
+    timestamp_granularities: list[str] | None = Form(None, alias="timestamp_granularities[]"),
+    include: list[str] | None = Form(None, alias="include[]", description="Accepted and ignored"),
+    chunking_strategy: str | None = Form(None, description="Accepted and ignored (VAD chunking is always on)"),
+    known_speaker_names: list[str] | None = Form(None, alias="known_speaker_names[]"),
+    known_speaker_references: list[str] | None = Form(None, alias="known_speaker_references[]"),
+    # --- GigaAM extensions ---
+    diarize: str | None = Form(None, description="GigaAM extension: speaker diarization"),
+    diarization_backend: str = Form("pyannote", description="GigaAM extension: pyannote | sortformer"),
+    num_speakers: int | None = Form(None, ge=1, description="GigaAM extension"),
+    asr_backend: str | None = Form(None, description="GigaAM extension: auto | pytorch | onnx | mlx"),
+    onnx_provider: str | None = Form(None, description="GigaAM extension"),
+    audio_preprocessing: str | None = Form(None, description="GigaAM extension: off | auto | deepfilter"),
+):
+    if response_format not in transcript_formats.FORMATS:
+        raise openai_error(400, f"Unsupported response_format '{response_format}'. Use one of: {', '.join(transcript_formats.FORMATS)}.",
+                           param="response_format", code="unsupported_response_format")
+    streaming = _parse_bool(stream)
+    if streaming and response_format not in _STREAM_FORMATS:
+        raise openai_error(400, "stream=true is only supported with response_format=json or verbose_json.",
+                           param="stream", code="stream_not_supported")
+    if known_speaker_names or known_speaker_references:
+        raise openai_error(400, "known_speaker_names/known_speaker_references are not supported by GigaAM.",
+                           param="known_speaker_names", code="unsupported_parameter")
+    granularities = set(timestamp_granularities or ["segment"])
+    bad = granularities - _GRANULARITIES
+    if bad:
+        raise openai_error(400, f"Unknown timestamp granularity: {', '.join(sorted(bad))}.",
+                           param="timestamp_granularities", code="unsupported_parameter")
+    model_id = resolve_model(model)
+    enable_diarization = _parse_bool(diarize) or response_format == "diarized_json"
+    try:
+        diarization_backend = normalize_diarization_backend(diarization_backend)
+    except ValueError as exc:
+        raise openai_error(400, f"Unknown diarization_backend '{diarization_backend}'. Use pyannote or sortformer.",
+                           param="diarization_backend", code="unsupported_parameter") from exc
+    if enable_diarization and diarization_backend == "sortformer" and num_speakers is not None:
+        raise openai_error(400, "num_speakers cannot be combined with diarization_backend=sortformer.",
+                           param="num_speakers", code="unsupported_parameter")
+    if enable_diarization and not (HF_TOKEN and HF_TOKEN.startswith("hf_")) and diarization_backend == "pyannote":
+        raise openai_error(503, "Diarization is unavailable: HF_TOKEN is not configured on the server.",
+                           type_="server_error", code="diarization_unavailable")
+    if model_loader is None:
+        raise openai_error(503, "ASR model is not loaded.", type_="server_error", code="model_not_loaded")
+    try:
+        asr_selection = transcription_service.normalize_asr_selection(
+            model_loader, backend=asr_backend, model=model_id, onnx_provider=onnx_provider)
+    except ValueError as exc:
+        raise openai_error(400, str(exc), param="asr_backend", code="unsupported_parameter") from exc
+    preprocessing = (audio_preprocessing or AUDIO_PREPROCESSING_MODE)
+
+    loop = asyncio.get_running_loop()
+    # Запись на диск — в executor, чтобы гигабайтная загрузка не блокировала loop
+    work_dir, file_path = await loop.run_in_executor(None, _save_upload, file)
+    progress_queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def progress_callback(event_or_stage, progress=None, **_):
+        # Процессор шлёт ProgressEvent одним аргументом (или (stage, value) — legacy).
+        # Вызывается из executor-потока — переключаемся в loop.
+        stage = getattr(event_or_stage, "stage", None) or (event_or_stage if isinstance(event_or_stage, str) else "processing")
+        value = getattr(event_or_stage, "file_progress", None)
+        if value is None:
+            value = progress
+        pct = f"{int(float(value) * 100)}%" if isinstance(value, (int, float)) else "…"
+        loop.call_soon_threadsafe(progress_queue.put_nowait, f": progress {stage} {pct}\n\n")
+
+    def blocking() -> dict[str, Any]:
+        request_loader, owns = model_loader, False
+        if asr_selection is not None:
+            request_loader, owns = transcription_service.acquire_request_model_loader(
+                model_loader, asr_selection, loader_factory=ModelLoader)
+        if owns and not request_loader.load_model(logger=(logger.info if logger else None)):
+            raise RuntimeError("could not load the requested ASR backend")
+        return _run_processor(
+            request_loader, file_path, work_dir, enable_diarization=enable_diarization,
+            diarization_backend=diarization_backend, num_speakers=num_speakers,
+            audio_preprocessing=preprocessing, progress_callback=progress_callback)
+
+    async def run() -> dict[str, Any]:
+        async with processing_semaphore:
+            return await loop.run_in_executor(None, blocking)
+
+    def render(result):
+        return transcript_formats.render(
+            response_format, result.get("utterances") or [], result.get("media_duration") or 0.0,
+            language=language, granularities=granularities,
+            diarized=bool(result.get("diarization", {}).get("applied")) or enable_diarization,
+            subtitle_options=None)
+
+    if not streaming:
+        try:
+            result = await run()
+        except OpenAIError:
+            _cleanup(work_dir)
+            raise
+        except Exception as exc:
+            _cleanup(work_dir)
+            if logger:
+                logger.error(f"[api] transcription failed: {exc}", exc_info=True)
+            raise openai_error(500, "Transcription failed on the server. See the server log.",
+                               type_="server_error", code="processing_failed") from exc
+        _cleanup(work_dir)
+        body, media_type = render(result)
+        if isinstance(body, dict):
+            return JSONResponse(body)
+        return Response(content=body, media_type=media_type)
+
+    async def events():
+        task = asyncio.ensure_future(run())
+        getter = asyncio.ensure_future(progress_queue.get())
+        try:
+            while not task.done():
+                done, _ = await asyncio.wait({task, getter}, timeout=5.0, return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    yield getter.result()
+                    getter = asyncio.ensure_future(progress_queue.get())
+                elif not done:
+                    yield ": keepalive\n\n"
+            while not progress_queue.empty():  # комментарии, пришедшие вместе с завершением
+                yield progress_queue.get_nowait()
+            result = task.result()
+            utts = result.get("utterances") or []
+            # Все дельты, кроме последней, с пробелом на конце — конкатенация равна full_text
+            parts = [t for t in (u.get("transcription", "").strip() for u in utts) if t]
+            for index, text in enumerate(parts):
+                delta = text if index == len(parts) - 1 else text + " "
+                yield _sse({"type": "transcript.text.delta", "delta": delta})
+            done_event = {"type": "transcript.text.done", "text": transcript_formats.full_text(utts),
+                          "usage": transcript_formats.usage(result.get("media_duration") or 0.0)}
+            if response_format == "verbose_json":
+                done_event.update({k: v for k, v in render(result)[0].items() if k not in done_event})
+            yield _sse(done_event)
+        except Exception as exc:
+            if logger:
+                logger.error(f"[api] streamed transcription failed: {exc}", exc_info=True)
+            err = openai_error(500, "Transcription failed on the server. See the server log.",
+                               type_="server_error", code="processing_failed")
+            yield _sse({"type": "error", "error": err.payload()["error"]})
+        finally:
+            getter.cancel()  # и при обрыве соединения клиентом (GeneratorExit)
+            _cleanup(work_dir)
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                             background=BackgroundTask(_cleanup, work_dir))
 
 
 # ==================== ЗАПУСК ====================
