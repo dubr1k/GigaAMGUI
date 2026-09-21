@@ -16,8 +16,11 @@ use crate::{
         open_command_menu, queue_paths, remove_selected_file, run_command, COMMANDS,
     },
     settings::save_app_settings,
-    ui::{processing::PARAM_ROWS, Action, ButtonId},
+    ui::{processing::PARAM_ROWS, Action, AreaId, ButtonId},
 };
+
+/// Lines `PgUp` / `PgDn` move the LLM answer by.
+const ANSWER_PAGE: i32 = 10;
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
     let idle = !app.running;
@@ -46,7 +49,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         }
         KeyCode::Char('l') if no_input => app.show_logs = !app.show_logs,
         KeyCode::Char('r') if idle && no_input && !app.llm_results.is_empty() => {
-            app.show_llm_result = !app.show_llm_result;
+            app.show_llm_result = true;
+            return dispatch(app, Action::Tab(Page::Llm));
+        }
+        KeyCode::PageUp if app.page == Page::Llm && !menu_open => {
+            return dispatch(app, Action::Scroll(AreaId::LlmOutput, -ANSWER_PAGE));
+        }
+        KeyCode::PageDown if app.page == Page::Llm && !menu_open => {
+            return dispatch(app, Action::Scroll(AreaId::LlmOutput, ANSWER_PAGE));
         }
         KeyCode::Char('d') if idle && no_input => {
             app.diarization = !app.diarization;
@@ -150,6 +160,16 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         KeyCode::Down if no_input && app.focus == Focus::Params => {
             app.params_cursor = (app.params_cursor + 1) % PARAM_ROWS.len();
         }
+        KeyCode::Up if idle && no_input && app.page == Page::Llm => {
+            let index = app.llm_input_cursor.saturating_sub(1);
+            return dispatch(app, Action::LlmInput(index));
+        }
+        KeyCode::Down if idle && no_input && app.page == Page::Llm => {
+            return dispatch(app, Action::LlmInput(app.llm_input_cursor + 1));
+        }
+        KeyCode::Delete | KeyCode::Backspace if idle && no_input && app.page == Page::Llm => {
+            return dispatch(app, Action::RemoveLlmInput(app.llm_input_cursor));
+        }
         KeyCode::Up if idle && no_input => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 if let Some(index) = app.selected_file.filter(|index| *index > 0) {
@@ -250,6 +270,34 @@ mod tests {
         assert_eq!(app.focus, Focus::Queue);
         press(&mut app, KeyCode::Char('x'));
         assert_eq!(app.focus, Focus::Input, "typing returns to the input line");
+    }
+
+    #[test]
+    fn r_opens_the_llm_page_and_page_keys_scroll_the_answer() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.input, "r", "without a result `r` is ordinary text");
+        app.input.clear();
+        app.llm_results.push(("summary".into(), "…".into()));
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.page, Page::Llm);
+        assert!(app.show_llm_result);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(
+            app.scroll[&crate::ui::AreaId::LlmOutput],
+            ANSWER_PAGE as u16
+        );
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.scroll[&crate::ui::AreaId::LlmOutput], 0);
+
+        // Delete on the LLM page acts on the transcript list, not the queue.
+        app.files = vec!["/tmp/a.wav".into()];
+        app.selected_file = Some(0);
+        app.llm_extra_files = vec!["/tmp/b.txt".into()];
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(app.files, vec!["/tmp/a.wav"]);
+        assert!(app.llm_extra_files.is_empty());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Rendering of the terminal UI.
 
+pub(crate) mod llm;
 pub(crate) mod menu;
 pub(crate) mod processing;
 
@@ -21,7 +22,7 @@ pub(crate) const SECONDARY: Color = Color::Rgb(180, 195, 220);
 
 /// Everything the user can do with a click or a key. Keys and mouse clicks both go
 /// through `app::dispatch`, so a click can never drift from its keyboard twin.
-// `SettingsRow` / `LlmInput` are registered by the Settings and LLM pages (Tasks 6–7).
+// `SettingsRow` is registered by the Settings page (Task 7).
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
@@ -38,7 +39,12 @@ pub(crate) enum Action {
     Scroll(AreaId, i32),
     FocusInput,
     SettingsRow(usize),
+    /// Highlights a row of the LLM «Транскрипты» table.
     LlmInput(usize),
+    /// Drops a `/llm-file` transcript from that table (session results stay).
+    RemoveLlmInput(usize),
+    /// Pre-fills the command line with `command ` so the value can be typed.
+    EditCommand(&'static str),
 }
 
 // `ClearLog` is wired by the Log page (Task 7).
@@ -136,7 +142,8 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     }
     match app.page {
         Page::Processing => processing::draw(frame, page_area, app),
-        Page::Llm | Page::Settings | Page::Log => draw_placeholder(frame, page_area, app),
+        Page::Llm => llm::draw(frame, page_area, app),
+        Page::Settings | Page::Log => draw_placeholder(frame, page_area, app),
     }
     draw_pet(frame, main, app);
     frame.render_widget(

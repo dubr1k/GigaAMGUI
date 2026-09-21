@@ -64,7 +64,7 @@ pub(crate) fn provider_prefix(provider: &str) -> &'static str {
     }
 }
 
-fn llm_tool_for<'a>(app: &'a App, provider: &str) -> Option<&'a LlmTool> {
+pub(crate) fn llm_tool_for<'a>(app: &'a App, provider: &str) -> Option<&'a LlmTool> {
     app.llm_tools.iter().find(|tool| tool.provider == provider)
 }
 

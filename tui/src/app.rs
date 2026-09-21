@@ -17,7 +17,7 @@ use crate::{
         accept_command_suggestion, apply_command_menu, clear_queue, command_menu_options,
         command_suggestions, is_command, open_command_menu, remove_selected_file, short_name,
     },
-    i18n::{t, Lang},
+    i18n::{t, tf, Lang},
     settings::save_app_settings,
     ui::{Action, AreaId, ButtonId, HitMap},
     worker::{llm_start_payload, start_payload, LlmTool},
@@ -145,6 +145,12 @@ pub(crate) struct App {
     pub(crate) show_llm_result: bool,
     pub(crate) llm_cancel_requested: bool,
     pub(crate) llm_extra_files: Vec<String>,
+    /// The highlighted row of the «Транскрипты» table on the LLM page.
+    pub(crate) llm_input_cursor: usize,
+    /// The mode the worker is streaming right now, from `llm_started`.
+    pub(crate) llm_stream_mode: String,
+    /// Where the last completed run saved its answers (`session_llm_<mode>.txt`).
+    pub(crate) llm_saved_files: Vec<String>,
     pub(crate) audio_preprocessing_mode: String,
 }
 
@@ -220,6 +226,9 @@ impl Default for App {
             show_llm_result: false,
             llm_cancel_requested: false,
             llm_extra_files: Vec::new(),
+            llm_input_cursor: 0,
+            llm_stream_mode: String::new(),
+            llm_saved_files: Vec::new(),
             audio_preprocessing_mode: "auto".into(),
         }
     }
@@ -351,7 +360,9 @@ impl App {
                 // A new run must never show the previous run's results: `llm_completed`
                 // without `results` (worker failure, cancel) leaves `llm_results` alone.
                 self.llm_results.clear();
+                self.llm_saved_files.clear();
                 self.show_llm_result = false;
+                self.llm_stream_mode = value["mode"].as_str().unwrap_or("summary").to_owned();
                 self.status = format!(
                     "LLM {} ({}/{})…",
                     value["mode"].as_str().unwrap_or("summary"),
@@ -379,6 +390,15 @@ impl App {
                 self.llm_running = false;
                 self.llm_cancel_requested = false;
                 self.llm_stream.clear();
+                self.llm_saved_files = value["saved_files"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if let Some(results) = value["results"].as_array() {
                     self.llm_results = results
                         .iter()
@@ -553,6 +573,8 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             | Action::MenuItem(_)
             | Action::Suggestion(_)
             | Action::ToggleMode(_)
+            | Action::RemoveLlmInput(_)
+            | Action::EditCommand(_)
     );
     if edits_idle_state && app.running {
         return Vec::new();
@@ -646,7 +668,33 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             let offset = app.scroll.entry(area).or_default();
             *offset = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX)) as u16;
         }
-        Action::SettingsRow(_) | Action::LlmInput(_) => {}
+        Action::LlmInput(index) => {
+            if index < llm_input_files(app).len() {
+                app.llm_input_cursor = index;
+            }
+        }
+        Action::RemoveLlmInput(index) => {
+            // Only files added with `/llm-file` can go; session results are the
+            // transcription's own output and leave with `/clear`.
+            let files = llm_input_files(app);
+            let Some(path) = files.get(index) else {
+                return Vec::new();
+            };
+            if app.result_files.contains(path) {
+                app.status = t(app.lang, "llm.cannot_remove_session").into();
+                return Vec::new();
+            }
+            app.llm_extra_files.retain(|item| item != path);
+            app.llm_input_cursor = index.min(llm_input_files(app).len().saturating_sub(1));
+            app.status = tf(app.lang, "llm.removed", &[("name", &short_name(path))]);
+        }
+        Action::EditCommand(command) => {
+            app.command_menu = None;
+            app.input = format!("{command} ");
+            app.selected_command = 0;
+            app.focus = Focus::Input;
+        }
+        Action::SettingsRow(_) => {}
     }
     Vec::new()
 }

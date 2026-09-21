@@ -45,7 +45,7 @@ fn timecode(seconds: f64) -> String {
 }
 
 /// Keeps the extension visible: `a-very-long-recording.wav` → `a-very…ing.wav`.
-fn fit_middle(text: &str, width: usize) -> String {
+pub(crate) fn fit_middle(text: &str, width: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= width || width < 5 {
         return text.to_owned();
