@@ -6,14 +6,11 @@ POST /v1/audio/transcriptions, GET /v1/models, GET /health. Клиенты OpenA
 """
 
 import asyncio
-import hashlib
 import hmac
 import json
 import os
-import re
 import shutil
 import tempfile
-import uuid
 
 # Подавляем предупреждения
 import warnings
@@ -42,6 +39,7 @@ from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.services import file_policy, transcript_formats, transcription_service
 from src.services import health as health_service
+from src.services.api_keys import KeyStore, hash_key, key_from_headers
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.diarization import normalize_diarization_backend
 from src.utils.logger import setup_logger
@@ -147,13 +145,11 @@ def _type_for_status(status: int) -> str:
 
 
 # ==================== КЛЮЧИ ====================
+# Само хранилище — src/services/api_keys.KeyStore (общее с веб-панелью и MCP).
+# Модульные VALID_API_KEY_HASHES / API_KEYS_FILE / load_api_keys / save_api_keys
+# остаются как тонкие обёртки: их подменяют тесты и внешний код.
 
-_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-
-
-def _hash_key(key: str) -> str:
-    """SHA-256 хэш ключа (в файле и памяти хранятся только хэши)"""
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+_hash_key = hash_key
 
 
 def _asr_health() -> dict[str, object]:
@@ -165,41 +161,18 @@ def _runtime_info() -> dict[str, object]:
 
 
 def load_api_keys():
-    """Загружает хэши API-ключей из файла (с миграцией старых plaintext-ключей)"""
-    global VALID_API_KEY_HASHES
-    if API_KEYS_FILE.exists():
-        raw_lines = [ln.strip() for ln in API_KEYS_FILE.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        hashes = set()
-        migrated = False
-        for line in raw_lines:
-            if _HASH_RE.match(line):
-                hashes.add(line)
-            else:
-                # Старый ключ в открытом виде — мигрируем в хэш
-                hashes.add(_hash_key(line))
-                migrated = True
-        VALID_API_KEY_HASHES = hashes
-        if migrated:
-            save_api_keys()
-            print("API-ключи мигрированы в хэшированный вид (.api_keys)")
-    else:
-        # Создаем первый ключ по умолчанию
-        default_key = f"gam_{uuid.uuid4().hex}"
-        VALID_API_KEY_HASHES = {_hash_key(default_key)}
-        save_api_keys()
-        print(f"\n{'='*60}")
-        print("ПЕРВЫЙ API КЛЮЧ СОЗДАН (показывается только один раз):")
-        print(f"  {default_key}")
-        print("Сохраните его в безопасном месте! В файле хранится только хэш.")
-        print(f"{'='*60}\n")
+    """Загружает хэши API-ключей из файла (с миграцией старых plaintext-ключей, первый ключ — при отсутствии файла)"""
+    # KeyStore создаётся здесь, а не на импорте: API_KEYS_FILE подменяют тесты
+    store = KeyStore(API_KEYS_FILE).load()
+    VALID_API_KEY_HASHES.clear()
+    VALID_API_KEY_HASHES.update(store.hashes)
 
 
 def save_api_keys():
     """Сохраняет хэши API-ключей в файл"""
-    with open(API_KEYS_FILE, 'w') as f:
-        for key_hash in VALID_API_KEY_HASHES:
-            f.write(f"{key_hash}\n")
-    os.chmod(API_KEYS_FILE, 0o600)  # Только владелец может читать
+    store = KeyStore(API_KEYS_FILE)
+    store.hashes = set(VALID_API_KEY_HASHES)
+    store.save()
 
 
 def verify_api_key(
@@ -208,15 +181,13 @@ def verify_api_key(
 ) -> str:
     """Bearer (как у OpenAI SDK) или X-API-Key; сравнение хэшей constant-time."""
     # При прямом вызове (тесты) незаполненный аргумент — это объект Header, а не строка
-    key = None
-    if isinstance(authorization, str) and authorization.lower().startswith("bearer "):
-        key = authorization[7:].strip()
-    elif isinstance(x_api_key, str):
-        key = x_api_key.strip()
+    headers = {name: value for name, value in (("authorization", authorization), ("x-api-key", x_api_key))
+               if isinstance(value, str)}
+    key = key_from_headers(headers)
     if not key:
         raise openai_error(401, "Missing API key. Send 'Authorization: Bearer <key>'.",
                            type_="authentication_error", code="invalid_api_key")
-    candidate = _hash_key(key)
+    candidate = hash_key(key)
     if not any(hmac.compare_digest(candidate, valid) for valid in VALID_API_KEY_HASHES):
         raise openai_error(401, "Incorrect API key provided.", type_="authentication_error", code="invalid_api_key")
     return key
@@ -371,8 +342,7 @@ class _UploadGuard:
 
 
 def _upload_guard_error(headers: dict[str, str]) -> OpenAIError | None:
-    auth = headers.get("authorization", "")
-    if not (auth.lower().startswith("bearer ") or headers.get("x-api-key")):
+    if key_from_headers(headers) is None:
         return openai_error(401, "Missing API key. Send 'Authorization: Bearer <key>'.",
                             type_="authentication_error", code="invalid_api_key")
     content_length = headers.get("content-length", "")
