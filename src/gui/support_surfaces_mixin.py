@@ -242,7 +242,9 @@ class SupportSurfacesMixin:
                 "  -F \"file=@meeting.mp3\" -F \"model=whisper-1\" -F \"response_format=verbose_json\"\n"
             ),
             "JavaScript": (
-                "import OpenAI from \"openai\";\n\n"
+                "import OpenAI from \"openai\";\n"
+                "import fs from \"node:fs\";\n\n"
+                "const apiKey = \"gam_...\";\n"
                 f"const client = new OpenAI({{ baseURL: \"{base_url}/v1\", apiKey }});\n"
                 "const result = await client.audio.transcriptions.create({\n"
                 "  model: \"whisper-1\",\n"

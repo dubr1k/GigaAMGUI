@@ -39,6 +39,7 @@ print(result.text)`,
   -H "Authorization: Bearer gam_..." \\
   -F file=@meeting.mp3 -F model=whisper-1 -F diarize=true -F response_format=diarized_json`,
   javascript: `import OpenAI from "openai";
+import fs from "node:fs";
 const client = new OpenAI({ baseURL: "http://127.0.0.1:8000/v1", apiKey: "gam_..." });
 const result = await client.audio.transcriptions.create({ model: "whisper-1", file: fs.createReadStream("meeting.mp3") });
 console.log(result.text);`,

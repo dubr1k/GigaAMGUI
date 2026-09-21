@@ -30,7 +30,7 @@ def test_api_examples_use_openai_contract() -> None:
     for rel in files:
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert "/api/v1/" not in text, rel
-    for rel in files[:4]:
+    for rel in files:
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert "/v1/audio/transcriptions" in text, rel
         assert "Authorization: Bearer" in text or "Bearer " in text, rel
