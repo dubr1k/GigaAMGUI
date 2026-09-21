@@ -10,7 +10,11 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{app::App, commands::BACK_MENU_OPTION, settings::TuiSettings};
+use crate::{
+    app::{llm_input_files, App},
+    commands::BACK_MENU_OPTION,
+    settings::TuiSettings,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -94,6 +98,18 @@ pub(crate) fn provider_from_menu_option(option: &str) -> &str {
 
 pub(crate) fn llm_settings_payload(app: &App) -> Value {
     llm_settings_from(&TuiSettings::from(app), &app.llm_tools)
+}
+
+/// The `llm_start` command for the current queue of transcripts and modes.
+pub(crate) fn llm_start_payload(app: &App) -> Value {
+    json!({
+        "type": "llm_start",
+        "files": llm_input_files(app),
+        "modes": app.llm_modes,
+        "prompt": app.llm_prompt,
+        "settings": llm_settings_payload(app),
+        "output_dir": app.output_dir,
+    })
 }
 
 /// The `settings` object of `llm_start`, built from persisted settings plus the

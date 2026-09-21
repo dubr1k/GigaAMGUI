@@ -18,6 +18,8 @@ pub(crate) struct TuiSettings {
     pub(crate) pet_enabled: bool,
     /// Interface language, `ru` or `en`; shared with the desktop app's `language`.
     pub(crate) language: String,
+    /// Mouse capture in the TUI; off leaves the terminal's own text selection alone.
+    pub(crate) mouse: bool,
     pub(crate) backend: String,
     pub(crate) onnx_provider: String,
     pub(crate) diarization_backend: String,
@@ -45,6 +47,7 @@ impl Default for TuiSettings {
         Self {
             pet_enabled: false,
             language: "ru".into(),
+            mouse: true,
             backend: "auto".into(),
             onnx_provider: "auto".into(),
             diarization_backend: "pyannote".into(),
@@ -466,6 +469,7 @@ impl From<&App> for TuiSettings {
         Self {
             pet_enabled: app.pet_enabled,
             language: app.lang.code().to_owned(),
+            mouse: app.mouse_enabled,
             backend: app.backend.clone(),
             onnx_provider: app.onnx_provider.clone(),
             diarization_backend: app.diarization_backend.clone(),

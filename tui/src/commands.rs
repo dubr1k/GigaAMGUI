@@ -186,7 +186,7 @@ pub(crate) const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-pub(crate) const COMMANDS: [(&str, &str); 30] = [
+pub(crate) const COMMANDS: [(&str, &str); 31] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -234,6 +234,7 @@ pub(crate) const COMMANDS: [(&str, &str); 30] = [
         "on|off · let the CLI agent use tools and sessions",
     ),
     ("/lang", "interface language: ru or en"),
+    ("/mouse", "mouse support: on or off"),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -702,6 +703,22 @@ pub(crate) fn run_command(app: &mut App) {
             }
             None => app.status = t(app.lang, "usage.lang").into(),
         },
+        "/mouse" => match argument {
+            "on" | "off" => {
+                app.mouse_enabled = argument == "on";
+                app.status = t(
+                    app.lang,
+                    if app.mouse_enabled {
+                        "settings.mouse_on"
+                    } else {
+                        "settings.mouse_off"
+                    },
+                )
+                .into();
+                save_app_settings(app);
+            }
+            _ => app.status = t(app.lang, "usage.mouse").into(),
+        },
         "/llm-mode" if matches!(argument, "summary" | "tasks" | "terms" | "custom") => {
             app.llm_modes = vec![argument.into()];
             app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
@@ -947,15 +964,7 @@ pub(crate) fn run_command(app: &mut App) {
             }
             _ => app.status = "Usage: /speakers auto|<positive number>".into(),
         },
-        "/clear" => {
-            app.files.clear();
-            app.selected_file = None;
-            app.result_files.clear();
-            app.llm_extra_files.clear();
-            app.llm_results.clear();
-            app.show_llm_result = false;
-            app.status = "Queue cleared".into();
-        }
+        "/clear" => clear_queue(app),
         "/remove" => match argument.parse::<usize>() {
             Ok(index) if index > 0 && index <= app.files.len() => {
                 let file = app.files.remove(index - 1);
@@ -972,6 +981,16 @@ pub(crate) fn run_command(app: &mut App) {
     }
     app.log(app.status.clone());
     app.input.clear();
+}
+
+pub(crate) fn clear_queue(app: &mut App) {
+    app.files.clear();
+    app.selected_file = None;
+    app.result_files.clear();
+    app.llm_extra_files.clear();
+    app.llm_results.clear();
+    app.show_llm_result = false;
+    app.status = "Queue cleared".into();
 }
 
 pub(crate) fn remove_selected_file(app: &mut App) {
@@ -998,6 +1017,17 @@ mod tests {
         settings::{isolated_config_dir, load_settings, TuiSettings},
         worker::{llm_settings_payload, start_payload},
     };
+
+    #[test]
+    fn mouse_setting_persists_and_defaults_on() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        assert!(app.mouse_enabled);
+        app.input = "/mouse off".into();
+        run_command(&mut app);
+        assert!(!app.mouse_enabled);
+        assert!(!load_settings().mouse);
+    }
 
     #[test]
     fn lang_command_switches_and_persists() {

@@ -1,16 +1,20 @@
 use std::{
     io,
+    process::ChildStdin,
     time::{Duration, Instant},
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::{Picker, ProtocolType};
-use serde_json::json;
+use serde_json::{json, Value};
 
 mod app;
 mod commands;
@@ -21,20 +25,27 @@ mod settings;
 mod ui;
 mod worker;
 
-use app::{
-    esc_should_soft_cancel, llm_can_run, llm_input_files, request_llm, reset_after_worker_restart,
-    App,
-};
+use app::{dispatch, esc_should_soft_cancel, llm_can_run, reset_after_worker_restart, App};
 use commands::{
-    accept_command_suggestion, apply_command_menu, backend_is_supported, command_menu_options,
-    command_suggestions, complete_path, is_command, open_command_menu, queue_paths,
-    remove_selected_file, run_command, COMMANDS, MODEL_OPTIONS,
+    apply_command_menu, backend_is_supported, command_menu_options, command_suggestions,
+    complete_path, is_command, open_command_menu, queue_paths, remove_selected_file, run_command,
+    COMMANDS, MODEL_OPTIONS,
 };
 use headless::{apply_data_dir_argument, run_headless, strip_data_dir, HEADLESS_USAGE};
 use i18n::{strip_lang, Lang};
 use settings::{load_settings, save_app_settings};
-use ui::draw;
-use worker::{llm_settings_payload, send, spawn_worker, start_payload};
+use ui::{draw, Action, ButtonId};
+use worker::{llm_start_payload, send, spawn_worker};
+
+/// Sends the commands `dispatch` returned; a dead worker is reported, not fatal.
+fn deliver(app: &mut App, worker: &mut ChildStdin, commands: Vec<Value>) {
+    for command in commands {
+        if let Err(error) = send(worker, command) {
+            app.status = format!("Worker unavailable: {error}");
+            app.log(app.status.clone());
+        }
+    }
+}
 
 fn request_exit(
     app: &mut App,
@@ -69,13 +80,18 @@ fn main() -> io::Result<()> {
         _ => {}
     }
     let (mut child, mut worker, mut events) = spawn_worker()?;
+    let mut app = App::default();
+    let settings = load_settings();
+    app.mouse_enabled = settings.mouse;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    if app.mouse_enabled {
+        execute!(stdout, EnableMouseCapture)?;
+    }
+    let mut mouse_captured = app.mouse_enabled;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::default();
-    let settings = load_settings();
     app.lang = lang_override
         .or_else(|| Lang::parse(&settings.language))
         .unwrap_or(Lang::Ru);
@@ -142,15 +158,22 @@ fn main() -> io::Result<()> {
         while let Ok(message) = events.try_recv() {
             app.handle_message(message);
         }
+        // `/llm-run` and other commands request a run through `llm_requested`; the
+        // `L` key and the button go through `dispatch`, which returns the payload.
         if app.llm_requested {
             app.llm_requested = false;
-            let settings = llm_settings_payload(&app);
-            if let Err(error) = send(
-                &mut worker,
-                json!({"type":"llm_start", "files":llm_input_files(&app), "modes":app.llm_modes, "prompt":app.llm_prompt, "settings":settings, "output_dir":app.output_dir}),
-            ) {
-                app.status = format!("Worker unavailable: {error}");
+            let payload = llm_start_payload(&app);
+            deliver(&mut app, &mut worker, vec![payload]);
+        }
+        // `/mouse on|off` flips the flag; capture follows it here so that the
+        // command needs no handle to the terminal.
+        if app.mouse_enabled != mouse_captured {
+            if app.mouse_enabled {
+                execute!(terminal.backend_mut(), EnableMouseCapture)?;
+            } else {
+                execute!(terminal.backend_mut(), DisableMouseCapture)?;
             }
+            mouse_captured = app.mouse_enabled;
         }
         if let Some((provider, path)) = app.llm_tool_check_requested.take() {
             let _ = send(
@@ -199,6 +222,26 @@ fn main() -> io::Result<()> {
                         }
                     }
                 }
+                Event::Mouse(mouse) => {
+                    let action = match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            app.hits.hit(mouse.column, mouse.row)
+                        }
+                        MouseEventKind::ScrollUp => app
+                            .hits
+                            .hit_scroll(mouse.column, mouse.row)
+                            .map(|area| Action::Scroll(area, -3)),
+                        MouseEventKind::ScrollDown => app
+                            .hits
+                            .hit_scroll(mouse.column, mouse.row)
+                            .map(|area| Action::Scroll(area, 3)),
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        let commands = dispatch(&mut app, action, Some(&mut worker));
+                        deliver(&mut app, &mut worker, commands);
+                    }
+                }
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
                         continue;
@@ -217,12 +260,16 @@ fn main() -> io::Result<()> {
                         }
                         KeyCode::Char('q') if !app.running && app.input.is_empty() => quit = true,
                         KeyCode::Char('L') if !app.running && app.input.is_empty() => {
-                            request_llm(&mut app)
+                            let commands =
+                                dispatch(&mut app, Action::Button(ButtonId::RunLlm), None);
+                            deliver(&mut app, &mut worker, commands);
                         }
                         KeyCode::Char('l')
                             if !app.running && app.input.is_empty() && llm_can_run(&app) =>
                         {
-                            request_llm(&mut app)
+                            let commands =
+                                dispatch(&mut app, Action::Button(ButtonId::RunLlm), None);
+                            deliver(&mut app, &mut worker, commands);
                         }
                         KeyCode::Char('l') if app.input.is_empty() => {
                             app.show_logs = !app.show_logs
@@ -254,16 +301,17 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('s')
                             if !app.running && app.input.is_empty() && !app.files.is_empty() =>
                         {
-                            if let Err(error) = send(&mut worker, start_payload(&app)) {
-                                app.log(format!("Worker unavailable: {error}"));
-                            }
+                            let commands =
+                                dispatch(&mut app, Action::Button(ButtonId::Start), None);
+                            deliver(&mut app, &mut worker, commands);
+                        }
+                        KeyCode::Char('?') if !app.running && app.input.is_empty() => {
+                            dispatch(&mut app, Action::Help, None);
                         }
                         KeyCode::Esc if esc_should_soft_cancel(&app) => {
-                            app.llm_cancel_requested = true;
-                            app.status = "Cancelling LLM… Esc again to kill the worker".into();
-                            if let Err(error) = send(&mut worker, json!({"type": "llm_cancel"})) {
-                                app.status = format!("Worker unavailable: {error}");
-                            }
+                            let commands =
+                                dispatch(&mut app, Action::Button(ButtonId::CancelLlm), None);
+                            deliver(&mut app, &mut worker, commands);
                         }
                         KeyCode::Esc if app.running => {
                             if last_exit_request.is_some_and(|(trigger, at)| {
@@ -322,8 +370,7 @@ fn main() -> io::Result<()> {
                                 digit.to_digit(10).unwrap_or_default().saturating_sub(1) as usize
                             };
                             if index < count {
-                                app.command_menu_index = index;
-                                apply_command_menu(&mut app);
+                                dispatch(&mut app, Action::MenuItem(index), None);
                             }
                         }
                         KeyCode::Char(' ') if !app.running && app.command_menu.is_some() => {
@@ -341,7 +388,7 @@ fn main() -> io::Result<()> {
                                 && !COMMANDS.iter().any(|(name, _)| *name == raw)
                             {
                                 let index = app.selected_command.min(suggestions.len() - 1);
-                                accept_command_suggestion(&mut app, suggestions[index].0);
+                                dispatch(&mut app, Action::Suggestion(index), None);
                             } else if open_command_menu(&mut app, &raw) {
                             } else if is_command(&raw) {
                                 run_command(&mut app);
@@ -386,8 +433,8 @@ fn main() -> io::Result<()> {
                                     app.selected_file = Some(index - 1);
                                 }
                             } else if !app.files.is_empty() {
-                                app.selected_file =
-                                    Some(app.selected_file.unwrap_or(0).saturating_sub(1));
+                                let index = app.selected_file.unwrap_or(0).saturating_sub(1);
+                                dispatch(&mut app, Action::SelectFile(index), None);
                             }
                         }
                         KeyCode::Down if !app.running && app.input.is_empty() => {
@@ -400,9 +447,9 @@ fn main() -> io::Result<()> {
                                     app.selected_file = Some(index + 1);
                                 }
                             } else if !app.files.is_empty() {
-                                app.selected_file = Some(
-                                    (app.selected_file.unwrap_or(0) + 1).min(app.files.len() - 1),
-                                );
+                                let index =
+                                    (app.selected_file.unwrap_or(0) + 1).min(app.files.len() - 1);
+                                dispatch(&mut app, Action::SelectFile(index), None);
                             }
                         }
                         KeyCode::Delete if !app.running && app.input.is_empty() => {
@@ -427,6 +474,9 @@ fn main() -> io::Result<()> {
         }
     }
     disable_raw_mode()?;
+    if mouse_captured {
+        execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    }
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     let _ = child.kill();

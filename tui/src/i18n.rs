@@ -88,6 +88,17 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
         "Language: English",
     ),
     ("usage.lang", "Usage: /lang ru|en", "Usage: /lang ru|en"),
+    ("settings.mouse_on", "Мышь: вкл", "Mouse: on"),
+    (
+        "settings.mouse_off",
+        "Мышь: выкл (Shift/Option + мышь — выделение текста)",
+        "Mouse: off (Shift/Option + mouse selects text)",
+    ),
+    (
+        "usage.mouse",
+        "Usage: /mouse on|off",
+        "Usage: /mouse on|off",
+    ),
     // Stage labels: the same texts as `_STAGE_NAMES` in src/gui/processing_mixin.py.
     ("stage.preparing", "Подготовка…", "Preparing…"),
     ("stage.conversion", "Конвертация…", "Converting…"),
@@ -239,6 +250,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
         "язык интерфейса: ru или en",
         "interface language: ru or en",
     ),
+    ("cmd.mouse", "мышь: on или off", "mouse support: on or off"),
     (
         "cmd.exit",
         "выйти из терминального интерфейса",

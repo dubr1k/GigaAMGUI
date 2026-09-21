@@ -3,18 +3,46 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    process::ChildStdin,
 };
 
 use ratatui_image::{
     picker::{Picker, ProtocolType},
     protocol::StatefulProtocol,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::{commands::short_name, i18n::Lang, worker::LlmTool};
+use crate::{
+    commands::{
+        accept_command_suggestion, apply_command_menu, clear_queue, command_menu_options,
+        command_suggestions, open_command_menu, remove_selected_file, short_name,
+    },
+    i18n::{t, Lang},
+    settings::save_app_settings,
+    ui::{Action, AreaId, ButtonId, HitMap},
+    worker::{llm_start_payload, start_payload, LlmTool},
+};
+
+/// The tabs of the interface; the tab bar itself is drawn from Task 5 on.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Page {
+    Processing,
+    Llm,
+    Settings,
+    Log,
+}
 
 pub(crate) struct App {
     pub(crate) lang: Lang,
+    pub(crate) page: Page,
+    /// Interactive areas of the last frame, rebuilt by every `draw`.
+    pub(crate) hits: HitMap,
+    pub(crate) mouse_enabled: bool,
+    /// Scroll offsets of the scrollable areas, in lines.
+    pub(crate) scroll: HashMap<AreaId, u16>,
+    /// The help overlay is drawn from Task 7 on; `?` and the button already toggle it.
+    pub(crate) help_open: bool,
     pub(crate) input: String,
     pub(crate) files: Vec<String>,
     pub(crate) logs: Vec<String>,
@@ -80,6 +108,11 @@ impl Default for App {
     fn default() -> Self {
         Self {
             lang: Lang::Ru,
+            page: Page::Processing,
+            hits: HitMap::default(),
+            mouse_enabled: true,
+            scroll: HashMap::new(),
+            help_open: false,
             input: String::new(),
             files: Vec::new(),
             logs: vec!["Ready. Paste a media path and press Enter.".into()],
@@ -388,15 +421,142 @@ pub(crate) fn reset_after_worker_restart(app: &mut App) {
     app.llm_stream.clear();
 }
 
+/// The one place where an action changes state, whether it came from a key or a click.
+/// Returns the commands the caller must send to the worker; `dispatch` itself never
+/// writes to the process, so the tests need no worker and `main` keeps the only
+/// handle that can respawn it.
+pub(crate) fn dispatch(
+    app: &mut App,
+    action: Action,
+    _worker: Option<&mut ChildStdin>,
+) -> Vec<Value> {
+    // The queue and the command line are read-only while the worker runs, exactly as
+    // the key arms in `main` refuse typing, selection and menus during a run.
+    let edits_idle_state = matches!(
+        action,
+        Action::SelectFile(_)
+            | Action::RemoveFile(_)
+            | Action::OpenMenu(_)
+            | Action::MenuItem(_)
+            | Action::Suggestion(_)
+            | Action::ToggleMode(_)
+    );
+    if edits_idle_state && app.running {
+        return Vec::new();
+    }
+    match action {
+        Action::Tab(page) => app.page = page,
+        Action::SelectFile(index) => {
+            if index < app.files.len() {
+                app.selected_file = Some(index);
+            }
+        }
+        Action::RemoveFile(index) => {
+            if index < app.files.len() {
+                app.selected_file = Some(index);
+                remove_selected_file(app);
+            }
+        }
+        Action::OpenMenu(command) => {
+            let _ = open_command_menu(app, command);
+        }
+        Action::MenuItem(index) => {
+            if index < command_menu_options(app).len() {
+                app.command_menu_index = index;
+                apply_command_menu(app);
+            }
+        }
+        Action::Suggestion(index) => {
+            if let Some((command, _)) = command_suggestions(&app.input).get(index) {
+                accept_command_suggestion(app, command);
+            }
+        }
+        Action::ToggleMode(mode) => {
+            if let Some(position) = app.llm_modes.iter().position(|item| item == mode) {
+                app.llm_modes.remove(position);
+            } else {
+                app.llm_modes.push(mode.to_owned());
+            }
+            app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
+        }
+        Action::Button(ButtonId::Start) => {
+            if !app.running && !app.files.is_empty() {
+                return vec![start_payload(app)];
+            }
+        }
+        Action::Button(ButtonId::Stop) => {
+            if app.running && !app.llm_running {
+                return vec![json!({"type": "cancel"})];
+            }
+        }
+        Action::Button(ButtonId::RunLlm) => {
+            if !app.running {
+                request_llm(app);
+                if app.llm_requested {
+                    app.llm_requested = false;
+                    return vec![llm_start_payload(app)];
+                }
+            }
+        }
+        Action::Button(ButtonId::CancelLlm) => {
+            if esc_should_soft_cancel(app) {
+                app.llm_cancel_requested = true;
+                app.status = "Cancelling LLM… Esc again to kill the worker".into();
+                return vec![json!({"type": "llm_cancel"})];
+            }
+        }
+        Action::Button(ButtonId::ClearQueue) => {
+            if !app.running {
+                clear_queue(app);
+                app.log(app.status.clone());
+            }
+        }
+        Action::Button(ButtonId::ClearLog) => app.logs.clear(),
+        Action::ToggleLang => {
+            app.lang = app.lang.toggle();
+            app.status = t(app.lang, "settings.language_changed").into();
+            save_app_settings(app);
+        }
+        Action::Help => app.help_open = !app.help_open,
+        Action::Scroll(area, delta) => {
+            let offset = app.scroll.entry(area).or_default();
+            *offset = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX)) as u16;
+        }
+        Action::FocusInput | Action::SettingsRow(_) | Action::LlmInput(_) => {}
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
     use crate::{
-        commands::{command_menu_options, BACK_MENU_OPTION},
+        commands::{command_menu_options, selectable_backends, BACK_MENU_OPTION},
+        settings::isolated_config_dir,
+        ui::{Action, ButtonId},
         worker::provider_from_menu_option,
     };
+
+    #[test]
+    fn dispatch_matches_the_keyboard_equivalents() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.files = vec!["/tmp/a.wav".into(), "/tmp/b.wav".into()];
+        dispatch(&mut app, Action::SelectFile(1), None);
+        assert_eq!(app.selected_file, Some(1));
+        dispatch(&mut app, Action::Tab(Page::Settings), None);
+        assert_eq!(app.page, Page::Settings);
+        dispatch(&mut app, Action::OpenMenu("/backend"), None);
+        assert_eq!(app.command_menu.as_deref(), Some("/backend"));
+        dispatch(&mut app, Action::MenuItem(1), None);
+        assert_eq!(app.backend, selectable_backends()[1]);
+        dispatch(&mut app, Action::ToggleLang, None);
+        assert_eq!(app.lang, Lang::En);
+        let commands = dispatch(&mut app, Action::Button(ButtonId::Start), None);
+        assert_eq!(commands[0]["type"], "start");
+    }
 
     #[test]
     fn llm_tools_message_fills_providers_and_menu_shows_status() {
