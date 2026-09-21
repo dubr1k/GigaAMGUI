@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::{
     app::App,
     commands::{backend_is_supported, FORMAT_KEYS, MODEL_OPTIONS},
-    i18n::Lang,
+    i18n::{t, tf, Lang},
 };
 
 #[derive(Deserialize, Serialize)]
@@ -445,6 +445,10 @@ pub(crate) fn apply_settings(app: &mut App, settings: TuiSettings, lang_override
     }
     app.diarization = settings.diarization;
     app.num_speakers = settings.num_speakers;
+    // `App::default()` greets in Russian before the language is known: redo the
+    // greeting in the language that was just chosen.
+    app.status = t(app.lang, "status.ready").into();
+    app.logs = vec![t(app.lang, "log.ready").into()];
 }
 
 pub(crate) fn load_settings() -> TuiSettings {
@@ -552,7 +556,7 @@ impl From<&App> for TuiSettings {
 
 pub(crate) fn save_app_settings(app: &mut App) {
     if let Err(error) = save_settings(&TuiSettings::from(&*app)) {
-        app.status = error;
+        app.status = tf(app.lang, "err.settings_save", &[("error", &error)]);
         app.log(app.status.clone());
     }
 }

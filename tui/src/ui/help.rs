@@ -44,6 +44,8 @@ const KEYS: [(&str, &str); 19] = [
 
 /// Breaks `text` into lines of at most `width` characters at spaces, so that a
 /// wrapped description can be indented under its key (ratatui's `Wrap` cannot).
+/// A single word longer than `width` (a path, a long option list) is cut at the
+/// width rather than overflowing the column.
 fn wrap_words(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
@@ -56,7 +58,17 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
         if !line.is_empty() {
             line.push(' ');
         }
-        line.push_str(word);
+        let mut rest: Vec<char> = word.chars().collect();
+        while line.chars().count() + rest.len() > width {
+            let room = width.saturating_sub(line.chars().count());
+            if room == 0 {
+                lines.push(std::mem::take(&mut line));
+                continue;
+            }
+            line.extend(rest.drain(..room));
+            lines.push(std::mem::take(&mut line));
+        }
+        line.extend(rest);
     }
     if !line.is_empty() || lines.is_empty() {
         lines.push(line);
@@ -184,6 +196,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+    use super::wrap_words;
     use crate::{
         app::{dispatch, App, Page},
         commands::run_command,
@@ -252,6 +265,21 @@ mod tests {
         assert_eq!(app.hits.hit(60, 20), Some(Action::Help));
         assert_eq!(app.hits.hit_scroll(60, 20), Some(AreaId::Help));
         assert_eq!(app.hits.hit_scroll(0, 0), None);
+    }
+
+    #[test]
+    fn wrap_words_breaks_at_spaces_and_cuts_over_long_words() {
+        assert_eq!(wrap_words("один два три", 8), vec!["один два", "три"]);
+        assert_eq!(
+            wrap_words("a /очень-длинный-путь/x", 6),
+            vec!["a", "/очень", "-длинн", "ый-пут", "ь/x"],
+            "a long word starts on its own line, then is cut at the width"
+        );
+        assert_eq!(wrap_words("", 10), vec![""]);
+        for line in wrap_words("слово ещё_одно_очень_длинное слово", 7)
+        {
+            assert!(line.chars().count() <= 7, "{line}");
+        }
     }
 
     #[test]

@@ -5,7 +5,10 @@ use std::io::{self, Cursor, Write};
 use image::ImageReader;
 use ratatui_image::picker::ProtocolType;
 
-use crate::app::App;
+use crate::{
+    app::App,
+    i18n::{t, tf},
+};
 
 const PET_IDLE_FRAMES: [&[u8]; 2] = [
     include_bytes!("../../assets/pets/unicorn-idle-01.png"),
@@ -31,7 +34,7 @@ impl App {
     pub(crate) fn refresh_pet_image(&mut self) -> Result<(), String> {
         self.clear_pet_layer();
         let Some(picker) = self.pet_picker.as_ref() else {
-            return Err("Pets require Kitty, iTerm2, or Sixel image support.".into());
+            return Err(t(self.lang, "pets.unsupported").into());
         };
         let frame = if self.running {
             PET_RUN_FRAMES[self.pet_frame % PET_RUN_FRAMES.len()]
@@ -40,9 +43,21 @@ impl App {
         };
         let image = ImageReader::new(Cursor::new(frame))
             .with_guessed_format()
-            .map_err(|error| format!("Cannot read pet image: {error}"))?
+            .map_err(|error| {
+                tf(
+                    self.lang,
+                    "pets.image_error",
+                    &[("error", &error.to_string())],
+                )
+            })?
             .decode()
-            .map_err(|error| format!("Cannot decode pet image: {error}"))?;
+            .map_err(|error| {
+                tf(
+                    self.lang,
+                    "pets.image_error",
+                    &[("error", &error.to_string())],
+                )
+            })?;
         self.pet_image = Some(picker.new_resize_protocol(image));
         Ok(())
     }

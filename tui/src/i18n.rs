@@ -351,7 +351,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
         "Язык: Русский",
         "Language: English",
     ),
-    ("usage.lang", "Usage: /lang ru|en", "Usage: /lang ru|en"),
+    ("usage.lang", "Использование: /lang ru|en", "Usage: /lang ru|en"),
     ("settings.mouse_on", "Мышь: вкл", "Mouse: on"),
     (
         "settings.mouse_off",
@@ -360,7 +360,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "usage.mouse",
-        "Usage: /mouse on|off",
+        "Использование: /mouse on|off",
         "Usage: /mouse on|off",
     ),
     // Stage labels: the same texts as `_STAGE_NAMES` in src/gui/processing_mixin.py.
@@ -393,7 +393,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "cmd.onnx-provider",
-        "выбрать провайдер исполнения ONNX",
+        "выбрать ONNX-провайдер",
         "select the ONNX execution provider",
     ),
     (
@@ -403,7 +403,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "cmd.formats",
-        "форматы вывода, например txt,srt",
+        "форматы вывода, например, txt,srt",
         "output formats, e.g. txt,srt",
     ),
     (
@@ -492,7 +492,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "cmd.llm-provider-name",
-        "внутренний провайдер Pi/oh-my-pi, например anthropic",
+        "внутренний провайдер Pi/oh-my-pi, например, anthropic",
         "Pi/oh-my-pi internal provider, e.g. anthropic",
     ),
     (
@@ -520,6 +520,397 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
         "cmd.exit",
         "выйти из терминального интерфейса",
         "exit the terminal UI",
+    ),
+    // Status line and log messages.
+    (
+        "log.ready",
+        "Готово. Вставьте путь к медиафайлу и нажмите Enter.",
+        "Ready. Paste a media path and press Enter.",
+    ),
+    (
+        "status.press_again_to_exit",
+        "Нажмите {key} ещё раз для выхода",
+        "Press {key} again to exit",
+    ),
+    ("status.menu_closed", "Меню закрыто", "Menu closed"),
+    ("status.input_cleared", "Ввод очищен", "Input cleared"),
+    ("status.exiting", "Выход…", "Exiting…"),
+    (
+        "status.choose_option",
+        "Выберите 1–9, 0 — назад, или стрелки и Enter",
+        "Choose 1–9, 0 for Back, or arrows and Enter",
+    ),
+    (
+        "status.running_backend",
+        "Распознавание · {backend}",
+        "Recognition running · {backend}",
+    ),
+    ("status.cancelling", "Отмена…", "Cancelling…"),
+    ("status.cancelled", "Отменено", "Cancelled"),
+    ("status.completed", "Обработка завершена", "Completed"),
+    (
+        "status.completed_with_errors",
+        "Завершено с ошибками",
+        "Completed with errors",
+    ),
+    (
+        "status.llm_mode_running",
+        "LLM {mode} ({index}/{total})…",
+        "LLM {mode} ({index}/{total})…",
+    ),
+    ("status.llm_cancelled", "LLM отменён", "LLM cancelled"),
+    (
+        "status.llm_saved",
+        "LLM: сохранено {results} · r — показать",
+        "LLM saved {results} · r to view",
+    ),
+    ("status.llm_error", "Ошибка LLM: {error}", "LLM error: {error}"),
+    ("status.unknown_error", "неизвестная ошибка", "unknown error"),
+    ("status.worker_error", "Ошибка воркера", "Worker error"),
+    ("log.error", "Ошибка: {error}", "Error: {error}"),
+    ("value.found", "найден", "found"),
+    (
+        "status.tool_found",
+        "{provider} · {version} · {path}",
+        "{provider} · {version} at {path}",
+    ),
+    (
+        "status.tool_missing",
+        "{provider} · {status} · {hint}",
+        "{provider} · {status} · {hint}",
+    ),
+    (
+        "status.llm_no_mode",
+        "Сначала выберите хотя бы один режим LLM",
+        "Select at least one LLM mode first",
+    ),
+    (
+        "status.llm_no_prompt",
+        "Для режима custom сначала задайте /llm-prompt",
+        "Set /llm-prompt for custom mode first",
+    ),
+    (
+        "status.llm_starting",
+        "Запуск LLM: {transcripts}…",
+        "Starting LLM for {transcripts}…",
+    ),
+    ("status.llm_modes", "Режимы LLM: {modes}", "LLM modes: {modes}"),
+    (
+        "status.llm_cancelling",
+        "Отмена LLM… Esc ещё раз — убить воркер",
+        "Cancelling LLM… Esc again to kill the worker",
+    ),
+    (
+        "status.subtitle_split",
+        "Разбиение субтитров по предложениям: {value}",
+        "Subtitle sentence splitting: {value}",
+    ),
+    (
+        "status.llm_tools",
+        "Инструменты и сессии агента: {value}",
+        "Agent tools and sessions: {value}",
+    ),
+    ("status.diarization", "Диаризация: {value}", "Diarization: {value}"),
+    ("status.formats", "Форматы: {formats}", "Formats: {formats}"),
+    ("status.backend", "Движок: {value}", "Engine: {value}"),
+    (
+        "status.onnx_provider",
+        "ONNX-провайдер: {value}",
+        "ONNX provider: {value}",
+    ),
+    ("status.model", "Модель: {value}", "Model: {value}"),
+    ("status.llm_provider", "Провайдер LLM: {value}", "LLM provider: {value}"),
+    (
+        "status.enter_model_name",
+        "Введите имя модели и нажмите Enter",
+        "Enter the model name and press Enter",
+    ),
+    (
+        "status.llm_default_model",
+        "Модель LLM: по умолчанию",
+        "LLM default model selected",
+    ),
+    ("status.llm_model", "Модель LLM: {value}", "LLM model: {value}"),
+    (
+        "status.audio_mode",
+        "Предобработка аудио: {value}",
+        "Audio preprocessing: {value}",
+    ),
+    (
+        "status.diarization_backend",
+        "Движок диаризации: {value}",
+        "Diarization engine: {value}",
+    ),
+    (
+        "status.sortformer_auto",
+        "Sortformer определяет число говорящих сам",
+        "Sortformer detects the speaker count automatically",
+    ),
+    ("status.speakers", "Говорящих: {value}", "Speaker count: {value}"),
+    (
+        "status.llm_prompt_saved",
+        "Свой промпт LLM сохранён",
+        "Custom LLM prompt saved",
+    ),
+    (
+        "status.llm_inputs",
+        "Транскриптов для LLM: {n}",
+        "LLM inputs: {n}",
+    ),
+    (
+        "status.llm_file_type",
+        "Файл для LLM должен быть .txt, .md, .srt или .vtt",
+        "LLM input must be .txt, .md, .srt or .vtt",
+    ),
+    (
+        "status.llm_api_url_saved",
+        "URL LLM API сохранён",
+        "LLM API URL saved",
+    ),
+    (
+        "status.llm_api_key_saved",
+        "Ключ LLM API сохранён",
+        "LLM API key saved",
+    ),
+    ("status.llm_model_saved", "Модель LLM сохранена", "LLM model saved"),
+    (
+        "status.llm_temperature_saved",
+        "Температура LLM сохранена",
+        "LLM temperature saved",
+    ),
+    (
+        "status.temperature_range",
+        "Температура должна быть от 0 до 2",
+        "Temperature must be between 0 and 2",
+    ),
+    (
+        "status.provider_name_pi_only",
+        "Внутренний провайдер задаётся только для Pi и oh-my-pi",
+        "Internal provider applies to Pi and oh-my-pi only",
+    ),
+    (
+        "status.provider_name_cleared",
+        "Внутренний провайдер сброшен (по умолчанию CLI)",
+        "Internal provider cleared (CLI default)",
+    ),
+    (
+        "status.provider_name",
+        "Внутренний провайдер: {value}",
+        "Internal provider: {value}",
+    ),
+    (
+        "status.args_cli_only",
+        "Доп. аргументы задаются только для CLI-провайдеров",
+        "Extra arguments apply to CLI providers only",
+    ),
+    (
+        "status.args_cleared",
+        "Доп. аргументы сброшены",
+        "Extra arguments cleared",
+    ),
+    ("status.args", "Доп. аргументы: {value}", "Extra arguments: {value}"),
+    (
+        "status.path_cli_only",
+        "Путь к бинарнику задаётся только для CLI-провайдеров",
+        "Binary path applies to CLI providers only",
+    ),
+    (
+        "status.path_reset",
+        "Путь к бинарнику сброшен: автопоиск",
+        "Binary path reset to auto-discovery",
+    ),
+    (
+        "status.path_checking",
+        "Путь к бинарнику: {value} · проверка…",
+        "Binary path: {value} · checking…",
+    ),
+    (
+        "status.output_dir_error",
+        "Не удалось создать папку результатов: {error}",
+        "Cannot create the output directory: {error}",
+    ),
+    (
+        "status.output_dir_updated",
+        "Папка результатов обновлена",
+        "Output directory updated",
+    ),
+    (
+        "status.subtitle_lines",
+        "Строк в реплике субтитров: {value}",
+        "Subtitle lines per cue: {value}",
+    ),
+    (
+        "status.subtitle_lines_range",
+        "Число строк должно быть от 1 до 4",
+        "Subtitle lines must be between 1 and 4",
+    ),
+    (
+        "status.subtitle_width",
+        "Символов в строке субтитров: {value}",
+        "Subtitle characters per line: {value}",
+    ),
+    (
+        "status.subtitle_width_range",
+        "Ширина строки должна быть от 20 до 100",
+        "Subtitle width must be between 20 and 100",
+    ),
+    ("queue.removed", "Убрано: {name}", "Removed: {name}"),
+    (
+        "status.unknown_command",
+        "Неизвестная команда: {name}",
+        "Unknown command: {name}",
+    ),
+    ("status.pets_off", "Пет скрыт", "Pet hidden"),
+    (
+        "status.pets_on",
+        "Пет показан · /pets — скрыть",
+        "Pet shown · /pets hides it",
+    ),
+    ("status.queue_cleared", "Очередь очищена", "Queue cleared"),
+    (
+        "status.no_file_selected",
+        "Файл в очереди не выбран",
+        "No queued file selected",
+    ),
+    ("status.queued", "Добавлено: {files}", "Queued {files}"),
+    (
+        "status.queued_skipped",
+        "Добавлено: {files} · пропущено: {skipped} (см. журнал)",
+        "Queued {files} · {skipped} skipped (see the log)",
+    ),
+    (
+        "status.no_input_files",
+        "Файлы не указаны",
+        "No input files supplied",
+    ),
+    ("err.home_not_set", "Переменная HOME не задана", "HOME is not set"),
+    ("err.file_missing", "Файл не найден: {path}", "File does not exist: {path}"),
+    ("err.not_a_file", "Не файл: {path}", "Not a file: {path}"),
+    (
+        "err.settings_save",
+        "Не удалось сохранить настройки: {error}",
+        "Cannot save the settings: {error}",
+    ),
+    (
+        "status.worker_unavailable",
+        "Воркер недоступен: {error}",
+        "Worker unavailable: {error}",
+    ),
+    (
+        "status.worker_start_failed",
+        "Воркер не запустился: {error}",
+        "Worker failed to start: {error}",
+    ),
+    ("status.worker_exited", "Воркер завершился", "Worker exited"),
+    (
+        "status.worker_restarted",
+        "Воркер перезапущен, обработка отменена",
+        "Worker restarted, run cancelled",
+    ),
+    (
+        "status.worker_restart_failed",
+        "Отменено, но воркер не перезапустился: {error}",
+        "Cancelled, but the worker restart failed: {error}",
+    ),
+    (
+        "status.esc_kill",
+        "Esc ещё раз — убить воркер",
+        "Press Esc again to kill the worker",
+    ),
+    (
+        "status.esc_cancel",
+        "Esc ещё раз — отменить распознавание",
+        "Press Esc again to cancel the transcription",
+    ),
+    (
+        "pets.unsupported",
+        "Пет требует Kitty, iTerm2 или Sixel-графику в терминале.",
+        "Pets require Kitty, iTerm2, or Sixel image support.",
+    ),
+    (
+        "pets.image_error",
+        "Не удалось загрузить картинку пета: {error}",
+        "Cannot load the pet image: {error}",
+    ),
+    ("menu.enter_manually", "ввести вручную", "enter manually"),
+    // Plural forms for `tn`: ru «1|2–4|5+», en «1|many».
+    ("plural.files", "файл|файла|файлов", "file|files"),
+    ("plural.results", "результат|результата|результатов", "result|results"),
+    (
+        "plural.transcripts",
+        "транскрипт|транскрипта|транскриптов",
+        "transcript|transcripts",
+    ),
+    // `Usage:` lines of the commands.
+    (
+        "usage.backend",
+        "Использование: /backend {backends}",
+        "Usage: /backend {backends}",
+    ),
+    (
+        "usage.onnx-provider",
+        "Использование: /onnx-provider auto|cpu|cuda|tensorrt|coreml|directml",
+        "Usage: /onnx-provider auto|cpu|cuda|tensorrt|coreml|directml",
+    ),
+    (
+        "usage.model",
+        "Использование: /model v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc",
+        "Usage: /model v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc",
+    ),
+    (
+        "usage.formats",
+        "Использование: /formats txt,srt,md,vtt",
+        "Usage: /formats txt,srt,md,vtt",
+    ),
+    (
+        "usage.subtitle-split",
+        "Использование: /subtitle-split on|off",
+        "Usage: /subtitle-split on|off",
+    ),
+    (
+        "usage.diarize",
+        "Использование: /diarize on|off",
+        "Usage: /diarize on|off",
+    ),
+    (
+        "usage.audio-mode",
+        "Использование: /audio-mode auto|off|light|denoise",
+        "Usage: /audio-mode auto|off|light|denoise",
+    ),
+    (
+        "usage.diarization-backend",
+        "Использование: /diarization-backend pyannote|onnx|sortformer",
+        "Usage: /diarization-backend pyannote|onnx|sortformer",
+    ),
+    (
+        "usage.speakers",
+        "Использование: /speakers auto|<число больше 0>",
+        "Usage: /speakers auto|<positive number>",
+    ),
+    (
+        "usage.remove",
+        "Использование: /remove <номер в очереди>",
+        "Usage: /remove <queue number>",
+    ),
+    (
+        "usage.output",
+        "Использование: /output <папка>",
+        "Usage: /output <directory>",
+    ),
+    (
+        "usage.llm-mode",
+        "Использование: /llm-mode summary|tasks|terms|custom",
+        "Usage: /llm-mode summary|tasks|terms|custom",
+    ),
+    (
+        "usage.llm-prompt",
+        "Использование: /llm-prompt <инструкция>",
+        "Usage: /llm-prompt <instruction>",
+    ),
+    (
+        "usage.llm-tools",
+        "Использование: /llm-tools on|off",
+        "Usage: /llm-tools on|off",
     ),
 ];
 
@@ -560,6 +951,27 @@ pub(crate) fn tf(lang: Lang, key: &str, args: &[(&str, &str)]) -> String {
     text
 }
 
+/// `n` with the noun from a `plural.*` key in the right form: «1 файл, 2 файла,
+/// 5 файлов» / «1 file, 2 files». The ru text lists the forms for 1, 2–4 and 5+
+/// (`|`-separated), the en text the singular and the plural.
+pub(crate) fn tn(lang: Lang, n: usize, key: &str) -> String {
+    let forms: Vec<&str> = t(lang, key).split('|').collect();
+    let index = match lang {
+        Lang::En => usize::from(n != 1),
+        Lang::Ru => match (n % 10, n % 100) {
+            (1, tens) if !(11..=14).contains(&tens) => 0,
+            (2..=4, tens) if !(11..=14).contains(&tens) => 1,
+            _ => 2,
+        },
+    };
+    let form = forms
+        .get(index)
+        .or_else(|| forms.last())
+        .copied()
+        .unwrap_or_default();
+    format!("{n} {form}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,11 +995,18 @@ mod tests {
 
     #[test]
     fn keys_used_in_sources_exist() {
-        let re = regex_lite::Regex::new(r#"\bt[f]?\(\s*[a-z_.]+\s*,\s*"([a-z0-9_.-]+)""#).unwrap();
+        // `t(lang, "key")`, `tf(lang, "key", …)` and `tn(lang, n, "key")`.
+        let re = regex_lite::Regex::new(
+            r#"\bt[fn]?\(\s*[a-z_.]+\s*,\s*(?:[a-z_.()]+\s*,\s*)?"([a-z0-9_.-]+)""#,
+        )
+        .unwrap();
         for file in [
             "app.rs",
             "commands.rs",
             "main.rs",
+            "pets.rs",
+            "settings.rs",
+            "worker.rs",
             "ui/mod.rs",
             "ui/processing.rs",
             "ui/llm.rs",
@@ -613,10 +1032,97 @@ mod tests {
         }
     }
 
+    /// English texts that may still be assigned to the status line or the log as
+    /// literals. Empty: every message goes through [`t`] / [`tf`].
+    const ALLOWED_LITERAL_STATUSES: &[&str] = &[];
+
+    /// Scans the interactive sources for English literals reaching `status`, the
+    /// log, or a `String` through `.into()` / `unwrap_or`, outside their test
+    /// modules. Not scanned: `headless.rs` (agent-facing output stays English),
+    /// `settings.rs` (its file errors carry OS text and reach the status line only
+    /// through `err.settings_save`) and `worker.rs` (provider names, JSON protocol).
+    #[test]
+    fn no_english_literal_reaches_the_status_line_or_the_log() {
+        let patterns = [
+            r#"(?:app|self)\.status = "([A-Z][^"]*)""#,
+            r#"(?:app|self)\.log\("([A-Z][^"]*)""#,
+            r#"(?:app|self)\.status = format!\("((?:[A-Z][a-z]+|[A-Z]{2,})[^"{]*)"#,
+            r#"(?:app|self)\.log\(format!\("((?:[A-Z][a-z]+|[A-Z]{2,})[^"{]*)"#,
+            r#""([A-Z][a-z]+(?: [^"]*)?)"\.into\(\)"#,
+            r#""([A-Z][a-z]+(?: [^"]*)?)"\.to_owned\(\)"#,
+            r#"unwrap_or(?:_else)?\((?:\|\| )?"([A-Z][^"]*)""#,
+            r#"Err\(\s*"([A-Z][^"]*)""#,
+            r#"format!\(\s*"((?:[A-Z][a-z]+|[A-Z]{2,}) [^"{]*)"#,
+            // A message continued on its own line inside a multi-line `format!(`.
+            r#"^\s*"((?:[A-Z][a-z]+|[A-Z]{2,}) [^"]*)","#,
+        ]
+        .map(|pattern| regex_lite::Regex::new(pattern).unwrap());
+        let mut found = Vec::new();
+        for file in [
+            "app.rs",
+            "commands.rs",
+            "keys.rs",
+            "main.rs",
+            "pets.rs",
+            "ui/mod.rs",
+            "ui/processing.rs",
+            "ui/llm.rs",
+            "ui/settings.rs",
+            "ui/log.rs",
+            "ui/help.rs",
+            "ui/menu.rs",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join(file);
+            let src = std::fs::read_to_string(&path).unwrap_or_default();
+            let src = src.split("#[cfg(test)]").next().unwrap_or_default();
+            for (offset, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for re in &patterns {
+                    for cap in re.captures_iter(line) {
+                        let literal = cap[1].to_owned();
+                        if !ALLOWED_LITERAL_STATUSES.contains(&literal.as_str()) {
+                            found.push(format!("{file}:{}: {literal}", offset + 1));
+                        }
+                    }
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        assert!(
+            found.is_empty(),
+            "English literals must go through t()/tf():\n{}",
+            found.join("\n")
+        );
+    }
+
     #[test]
     fn tf_substitutes_named_arguments() {
         assert_eq!(tf(Lang::Ru, "queue.count", &[("n", "3")]), "Очередь (3)");
         assert_eq!(tf(Lang::En, "queue.count", &[("n", "3")]), "Queue (3)");
+    }
+
+    #[test]
+    fn tn_picks_the_russian_and_english_plural_forms() {
+        let ru = |n| tn(Lang::Ru, n, "plural.files");
+        assert_eq!(ru(1), "1 файл");
+        assert_eq!(ru(2), "2 файла");
+        assert_eq!(ru(5), "5 файлов");
+        assert_eq!(ru(11), "11 файлов");
+        assert_eq!(ru(21), "21 файл");
+        assert_eq!(ru(24), "24 файла");
+        assert_eq!(ru(112), "112 файлов");
+        assert_eq!(tn(Lang::En, 1, "plural.files"), "1 file");
+        assert_eq!(tn(Lang::En, 0, "plural.files"), "0 files");
+        assert_eq!(tn(Lang::En, 3, "plural.results"), "3 results");
+        for (key, ru, en) in STRINGS.iter().filter(|(k, _, _)| k.starts_with("plural.")) {
+            assert_eq!(ru.split('|').count(), 3, "{key}");
+            assert_eq!(en.split('|').count(), 2, "{key}");
+        }
     }
 
     #[test]

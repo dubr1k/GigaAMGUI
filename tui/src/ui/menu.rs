@@ -10,7 +10,9 @@ use ratatui::{
 
 use crate::{
     app::App,
-    commands::{command_menu_options, command_suggestions, BACK_MENU_OPTION},
+    commands::{
+        command_menu_options, command_suggestions, BACK_MENU_OPTION, ENTER_MANUALLY_OPTION,
+    },
     i18n::t,
     ui::{Action, ACCENT},
 };
@@ -88,6 +90,8 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
                 let option = &rows.menu[index];
                 let label = if option == BACK_MENU_OPTION {
                     format!("← {}", t(app.lang, "menu.back"))
+                } else if option == ENTER_MANUALLY_OPTION {
+                    t(app.lang, "menu.enter_manually").to_owned()
                 } else {
                     option.clone()
                 };

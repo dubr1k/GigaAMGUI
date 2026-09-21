@@ -29,7 +29,7 @@ mod worker;
 
 use app::{dispatch, esc_is_cancel, reset_after_worker_restart, App};
 use headless::{apply_data_dir_argument, run_headless, strip_data_dir, HEADLESS_USAGE};
-use i18n::strip_lang;
+use i18n::{strip_lang, t, tf};
 use keys::handle_key;
 use settings::{apply_settings, load_settings};
 use ui::{draw, Action, ButtonId};
@@ -47,7 +47,11 @@ fn deliver(app: &mut App, worker: &mut Worker, commands: Vec<Value>) {
         };
         if let Err(error) = result {
             app.worker_down = true;
-            app.status = format!("Worker unavailable: {error}");
+            app.status = tf(
+                app.lang,
+                "status.worker_unavailable",
+                &[("error", &error.to_string())],
+            );
             app.log(app.status.clone());
         }
     }
@@ -67,7 +71,11 @@ fn start_worker(app: &mut App) -> Worker {
         }
         Err(error) => {
             app.worker_down = true;
-            app.status = format!("Worker failed to start: {error}");
+            app.status = tf(
+                app.lang,
+                "status.worker_start_failed",
+                &[("error", &error.to_string())],
+            );
             app.log(app.status.clone());
             None
         }
@@ -123,7 +131,7 @@ fn main() -> io::Result<()> {
                         if !app.worker_down {
                             app.worker_down = true;
                             reset_after_worker_restart(&mut app);
-                            app.status = "Worker exited".into();
+                            app.status = t(app.lang, "status.worker_exited").into();
                             app.log(app.status.clone());
                         }
                         break;
@@ -224,9 +232,13 @@ fn main() -> io::Result<()> {
                         worker = start_worker(&mut app);
                         reset_after_worker_restart(&mut app);
                         app.status = if worker.is_some() {
-                            "Worker restarted, run cancelled".into()
+                            t(app.lang, "status.worker_restarted").into()
                         } else {
-                            format!("Cancelled, but worker restart failed: {}", app.status)
+                            tf(
+                                app.lang,
+                                "status.worker_restart_failed",
+                                &[("error", &app.status)],
+                            )
                         };
                         app.log(app.status.clone());
                         app.last_exit_request = None;
@@ -236,11 +248,15 @@ fn main() -> io::Result<()> {
                         let commands = dispatch(&mut app, Action::Button(ButtonId::Stop));
                         deliver(&mut app, &mut worker, commands);
                         app.last_exit_request = Some(("cancel", Instant::now()));
-                        app.status = if app.llm_running {
-                            "Press Esc again to kill the worker".into()
-                        } else {
-                            "Press Esc again to cancel transcription".into()
-                        };
+                        app.status = t(
+                            app.lang,
+                            if app.llm_running {
+                                "status.esc_kill"
+                            } else {
+                                "status.esc_cancel"
+                            },
+                        )
+                        .into();
                     }
                 } else {
                     let commands = handle_key(&mut app, key);

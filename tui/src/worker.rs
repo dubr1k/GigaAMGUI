@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::{
     app::{llm_input_files, App},
     commands::BACK_MENU_OPTION,
+    i18n::t,
     settings::TuiSettings,
 };
 
@@ -82,10 +83,16 @@ pub(crate) fn provider_menu_options(app: &App) -> Vec<String> {
         .map(|provider| match llm_tool_for(app, &provider) {
             Some(tool) if tool.status == "found" => format!(
                 "{provider} · {}",
-                tool.version.as_deref().unwrap_or("found")
+                tool.version
+                    .as_deref()
+                    .unwrap_or(t(app.lang, "value.found"))
             ),
-            Some(tool) if tool.status == "broken" => format!("{provider} · broken"),
-            Some(tool) if tool.status == "missing" => format!("{provider} · not installed"),
+            Some(tool) if tool.status == "broken" => {
+                format!("{provider} · {}", t(app.lang, "llm.broken"))
+            }
+            Some(tool) if tool.status == "missing" => {
+                format!("{provider} · {}", t(app.lang, "llm.not_installed"))
+            }
             _ => provider,
         })
         .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))

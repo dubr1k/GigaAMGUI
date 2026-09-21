@@ -10,11 +10,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 
 use crate::{
-    app::{dispatch, esc_should_soft_cancel, llm_can_run, App, Focus, Page},
+    app::{dispatch, esc_should_soft_cancel, llm_can_run, on_off, App, Focus, Page},
     commands::{
         apply_command_menu, command_menu_options, command_suggestions, complete_path, is_command,
         open_command_menu, queue_paths, remove_selected_file, run_command, COMMANDS,
     },
+    i18n::{t, tf},
     settings::save_app_settings,
     ui::{llm::MODES, processing::PARAM_ROWS, Action, AreaId, ButtonId},
 };
@@ -123,9 +124,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         }
         KeyCode::Char('d') if idle && no_input => {
             app.diarization = !app.diarization;
-            app.log(format!(
-                "Diarization {}",
-                if app.diarization { "on" } else { "off" }
+            app.log(tf(
+                app.lang,
+                "status.diarization",
+                &[("value", on_off(app.lang, app.diarization))],
             ));
             save_app_settings(app);
         }
@@ -135,7 +137,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             } else {
                 vec!["txt".into()]
             };
-            app.log(format!("Formats: {}", app.formats.join(", ")));
+            app.log(tf(
+                app.lang,
+                "status.formats",
+                &[("formats", &app.formats.join(", "))],
+            ));
             save_app_settings(app);
         }
         KeyCode::Char('s') if idle && no_input && !app.files.is_empty() => {
@@ -148,7 +154,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         KeyCode::Esc if menu_open => {
             app.command_menu = None;
             app.input.clear();
-            app.status = "Settings menu closed".into();
+            app.status = t(app.lang, "status.menu_closed").into();
         }
         KeyCode::Esc if idle && app.focus != Focus::Input => {
             return dispatch(app, Action::FocusInput);
@@ -156,7 +162,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         KeyCode::Esc if no_input => app.request_exit("esc", "Esc"),
         KeyCode::Esc => {
             app.input.clear();
-            app.status = "Input cleared".into();
+            app.status = t(app.lang, "status.input_cleared").into();
         }
         KeyCode::Char(digit) if idle && menu_open && digit.is_ascii_digit() => {
             let count = command_menu_options(app).len();

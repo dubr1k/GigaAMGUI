@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::{
-    app::{llm_input_files, request_llm, App, Page},
-    i18n::{t, Lang},
+    app::{llm_input_files, on_off, request_llm, App, Page},
+    i18n::{t, tf, tn, Lang},
     settings::save_app_settings,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
 };
@@ -25,18 +25,37 @@ pub(crate) const FORMAT_KEYS: [&str; 7] = [
 pub(crate) fn short_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
-pub(crate) fn normalize_path(raw: &str) -> Result<String, String> {
+/// Why a pasted path was rejected; [`PathError::message`] renders it in the UI
+/// language (headless mode uses English).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PathError {
+    HomeNotSet,
+    Missing(String),
+    NotAFile(String),
+}
+
+impl PathError {
+    pub(crate) fn message(&self, lang: Lang) -> String {
+        match self {
+            PathError::HomeNotSet => t(lang, "err.home_not_set").to_owned(),
+            PathError::Missing(path) => tf(lang, "err.file_missing", &[("path", path)]),
+            PathError::NotAFile(path) => tf(lang, "err.not_a_file", &[("path", path)]),
+        }
+    }
+}
+
+pub(crate) fn normalize_path(raw: &str) -> Result<String, PathError> {
     let mut text = raw.trim().trim_matches(['\'', '"']).trim().to_string();
     if let Some(path) = text.strip_prefix("file://") {
         text = path.replace("%20", " ");
     }
     if let Some(path) = text.strip_prefix("~/") {
-        let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+        let home = std::env::var("HOME").map_err(|_| PathError::HomeNotSet)?;
         text = format!("{home}/{path}");
     }
-    let path = fs::canonicalize(&text).map_err(|_| format!("File does not exist: {text}"))?;
+    let path = fs::canonicalize(&text).map_err(|_| PathError::Missing(text.clone()))?;
     if !path.is_file() {
-        return Err(format!("Not a file: {}", path.display()));
+        return Err(PathError::NotAFile(path.display().to_string()));
     }
     Ok(path.to_string_lossy().into_owned())
 }
@@ -97,7 +116,7 @@ pub(crate) fn queue_paths(app: &mut App, raw: &str) {
                 } else if split.len() > 1 {
                     split
                 } else {
-                    app.status = error;
+                    app.status = error.message(app.lang);
                     return;
                 }
             }
@@ -112,25 +131,26 @@ pub(crate) fn queue_paths(app: &mut App, raw: &str) {
                 app.files.push(path);
                 queued += 1;
             }
-            Err(error) => errors.push(error),
+            Err(error) => errors.push(error.message(app.lang)),
         }
     }
     if queued == 0 {
         app.status = errors
             .into_iter()
             .next()
-            .unwrap_or_else(|| "No input files supplied".into());
+            .unwrap_or_else(|| t(app.lang, "status.no_input_files").into());
         return;
     }
     app.selected_file = app.files.len().checked_sub(1);
     app.input.clear();
+    let files = tn(app.lang, queued, "plural.files");
     app.status = if errors.is_empty() {
-        format!("Queued {queued} file{}", if queued == 1 { "" } else { "s" })
+        tf(app.lang, "status.queued", &[("files", &files)])
     } else {
-        format!(
-            "Queued {queued} file{} · {} skipped (see log)",
-            if queued == 1 { "" } else { "s" },
-            errors.len()
+        tf(
+            app.lang,
+            "status.queued_skipped",
+            &[("files", &files), ("skipped", &errors.len().to_string())],
         )
     };
     app.log(app.status.clone());
@@ -178,7 +198,10 @@ pub(crate) fn complete_path(raw: &str) -> Option<String> {
     Some(completed)
 }
 
+/// Menu entries that are not values: the UI shows them through `menu.back` /
+/// `menu.enter_manually`, the code compares against these identifiers.
 pub(crate) const BACK_MENU_OPTION: &str = "← Back";
+pub(crate) const ENTER_MANUALLY_OPTION: &str = "Enter manually";
 
 pub(crate) const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("v3_e2e_rnnt", "GigaAM v3 e2e RNNT (current)"),
@@ -261,15 +284,12 @@ pub(crate) fn backend_is_supported(backend: &str) -> bool {
     }
 }
 
-pub(crate) fn backend_usage() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "Usage: /backend auto|pytorch|mlx|onnx"
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        "Usage: /backend auto|pytorch|onnx"
-    }
+pub(crate) fn backend_usage(lang: Lang) -> String {
+    tf(
+        lang,
+        "usage.backend",
+        &[("backends", &selectable_backends().join("|"))],
+    )
 }
 
 pub(crate) fn command_suggestions(input: &str) -> Vec<(&'static str, &'static str)> {
@@ -418,7 +438,10 @@ fn llm_model_options(provider: &str) -> Vec<String> {
     models
         .iter()
         .map(|model| (*model).to_owned())
-        .chain(["Enter manually".to_owned(), BACK_MENU_OPTION.to_owned()])
+        .chain([
+            ENTER_MANUALLY_OPTION.to_owned(),
+            BACK_MENU_OPTION.to_owned(),
+        ])
         .collect()
 }
 
@@ -459,7 +482,7 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
         } else {
             0
         };
-        app.status = "Choose 1–9, 0 for Back, or arrows and Enter".into();
+        app.status = t(app.lang, "status.choose_option").into();
         true
     } else {
         false
@@ -475,7 +498,7 @@ pub(crate) fn apply_command_menu(app: &mut App) {
     if option == BACK_MENU_OPTION {
         app.command_menu = None;
         app.input.clear();
-        app.status = "Settings menu closed".into();
+        app.status = t(app.lang, "status.menu_closed").into();
         app.log(app.status.clone());
         return;
     }
@@ -483,14 +506,18 @@ pub(crate) fn apply_command_menu(app: &mut App) {
     match command.as_str() {
         "/backend" => {
             app.backend = option.clone();
-            app.status = format!("Backend: {}", app.backend);
+            app.status = tf(app.lang, "status.backend", &[("value", &app.backend)]);
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
         }
         "/onnx-provider" => {
             app.onnx_provider = option.clone();
-            app.status = format!("ONNX provider: {}", app.onnx_provider);
+            app.status = tf(
+                app.lang,
+                "status.onnx_provider",
+                &[("value", &app.onnx_provider)],
+            );
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
@@ -501,7 +528,7 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 .next()
                 .unwrap_or("v3_e2e_rnnt")
                 .into();
-            app.status = format!("Model: {}", app.model);
+            app.status = tf(app.lang, "status.model", &[("value", &app.model)]);
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
@@ -510,7 +537,11 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             app.llm_provider = provider_from_menu_option(option).to_owned();
             app.command_menu = None;
             app.input.clear();
-            app.status = format!("LLM provider: {}", app.llm_provider);
+            app.status = tf(
+                app.lang,
+                "status.llm_provider",
+                &[("value", &app.llm_provider)],
+            );
             save_app_settings(app);
         }
         "/lang" => {
@@ -524,10 +555,10 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             app.status = t(app.lang, "settings.language_changed").into();
             save_app_settings(app);
         }
-        "/settings-model" if option == "Enter manually" => {
+        "/settings-model" if option == ENTER_MANUALLY_OPTION => {
             app.command_menu = None;
             app.input = "/llm-model ".into();
-            app.status = "Enter model name and press Enter".into();
+            app.status = t(app.lang, "status.enter_model_name").into();
         }
         "/settings-model" => {
             app.llm_model = if option == "default" {
@@ -538,9 +569,9 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             app.command_menu = None;
             app.input.clear();
             app.status = if app.llm_model.is_empty() {
-                "LLM default model selected".into()
+                t(app.lang, "status.llm_default_model").into()
             } else {
-                format!("LLM model: {}", app.llm_model)
+                tf(app.lang, "status.llm_model", &[("value", &app.llm_model)])
             };
             save_app_settings(app);
         }
@@ -553,18 +584,26 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             } else {
                 app.llm_modes.push(mode.into());
             }
-            app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
+            app.status = tf(
+                app.lang,
+                "status.llm_modes",
+                &[("modes", &app.llm_modes.join(", "))],
+            );
         }
         "/diarize" => {
             app.diarization = option == "on";
-            app.status = format!("Diarization {option}");
+            app.status = tf(
+                app.lang,
+                "status.diarization",
+                &[("value", on_off(app.lang, app.diarization))],
+            );
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
         }
         "/audio-mode" => {
             app.audio_preprocessing_mode = option.clone();
-            app.status = format!("Audio preprocessing: {option}");
+            app.status = tf(app.lang, "status.audio_mode", &[("value", option)]);
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
@@ -574,21 +613,25 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             if app.diarization_backend == "sortformer" {
                 app.num_speakers = None;
             }
-            app.status = format!("Diarization backend: {}", app.diarization_backend);
+            app.status = tf(
+                app.lang,
+                "status.diarization_backend",
+                &[("value", &app.diarization_backend)],
+            );
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
         }
         "/speakers" if app.diarization_backend == "sortformer" => {
             app.num_speakers = None;
-            app.status = "Sortformer detects the speaker count automatically".into();
+            app.status = t(app.lang, "status.sortformer_auto").into();
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
         }
         "/speakers" => {
             app.num_speakers = option.parse().ok();
-            app.status = format!("Speaker count: {option}");
+            app.status = tf(app.lang, "status.speakers", &[("value", option)]);
             app.command_menu = None;
             app.input.clear();
             save_app_settings(app);
@@ -603,7 +646,11 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             if app.formats.is_empty() {
                 app.formats.push("txt".into());
             }
-            app.status = format!("Formats: {}", app.formats.join(", "));
+            app.status = tf(
+                app.lang,
+                "status.formats",
+                &[("formats", &app.formats.join(", "))],
+            );
             save_app_settings(app);
         }
         _ => {}
@@ -624,7 +671,7 @@ pub(crate) fn run_command(app: &mut App) {
     match name.as_str() {
         "/exit" => {
             app.exit_requested = true;
-            app.status = "Exiting…".into();
+            app.status = t(app.lang, "status.exiting").into();
         }
         "/settings" => {
             app.page = Page::Settings;
@@ -657,14 +704,18 @@ pub(crate) fn run_command(app: &mut App) {
         },
         "/llm-mode" if matches!(argument, "summary" | "tasks" | "terms" | "custom") => {
             app.llm_modes = vec![argument.into()];
-            app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
+            app.status = tf(
+                app.lang,
+                "status.llm_modes",
+                &[("modes", &app.llm_modes.join(", "))],
+            );
         }
-        "/llm-mode" => app.status = "Usage: /llm-mode summary|tasks|terms|custom".into(),
+        "/llm-mode" => app.status = t(app.lang, "usage.llm-mode").into(),
         "/llm-prompt" if !argument.is_empty() => {
             app.llm_prompt = argument.into();
-            app.status = "Custom LLM prompt saved".into();
+            app.status = t(app.lang, "status.llm_prompt_saved").into();
         }
-        "/llm-prompt" => app.status = "Usage: /llm-prompt <instruction>".into(),
+        "/llm-prompt" => app.status = t(app.lang, "usage.llm-prompt").into(),
         "/llm-run" => request_llm(app),
         "/llm-file" => match normalize_path(argument) {
             Ok(path)
@@ -676,24 +727,28 @@ pub(crate) fn run_command(app: &mut App) {
                 ) =>
             {
                 app.llm_extra_files.push(path);
-                app.status = format!("LLM inputs: {}", llm_input_files(app).len());
+                app.status = tf(
+                    app.lang,
+                    "status.llm_inputs",
+                    &[("n", &llm_input_files(app).len().to_string())],
+                );
             }
-            Ok(_) => app.status = "LLM input must be .txt, .md, .srt or .vtt".into(),
-            Err(error) => app.status = error,
+            Ok(_) => app.status = t(app.lang, "status.llm_file_type").into(),
+            Err(error) => app.status = error.message(app.lang),
         },
         "/llm-api-url" if !argument.is_empty() => {
             app.llm_api_url = argument.into();
-            app.status = "LLM API URL saved".into();
+            app.status = t(app.lang, "status.llm_api_url_saved").into();
             save_app_settings(app);
         }
         "/llm-api-key" if !argument.is_empty() => {
             app.llm_api_key = argument.into();
-            app.status = "LLM API key saved".into();
+            app.status = t(app.lang, "status.llm_api_key_saved").into();
             save_app_settings(app);
         }
         "/llm-model" if !argument.is_empty() => {
             app.llm_model = argument.into();
-            app.status = "LLM model saved".into();
+            app.status = t(app.lang, "status.llm_model_saved").into();
             save_app_settings(app);
         }
         "/llm-model" => {
@@ -702,50 +757,50 @@ pub(crate) fn run_command(app: &mut App) {
         "/llm-temperature" => match argument.parse::<f64>() {
             Ok(value) if (0.0..=2.0).contains(&value) => {
                 app.llm_temperature = value;
-                app.status = "LLM temperature saved".into();
+                app.status = t(app.lang, "status.llm_temperature_saved").into();
                 save_app_settings(app);
             }
-            _ => app.status = "Temperature must be between 0 and 2".into(),
+            _ => app.status = t(app.lang, "status.temperature_range").into(),
         },
         "/llm-provider-name" if !matches!(provider_prefix(&app.llm_provider), "pi" | "omp") => {
-            app.status = "Internal provider applies to Pi and oh-my-pi only".into();
+            app.status = t(app.lang, "status.provider_name_pi_only").into();
         }
         "/llm-provider-name" => {
             let prefix = provider_prefix(&app.llm_provider).to_owned();
             if argument.is_empty() {
                 app.llm_internal_providers.remove(&prefix);
-                app.status = "Internal provider cleared (CLI default)".into();
+                app.status = t(app.lang, "status.provider_name_cleared").into();
             } else {
                 app.llm_internal_providers.insert(prefix, argument.into());
-                app.status = format!("Internal provider: {argument}");
+                app.status = tf(app.lang, "status.provider_name", &[("value", argument)]);
             }
             save_app_settings(app);
         }
         "/llm-args" if app.llm_provider == "API" => {
-            app.status = "Extra arguments apply to CLI providers only".into();
+            app.status = t(app.lang, "status.args_cli_only").into();
         }
         "/llm-args" => {
             let prefix = provider_prefix(&app.llm_provider).to_owned();
             if argument.is_empty() {
                 app.llm_extra_args.remove(&prefix);
-                app.status = "Extra arguments cleared".into();
+                app.status = t(app.lang, "status.args_cleared").into();
             } else {
                 app.llm_extra_args.insert(prefix, argument.into());
-                app.status = format!("Extra arguments: {argument}");
+                app.status = tf(app.lang, "status.args", &[("value", argument)]);
             }
             save_app_settings(app);
         }
         "/llm-path" if app.llm_provider == "API" => {
-            app.status = "Binary path applies to CLI providers only".into();
+            app.status = t(app.lang, "status.path_cli_only").into();
         }
         "/llm-path" => {
             let prefix = provider_prefix(&app.llm_provider).to_owned();
             if argument.is_empty() {
                 app.llm_tool_paths.remove(&prefix);
-                app.status = "Binary path reset to auto-discovery".into();
+                app.status = t(app.lang, "status.path_reset").into();
             } else {
                 app.llm_tool_paths.insert(prefix, argument.into());
-                app.status = format!("Binary path: {argument} · checking…");
+                app.status = tf(app.lang, "status.path_checking", &[("value", argument)]);
             }
             if app.llm_provider != "Other" {
                 app.llm_tool_check_requested = Some((app.llm_provider.clone(), argument.into()));
@@ -754,27 +809,35 @@ pub(crate) fn run_command(app: &mut App) {
         }
         "/llm-tools" if matches!(argument, "on" | "off") => {
             app.llm_allow_tools = argument == "on";
-            app.status = format!("Agent tools and sessions {argument}");
+            app.status = tf(
+                app.lang,
+                "status.llm_tools",
+                &[("value", on_off(app.lang, app.llm_allow_tools))],
+            );
             save_app_settings(app);
         }
-        "/llm-tools" => app.status = "Usage: /llm-tools on|off".into(),
+        "/llm-tools" => app.status = t(app.lang, "usage.llm-tools").into(),
         "/pets" => toggle_pets(app),
         "/output" => {
             if argument.is_empty() {
-                app.status = "Usage: /output <directory>".into();
+                app.status = t(app.lang, "usage.output").into();
             } else if let Err(error) = fs::create_dir_all(argument) {
-                app.status = format!("Cannot create output directory: {error}");
+                app.status = tf(
+                    app.lang,
+                    "status.output_dir_error",
+                    &[("error", &error.to_string())],
+                );
             } else if let Ok(path) = fs::canonicalize(argument) {
                 app.output_dir = Some(path.to_string_lossy().into_owned());
-                app.status = "Output directory updated".into();
+                app.status = t(app.lang, "status.output_dir_updated").into();
             }
         }
         "/backend" if backend_is_supported(&argument.to_ascii_lowercase()) => {
             app.backend = argument.to_ascii_lowercase();
-            app.status = format!("Backend: {}", app.backend);
+            app.status = tf(app.lang, "status.backend", &[("value", &app.backend)]);
             save_app_settings(app);
         }
-        "/backend" => app.status = backend_usage().into(),
+        "/backend" => app.status = backend_usage(app.lang),
         "/onnx-provider"
             if matches!(
                 argument.to_ascii_lowercase().as_str(),
@@ -782,20 +845,20 @@ pub(crate) fn run_command(app: &mut App) {
             ) =>
         {
             app.onnx_provider = argument.to_ascii_lowercase();
-            app.status = format!("ONNX provider: {}", app.onnx_provider);
+            app.status = tf(
+                app.lang,
+                "status.onnx_provider",
+                &[("value", &app.onnx_provider)],
+            );
             save_app_settings(app);
         }
-        "/onnx-provider" => {
-            app.status = "Usage: /onnx-provider auto|cpu|cuda|tensorrt|coreml|directml".into()
-        }
+        "/onnx-provider" => app.status = t(app.lang, "usage.onnx-provider").into(),
         "/model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == argument) => {
             app.model = argument.into();
-            app.status = format!("Model: {}", app.model);
+            app.status = tf(app.lang, "status.model", &[("value", &app.model)]);
             save_app_settings(app);
         }
-        "/model" => {
-            app.status = "Usage: /model v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc".into()
-        }
+        "/model" => app.status = t(app.lang, "usage.model").into(),
         "/formats" => {
             let formats: Vec<String> = argument
                 .split(',')
@@ -815,75 +878,105 @@ pub(crate) fn run_command(app: &mut App) {
                 .map(str::to_owned)
                 .collect();
             if formats.is_empty() {
-                app.status = "Usage: /formats txt,srt,md,vtt".into();
+                app.status = t(app.lang, "usage.formats").into();
             } else {
                 app.formats = formats;
-                app.status = format!("Formats: {}", app.formats.join(", "));
+                app.status = tf(
+                    app.lang,
+                    "status.formats",
+                    &[("formats", &app.formats.join(", "))],
+                );
                 save_app_settings(app);
             }
         }
         "/subtitle-split" if matches!(argument, "on" | "off") => {
             app.subtitle_sentence_split = argument == "on";
-            app.status = format!("Subtitle sentence splitting: {argument}");
+            app.status = tf(
+                app.lang,
+                "status.subtitle_split",
+                &[("value", on_off(app.lang, app.subtitle_sentence_split))],
+            );
             save_app_settings(app);
         }
-        "/subtitle-split" => app.status = "Usage: /subtitle-split on|off".into(),
+        "/subtitle-split" => app.status = t(app.lang, "usage.subtitle-split").into(),
         "/subtitle-lines" => match argument.parse::<u8>() {
             Ok(value) if (1..=4).contains(&value) => {
                 app.subtitle_max_lines = value;
-                app.status = format!("Subtitle lines per cue: {value}");
+                app.status = tf(
+                    app.lang,
+                    "status.subtitle_lines",
+                    &[("value", &value.to_string())],
+                );
                 save_app_settings(app);
             }
-            _ => app.status = "Subtitle lines must be between 1 and 4".into(),
+            _ => app.status = t(app.lang, "status.subtitle_lines_range").into(),
         },
         "/subtitle-width" => match argument.parse::<u16>() {
             Ok(value) if (20..=100).contains(&value) => {
                 app.subtitle_max_width = value;
-                app.status = format!("Subtitle characters per line: {value}");
+                app.status = tf(
+                    app.lang,
+                    "status.subtitle_width",
+                    &[("value", &value.to_string())],
+                );
                 save_app_settings(app);
             }
-            _ => app.status = "Subtitle width must be between 20 and 100".into(),
+            _ => app.status = t(app.lang, "status.subtitle_width_range").into(),
         },
         "/diarize" if matches!(argument, "on" | "off") => {
             app.diarization = argument == "on";
-            app.status = format!("Diarization {}", argument);
+            app.status = tf(
+                app.lang,
+                "status.diarization",
+                &[("value", on_off(app.lang, app.diarization))],
+            );
             save_app_settings(app);
         }
-        "/diarize" => app.status = "Usage: /diarize on|off".into(),
+        "/diarize" => app.status = t(app.lang, "usage.diarize").into(),
         "/audio-mode" if matches!(argument, "auto" | "off" | "light" | "denoise") => {
             app.audio_preprocessing_mode = argument.into();
-            app.status = format!("Audio preprocessing: {argument}");
+            app.status = tf(app.lang, "status.audio_mode", &[("value", argument)]);
             save_app_settings(app);
         }
-        "/audio-mode" => app.status = "Usage: /audio-mode auto|off|light|denoise".into(),
+        "/audio-mode" => app.status = t(app.lang, "usage.audio-mode").into(),
         "/diarization-backend" if matches!(argument, "pyannote" | "onnx" | "sortformer") => {
             app.diarization_backend = argument.into();
             if app.diarization_backend == "sortformer" {
                 app.num_speakers = None;
             }
-            app.status = format!("Diarization backend: {}", app.diarization_backend);
+            app.status = tf(
+                app.lang,
+                "status.diarization_backend",
+                &[("value", &app.diarization_backend)],
+            );
             save_app_settings(app);
         }
-        "/diarization-backend" => {
-            app.status = "Usage: /diarization-backend pyannote|onnx|sortformer".into()
-        }
+        "/diarization-backend" => app.status = t(app.lang, "usage.diarization-backend").into(),
         "/speakers" if app.diarization_backend == "sortformer" => {
             app.num_speakers = None;
-            app.status = "Sortformer detects the speaker count automatically".into();
+            app.status = t(app.lang, "status.sortformer_auto").into();
             save_app_settings(app);
         }
         "/speakers" if argument == "auto" => {
             app.num_speakers = None;
-            app.status = "Speaker count: auto".into();
+            app.status = tf(
+                app.lang,
+                "status.speakers",
+                &[("value", t(app.lang, "value.auto"))],
+            );
             save_app_settings(app);
         }
         "/speakers" => match argument.parse::<u32>() {
             Ok(value) if value > 0 => {
                 app.num_speakers = Some(value);
-                app.status = format!("Speaker count: {value}");
+                app.status = tf(
+                    app.lang,
+                    "status.speakers",
+                    &[("value", &value.to_string())],
+                );
                 save_app_settings(app);
             }
-            _ => app.status = "Usage: /speakers auto|<positive number>".into(),
+            _ => app.status = t(app.lang, "usage.speakers").into(),
         },
         "/clear" => clear_queue(app),
         "/remove" => match argument.parse::<usize>() {
@@ -895,11 +988,11 @@ pub(crate) fn run_command(app: &mut App) {
                     .get(index - 1)
                     .map(|_| index - 1)
                     .or_else(|| index.checked_sub(2));
-                app.status = format!("Removed {}", short_name(&file));
+                app.status = tf(app.lang, "queue.removed", &[("name", &short_name(&file))]);
             }
-            _ => app.status = "Usage: /remove <queue number>".into(),
+            _ => app.status = t(app.lang, "usage.remove").into(),
         },
-        _ => app.status = format!("Unknown command: {name}"),
+        _ => app.status = tf(app.lang, "status.unknown_command", &[("name", &name)]),
     }
     app.log(app.status.clone());
     app.input.clear();
@@ -911,14 +1004,14 @@ pub(crate) fn toggle_pets(app: &mut App) {
         app.clear_pet_layer();
         app.pet_enabled = false;
         app.pet_image = None;
-        app.status = "Pets off".into();
+        app.status = t(app.lang, "status.pets_off").into();
         save_app_settings(app);
     } else if let Err(error) = app.refresh_pet_image() {
         app.status = error;
     } else {
         app.pet_enabled = true;
         app.pet_running = app.running;
-        app.status = "Pets on · /pets to hide".into();
+        app.status = t(app.lang, "status.pets_on").into();
         save_app_settings(app);
     }
 }
@@ -931,12 +1024,12 @@ pub(crate) fn clear_queue(app: &mut App) {
     app.llm_extra_files.clear();
     app.llm_results.clear();
     app.show_llm_result = false;
-    app.status = "Queue cleared".into();
+    app.status = t(app.lang, "status.queue_cleared").into();
 }
 
 pub(crate) fn remove_selected_file(app: &mut App) {
     let Some(index) = app.selected_file.filter(|index| *index < app.files.len()) else {
-        app.status = "No queued file selected".into();
+        app.status = t(app.lang, "status.no_file_selected").into();
         return;
     };
     let file = app.files.remove(index);
@@ -946,7 +1039,7 @@ pub(crate) fn remove_selected_file(app: &mut App) {
         .get(index)
         .map(|_| index)
         .or_else(|| index.checked_sub(1));
-    app.status = format!("Removed {}", short_name(&file));
+    app.status = tf(app.lang, "queue.removed", &[("name", &short_name(&file))]);
     app.log(app.status.clone());
 }
 
@@ -998,6 +1091,7 @@ mod tests {
     fn subtitle_commands_validate_and_update_limits() {
         let _config = isolated_config_dir();
         let mut app = App::default();
+        app.lang = Lang::En;
         app.input = "/subtitle-split off".into();
         run_command(&mut app);
         app.input = "/subtitle-lines 3".into();
@@ -1045,6 +1139,7 @@ mod tests {
     fn sortformer_rejects_fixed_speaker_count() {
         let _config = isolated_config_dir();
         let mut app = App::default();
+        app.lang = Lang::En;
         app.diarization_backend = "sortformer".into();
         app.input = "/speakers 2".into();
 
@@ -1075,6 +1170,7 @@ mod tests {
     fn llm_model_command_is_accepted() {
         let _config = isolated_config_dir();
         let mut app = App::default();
+        app.lang = Lang::En;
         app.input = "/llm-model gpt-4.1-mini".into();
 
         run_command(&mut app);
@@ -1148,6 +1244,7 @@ mod tests {
     fn provider_name_command_is_only_for_pi_like_providers() {
         let _config = isolated_config_dir();
         let mut app = App::default();
+        app.lang = Lang::En;
         app.llm_provider = "Claude Code".into();
         app.input = "/llm-provider-name openai".into();
         run_command(&mut app);
@@ -1175,6 +1272,7 @@ mod tests {
     fn pets_suggestion_executes_without_an_extra_enter() {
         let _config = isolated_config_dir();
         let mut app = App::default();
+        app.lang = Lang::En;
 
         accept_command_suggestion(&mut app, "/pets");
 
@@ -1241,6 +1339,7 @@ mod tests {
         fs::write(&audio, []).unwrap();
 
         let mut app = App::default();
+        app.lang = Lang::En;
         app.input = format!("/llm-file {}", transcript.display());
         run_command(&mut app);
         assert_eq!(llm_input_files(&app).len(), 1);
@@ -1261,6 +1360,7 @@ mod tests {
     fn audio_mode_is_selectable_persisted_and_sent_to_the_worker() {
         let _config = isolated_config_dir();
         let mut app = App::default();
+        app.lang = Lang::En;
         assert!(open_command_menu(&mut app, "/audio-mode"));
         assert_eq!(
             command_menu_options(&app),

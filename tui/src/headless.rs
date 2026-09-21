@@ -17,6 +17,7 @@ use crate::{
         backend_is_supported, normalize_path, selectable_backends, short_name, FORMAT_KEYS,
         MODEL_OPTIONS,
     },
+    i18n::Lang,
     settings::{load_settings, TuiSettings},
     worker::{llm_settings_from, send, spawn_worker_with},
 };
@@ -441,7 +442,7 @@ fn resolve_headless_paths(command: &mut HeadlessCommand) -> Result<(), String> {
         HeadlessCommand::Llm(args) => (&mut args.files, &mut args.output_dir),
     };
     for file in files.iter_mut() {
-        *file = normalize_path(file)?;
+        *file = normalize_path(file).map_err(|error| error.message(Lang::En))?;
     }
     if let Some(directory) = output_dir.as_mut() {
         fs::create_dir_all(&*directory)

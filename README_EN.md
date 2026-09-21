@@ -160,6 +160,22 @@ provider, formats, diarization, and more — are shared between the TUI and
 that app: whichever program saved last wins, and the other one picks up the
 change on its next start.
 
+**TUI 2.0.** The interface is Russian by default; `/lang ru|en` (the
+«Language» row in Settings, or `--lang en` at start-up) switches it and stores
+the choice in the `language` setting shared with the desktop app. Four tabs —
+**Processing**, **LLM**, **Settings**, **Log** — are reached with F1–F4,
+Tab/Shift+Tab or a click on the header. The Processing tab has the file queue
+on the left and the parameter panel (engine, model, formats, diarization,
+speakers, audio, folder) on the right: → moves the cursor into the panel, Enter
+or a click opens the value menu. The «▶ Next:» line under the main area says
+what to do next (paste a path → `s` starts → `L` runs the LLM → `r` shows the
+answer); `?` opens the help with every key and command. The mouse is on: click
+tabs, buttons, queue and settings rows, scroll lists with the wheel;
+`/mouse off` (or the «Mouse» row in Settings) hands the mouse back to the
+terminal for text selection — or hold Shift (Linux/Windows) / Option (macOS).
+`/settings` opens the Settings tab (a row list: Enter or a click changes the
+value), not a separate menu.
+
 **Headless / for agents.** `gigaam transcribe FILE... [options]` and
 `gigaam llm FILE... --mode summary [options]` run without the interactive UI:
 one line per file on stdout, `--json` for a line-delimited stream of worker

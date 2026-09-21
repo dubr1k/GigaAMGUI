@@ -18,7 +18,7 @@ use crate::{
         command_suggestions, is_command, open_command_menu, remove_selected_file, short_name,
         toggle_pets,
     },
-    i18n::{t, tf, Lang},
+    i18n::{t, tf, tn, Lang},
     settings::save_app_settings,
     ui::{llm::MODES, settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
     worker::{llm_start_payload, start_payload, LlmTool},
@@ -182,8 +182,8 @@ impl Default for App {
             last_exit_request: None,
             input: String::new(),
             files: Vec::new(),
-            logs: vec!["Ready. Paste a media path and press Enter.".into()],
-            status: "Ready".into(),
+            logs: vec![t(Lang::Ru, "log.ready").into()],
+            status: t(Lang::Ru, "status.ready").into(),
             current_file: None,
             file_index: 0,
             total_files: 0,
@@ -271,7 +271,7 @@ impl App {
             self.exit_requested = true;
         } else {
             self.last_exit_request = Some((trigger, Instant::now()));
-            self.status = format!("Press {label} again to exit");
+            self.status = tf(self.lang, "status.press_again_to_exit", &[("key", label)]);
         }
     }
 
@@ -283,9 +283,10 @@ impl App {
                 self.cancelled = false;
                 self.file_states.clear();
                 self.total_files = value["total_files"].as_u64().unwrap_or(0) as usize;
-                self.status = format!(
-                    "Recognition running · {}",
-                    value["backend"].as_str().unwrap_or("auto")
+                self.status = tf(
+                    self.lang,
+                    "status.running_backend",
+                    &[("backend", value["backend"].as_str().unwrap_or("auto"))],
                 );
             }
             "log" => self.log(value["message"].as_str().unwrap_or("").to_string()),
@@ -297,7 +298,7 @@ impl App {
                 }
                 self.file_index = value["file_index"].as_u64().unwrap_or(0) as usize;
                 self.progress = 0.0;
-                self.status = "Recognition running…".into();
+                self.status = t(self.lang, "status.running").into();
             }
             "progress" => {
                 self.stage = value["stage"].as_str().unwrap_or("preparing").to_string();
@@ -341,7 +342,10 @@ impl App {
             }
             "cancelling" => {
                 self.cancelled = true;
-                self.status = value["message"].as_str().unwrap_or("Cancelling…").into();
+                self.status = value["message"]
+                    .as_str()
+                    .unwrap_or(t(self.lang, "status.cancelling"))
+                    .into();
             }
             "completed" => {
                 self.running = false;
@@ -357,13 +361,17 @@ impl App {
                         }
                     }
                 }
-                self.status = if self.cancelled {
-                    "Cancelled".into()
-                } else if value["success"].as_bool().unwrap_or(false) {
-                    "Completed".into()
-                } else {
-                    "Completed with errors".into()
-                };
+                self.status = t(
+                    self.lang,
+                    if self.cancelled {
+                        "status.cancelled"
+                    } else if value["success"].as_bool().unwrap_or(false) {
+                        "status.completed"
+                    } else {
+                        "status.completed_with_errors"
+                    },
+                )
+                .into();
                 self.log(self.status.clone());
             }
             "llm_started" => {
@@ -376,11 +384,14 @@ impl App {
                 self.llm_saved_files.clear();
                 self.show_llm_result = false;
                 self.llm_stream_mode = value["mode"].as_str().unwrap_or("summary").to_owned();
-                self.status = format!(
-                    "LLM {} ({}/{})…",
-                    value["mode"].as_str().unwrap_or("summary"),
-                    value["index"].as_u64().unwrap_or(1),
-                    value["total"].as_u64().unwrap_or(1)
+                self.status = tf(
+                    self.lang,
+                    "status.llm_mode_running",
+                    &[
+                        ("mode", value["mode"].as_str().unwrap_or("summary")),
+                        ("index", &value["index"].as_u64().unwrap_or(1).to_string()),
+                        ("total", &value["total"].as_u64().unwrap_or(1).to_string()),
+                    ],
                 );
             }
             "llm_chunk" => {
@@ -424,15 +435,25 @@ impl App {
                         .collect();
                 }
                 if value["cancelled"].as_bool().unwrap_or(false) {
-                    self.status = "LLM cancelled".into();
+                    self.status = t(self.lang, "status.llm_cancelled").into();
                 } else if value["success"].as_bool().unwrap_or(false) {
                     let saved = value["saved_files"].as_array().map_or(0, Vec::len);
-                    self.status = format!("LLM saved {saved} result(s) · r to view");
+                    self.status = tf(
+                        self.lang,
+                        "status.llm_saved",
+                        &[("results", &tn(self.lang, saved, "plural.results"))],
+                    );
                     self.show_llm_result = !self.llm_results.is_empty();
                 } else {
-                    self.status = format!(
-                        "LLM error: {}",
-                        value["message"].as_str().unwrap_or("unknown error")
+                    self.status = tf(
+                        self.lang,
+                        "status.llm_error",
+                        &[(
+                            "error",
+                            value["message"]
+                                .as_str()
+                                .unwrap_or(t(self.lang, "status.unknown_error")),
+                        )],
                     );
                 }
                 self.log(self.status.clone());
@@ -460,15 +481,35 @@ impl App {
             "llm_tool_check" => {
                 if let Ok(tool) = serde_json::from_value::<LlmTool>(value["tool"].clone()) {
                     self.status = match tool.status.as_str() {
-                        "found" => format!(
-                            "{} · {} at {}",
-                            tool.provider,
-                            tool.version.as_deref().unwrap_or("found"),
-                            tool.path.as_deref().unwrap_or("?")
+                        "found" => tf(
+                            self.lang,
+                            "status.tool_found",
+                            &[
+                                ("provider", &tool.provider),
+                                (
+                                    "version",
+                                    tool.version
+                                        .as_deref()
+                                        .unwrap_or(t(self.lang, "value.found")),
+                                ),
+                                ("path", tool.path.as_deref().unwrap_or("?")),
+                            ],
                         ),
-                        _ => format!(
-                            "{} · {} · {}",
-                            tool.provider, tool.status, tool.install_hint
+                        status => tf(
+                            self.lang,
+                            "status.tool_missing",
+                            &[
+                                ("provider", &tool.provider),
+                                (
+                                    "status",
+                                    match status {
+                                        "broken" => t(self.lang, "llm.broken"),
+                                        "missing" => t(self.lang, "llm.not_installed"),
+                                        other => other,
+                                    },
+                                ),
+                                ("hint", &tool.install_hint),
+                            ],
                         ),
                     };
                     self.log(self.status.clone());
@@ -484,12 +525,20 @@ impl App {
                 }
             }
             "error" => {
-                self.status = value["message"].as_str().unwrap_or("Worker error").into();
-                self.log(format!("Error: {}", self.status));
+                self.status = value["message"]
+                    .as_str()
+                    .unwrap_or(t(self.lang, "status.worker_error"))
+                    .into();
+                self.log(tf(self.lang, "log.error", &[("error", &self.status)]));
             }
             _ => {}
         }
     }
+}
+
+/// «вкл» / «выкл» (or `on` / `off`) for the status messages of the toggles.
+pub(crate) fn on_off(lang: Lang, value: bool) -> &'static str {
+    t(lang, if value { "value.on" } else { "value.off" })
 }
 
 pub(crate) fn llm_input_files(app: &App) -> Vec<String> {
@@ -516,16 +565,20 @@ pub(crate) fn llm_can_run(app: &App) -> bool {
 
 pub(crate) fn request_llm(app: &mut App) {
     if llm_input_files(app).is_empty() {
-        app.status = "No transcripts: run a transcription or /llm-file <path>".into();
+        app.status = t(app.lang, "llm.inputs_empty").into();
     } else if app.llm_modes.is_empty() {
-        app.status = "Select at least one LLM mode first".into();
+        app.status = t(app.lang, "status.llm_no_mode").into();
     } else if app.llm_modes.iter().any(|mode| mode == "custom") && app.llm_prompt.is_empty() {
-        app.status = "Set /llm-prompt for custom mode first".into();
+        app.status = t(app.lang, "status.llm_no_prompt").into();
     } else {
         app.llm_requested = true;
-        app.status = format!(
-            "Starting LLM for {} session result(s)…",
-            llm_input_files(app).len()
+        app.status = tf(
+            app.lang,
+            "status.llm_starting",
+            &[(
+                "transcripts",
+                &tn(app.lang, llm_input_files(app).len(), "plural.transcripts"),
+            )],
         );
     }
 }
@@ -641,7 +694,11 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             } else {
                 app.llm_modes.push(mode.to_owned());
             }
-            app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
+            app.status = tf(
+                app.lang,
+                "status.llm_modes",
+                &[("modes", &app.llm_modes.join(", "))],
+            );
         }
         Action::Button(ButtonId::Start) => {
             if !app.running && !app.files.is_empty() {
@@ -669,7 +726,7 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
         Action::Button(ButtonId::CancelLlm) => {
             if esc_should_soft_cancel(app) {
                 app.llm_cancel_requested = true;
-                app.status = "Cancelling LLM… Esc again to kill the worker".into();
+                app.status = t(app.lang, "status.llm_cancelling").into();
                 return vec![json!({"type": "llm_cancel"})];
             }
         }
@@ -758,20 +815,18 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
                 }
                 "subtitle_split" => {
                     app.subtitle_sentence_split = !app.subtitle_sentence_split;
-                    app.status = format!(
-                        "Subtitle sentence splitting: {}",
-                        if app.subtitle_sentence_split {
-                            "on"
-                        } else {
-                            "off"
-                        }
+                    app.status = tf(
+                        app.lang,
+                        "status.subtitle_split",
+                        &[("value", on_off(app.lang, app.subtitle_sentence_split))],
                     );
                 }
                 "llm_tools" => {
                     app.llm_allow_tools = !app.llm_allow_tools;
-                    app.status = format!(
-                        "Agent tools and sessions {}",
-                        if app.llm_allow_tools { "on" } else { "off" }
+                    app.status = tf(
+                        app.lang,
+                        "status.llm_tools",
+                        &[("value", on_off(app.lang, app.llm_allow_tools))],
                     );
                 }
                 _ => return Vec::new(),
@@ -1052,6 +1107,7 @@ mod tests {
     #[test]
     fn cancelled_llm_run_is_reported_without_an_error() {
         let mut app = App::default();
+        app.lang = Lang::En;
         app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 2}));
         app.handle_message(
             json!({"type": "llm_completed", "success": false, "cancelled": true,
