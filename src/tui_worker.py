@@ -350,7 +350,9 @@ def read_commands(stream) -> Iterator[dict[str, Any]]:
 
 def main() -> int:
     worker = TuiWorker()
-    stdin = getattr(sys.stdin, "buffer", sys.stdin)
+    # Небуферизованный поток: BufferedReader.read(n) ждёт n байт или EOF, а
+    # команды приходят по одной строке — с ним воркер «завис» бы на первой же.
+    stdin = os.fdopen(sys.stdin.fileno(), "rb", buffering=0, closefd=False)
     for command in read_commands(stdin):
         if "_invalid" in command:
             worker.emit("error", message=command["_invalid"])

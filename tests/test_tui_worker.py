@@ -53,6 +53,35 @@ def test_worker_survives_a_child_that_makes_stdin_non_blocking(tmp_path):
     assert json.loads(result.stdout.strip()) == ["ping", "ping"], result.stdout
 
 
+def test_worker_answers_while_stdin_stays_open():
+    """The TUI keeps the pipe open for the whole session; the worker must answer
+    each line as it arrives (a BufferedReader.read(n) would wait for n bytes/EOF)."""
+    import os
+
+    worker = subprocess.Popen(
+        [sys.executable, "-m", "src.tui_worker"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        env={**os.environ, "PYTHONPATH": "."},
+    )
+    try:
+        import select
+
+        worker.stdin.write('{"type":"ping"}\n')
+        worker.stdin.flush()
+        ready, _, _ = select.select([worker.stdout], [], [], 20)
+        assert ready, "worker did not answer within 20 s while stdin stayed open"
+        assert json.loads(worker.stdout.readline()) == {"type": "pong"}
+        worker.stdin.write('{"type":"ping"}\n')
+        worker.stdin.flush()
+        ready, _, _ = select.select([worker.stdout], [], [], 20)
+        assert ready
+        assert json.loads(worker.stdout.readline()) == {"type": "pong"}
+        assert worker.poll() is None, "worker exited although stdin is still open"
+    finally:
+        worker.kill()
+        worker.wait(timeout=10)
+
+
 def test_cli_probe_does_not_share_the_worker_stdin(monkeypatch):
     """Children of the worker must get /dev/null as stdin: an inherited pipe lets a
     CLI change the worker's own stdin flags (see the non-blocking test above)."""
