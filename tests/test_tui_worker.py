@@ -3,7 +3,13 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from src.tui_worker import TuiWorker
+
+# fcntl/O_NONBLOCK and select() on pipes are POSIX-only; build.yml runs this file
+# on windows-latest too, where these two pipe-level regressions cannot be reproduced.
+posix_pipes_only = pytest.mark.skipif(sys.platform == "win32", reason="needs fcntl and select() on pipes")
 
 
 def test_frozen_native_worker_entrypoint_replies_to_ping():
@@ -20,6 +26,122 @@ def test_frozen_native_worker_entrypoint_replies_to_ping():
 
 def _messages(output):
     return [json.loads(line) for line in output.getvalue().splitlines()]
+
+
+@posix_pipes_only
+def test_worker_survives_a_child_that_makes_stdin_non_blocking(tmp_path):
+    """`pi --version` (probed by llm_tools) sets O_NONBLOCK on its inherited stdin —
+    the flag lives on the shared open-file description, so the worker's own pipe
+    turned non-blocking, `for line in sys.stdin` got EAGAIN, Python reported EOF and
+    the worker exited 0 while the TUI still held the pipe («Worker exited»)."""
+    import os
+
+    # Drive the worker's own reader with a pipe whose read end is flipped to
+    # non-blocking mid-stream, exactly what a probed CLI does to the shared fd.
+    reader = tmp_path / "reader.py"
+    reader.write_text(
+        "import fcntl, json, os, sys, threading, time\n"
+        "from src.tui_worker import read_commands\n"
+        "r, w = os.pipe()\n"
+        "def writer():\n"
+        "    os.write(w, b'{\"type\":\"ping\"}\\n')\n"
+        "    time.sleep(0.2)\n"
+        "    fl = fcntl.fcntl(r, fcntl.F_GETFL); fcntl.fcntl(r, fcntl.F_SETFL, fl | os.O_NONBLOCK)\n"
+        "    time.sleep(0.4)\n"
+        "    os.write(w, b'{\"type\":\"ping\"}\\n')\n"
+        "    time.sleep(0.2)\n"
+        "    os.close(w)\n"
+        "threading.Thread(target=writer, daemon=True).start()\n"
+        "got = [c['type'] for c in read_commands(os.fdopen(r, 'rb', buffering=0))]\n"
+        "print(json.dumps(got))\n"
+    )
+    result = subprocess.run([sys.executable, str(reader)], capture_output=True, text=True, timeout=30, env={**os.environ, "PYTHONPATH": "."})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip()) == ["ping", "ping"], result.stdout
+
+
+@posix_pipes_only
+def test_worker_answers_while_stdin_stays_open():
+    """The TUI keeps the pipe open for the whole session; the worker must answer
+    each line as it arrives (a BufferedReader.read(n) would wait for n bytes/EOF)."""
+    import os
+
+    worker = subprocess.Popen(
+        [sys.executable, "-m", "src.tui_worker"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        env={**os.environ, "PYTHONPATH": "."},
+    )
+    try:
+        import select
+
+        worker.stdin.write('{"type":"ping"}\n')
+        worker.stdin.flush()
+        ready, _, _ = select.select([worker.stdout], [], [], 20)
+        assert ready, "worker did not answer within 20 s while stdin stayed open"
+        assert json.loads(worker.stdout.readline()) == {"type": "pong"}
+        worker.stdin.write('{"type":"ping"}\n')
+        worker.stdin.flush()
+        ready, _, _ = select.select([worker.stdout], [], [], 20)
+        assert ready
+        assert json.loads(worker.stdout.readline()) == {"type": "pong"}
+        assert worker.poll() is None, "worker exited although stdin is still open"
+    finally:
+        worker.kill()
+        worker.wait(timeout=10)
+
+
+def test_cli_probe_does_not_share_the_worker_stdin(monkeypatch):
+    """Children of the worker must get /dev/null as stdin: an inherited pipe lets a
+    CLI change the worker's own stdin flags (see the non-blocking test above)."""
+    from src.services import cli_tools
+
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["stdin"] = kwargs.get("stdin")
+        return subprocess.CompletedProcess(command, 0, "1.2.3", "")
+
+    monkeypatch.setattr(cli_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_tools, "locate_tool", lambda spec, override=None: "/x/claude")
+    status = cli_tools.resolve_tool(cli_tools.provider_by_name("Claude Code"))
+    assert status.status == "found"
+    assert captured["stdin"] == subprocess.DEVNULL
+
+
+def test_run_command_uses_devnull_without_input(monkeypatch):
+    """llm_service._run_command must never hand the worker's own stdin to a CLI:
+    /dev/null when there is no prompt, a private pipe when there is one."""
+    from src.services import llm_service
+
+    captured = []
+
+    def fake_run(command, **kwargs):
+        captured.append(("run", kwargs.get("stdin"), kwargs.get("input")))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            captured.append(("popen", kwargs.get("stdin"), None))
+
+        def communicate(self, input=None, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(llm_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(llm_service.subprocess, "Popen", FakePopen)
+
+    llm_service._run_command(["tool"])
+    llm_service._run_command(["tool"], input_text="prompt")
+    llm_service._run_command(["tool"], cancel_check=lambda: False)
+    llm_service._run_command(["tool"], input_text="prompt", cancel_check=lambda: False)
+
+    assert captured == [
+        ("run", subprocess.DEVNULL, None),
+        ("run", None, "prompt"),
+        ("popen", subprocess.DEVNULL, None),
+        ("popen", subprocess.PIPE, None),
+    ]
 
 
 def test_tui_worker_replies_to_ping():

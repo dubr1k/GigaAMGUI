@@ -5,7 +5,7 @@ description: Transcribe audio/video to text or subtitles and summarise transcrip
 
 # GigaAM (local speech-to-text)
 
-`gigaam` is installed at `~/.local/bin/gigaam`. Never start plain `gigaam` (interactive TUI) from an agent — use the headless subcommands below. They print one line per finished file and exit non-zero on failure.
+`gigaam` is installed at `~/.local/bin/gigaam`. Never start plain `gigaam` (interactive TUI) from an agent — use the headless subcommands below. They print one line per finished file and exit non-zero on failure. The interactive TUI is Russian by default (`/lang en` switches it); the headless commands and their output are unchanged and always English.
 
 ## Transcribe
 

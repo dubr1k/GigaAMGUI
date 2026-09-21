@@ -68,12 +68,18 @@ class LLMCancelled(RuntimeError):
 def _run_command(command: list[str], *, input_text: str | None = None, cancel_check=None):
     env = cli_tools.child_environment()
     if cancel_check is None:
+        # Без input_text stdin ребёнка — /dev/null, а не наш: унаследованная труба
+        # JSONL-воркера превращалась в неблокирующую (см. cli_tools.resolve_tool).
+        if input_text is None:
+            return subprocess.run(
+                command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=_TIMEOUT, env=env,
+            )
         return subprocess.run(
             command, input=input_text, capture_output=True, text=True, timeout=_TIMEOUT, env=env,
         )
     process = subprocess.Popen(
         command,
-        stdin=subprocess.PIPE if input_text is not None else None,
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
