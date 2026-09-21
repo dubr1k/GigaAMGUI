@@ -176,6 +176,16 @@ terminal for text selection — or hold Shift (Linux/Windows) / Option (macOS).
 `/settings` opens the Settings tab (a row list: Enter or a click changes the
 value), not a separate menu.
 
+**Colour themes.** `/theme` without an argument opens a scrollable list of
+102 schemes, `/theme dark-monokai` switches by name (Tab completes it), the
+«Theme» row in Settings opens the same list, and `--theme NAME` sets a scheme
+for one run. The choice is stored in `tui_settings.json`. Bundled: `default`
+(the previous colours), `mono` (terminal colours only, selection shown in
+bold/reverse), our own `dark-hermes-pink`, and 99 palettes from
+[oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT; licence text in
+`tui/themes/LICENSE-oh-my-pi`) — for example `dark-tokyo-night`,
+`dark-gruvbox`, `light-github`, `light-solarized`.
+
 **Headless / for agents.** `gigaam transcribe FILE... [options]` and
 `gigaam llm FILE... --mode summary [options]` run without the interactive UI:
 one line per file on stdout, `--json` for a line-delimited stream of worker
@@ -455,3 +465,4 @@ and Rescan. The build is ad-hoc signed: open it via right-click → Open or run
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
 - [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
 - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT, optional neural noise suppression
+- [oh-my-pi](https://github.com/can1357/oh-my-pi) — MIT, the colour palettes of the terminal UI (`tui/themes/`)

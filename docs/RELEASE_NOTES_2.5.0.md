@@ -26,6 +26,13 @@
   заголовками.
 - **Мышь**: вкладки, кнопки, строки очереди и настроек, колёсико прокрутки.
   `/mouse off` возвращает выделение текста терминалу.
+- **Цветовые темы**: `/theme` открывает список из 102 схем, `/theme <имя>`
+  включает схему сразу (Tab дописывает имя), строка «Тема» в настройках,
+  `--theme NAME` на один запуск; выбор хранится в `tui_settings.json`.
+  В комплекте `default`, `mono`, `dark-hermes-pink` и 99 палитр
+  [oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT,
+  `tui/themes/LICENSE-oh-my-pi`), например `dark-monokai`, `dark-tokyo-night`,
+  `light-github`.
 - Обновление до ratatui 0.30 / crossterm 0.29 / ratatui-image 11; `main.rs`
   разбит на модули.
 
@@ -79,6 +86,8 @@
   `gigaam` открывается по-русски, `/lang en` переключает язык и это же
   значение видно в настольном приложении.
 - Клики мышью по вкладкам и строкам параметров; `?` — справка; `/mouse off`.
+- `/theme dark-hermes-pink` — розовая схема, `/theme` — список, F3 → строка
+  «Тема» показывает имя, `/theme default` возвращает прежний вид.
 - `python api.py`, затем `curl http://127.0.0.1:8000/v1/audio/transcriptions
   -H "Authorization: Bearer $KEY" -F file=@a.mp3 -F model=whisper-1` — текст;
   `-F response_format=srt`, `-F stream=true`; `openai` SDK с
@@ -114,6 +123,13 @@ are unaffected.
   answer; with several modes every answer is shown under its own heading.
 - Mouse support: tabs, buttons, queue and settings rows, wheel scrolling.
   `/mouse off` hands text selection back to the terminal.
+- Colour themes: `/theme` opens a list of 102 schemes, `/theme <name>` switches
+  at once (Tab completes the name), a «Theme» row in Settings, `--theme NAME`
+  for one run; the choice is stored in `tui_settings.json`. Bundled: `default`,
+  `mono`, `dark-hermes-pink` and 99 palettes from
+  [oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT,
+  `tui/themes/LICENSE-oh-my-pi`), e.g. `dark-monokai`, `dark-tokyo-night`,
+  `light-github`.
 - ratatui 0.30 / crossterm 0.29 / ratatui-image 11; `main.rs` split into modules.
 
 **OpenAI-compatible REST API**
@@ -165,6 +181,8 @@ are unaffected.
 - `gigaam --update` → `gigaam --version` prints `gigaam-tui v2.5.0`; `gigaam`
   opens in Russian, `/lang en` switches and the desktop app sees the same value.
 - Mouse clicks on tabs and parameter rows; `?` help; `/mouse off`.
+- `/theme dark-hermes-pink` for the pink scheme, `/theme` for the list, F3 →
+  the «Theme» row shows the name, `/theme default` restores the old look.
 - `python api.py`, then `curl http://127.0.0.1:8000/v1/audio/transcriptions
   -H "Authorization: Bearer $KEY" -F file=@a.mp3 -F model=whisper-1`;
   `-F response_format=srt`, `-F stream=true`; the `openai` SDK with
