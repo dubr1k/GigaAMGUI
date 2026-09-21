@@ -1,0 +1,266 @@
+//! Keyboard handling: every key press becomes state changes on [`App`] and, for the
+//! keys that start or stop work, the commands the caller must send to the worker.
+//! The function never touches the terminal or the worker process, so the tests
+//! drive it with synthetic [`KeyEvent`]s.
+//!
+//! The one key that is not here is `Esc` during a run: its second press kills and
+//! respawns the worker, which needs the child handle that only `main` owns.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde_json::Value;
+
+use crate::{
+    app::{dispatch, esc_should_soft_cancel, llm_can_run, App, Focus, Page},
+    commands::{
+        apply_command_menu, command_menu_options, command_suggestions, complete_path, is_command,
+        open_command_menu, queue_paths, remove_selected_file, run_command, COMMANDS,
+    },
+    settings::save_app_settings,
+    ui::{processing::PARAM_ROWS, Action, ButtonId},
+};
+
+pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
+    let idle = !app.running;
+    let no_input = app.input.is_empty();
+    let menu_open = app.command_menu.is_some();
+    match key.code {
+        KeyCode::Char('c') if idle && key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.request_exit("ctrl-c", "Ctrl+C");
+        }
+        KeyCode::Char('q') if idle && no_input => app.exit_requested = true,
+        KeyCode::F(1) => return dispatch(app, Action::Tab(Page::Processing)),
+        KeyCode::F(2) => return dispatch(app, Action::Tab(Page::Llm)),
+        KeyCode::F(3) => return dispatch(app, Action::Tab(Page::Settings)),
+        KeyCode::F(4) => return dispatch(app, Action::Tab(Page::Log)),
+        KeyCode::Tab if no_input && !menu_open => {
+            return dispatch(app, Action::Tab(app.page.next()));
+        }
+        KeyCode::BackTab => return dispatch(app, Action::Tab(app.page.previous())),
+        KeyCode::Right if no_input && !menu_open => app.focus = Focus::Params,
+        KeyCode::Left if no_input && !menu_open => app.focus = Focus::Queue,
+        KeyCode::Char('L') if idle && no_input => {
+            return dispatch(app, Action::Button(ButtonId::RunLlm));
+        }
+        KeyCode::Char('l') if idle && no_input && llm_can_run(app) => {
+            return dispatch(app, Action::Button(ButtonId::RunLlm));
+        }
+        KeyCode::Char('l') if no_input => app.show_logs = !app.show_logs,
+        KeyCode::Char('r') if idle && no_input && !app.llm_results.is_empty() => {
+            app.show_llm_result = !app.show_llm_result;
+        }
+        KeyCode::Char('d') if idle && no_input => {
+            app.diarization = !app.diarization;
+            app.log(format!(
+                "Diarization {}",
+                if app.diarization { "on" } else { "off" }
+            ));
+            save_app_settings(app);
+        }
+        KeyCode::Char('f') if idle && no_input => {
+            app.formats = if app.formats.len() == 1 {
+                vec!["txt".into(), "srt".into()]
+            } else {
+                vec!["txt".into()]
+            };
+            app.log(format!("Formats: {}", app.formats.join(", ")));
+            save_app_settings(app);
+        }
+        KeyCode::Char('s') if idle && no_input && !app.files.is_empty() => {
+            return dispatch(app, Action::Button(ButtonId::Start));
+        }
+        KeyCode::Char('?') if idle && no_input => return dispatch(app, Action::Help),
+        KeyCode::Esc if esc_should_soft_cancel(app) => {
+            return dispatch(app, Action::Button(ButtonId::CancelLlm));
+        }
+        KeyCode::Esc if menu_open => {
+            app.command_menu = None;
+            app.input.clear();
+            app.status = "Settings menu closed".into();
+        }
+        KeyCode::Esc if idle && app.focus != Focus::Input => {
+            return dispatch(app, Action::FocusInput);
+        }
+        KeyCode::Esc if no_input => app.request_exit("esc", "Esc"),
+        KeyCode::Esc => {
+            app.input.clear();
+            app.status = "Input cleared".into();
+        }
+        KeyCode::Char(digit) if idle && menu_open && digit.is_ascii_digit() => {
+            let count = command_menu_options(app).len();
+            let index = if digit == '0' {
+                count.saturating_sub(1)
+            } else {
+                digit.to_digit(10).unwrap_or_default().saturating_sub(1) as usize
+            };
+            if index < count {
+                return dispatch(app, Action::MenuItem(index));
+            }
+        }
+        KeyCode::Char(' ') | KeyCode::Enter if idle && menu_open => apply_command_menu(app),
+        KeyCode::Enter if idle && no_input && app.focus == Focus::Params => {
+            let (_, command) = PARAM_ROWS[app.params_cursor.min(PARAM_ROWS.len() - 1)];
+            return dispatch(app, Action::OpenMenu(command));
+        }
+        KeyCode::Enter if idle => {
+            let raw = app.input.trim().to_string();
+            let suggestions = command_suggestions(&raw);
+            let has_argument = raw.split_whitespace().count() > 1;
+            if !suggestions.is_empty()
+                && (!has_argument || !raw.contains(' '))
+                && !COMMANDS.iter().any(|(name, _)| *name == raw)
+            {
+                let index = app.selected_command.min(suggestions.len() - 1);
+                return dispatch(app, Action::Suggestion(index));
+            } else if open_command_menu(app, &raw) {
+            } else if is_command(&raw) {
+                run_command(app);
+            } else if !raw.is_empty() {
+                queue_paths(app, &raw);
+            }
+        }
+        KeyCode::Tab if idle => {
+            let suggestions = command_suggestions(&app.input);
+            if !suggestions.is_empty() {
+                let index = app.selected_command.min(suggestions.len() - 1);
+                app.input = format!("{} ", suggestions[index].0);
+                app.selected_command = 0;
+            } else if let Some(path) = complete_path(&app.input) {
+                app.input = path;
+            }
+        }
+        KeyCode::Up if idle && menu_open => {
+            let count = command_menu_options(app).len();
+            app.command_menu_index = (app.command_menu_index + count - 1) % count;
+        }
+        KeyCode::Down if idle && menu_open => {
+            let count = command_menu_options(app).len();
+            app.command_menu_index = (app.command_menu_index + 1) % count;
+        }
+        KeyCode::Up if idle && !command_suggestions(&app.input).is_empty() => {
+            let count = command_suggestions(&app.input).len();
+            app.selected_command = (app.selected_command + count - 1) % count;
+        }
+        KeyCode::Down if idle && !command_suggestions(&app.input).is_empty() => {
+            let count = command_suggestions(&app.input).len();
+            app.selected_command = (app.selected_command + 1) % count;
+        }
+        KeyCode::Up if no_input && app.focus == Focus::Params => {
+            app.params_cursor = (app.params_cursor + PARAM_ROWS.len() - 1) % PARAM_ROWS.len();
+        }
+        KeyCode::Down if no_input && app.focus == Focus::Params => {
+            app.params_cursor = (app.params_cursor + 1) % PARAM_ROWS.len();
+        }
+        KeyCode::Up if idle && no_input => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if let Some(index) = app.selected_file.filter(|index| *index > 0) {
+                    app.files.swap(index, index - 1);
+                    app.selected_file = Some(index - 1);
+                }
+            } else if !app.files.is_empty() {
+                let index = app.selected_file.unwrap_or(0).saturating_sub(1);
+                return dispatch(app, Action::SelectFile(index));
+            }
+        }
+        KeyCode::Down if idle && no_input => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if let Some(index) = app
+                    .selected_file
+                    .filter(|index| *index + 1 < app.files.len())
+                {
+                    app.files.swap(index, index + 1);
+                    app.selected_file = Some(index + 1);
+                }
+            } else if !app.files.is_empty() {
+                let index = (app.selected_file.unwrap_or(0) + 1).min(app.files.len() - 1);
+                return dispatch(app, Action::SelectFile(index));
+            }
+        }
+        KeyCode::Delete | KeyCode::Backspace if idle && no_input => remove_selected_file(app),
+        KeyCode::Backspace if idle => {
+            app.input.pop();
+        }
+        KeyCode::Char(c) if idle => {
+            app.command_menu = None;
+            app.focus = Focus::Input;
+            app.input.push(c);
+            app.selected_command = 0;
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::isolated_config_dir;
+
+    fn press(app: &mut App, code: KeyCode) -> Vec<Value> {
+        handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn tabs_cycle_and_function_keys_jump() {
+        let mut app = App::default();
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.page, Page::Llm);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.page, Page::Processing);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.page, Page::Log, "Shift+Tab wraps around");
+        press(&mut app, KeyCode::F(3));
+        assert_eq!(app.page, Page::Settings);
+        app.running = true;
+        press(&mut app, KeyCode::F(1));
+        assert_eq!(app.page, Page::Processing, "tabs work during a run");
+        // Tab with text in the input line still completes instead of switching tabs.
+        app.running = false;
+        app.input = "/back".into();
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input, "/backend ");
+        assert_eq!(app.page, Page::Processing);
+    }
+
+    #[test]
+    fn arrows_move_focus_and_enter_opens_the_parameter_menu() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.focus, Focus::Params);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.params_cursor, 1,
+            "Down moves the panel cursor, not the queue"
+        );
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.params_cursor, PARAM_ROWS.len() - 1, "Up wraps");
+        app.params_cursor = 0;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.command_menu.as_deref(), Some("/backend"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.command_menu, None, "the first Esc closes the menu");
+        assert_eq!(app.focus, Focus::Params);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, Focus::Input, "the next Esc leaves the panel");
+        assert!(!app.exit_requested);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.focus, Focus::Queue);
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.focus, Focus::Input, "typing returns to the input line");
+    }
+
+    #[test]
+    fn q_and_s_keep_their_meaning() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.input, "s", "with an empty queue `s` is ordinary text");
+        app.input.clear();
+        app.files.push("/tmp/a.wav".into());
+        let commands = press(&mut app, KeyCode::Char('s'));
+        assert_eq!(commands[0]["type"], "start");
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.exit_requested);
+    }
+}

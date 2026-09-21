@@ -985,6 +985,7 @@ pub(crate) fn run_command(app: &mut App) {
 
 pub(crate) fn clear_queue(app: &mut App) {
     app.files.clear();
+    app.file_states.clear();
     app.selected_file = None;
     app.result_files.clear();
     app.llm_extra_files.clear();

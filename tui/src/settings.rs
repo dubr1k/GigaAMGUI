@@ -10,7 +10,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{app::App, commands::FORMAT_KEYS};
+use crate::{
+    app::App,
+    commands::{backend_is_supported, FORMAT_KEYS, MODEL_OPTIONS},
+    i18n::Lang,
+};
 
 #[derive(Deserialize, Serialize)]
 #[serde(default)]
@@ -389,6 +393,58 @@ fn write_text_atomic(path: &Path, contents: &str) -> Result<(), String> {
         let _ = fs::remove_file(&temp);
     }
     written
+}
+
+/// Copies the loaded settings into the app state, dropping values the current build
+/// cannot honour (an unsupported backend, an unknown model) so that the UI never
+/// offers a choice the worker would reject.
+pub(crate) fn apply_settings(app: &mut App, settings: TuiSettings, lang_override: Option<Lang>) {
+    app.mouse_enabled = settings.mouse;
+    app.lang = lang_override
+        .or_else(|| Lang::parse(&settings.language))
+        .unwrap_or(Lang::Ru);
+    app.pet_enabled = settings.pet_enabled;
+    if backend_is_supported(&settings.backend) {
+        app.backend = settings.backend;
+    }
+    if matches!(
+        settings.onnx_provider.as_str(),
+        "auto" | "cpu" | "cuda" | "tensorrt" | "coreml" | "directml"
+    ) {
+        app.onnx_provider = settings.onnx_provider;
+    }
+    if matches!(
+        settings.diarization_backend.as_str(),
+        "pyannote" | "onnx" | "sortformer"
+    ) {
+        app.diarization_backend = settings.diarization_backend;
+    }
+    if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
+        app.model = settings.model;
+    }
+    if matches!(
+        settings.audio_preprocessing_mode.as_str(),
+        "auto" | "off" | "light" | "denoise"
+    ) {
+        app.audio_preprocessing_mode = settings.audio_preprocessing_mode;
+    }
+    app.llm_provider = settings.llm_provider;
+    app.llm_api_url = settings.llm_api_url;
+    app.llm_api_key = settings.llm_api_key;
+    app.llm_model = settings.llm_model;
+    app.llm_temperature = settings.llm_temperature;
+    app.llm_internal_providers = settings.llm_internal_providers;
+    app.llm_extra_args = settings.llm_extra_args;
+    app.llm_tool_paths = settings.llm_tool_paths;
+    app.llm_allow_tools = settings.llm_allow_tools;
+    app.subtitle_sentence_split = settings.subtitle_sentence_split;
+    app.subtitle_max_lines = settings.subtitle_max_lines.clamp(1, 4);
+    app.subtitle_max_width = settings.subtitle_max_width.clamp(20, 100);
+    if !settings.formats.is_empty() {
+        app.formats = settings.formats;
+    }
+    app.diarization = settings.diarization;
+    app.num_speakers = settings.num_speakers;
 }
 
 pub(crate) fn load_settings() -> TuiSettings {

@@ -3,7 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
-    process::ChildStdin,
+    time::{Duration, Instant},
 };
 
 use ratatui_image::{
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use crate::{
     commands::{
         accept_command_suggestion, apply_command_menu, clear_queue, command_menu_options,
-        command_suggestions, open_command_menu, remove_selected_file, short_name,
+        command_suggestions, is_command, open_command_menu, remove_selected_file, short_name,
     },
     i18n::{t, Lang},
     settings::save_app_settings,
@@ -23,14 +23,48 @@ use crate::{
     worker::{llm_start_payload, start_payload, LlmTool},
 };
 
-/// The tabs of the interface; the tab bar itself is drawn from Task 5 on.
-#[allow(dead_code)]
+/// The tabs of the interface, in tab-bar order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Page {
     Processing,
     Llm,
     Settings,
     Log,
+}
+
+impl Page {
+    pub(crate) const ALL: [Page; 4] = [Page::Processing, Page::Llm, Page::Settings, Page::Log];
+
+    pub(crate) fn index(self) -> usize {
+        Page::ALL.iter().position(|page| *page == self).unwrap_or(0)
+    }
+
+    pub(crate) fn next(self) -> Page {
+        Page::ALL[(self.index() + 1) % Page::ALL.len()]
+    }
+
+    pub(crate) fn previous(self) -> Page {
+        Page::ALL[(self.index() + Page::ALL.len() - 1) % Page::ALL.len()]
+    }
+}
+
+/// Which part of the Processing page the arrow keys and Enter act on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum Focus {
+    #[default]
+    Input,
+    Queue,
+    Params,
+}
+
+/// What the worker has reported about a queued file so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileState {
+    Pending,
+    Processing,
+    Done,
+    Failed,
+    Cancelled,
 }
 
 pub(crate) struct App {
@@ -43,6 +77,16 @@ pub(crate) struct App {
     pub(crate) scroll: HashMap<AreaId, u16>,
     /// The help overlay is drawn from Task 7 on; `?` and the button already toggle it.
     pub(crate) help_open: bool,
+    pub(crate) focus: Focus,
+    /// The highlighted row of the parameter panel while `focus == Focus::Params`.
+    pub(crate) params_cursor: usize,
+    /// The worker could not be started or its event channel closed: the UI stays
+    /// usable for settings, and the next-step hint says how to repair it.
+    pub(crate) worker_down: bool,
+    /// Per-file outcome of the current batch, keyed by the queued path.
+    pub(crate) file_states: HashMap<String, FileState>,
+    /// The last `Esc` / `Ctrl+C` press and when: a second one within 700 ms confirms.
+    pub(crate) last_exit_request: Option<(&'static str, Instant)>,
     pub(crate) input: String,
     pub(crate) files: Vec<String>,
     pub(crate) logs: Vec<String>,
@@ -113,6 +157,11 @@ impl Default for App {
             mouse_enabled: true,
             scroll: HashMap::new(),
             help_open: false,
+            focus: Focus::Input,
+            params_cursor: 0,
+            worker_down: false,
+            file_states: HashMap::new(),
+            last_exit_request: None,
             input: String::new(),
             files: Vec::new(),
             logs: vec!["Ready. Paste a media path and press Enter.".into()],
@@ -184,12 +233,33 @@ impl App {
         }
     }
 
+    pub(crate) fn file_state(&self, path: &str) -> FileState {
+        self.file_states
+            .get(path)
+            .copied()
+            .unwrap_or(FileState::Pending)
+    }
+
+    /// Quits on the second press of the same key within 700 ms; the first only
+    /// asks for confirmation in the status line.
+    pub(crate) fn request_exit(&mut self, trigger: &'static str, label: &str) {
+        if self.last_exit_request.is_some_and(|(last_trigger, at)| {
+            last_trigger == trigger && at.elapsed() <= Duration::from_millis(700)
+        }) {
+            self.exit_requested = true;
+        } else {
+            self.last_exit_request = Some((trigger, Instant::now()));
+            self.status = format!("Press {label} again to exit");
+        }
+    }
+
     pub(crate) fn handle_message(&mut self, value: Value) {
         let kind = value["type"].as_str().unwrap_or("error");
         match kind {
             "started" => {
                 self.running = true;
                 self.cancelled = false;
+                self.file_states.clear();
                 self.total_files = value["total_files"].as_u64().unwrap_or(0) as usize;
                 self.status = format!(
                     "Recognition running · {}",
@@ -199,6 +269,10 @@ impl App {
             "log" => self.log(value["message"].as_str().unwrap_or("").to_string()),
             "file_started" => {
                 self.current_file = value["file"].as_str().map(str::to_owned);
+                if let Some(file) = value["file"].as_str() {
+                    self.file_states
+                        .insert(file.to_owned(), FileState::Processing);
+                }
                 self.file_index = value["file_index"].as_u64().unwrap_or(0) as usize;
                 self.progress = 0.0;
                 self.status = "Recognition running…".into();
@@ -216,7 +290,18 @@ impl App {
                 }
             }
             "file_completed" => {
-                if value["result"]["success"].as_bool().unwrap_or(false) {
+                let success = value["result"]["success"].as_bool().unwrap_or(false);
+                if let Some(file) = value["file"].as_str() {
+                    self.file_states.insert(
+                        file.to_owned(),
+                        if success {
+                            FileState::Done
+                        } else {
+                            FileState::Failed
+                        },
+                    );
+                }
+                if success {
                     self.log(format!(
                         "✓ {}",
                         short_name(value["file"].as_str().unwrap_or(""))
@@ -239,6 +324,17 @@ impl App {
             "completed" => {
                 self.running = false;
                 self.cancelled = value["cancelled"].as_bool().unwrap_or(false);
+                if self.cancelled {
+                    for file in &self.files {
+                        let state = self
+                            .file_states
+                            .entry(file.clone())
+                            .or_insert(FileState::Pending);
+                        if matches!(state, FileState::Pending | FileState::Processing) {
+                            *state = FileState::Cancelled;
+                        }
+                    }
+                }
                 self.status = if self.cancelled {
                     "Cancelled".into()
                 } else if value["success"].as_bool().unwrap_or(false) {
@@ -409,6 +505,27 @@ pub(crate) fn esc_should_soft_cancel(app: &App) -> bool {
     app.llm_running && !app.llm_cancel_requested
 }
 
+/// The one-line hint under the main area, as an i18n key. The first matching
+/// situation wins: a dead worker outranks everything, then the two kinds of run,
+/// then the furthest stage the session has reached.
+pub(crate) fn next_step(app: &App) -> &'static str {
+    if app.worker_down {
+        "hint.worker_down"
+    } else if app.llm_running {
+        "hint.cancel_llm"
+    } else if app.running {
+        "hint.cancel_batch"
+    } else if !app.llm_results.is_empty() {
+        "hint.view_result"
+    } else if !app.result_files.is_empty() {
+        "hint.run_llm"
+    } else if !app.files.is_empty() {
+        "hint.start"
+    } else {
+        "hint.add_files"
+    }
+}
+
 /// After the worker is killed and respawned nothing it was doing survives, so every
 /// "in flight" flag and buffer of both the transcription and the LLM run must go back to
 /// idle; the fresh worker will never send the `completed`/`llm_completed` that would.
@@ -425,11 +542,7 @@ pub(crate) fn reset_after_worker_restart(app: &mut App) {
 /// Returns the commands the caller must send to the worker; `dispatch` itself never
 /// writes to the process, so the tests need no worker and `main` keeps the only
 /// handle that can respawn it.
-pub(crate) fn dispatch(
-    app: &mut App,
-    action: Action,
-    _worker: Option<&mut ChildStdin>,
-) -> Vec<Value> {
+pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
     // The queue and the command line are read-only while the worker runs, exactly as
     // the key arms in `main` refuse typing, selection and menus during a run.
     let edits_idle_state = matches!(
@@ -458,7 +571,13 @@ pub(crate) fn dispatch(
             }
         }
         Action::OpenMenu(command) => {
-            let _ = open_command_menu(app, command);
+            // A parameter without a choice menu (`/output <dir>`) is typed instead:
+            // the command line is pre-filled the way the `/settings` menu does it.
+            if !open_command_menu(app, command) && is_command(command) {
+                app.input = format!("{command} ");
+                app.selected_command = 0;
+                app.focus = Focus::Input;
+            }
         }
         Action::MenuItem(index) => {
             if index < command_menu_options(app).len() {
@@ -511,6 +630,7 @@ pub(crate) fn dispatch(
                 app.log(app.status.clone());
             }
         }
+        Action::FocusInput => app.focus = Focus::Input,
         Action::Button(ButtonId::ClearLog) => app.logs.clear(),
         Action::ToggleLang => {
             app.lang = app.lang.toggle();
@@ -522,7 +642,7 @@ pub(crate) fn dispatch(
             let offset = app.scroll.entry(area).or_default();
             *offset = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX)) as u16;
         }
-        Action::FocusInput | Action::SettingsRow(_) | Action::LlmInput(_) => {}
+        Action::SettingsRow(_) | Action::LlmInput(_) => {}
     }
     Vec::new()
 }
@@ -544,18 +664,79 @@ mod tests {
         let _config = isolated_config_dir();
         let mut app = App::default();
         app.files = vec!["/tmp/a.wav".into(), "/tmp/b.wav".into()];
-        dispatch(&mut app, Action::SelectFile(1), None);
+        dispatch(&mut app, Action::SelectFile(1));
         assert_eq!(app.selected_file, Some(1));
-        dispatch(&mut app, Action::Tab(Page::Settings), None);
+        dispatch(&mut app, Action::Tab(Page::Settings));
         assert_eq!(app.page, Page::Settings);
-        dispatch(&mut app, Action::OpenMenu("/backend"), None);
+        dispatch(&mut app, Action::OpenMenu("/backend"));
         assert_eq!(app.command_menu.as_deref(), Some("/backend"));
-        dispatch(&mut app, Action::MenuItem(1), None);
+        dispatch(&mut app, Action::MenuItem(1));
         assert_eq!(app.backend, selectable_backends()[1]);
-        dispatch(&mut app, Action::ToggleLang, None);
+        dispatch(&mut app, Action::ToggleLang);
         assert_eq!(app.lang, Lang::En);
-        let commands = dispatch(&mut app, Action::Button(ButtonId::Start), None);
+        let commands = dispatch(&mut app, Action::Button(ButtonId::Start));
         assert_eq!(commands[0]["type"], "start");
+    }
+
+    #[test]
+    fn next_step_follows_the_state_machine() {
+        let mut app = App::default();
+        assert_eq!(next_step(&app), "hint.add_files");
+        app.files.push("/tmp/a.wav".into());
+        assert_eq!(next_step(&app), "hint.start");
+        app.running = true;
+        assert_eq!(next_step(&app), "hint.cancel_batch");
+        app.running = false;
+        app.result_files.push("/tmp/a.txt".into());
+        assert_eq!(next_step(&app), "hint.run_llm");
+        app.llm_running = true;
+        app.running = true;
+        assert_eq!(next_step(&app), "hint.cancel_llm");
+        app.llm_running = false;
+        app.running = false;
+        app.llm_results.push(("summary".into(), "…".into()));
+        assert_eq!(next_step(&app), "hint.view_result");
+        app.worker_down = true;
+        assert_eq!(next_step(&app), "hint.worker_down");
+    }
+
+    #[test]
+    fn file_states_follow_worker_events() {
+        let mut app = App::default();
+        app.files = vec!["/tmp/a.wav".into(), "/tmp/b.wav".into()];
+        assert_eq!(app.file_state("/tmp/a.wav"), FileState::Pending);
+        app.handle_message(json!({"type": "started", "total_files": 2, "backend": "auto"}));
+        app.handle_message(json!({
+            "type": "file_started", "file": "/tmp/a.wav", "file_index": 0, "total_files": 2
+        }));
+        assert_eq!(app.file_state("/tmp/a.wav"), FileState::Processing);
+        app.handle_message(json!({
+            "type": "file_completed", "file": "/tmp/a.wav", "file_index": 0,
+            "result": {"success": false, "saved_files": [], "error": "x"}
+        }));
+        assert_eq!(app.file_state("/tmp/a.wav"), FileState::Failed);
+        app.handle_message(json!({"type": "completed", "success": false, "cancelled": true}));
+        assert_eq!(
+            app.file_state("/tmp/a.wav"),
+            FileState::Failed,
+            "a finished file keeps its outcome"
+        );
+        assert_eq!(app.file_state("/tmp/b.wav"), FileState::Cancelled);
+        // The next batch starts from a clean slate.
+        app.handle_message(json!({"type": "started", "total_files": 2, "backend": "auto"}));
+        assert_eq!(app.file_state("/tmp/b.wav"), FileState::Pending);
+        dispatch(&mut app, Action::Tab(Page::Processing));
+    }
+
+    #[test]
+    fn open_menu_prefills_the_command_line_for_typed_parameters() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.focus = Focus::Params;
+        dispatch(&mut app, Action::OpenMenu("/output"));
+        assert_eq!(app.command_menu, None);
+        assert_eq!(app.input, "/output ");
+        assert_eq!(app.focus, Focus::Input);
     }
 
     #[test]

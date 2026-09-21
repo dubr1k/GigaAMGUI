@@ -29,8 +29,6 @@ impl Lang {
         }
     }
 
-    /// Used by the language switch in the settings tab (Task 5).
-    #[allow(dead_code)]
     pub(crate) fn toggle(self) -> Lang {
         match self {
             Lang::Ru => Lang::En,
@@ -81,6 +79,92 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ("tab.settings", "Настройки", "Settings"),
     ("tab.log", "Журнал", "Log"),
     ("queue.count", "Очередь ({n})", "Queue ({n})"),
+    ("status.llm_running", "LLM…", "LLM…"),
+    (
+        "status.worker_down",
+        "воркер недоступен",
+        "worker unavailable",
+    ),
+    ("header.help", "справка", "help"),
+    ("hint.prefix", "Далее", "Next"),
+    (
+        "hint.worker_down",
+        "Воркер не запущен: выполните gigaam --update",
+        "Worker is not running: run gigaam --update",
+    ),
+    (
+        "hint.cancel_batch",
+        "Esc — остановить после текущего файла (Esc×2 — сразу)",
+        "Esc stops after the current file (Esc×2 kills at once)",
+    ),
+    (
+        "hint.cancel_llm",
+        "Esc — отменить LLM",
+        "Esc cancels the LLM run",
+    ),
+    (
+        "hint.add_files",
+        "Вставьте путь к файлу/папке и Enter",
+        "Paste a file or folder path and press Enter",
+    ),
+    (
+        "hint.start",
+        "s или [Запустить] — начать обработку",
+        "s or [Start] begins processing",
+    ),
+    (
+        "hint.run_llm",
+        "L — выжимка/задачи через LLM",
+        "L runs a summary or tasks through the LLM",
+    ),
+    (
+        "hint.view_result",
+        "r — показать/скрыть ответ; вкладка Журнал — детали",
+        "r shows/hides the answer; the Log tab has the details",
+    ),
+    (
+        "page.coming",
+        "Раздел в разработке",
+        "Coming in the next step",
+    ),
+    ("queue.title", "Очередь", "Queue"),
+    (
+        "queue.empty",
+        "Вставьте путь к файлу или папке и нажмите Enter",
+        "Paste a file or folder path and press Enter",
+    ),
+    ("queue.col_no", "№", "#"),
+    ("queue.col_file", "Файл", "File"),
+    ("queue.col_state", "Состояние", "State"),
+    ("state.pending", "ожидает", "pending"),
+    ("state.processing", "в обработке", "processing"),
+    ("state.done", "готово", "done"),
+    ("state.failed", "ошибка", "error"),
+    ("state.cancelled", "отменён", "cancelled"),
+    ("params.title", "Параметры", "Parameters"),
+    ("params.backend", "Движок", "Engine"),
+    ("params.model", "Модель", "Model"),
+    ("params.formats", "Форматы", "Formats"),
+    ("params.diarize", "Диаризация", "Diarization"),
+    ("params.speakers", "Спикеры", "Speakers"),
+    ("params.audio", "Звук", "Audio"),
+    ("params.output", "Папка", "Folder"),
+    ("value.on", "вкл", "on"),
+    ("value.off", "выкл", "off"),
+    ("value.auto", "авто", "auto"),
+    ("value.next_to_file", "рядом с файлом", "next to the file"),
+    ("progress.title", "Прогресс", "Progress"),
+    ("progress.saved", "Сохранено", "Saved"),
+    ("btn.start", "Запустить", "Start"),
+    ("btn.stop", "Остановить", "Stop"),
+    ("btn.clear", "Очистить", "Clear"),
+    ("footer.start", "запустить", "start"),
+    ("footer.llm", "LLM", "LLM"),
+    ("footer.diar", "диаризация", "diarization"),
+    ("footer.formats", "форматы", "formats"),
+    ("footer.help", "справка", "help"),
+    ("footer.quit", "выход", "quit"),
+    ("menu.back", "назад", "back"),
     ("settings.language", "Язык интерфейса", "Interface language"),
     (
         "settings.language_changed",
@@ -258,6 +342,18 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Looks a key up in [`STRINGS`] and returns `None` when it is absent, for keys
+/// built at runtime (worker stage ids) that may name a stage the table does not know.
+pub(crate) fn try_t(lang: Lang, key: &str) -> Option<&'static str> {
+    STRINGS
+        .iter()
+        .find(|(k, _, _)| *k == key)
+        .map(|(_, ru, en)| match lang {
+            Lang::Ru => *ru,
+            Lang::En => *en,
+        })
+}
+
 /// Looks a key up in [`STRINGS`]. A missing key is a programming error caught
 /// by `keys_used_in_sources_exist`; at runtime it renders as `??` rather than
 /// panicking in the draw loop.
@@ -274,9 +370,7 @@ pub(crate) fn t(lang: Lang, key: &str) -> &'static str {
     }
 }
 
-/// [`t`] with `{name}` placeholders replaced from `args`. Used by the tabbed
-/// UI (Tasks 5–7); tested here.
-#[allow(dead_code)]
+/// [`t`] with `{name}` placeholders replaced from `args`.
 pub(crate) fn tf(lang: Lang, key: &str, args: &[(&str, &str)]) -> String {
     let mut text = t(lang, key).to_owned();
     for (name, value) in args {
@@ -320,6 +414,7 @@ mod tests {
             "ui/log.rs",
             "ui/help.rs",
             "ui/menu.rs",
+            "keys.rs",
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("src")

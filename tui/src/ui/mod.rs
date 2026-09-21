@@ -1,22 +1,27 @@
 //! Rendering of the terminal UI.
 
+pub(crate) mod menu;
+pub(crate) mod processing;
+
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Wrap},
+    widgets::{Paragraph, Tabs},
 };
 use ratatui_image::StatefulImage;
 
 use crate::{
-    app::{llm_can_run, App, Page},
-    commands::{command_menu_options, command_suggestions, short_name, BACK_MENU_OPTION},
+    app::{llm_can_run, next_step, App, Page},
     i18n::t,
 };
 
+pub(crate) const ACCENT: Color = Color::Rgb(92, 155, 255);
+pub(crate) const SECONDARY: Color = Color::Rgb(180, 195, 220);
+
 /// Everything the user can do with a click or a key. Keys and mouse clicks both go
 /// through `app::dispatch`, so a click can never drift from its keyboard twin.
-// Variants without a caller yet are registered by the tab UI (Tasks 5–7).
+// `SettingsRow` / `LlmInput` are registered by the Settings and LLM pages (Tasks 6–7).
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
@@ -36,6 +41,7 @@ pub(crate) enum Action {
     LlmInput(usize),
 }
 
+// `ClearLog` is wired by the Log page (Task 7).
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ButtonId {
@@ -47,6 +53,7 @@ pub(crate) enum ButtonId {
     ClearLog,
 }
 
+// The other areas belong to the pages of Tasks 6–7.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AreaId {
@@ -74,7 +81,7 @@ impl HitMap {
     }
 
     /// Every registered area, for tests that check what a frame made clickable.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn items(&self) -> &[(Rect, Action)] {
         &self.items
     }
@@ -102,374 +109,199 @@ impl HitMap {
     }
 }
 
-fn timecode(seconds: f64) -> String {
-    format!(
-        "{:02}:{:02}:{:02}",
-        (seconds / 3600.0) as u64,
-        ((seconds / 60.0) as u64) % 60,
-        seconds as u64 % 60
-    )
-}
+/// Width of the column on the right of the main area that the pet image occupies.
+const PET_COLUMNS: u16 = 18;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     app.hits.clear();
     let area = frame.area();
-    let menu_options = if app.running {
-        Vec::new()
+    let rows = menu::MenuRows::of(app);
+    // Rows above the input line, capped so that the main area keeps its 11 lines
+    // (queue and panel 6, progress 5) and the input line is always visible.
+    let menu_height = (rows.len() as u16).min(area.height.saturating_sub(17));
+    let [header, tabs, main, hint, input, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(11),
+        Constraint::Length(1),
+        Constraint::Length(menu_height + 2),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    draw_header(frame, header, app);
+    draw_tabs(frame, tabs, app);
+    let mut page_area = main;
+    if app.pet_enabled && main.width > PET_COLUMNS + 20 {
+        page_area.width -= PET_COLUMNS;
+    }
+    match app.page {
+        Page::Processing => processing::draw(frame, page_area, app),
+        Page::Llm | Page::Settings | Page::Log => draw_placeholder(frame, page_area, app),
+    }
+    draw_pet(frame, main, app);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" ▶ {}: ", t(app.lang, "hint.prefix")),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(t(app.lang, next_step(app)), Style::default().fg(ACCENT)),
+        ])),
+        hint,
+    );
+    menu::draw(frame, input, app, &rows);
+    draw_footer(frame, footer, app);
+}
+
+fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let (status_key, colour) = if app.worker_down {
+        ("status.worker_down", Color::Red)
+    } else if app.llm_running {
+        ("status.llm_running", Color::Green)
+    } else if app.running {
+        ("status.running", Color::Green)
     } else {
-        command_menu_options(app)
+        ("status.ready", SECONDARY)
     };
-    let suggestions = if app.running || !menu_options.is_empty() {
-        Vec::new()
-    } else {
-        command_suggestions(&app.input)
-    };
-    let prompt_height = 3 + menu_options.len().max(suggestions.len()).min(8) as u16;
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(10),
-            Constraint::Length(prompt_height),
-            Constraint::Length(1),
-        ])
-        .split(area);
-    let accent = Color::Rgb(92, 155, 255);
-    let secondary = Color::Rgb(180, 195, 220);
-    let header = Line::from(vec![
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " GigaAM",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  ● {}", t(app.lang, status_key)),
+                Style::default().fg(colour),
+            ),
+        ])),
+        area,
+    );
+    let lang = app.lang.code().to_ascii_uppercase();
+    let help = format!("? {}", t(app.lang, "header.help"));
+    let help_width = help.chars().count() as u16;
+    let right = Line::from(vec![
         Span::styled(
-            " GigaAM",
+            lang.clone(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(help, Style::default().fg(SECONDARY)),
+        Span::raw(" "),
+    ]);
+    let right_width = right.width() as u16;
+    if right_width < area.width {
+        let x = area.right() - right_width;
+        frame.render_widget(Paragraph::new(right), Rect::new(x, area.y, right_width, 1));
+        app.hits.add(Rect::new(x, area.y, 2, 1), Action::ToggleLang);
+        app.hits
+            .add(Rect::new(x + 4, area.y, help_width, 1), Action::Help);
+    }
+}
+
+fn draw_tabs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let titles: Vec<String> = Page::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, page)| {
+            let key = match page {
+                Page::Processing => "tab.processing",
+                Page::Llm => "tab.llm",
+                Page::Settings => "tab.settings",
+                Page::Log => "tab.log",
+            };
+            format!("F{} {}", index + 1, t(app.lang, key))
+        })
+        .collect();
+    // Padding " " on both sides and a one-cell divider, mirrored below for the hit map.
+    let tabs = Tabs::new(titles.iter().map(|title| Line::from(title.as_str())))
+        .select(app.page.index())
+        .padding(" ", " ")
+        .divider("│")
+        .style(Style::default().fg(SECONDARY))
+        .highlight_style(
             Style::default()
                 .fg(Color::White)
+                .bg(Color::Rgb(40, 60, 100))
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  terminal transcriber", Style::default().fg(secondary)),
-        Span::raw(" "),
-        Span::styled(
-            if app.running {
-                "● running"
-            } else {
-                "● idle"
-            },
-            Style::default().fg(if app.running { Color::Green } else { secondary }),
-        ),
-        Span::styled(
-            format!(
-                "   {} · {} · audio {}",
-                app.backend,
-                app.formats.join(","),
-                app.audio_preprocessing_mode
-            ),
-            Style::default().fg(secondary),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(header), chunks[0]);
+        );
+    frame.render_widget(tabs, area);
+    let mut x = area.x;
+    for (title, page) in titles.iter().zip(Page::ALL) {
+        let width = title.chars().count() as u16 + 2;
+        if x + width > area.right() {
+            break;
+        }
+        app.hits
+            .add(Rect::new(x, area.y, width, 1), Action::Tab(page));
+        x += width + 1;
+    }
+}
 
-    let mut body = Vec::<Line>::new();
-    let mut queue_rows = Vec::<(usize, u16)>::new();
-    if app.files.is_empty() {
-        body.push(Line::styled(
-            "  Drop files here or type a path",
-            Style::default().fg(secondary),
-        ));
-    } else {
-        body.push(Line::styled(
-            format!(
-                "  {} file{} queued",
-                app.files.len(),
-                if app.files.len() == 1 { "" } else { "s" }
-            ),
-            Style::default().fg(Color::Gray),
-        ));
-        for (index, file) in app.files.iter().enumerate() {
-            // Line 0 is the "N files queued" header; a running file adds a detail line.
-            let row = body.len() as u16;
-            queue_rows.push((index, row));
-            let current = app.running && app.file_index == index;
-            let selected = !app.running && app.selected_file == Some(index);
-            let symbol = if current {
-                "●"
-            } else if selected {
-                "›"
-            } else if app.running && index < app.file_index {
-                "✓"
-            } else {
-                "○"
-            };
-            body.push(Line::from(vec![
-                Span::styled(
-                    format!("  {symbol} "),
-                    Style::default().fg(if current || selected {
-                        accent
-                    } else {
-                        secondary
-                    }),
-                ),
-                Span::styled(
-                    short_name(file),
-                    Style::default()
-                        .fg(if selected { accent } else { Color::White })
-                        .add_modifier(if current || selected {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
-                ),
-            ]));
-            if current {
-                let detail = match (app.processed_seconds, app.total_seconds) {
-                    (Some(done), Some(total)) => {
-                        format!("{} / {}", timecode(done), timecode(total))
-                    }
-                    _ => format!("{:>3}%", (app.progress * 100.0) as u16),
-                };
-                body.push(Line::styled(
-                    format!(
-                        "    {:<16} {:>3}%   {}",
-                        app.stage,
-                        (app.progress * 100.0) as u16,
-                        detail
-                    ),
-                    Style::default().fg(Color::Gray),
-                ));
-            }
-        }
+fn draw_placeholder(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
     }
-    body.push(Line::raw(""));
-    body.push(Line::styled(
-        format!("  {}", app.status),
-        Style::default().fg(if app.running { accent } else { Color::Gray }),
-    ));
-    if !app.result_files.is_empty() {
-        body.push(Line::raw(""));
-        body.push(Line::styled("  Saved", Style::default().fg(Color::Green)));
-        for file in app.result_files.iter().take(4) {
-            body.push(Line::styled(
-                format!("  {}", file),
-                Style::default().fg(Color::Gray),
-            ));
-        }
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            t(app.lang, "page.coming"),
+            Style::default().fg(SECONDARY),
+        ))
+        .centered(),
+        Rect::new(area.x, area.y + area.height / 2, area.width, 1),
+    );
+}
+
+fn draw_pet(frame: &mut ratatui::Frame, main: Rect, app: &mut App) {
+    if !app.pet_enabled {
+        return;
     }
-    if app.llm_running && !app.llm_stream.is_empty() {
-        body.push(Line::raw(""));
-        body.push(Line::styled(
-            "  LLM · streaming",
-            Style::default().fg(accent),
-        ));
-        for line in app
-            .llm_stream
-            .lines()
-            .rev()
-            .take(6)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
-            body.push(Line::styled(
-                format!("  {line}"),
-                Style::default().fg(Color::White),
-            ));
-        }
-    } else if app.show_llm_result {
-        for (mode, text) in &app.llm_results {
-            body.push(Line::raw(""));
-            body.push(Line::styled(
-                format!("  LLM · {mode}"),
-                Style::default().fg(Color::Green),
-            ));
-            for line in text.lines().take(12) {
-                body.push(Line::styled(
-                    format!("  {line}"),
-                    Style::default().fg(Color::White),
-                ));
-            }
-            if text.lines().count() > 12 {
-                body.push(Line::styled(
-                    "  … (full text in the saved file)",
-                    Style::default().fg(Color::Gray),
-                ));
-            }
-        }
+    let Some(image) = app.pet_image.as_mut() else {
+        return;
+    };
+    let pet_area = Rect::new(
+        main.right().saturating_sub(PET_COLUMNS),
+        main.y.saturating_add(1),
+        16.min(main.width.saturating_sub(2)),
+        8.min(main.height.saturating_sub(2)),
+    );
+    if pet_area.width >= 10 && pet_area.height >= 6 {
+        frame.render_stateful_widget(StatefulImage::default(), pet_area, image);
     }
-    if app.show_logs {
-        body.push(Line::raw(""));
-        body.push(Line::styled(
-            "  ── activity ─────────────────────────",
-            Style::default().fg(secondary),
-        ));
-        for line in app.logs.iter().rev().take(5).rev() {
-            body.push(Line::styled(
-                format!("  {}", line),
-                Style::default().fg(secondary),
-            ));
-        }
-    }
-    let mut body_area = chunks[1].inner(Margin {
-        horizontal: 1,
-        vertical: 0,
-    });
-    // Keep text clear of the pet image instead of rendering under it.
-    if app.pet_enabled && body_area.width > 20 {
-        body_area.width = body_area.width.saturating_sub(18);
-    }
-    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), body_area);
-    app.hits.add(body_area, Action::Scroll(AreaId::Queue, 0));
-    for (index, row) in queue_rows {
-        if row < body_area.height {
-            app.hits.add(
-                Rect::new(body_area.x, body_area.y + row, body_area.width, 1),
-                Action::SelectFile(index),
-            );
-        }
-    }
-    if app.pet_enabled {
-        if let Some(image) = app.pet_image.as_mut() {
-            let pet_area = Rect::new(
-                chunks[1].right().saturating_sub(18),
-                chunks[1].y.saturating_add(1),
-                16.min(chunks[1].width.saturating_sub(2)),
-                8.min(chunks[1].height.saturating_sub(2)),
-            );
-            if pet_area.width >= 10 && pet_area.height >= 6 {
-                frame.render_stateful_widget(StatefulImage::default(), pet_area, image);
-            }
-        }
-    }
-    if app.running {
-        frame.render_widget(
-            Gauge::default()
-                .gauge_style(Style::default().fg(accent))
-                .ratio(app.progress)
-                .label(format!(" {}", app.stage)),
-            chunks[2].inner(Margin {
-                horizontal: 2,
-                vertical: 1,
-            }),
-        );
-    } else {
-        let mut prompt_lines = if !menu_options.is_empty() {
-            menu_options
-                .iter()
-                .enumerate()
-                .map(|(index, option)| {
-                    let selected = index
-                        == app
-                            .command_menu_index
-                            .min(menu_options.len().saturating_sub(1));
-                    Line::from(vec![
-                        Span::styled(
-                            if selected { "  › " } else { "    " },
-                            Style::default().fg(accent),
-                        ),
-                        Span::styled(
-                            if option == BACK_MENU_OPTION {
-                                "0. ".into()
-                            } else {
-                                format!("{}. ", index + 1)
-                            },
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::styled(
-                            option,
-                            Style::default()
-                                .fg(if selected { Color::White } else { Color::Gray })
-                                .add_modifier(if selected {
-                                    Modifier::BOLD
-                                } else {
-                                    Modifier::empty()
-                                }),
-                        ),
-                    ])
-                })
-                .collect::<Vec<_>>()
-        } else {
-            suggestions
-                .iter()
-                .enumerate()
-                .map(|(index, (command, _))| {
-                    let selected = index
-                        == app
-                            .selected_command
-                            .min(suggestions.len().saturating_sub(1));
-                    Line::from(vec![
-                        Span::styled(
-                            format!("  {command:<12}"),
-                            Style::default().fg(accent).add_modifier(if selected {
-                                Modifier::BOLD
-                            } else {
-                                Modifier::empty()
-                            }),
-                        ),
-                        Span::styled(
-                            t(
-                                app.lang,
-                                &format!("cmd.{}", command.trim_start_matches('/')),
-                            ),
-                            Style::default().fg(if selected { Color::White } else { Color::Gray }),
-                        ),
-                    ])
-                })
-                .collect::<Vec<_>>()
-        };
-        prompt_lines.push(Line::from(vec![
-            Span::styled(
-                "› ",
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(&app.input),
-        ]));
-        frame.render_widget(
-            Paragraph::new(prompt_lines).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            ),
-            chunks[2],
-        );
-        // The block's top border takes row 0; option `i` sits on row `i + 1`.
-        let items = if menu_options.is_empty() {
-            suggestions.len()
-        } else {
-            menu_options.len()
-        };
-        for index in 0..items {
-            let row = chunks[2].y + 1 + index as u16;
-            if row >= chunks[2].bottom().saturating_sub(1) {
-                break;
-            }
-            let rect = Rect::new(chunks[2].x, row, chunks[2].width, 1);
-            app.hits.add(
-                rect,
-                if menu_options.is_empty() {
-                    Action::Suggestion(index)
-                } else {
-                    Action::MenuItem(index)
-                },
-            );
-        }
-    }
+}
+
+fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let llm_active = llm_can_run(app);
-    let footer = Line::from(vec![
-        Span::styled(
-            "Enter add path · Tab complete · type / for commands · s start · ",
-            Style::default().fg(Color::Gray),
-        ),
-        Span::styled(
-            "[L] Run LLM",
-            Style::default()
-                .fg(if llm_active { accent } else { Color::DarkGray })
-                .add_modifier(if llm_active {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        ),
-        Span::styled(
-            " · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs · r LLM result",
-            Style::default().fg(Color::Gray),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(footer), chunks[3]);
+    let dim = Style::default().fg(Color::Gray);
+    let key = Style::default().fg(SECONDARY).add_modifier(Modifier::BOLD);
+    let item = |k: &str, text: &str| {
+        vec![
+            Span::styled(k.to_owned(), key),
+            Span::styled(format!(" {text} · "), dim),
+        ]
+    };
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(item("s", t(app.lang, "footer.start")));
+    spans.push(Span::styled(
+        "L",
+        Style::default()
+            .fg(if llm_active { ACCENT } else { Color::DarkGray })
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!(" {} · ", t(app.lang, "footer.llm")),
+        dim,
+    ));
+    spans.extend(item("d", t(app.lang, "footer.diar")));
+    spans.extend(item("f", t(app.lang, "footer.formats")));
+    spans.extend(item("?", t(app.lang, "footer.help")));
+    spans.push(Span::styled("q", key));
+    spans.push(Span::styled(
+        format!(" {}", t(app.lang, "footer.quit")),
+        dim,
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 #[cfg(test)]
