@@ -20,6 +20,7 @@ use crate::{
     },
     i18n::{t, tf, tn, Lang},
     settings::save_app_settings,
+    theme::{Palette, Theme},
     ui::{llm::MODES, settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
     worker::{llm_start_payload, start_payload, LlmTool},
 };
@@ -160,6 +161,8 @@ pub(crate) struct App {
     /// Where the last completed run saved its answers (`session_llm_<mode>.txt`).
     pub(crate) llm_saved_files: Vec<String>,
     pub(crate) audio_preprocessing_mode: String,
+    /// Цветовая схема; все виджеты берут цвета из `palette()`.
+    pub(crate) theme: Theme,
 }
 
 impl Default for App {
@@ -239,11 +242,16 @@ impl Default for App {
             llm_stream_mode: String::new(),
             llm_saved_files: Vec::new(),
             audio_preprocessing_mode: "auto".into(),
+            theme: Theme::default_theme(),
         }
     }
 }
 
 impl App {
+    pub(crate) fn palette(&self) -> &Palette {
+        &self.theme.palette
+    }
+
     pub(crate) fn log(&mut self, line: impl Into<String>) {
         self.logs.push(line.into());
         if self.logs.len() > 200 {

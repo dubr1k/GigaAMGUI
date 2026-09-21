@@ -9,7 +9,7 @@ pub(crate) mod settings;
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Tabs},
 };
@@ -19,9 +19,6 @@ use crate::{
     app::{llm_can_run, next_step, App, Page},
     i18n::t,
 };
-
-pub(crate) const ACCENT: Color = Color::Rgb(92, 155, 255);
-pub(crate) const SECONDARY: Color = Color::Rgb(180, 195, 220);
 
 /// Everything the user can do with a click or a key. Keys and mouse clicks both go
 /// through `app::dispatch`, so a click can never drift from its keyboard twin.
@@ -119,6 +116,7 @@ impl HitMap {
 const PET_COLUMNS: u16 = 18;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
+    let p = *app.palette();
     app.hits.clear();
     let area = frame.area();
     let rows = menu::MenuRows::of(app);
@@ -151,9 +149,9 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 format!(" ▶ {}: ", t(app.lang, "hint.prefix")),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(t(app.lang, next_step(app)), Style::default().fg(ACCENT)),
+            Span::styled(t(app.lang, next_step(app)), Style::default().fg(p.accent)),
         ])),
         hint,
     );
@@ -166,23 +164,19 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let (status_key, colour) = if app.worker_down {
-        ("status.worker_down", Color::Red)
+        ("status.worker_down", p.error)
     } else if app.llm_running {
-        ("status.llm_running", Color::Green)
+        ("status.llm_running", p.success)
     } else if app.running {
-        ("status.running", Color::Green)
+        ("status.running", p.success)
     } else {
-        ("status.ready", SECONDARY)
+        ("status.ready", p.muted)
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(
-                " GigaAM",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(" GigaAM", p.title()),
             Span::styled(
                 format!("  ● {}", t(app.lang, status_key)),
                 Style::default().fg(colour),
@@ -196,10 +190,10 @@ fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let right = Line::from(vec![
         Span::styled(
             lang.clone(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::default()),
-        Span::styled(help, Style::default().fg(SECONDARY)),
+        Span::styled(help, Style::default().fg(p.muted)),
         Span::raw(" "),
     ]);
     let right_width = right.width() as u16;
@@ -213,6 +207,7 @@ fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_tabs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let titles: Vec<String> = Page::ALL
         .iter()
         .enumerate()
@@ -231,13 +226,8 @@ fn draw_tabs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .select(app.page.index())
         .padding(" ", " ")
         .divider("│")
-        .style(Style::default().fg(SECONDARY))
-        .highlight_style(
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(40, 60, 100))
-                .add_modifier(Modifier::BOLD),
-        );
+        .style(Style::default().fg(p.muted))
+        .highlight_style(p.emphasis());
     frame.render_widget(tabs, area);
     let mut x = area.x;
     for (title, page) in titles.iter().zip(Page::ALL) {
@@ -270,9 +260,10 @@ fn draw_pet(frame: &mut ratatui::Frame, main: Rect, app: &mut App) {
 }
 
 fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let p = *app.palette();
     let llm_active = llm_can_run(app);
-    let dim = Style::default().fg(Color::Gray);
-    let key = Style::default().fg(SECONDARY).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(p.dim);
+    let key = Style::default().fg(p.muted).add_modifier(Modifier::BOLD);
     let item = |k: &str, text: &str| {
         vec![
             Span::styled(k.to_owned(), key),
@@ -284,7 +275,7 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     spans.push(Span::styled(
         "L",
         Style::default()
-            .fg(if llm_active { ACCENT } else { Color::DarkGray })
+            .fg(if llm_active { p.accent } else { p.disabled })
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(
@@ -305,7 +296,49 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Page;
+    use crate::{app::Page, theme::Theme};
+    use ratatui::{buffer::Buffer, style::Color};
+
+    fn render(theme: &str) -> Buffer {
+        let mut app = App::default();
+        app.theme = Theme::by_name(theme).expect(theme);
+        app.files = vec!["/a/one.wav".into()];
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn active_tab_cell_follows_the_theme() {
+        // Row 1 is the tab bar, column 1 the "F" of the active «F1 …» tab.
+        let default = render("default")[(1, 1)].clone();
+        let monokai = render("dark-monokai")[(1, 1)].clone();
+        assert_eq!(default.symbol(), "F");
+        assert_eq!(default.fg, Color::White);
+        assert_eq!(default.bg, Color::Rgb(40, 60, 100));
+        assert!(default.modifier.contains(Modifier::BOLD));
+        assert_eq!(monokai.symbol(), "F");
+        assert_eq!(monokai.bg, Color::Rgb(0x49, 0x48, 0x3e));
+        assert_ne!(default.bg, monokai.bg);
+        // An inactive tab takes the theme's muted colour.
+        let inactive = render("dark-monokai")[(20, 1)].clone();
+        assert_eq!(inactive.fg, Color::Rgb(0x99, 0x99, 0x99));
+    }
+
+    #[test]
+    fn mono_uses_only_terminal_colours_and_bold_for_the_active_tab() {
+        let buffer = render("mono");
+        for cell in buffer.content() {
+            assert_eq!(cell.fg, Color::Reset, "{cell:?}");
+            assert_eq!(cell.bg, Color::Reset, "{cell:?}");
+        }
+        let active = &buffer[(1, 1)];
+        assert_eq!(active.symbol(), "F");
+        assert!(active.modifier.contains(Modifier::BOLD), "{active:?}");
+        assert!(active.modifier.contains(Modifier::REVERSED), "{active:?}");
+        assert!(!buffer[(20, 1)].modifier.contains(Modifier::BOLD));
+    }
 
     #[test]
     fn hit_map_returns_the_topmost_action() {

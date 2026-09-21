@@ -1,11 +1,11 @@
-//! Цветовые схемы TUI: палитра из 13 именованных цветов ratatui.
+//! Цветовые схемы TUI: палитра из 14 именованных цветов ratatui.
 //!
 //! Источник — JSON-файлы oh-my-pi в `tui/themes/` (плюс наш `dark-hermes-pink`),
 //! вшитые через `theme_catalog::THEMES`; сверх каталога встроены `default`
 //! (сегодняшние цвета, ничего не меняется для существующих пользователей) и
 //! `mono` (всё `Color::Reset`, акценты — модификаторами).
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 use serde_json::{Map, Value};
 
 use crate::theme_catalog::THEMES;
@@ -19,8 +19,10 @@ pub(crate) const MONO_THEME: &str = "mono";
 ///
 /// Поле ↔ ключ `colors` в JSON oh-my-pi: `accent`, `border`, `borderAccent`,
 /// `borderMuted`, `text`, `muted`, `dim`, `success`, `warning`, `error`,
-/// `selectedBg`, `statusLineBg`; `gauge_bg` (фон незаполненной части прогресса)
-/// в схеме oh-my-pi отсутствует и берётся из `selectedBg`.
+/// `selectedBg`, `statusLineBg`. Двух полей в схеме oh-my-pi нет: `gauge_bg`
+/// (фон незаполненной части прогресса) берётся из `selectedBg`, `disabled`
+/// (недоступные кнопки, номера строк) — из `dim`: `borderMuted` в 90 темах из
+/// 100 почти сливается с фоном (контраст ≈1.0–1.3) и текстом быть не может.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Palette {
     /// Акцент: активная вкладка, подсказка «▶», клавиши, кнопки, заливка прогресса.
@@ -29,7 +31,7 @@ pub(crate) struct Palette {
     pub border: Color,
     /// Рамка блока в фокусе и рамка окна справки.
     pub border_accent: Color,
-    /// Приглушённые элементы: номера строк, недоступные кнопки.
+    /// Едва заметная линия: разделитель над строкой ввода.
     pub border_muted: Color,
     /// Основной текст: заголовки блоков, значения, выбранная строка.
     pub text: Color,
@@ -49,6 +51,8 @@ pub(crate) struct Palette {
     pub status_bg: Color,
     /// Фон незаполненной части индикатора прогресса.
     pub gauge_bg: Color,
+    /// Недоступные кнопки, номера строк, неактивная клавиша в подвале.
+    pub disabled: Color,
 }
 
 impl Palette {
@@ -67,6 +71,7 @@ impl Palette {
         selected_bg: Color::Rgb(40, 60, 100),
         status_bg: Color::Rgb(20, 24, 34),
         gauge_bg: Color::Rgb(40, 40, 50),
+        disabled: Color::DarkGray,
     };
 
     /// Ни одного цвета: терминал рисует своими; акценты — модификаторами.
@@ -84,7 +89,26 @@ impl Palette {
         selected_bg: Color::Reset,
         status_bg: Color::Reset,
         gauge_bg: Color::Reset,
+        disabled: Color::Reset,
     };
+
+    /// Заголовок блока: основной цвет, жирный.
+    pub(crate) fn title(&self) -> Style {
+        Style::new().fg(self.text).add_modifier(Modifier::BOLD)
+    }
+
+    /// Выбранная строка или активная вкладка. Тема без фона выделения (`mono`)
+    /// показывает выбор инверсией, иначе его было бы не отличить.
+    pub(crate) fn emphasis(&self) -> Style {
+        if self.selected_bg == Color::Reset {
+            Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::new()
+                .fg(self.text)
+                .bg(self.selected_bg)
+                .add_modifier(Modifier::BOLD)
+        }
+    }
 }
 
 /// Именованная палитра: встроенная (`default`, `mono`) или из каталога.
@@ -96,6 +120,7 @@ pub(crate) struct Theme {
 
 impl Theme {
     /// Тема по точному имени; `None` для неизвестного.
+    #[allow(dead_code)] // removed in Task 3: `/theme` and `--theme` are the callers
     pub(crate) fn by_name(name: &str) -> Option<Theme> {
         if name == DEFAULT_THEME {
             return Some(Theme::default_theme());
@@ -116,6 +141,7 @@ impl Theme {
     }
 
     /// `default`, `mono`, затем каталог по алфавиту — порядок меню и автодополнения.
+    #[allow(dead_code)] // removed in Task 3: the `/theme` menu lists these
     pub(crate) fn names() -> Vec<&'static str> {
         let mut names = vec![DEFAULT_THEME, MONO_THEME];
         names.extend(THEMES.iter().map(|(name, _)| *name));
@@ -163,6 +189,7 @@ pub(crate) fn parse_palette(json: &str) -> Result<Palette, String> {
     let accent = lookup("accent")?.unwrap_or(Color::Reset);
     let border = lookup("border")?.unwrap_or(Color::Reset);
     let muted = lookup("muted")?.unwrap_or(Color::Reset);
+    let dim = lookup("dim")?.unwrap_or(muted);
     let selected_bg = lookup("selectedBg")?.unwrap_or(Color::Reset);
     Ok(Palette {
         accent,
@@ -171,13 +198,14 @@ pub(crate) fn parse_palette(json: &str) -> Result<Palette, String> {
         border_muted: lookup("borderMuted")?.unwrap_or(border),
         text: lookup("text")?.unwrap_or(Color::Reset),
         muted,
-        dim: lookup("dim")?.unwrap_or(muted),
+        dim,
         success: lookup("success")?.unwrap_or(Color::Reset),
         warning: lookup("warning")?.unwrap_or(Color::Reset),
         error: lookup("error")?.unwrap_or(Color::Reset),
         selected_bg,
         status_bg: lookup("statusLineBg")?.unwrap_or(Color::Reset),
         gauge_bg: selected_bg,
+        disabled: dim,
     })
 }
 
@@ -248,6 +276,8 @@ mod tests {
         assert_eq!(palette.border_accent, Color::Rgb(0xf9, 0x26, 0x72));
         assert_eq!(palette.selected_bg, Color::Rgb(0x49, 0x48, 0x3e));
         assert_eq!(palette.gauge_bg, palette.selected_bg);
+        assert_eq!(palette.disabled, palette.dim, "disabled -> dim");
+        assert_ne!(palette.disabled, palette.border_muted);
     }
 
     #[test]
@@ -291,6 +321,7 @@ mod tests {
         assert_eq!(palette.border_muted, Color::Reset, "borderMuted -> border");
         assert_eq!(palette.dim, Color::Reset, "dim -> muted");
         assert_eq!(palette.gauge_bg, Color::Reset, "gauge_bg -> selectedBg");
+        assert_eq!(palette.disabled, Color::Reset, "disabled -> dim -> muted");
         assert_eq!(palette.text, Color::Reset);
         assert_eq!(palette.status_bg, Color::Reset);
     }
@@ -341,6 +372,56 @@ mod tests {
         assert_eq!(palette.selected_bg, Color::Rgb(40, 60, 100));
         assert_eq!(palette.status_bg, Color::Rgb(20, 24, 34));
         assert_eq!(palette.gauge_bg, Color::Rgb(40, 40, 50));
+        assert_eq!(palette.disabled, Color::DarkGray);
+    }
+
+    #[test]
+    fn no_colour_literal_outside_theme_rs() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        assert!(files.len() > 10);
+        let offenders: Vec<String> = files
+            .iter()
+            .filter(|path| path.file_name().is_some_and(|name| name != "theme.rs"))
+            .filter(|path| {
+                // Tests may spell out expected colours; production code may not.
+                let source = std::fs::read_to_string(path).unwrap();
+                let production = source.split("#[cfg(test)]").next().unwrap_or("");
+                production.contains("Color::")
+            })
+            .map(|path| path.display().to_string())
+            .collect();
+        assert!(offenders.is_empty(), "hard-coded colours in {offenders:?}");
+    }
+
+    #[test]
+    fn emphasis_is_colours_when_the_theme_has_them_and_modifiers_otherwise() {
+        use ratatui::style::{Modifier, Style};
+        let default = Palette::DEFAULT.emphasis();
+        assert_eq!(
+            default,
+            Style::new()
+                .fg(Color::White)
+                .bg(Color::Rgb(40, 60, 100))
+                .add_modifier(Modifier::BOLD)
+        );
+        let mono = Palette::MONO.emphasis();
+        assert_eq!(mono.fg, None);
+        assert_eq!(mono.bg, None);
+        assert!(mono
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::REVERSED));
     }
 
     #[test]
@@ -360,6 +441,7 @@ mod tests {
             palette.selected_bg,
             palette.status_bg,
             palette.gauge_bg,
+            palette.disabled,
         ] {
             assert_eq!(colour, Color::Reset);
         }

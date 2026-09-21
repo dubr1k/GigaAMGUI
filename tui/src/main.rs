@@ -24,10 +24,7 @@ mod i18n;
 mod keys;
 mod pets;
 mod settings;
-// removed in Task 2: nothing draws from the palette yet
-#[allow(dead_code)]
 mod theme;
-#[allow(dead_code)]
 mod theme_catalog;
 mod ui;
 mod worker;

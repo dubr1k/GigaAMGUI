@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Cell, Gauge, Paragraph, Row, Table, TableState, Wrap},
 };
@@ -11,7 +11,7 @@ use crate::{
     app::{App, FileState, Focus},
     commands::short_name,
     i18n::{t, tf, try_t},
-    ui::{Action, AreaId, ButtonId, ACCENT, SECONDARY},
+    ui::{Action, AreaId, ButtonId},
 };
 
 /// The rows of the parameter panel, top to bottom: the label key and the command
@@ -71,6 +71,7 @@ fn state_of(app: &App, index: usize, file: &str) -> FileState {
 }
 
 fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let title = if app.files.is_empty() {
         t(app.lang, "queue.title").to_owned()
     } else {
@@ -81,27 +82,22 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         )
     };
     let block = Block::bordered()
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ))
+        .title(Span::styled(format!(" {title} "), p.title()))
         .title_top(
             Line::from(Span::styled(
                 format!("[{}]", t(app.lang, "btn.clear")),
                 Style::default().fg(if app.files.is_empty() || app.running {
-                    Color::DarkGray
+                    p.disabled
                 } else {
-                    SECONDARY
+                    p.muted
                 }),
             ))
             .right_aligned(),
         )
         .border_style(Style::default().fg(if app.focus == Focus::Queue {
-            ACCENT
+            p.border_accent
         } else {
-            Color::DarkGray
+            p.border
         }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -117,7 +113,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 t(app.lang, "queue.empty"),
-                Style::default().fg(SECONDARY),
+                Style::default().fg(p.muted),
             ))
             .centered()
             .wrap(Wrap { trim: true }),
@@ -138,15 +134,14 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .map(|(index, file)| {
             let state = state_of(app, index, file);
             let (key, colour) = match state {
-                FileState::Pending => ("state.pending", SECONDARY),
-                FileState::Processing => ("state.processing", ACCENT),
-                FileState::Done => ("state.done", Color::Green),
-                FileState::Failed => ("state.failed", Color::Red),
-                FileState::Cancelled => ("state.cancelled", Color::Yellow),
+                FileState::Pending => ("state.pending", p.muted),
+                FileState::Processing => ("state.processing", p.accent),
+                FileState::Done => ("state.done", p.success),
+                FileState::Failed => ("state.failed", p.error),
+                FileState::Cancelled => ("state.cancelled", p.warning),
             };
             Row::new(vec![
-                Cell::from(format!("{:>2}.", index + 1))
-                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:>2}.", index + 1)).style(Style::default().fg(p.disabled)),
                 Cell::from(fit_middle(&short_name(file), name_width)),
                 Cell::from(t(app.lang, key)).style(Style::default().fg(colour)),
             ])
@@ -164,12 +159,9 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .with_offset(offset)
         .with_selected(selected);
     let highlight = if app.focus == Focus::Queue {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(40, 60, 100))
-            .add_modifier(Modifier::BOLD)
+        p.emphasis()
     } else {
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
     };
     let table = Table::new(
         rows,
@@ -187,7 +179,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         ])
         .style(
             Style::default()
-                .fg(SECONDARY)
+                .fg(p.muted)
                 .add_modifier(Modifier::UNDERLINED),
         ),
     )
@@ -229,17 +221,16 @@ fn param_value(app: &App, command: &str) -> String {
 }
 
 fn draw_params(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", t(app.lang, "params.title")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            p.title(),
         ))
         .border_style(Style::default().fg(if app.focus == Focus::Params {
-            ACCENT
+            p.border_accent
         } else {
-            Color::DarkGray
+            p.border
         }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -247,20 +238,16 @@ fn draw_params(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .iter()
         .map(|(key, command)| {
             Row::new(vec![
-                Cell::from(t(app.lang, key)).style(Style::default().fg(SECONDARY)),
-                Cell::from(param_value(app, command)).style(Style::default().fg(Color::White)),
+                Cell::from(t(app.lang, key)).style(Style::default().fg(p.muted)),
+                Cell::from(param_value(app, command)).style(Style::default().fg(p.text)),
             ])
         })
         .collect();
     let mut state = TableState::default().with_selected(
         (app.focus == Focus::Params).then_some(app.params_cursor.min(PARAM_ROWS.len() - 1)),
     );
-    let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(6)]).row_highlight_style(
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(40, 60, 100))
-            .add_modifier(Modifier::BOLD),
-    );
+    let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(6)])
+        .row_highlight_style(p.emphasis());
     frame.render_stateful_widget(table, inner, &mut state);
     for (row, (_, command)) in PARAM_ROWS.iter().enumerate() {
         if row as u16 >= inner.height {
@@ -274,13 +261,14 @@ fn draw_params(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_progress(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let can_start = !app.running && !app.files.is_empty();
     let can_stop = app.running && !app.llm_running;
     let start = format!("[{}]", t(app.lang, "btn.start"));
     let stop = format!("[{}]", t(app.lang, "btn.stop"));
     let button_style = |active: bool| {
         Style::default()
-            .fg(if active { ACCENT } else { Color::DarkGray })
+            .fg(if active { p.accent } else { p.disabled })
             .add_modifier(if active {
                 Modifier::BOLD
             } else {
@@ -290,9 +278,7 @@ fn draw_progress(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", t(app.lang, "progress.title")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            p.title(),
         ))
         .title_top(
             Line::from(vec![
@@ -302,7 +288,7 @@ fn draw_progress(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             ])
             .right_aligned(),
         )
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(p.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     // Right-aligned titles end one cell before the corner.
@@ -326,7 +312,7 @@ fn draw_progress(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let percent = (app.progress * 100.0).round() as u16;
     frame.render_widget(
         Gauge::default()
-            .gauge_style(Style::default().fg(ACCENT).bg(Color::Rgb(40, 40, 50)))
+            .gauge_style(Style::default().fg(p.accent).bg(p.gauge_bg))
             .ratio(app.progress.clamp(0.0, 1.0))
             .label(format!("{percent}%")),
         gauge_area,
@@ -344,7 +330,7 @@ fn draw_progress(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         format!(" {}", app.status)
     };
     frame.render_widget(
-        Paragraph::new(Line::styled(first_line, Style::default().fg(Color::White))),
+        Paragraph::new(Line::styled(first_line, Style::default().fg(p.text))),
         text_area,
     );
     let mut lines = Vec::<Line>::new();
@@ -361,15 +347,15 @@ fn draw_progress(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{}: ", t(app.lang, "progress.saved")),
-                Style::default().fg(Color::Green),
+                Style::default().fg(p.success),
             ),
-            Span::styled(saved, Style::default().fg(Color::Gray)),
+            Span::styled(saved, Style::default().fg(p.dim)),
         ]));
     }
     if app.running {
         lines.push(Line::styled(
             app.status.clone(),
-            Style::default().fg(SECONDARY),
+            Style::default().fg(p.muted),
         ));
     }
     if inner.height > 1 && !lines.is_empty() {

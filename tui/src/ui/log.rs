@@ -6,7 +6,7 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
 };
@@ -14,25 +14,24 @@ use ratatui::{
 use crate::{
     app::App,
     i18n::t,
-    ui::{Action, AreaId, ButtonId, SECONDARY},
+    ui::{Action, AreaId, ButtonId},
 };
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let clear = format!("[{}]", t(app.lang, "btn.clear"));
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", t(app.lang, "log.title")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            p.title(),
         ))
         .title_top(
             Line::from(Span::styled(
                 clear.clone(),
                 Style::default().fg(if app.logs.is_empty() {
-                    Color::DarkGray
+                    p.disabled
                 } else {
-                    SECONDARY
+                    p.muted
                 }),
             ))
             .right_aligned(),
@@ -40,11 +39,11 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .title_bottom(
             Line::from(Span::styled(
                 format!(" {} ", t(app.lang, "log.hint")),
-                Style::default().fg(SECONDARY),
+                Style::default().fg(p.muted),
             ))
             .right_aligned(),
         )
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(p.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.add(area, Action::Scroll(AreaId::Log, 0));
@@ -65,7 +64,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 t(app.lang, "log.empty"),
-                Style::default().fg(SECONDARY),
+                Style::default().fg(p.muted),
             ))
             .centered(),
             Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1),

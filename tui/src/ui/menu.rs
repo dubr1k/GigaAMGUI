@@ -3,7 +3,7 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -14,7 +14,7 @@ use crate::{
         command_menu_options, command_suggestions, BACK_MENU_OPTION, ENTER_MANUALLY_OPTION,
     },
     i18n::t,
-    ui::{Action, ACCENT},
+    ui::Action,
 };
 
 /// What the block shows this frame; computed once so that the layout and the
@@ -48,6 +48,7 @@ impl MenuRows {
 /// row that is drawn is registered as clickable; when there are more rows than
 /// fit, the window slides so that the selected row stays visible.
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: &MenuRows) {
+    let p = *app.palette();
     let visible = usize::from(area.height.saturating_sub(2));
     let (count, selected) = if rows.menu.is_empty() {
         (rows.suggestions.len(), app.selected_command)
@@ -68,7 +69,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
                 Line::from(vec![
                     Span::styled(
                         format!("  {command:<19}"),
-                        Style::default().fg(ACCENT).add_modifier(if is_selected {
+                        Style::default().fg(p.accent).add_modifier(if is_selected {
                             Modifier::BOLD
                         } else {
                             Modifier::empty()
@@ -79,11 +80,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
                             app.lang,
                             &format!("cmd.{}", command.trim_start_matches('/')),
                         ),
-                        Style::default().fg(if is_selected {
-                            Color::White
-                        } else {
-                            Color::Gray
-                        }),
+                        Style::default().fg(if is_selected { p.text } else { p.dim }),
                     ),
                 ])
             } else {
@@ -98,7 +95,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
                 Line::from(vec![
                     Span::styled(
                         if is_selected { "  › " } else { "    " },
-                        Style::default().fg(ACCENT),
+                        Style::default().fg(p.accent),
                     ),
                     Span::styled(
                         if option == BACK_MENU_OPTION {
@@ -106,16 +103,12 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
                         } else {
                             format!("{}. ", index + 1)
                         },
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(p.disabled),
                     ),
                     Span::styled(
                         label,
                         Style::default()
-                            .fg(if is_selected {
-                                Color::White
-                            } else {
-                                Color::Gray
-                            })
+                            .fg(if is_selected { p.text } else { p.dim })
                             .add_modifier(if is_selected {
                                 Modifier::BOLD
                             } else {
@@ -129,7 +122,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
     lines.push(Line::from(vec![
         Span::styled(
             "› ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
         ),
         Span::raw(app.input.as_str()),
     ]));
@@ -137,7 +130,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::TOP)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(p.border_muted)),
         ),
         area,
     );
