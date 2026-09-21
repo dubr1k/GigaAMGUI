@@ -368,6 +368,41 @@ mod tests {
     use crate::{settings::isolated_config_dir, ui::draw as draw_all};
 
     #[test]
+    fn progress_bar_is_visible_without_colours() {
+        // ratatui's Gauge paints the filled part as `█` in the gauge fg, so a theme
+        // with every colour Reset still shows the bar in the terminal foreground.
+        let mut app = App::default();
+        app.progress = 0.5;
+        app.running = true;
+        let render = |app: &mut App| {
+            let backend = ratatui::backend::TestBackend::new(100, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw_all(f, app)).unwrap();
+            terminal.backend().buffer().clone()
+        };
+        let filled = |buffer: &ratatui::buffer::Buffer| {
+            buffer
+                .content()
+                .iter()
+                .filter(|cell| cell.symbol() == "█")
+                .map(|cell| cell.fg)
+                .collect::<Vec<_>>()
+        };
+        let default = filled(&render(&mut app));
+        assert!(default.len() >= 8, "{} filled cells", default.len());
+        assert!(default.iter().all(|fg| *fg == app.palette().accent));
+        app.theme = crate::theme::Theme::by_name("mono").unwrap();
+        let mono = render(&mut app);
+        let blocks = filled(&mono);
+        assert_eq!(blocks.len(), default.len());
+        assert!(blocks.iter().all(|fg| *fg == ratatui::style::Color::Reset));
+        assert!(mono
+            .content()
+            .iter()
+            .all(|cell| cell.fg == ratatui::style::Color::Reset));
+    }
+
+    #[test]
     fn fit_middle_keeps_both_ends() {
         assert_eq!(fit_middle("short.wav", 20), "short.wav");
         assert_eq!(fit_middle("a-very-long-recording.wav", 12), "a-very…g.wav");

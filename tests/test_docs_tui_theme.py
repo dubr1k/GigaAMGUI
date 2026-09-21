@@ -41,5 +41,5 @@ def test_release_notes_mention_themes_in_both_languages():
 
 def test_theme_count_matches_the_bundled_catalogue():
     count = len(list((ROOT / "tui" / "themes").glob("*.json"))) + 2  # + default, mono
-    for rel in ("README.md", "README_EN.md"):
-        assert str(count) in _read(rel), rel
+    for rel, phrase in (("README.md", f"из {count} схем"), ("README_EN.md", f"{count} schemes")):
+        assert phrase in _read(rel), f"{rel}: README must say {count} schemes (files + default + mono)"

@@ -184,7 +184,8 @@ for one run. The choice is stored in `tui_settings.json`. Bundled: `default`
 bold/reverse), our own `dark-hermes-pink`, and 99 palettes from
 [oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT; licence text in
 `tui/themes/LICENSE-oh-my-pi`) — for example `dark-tokyo-night`,
-`dark-gruvbox`, `light-github`, `light-solarized`.
+`dark-gruvbox`, `light-github`, `light-solarized`. `light-*` schemes expect a
+light terminal background, `dark-*` a dark one.
 
 **Headless / for agents.** `gigaam transcribe FILE... [options]` and
 `gigaam llm FILE... --mode summary [options]` run without the interactive UI:

@@ -318,6 +318,8 @@ pub(crate) fn complete_theme_name(input: &str) -> Option<String> {
         .filter(|name| name.starts_with(prefix))
         .collect();
     let first = matches.first()?;
+    // Byte offsets are char boundaries here: theme names are ASCII (asserted by a
+    // theme.rs test).
     let common = matches.iter().fold(first.len(), |common, name| {
         first
             .bytes()

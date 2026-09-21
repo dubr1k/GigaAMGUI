@@ -268,7 +268,8 @@ LLM → `r` показать ответ); `?` открывает справку 
 цвета терминала, выделение — жирным и инверсией), наша `dark-hermes-pink` и
 99 палитр из [oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT, текст
 лицензии — `tui/themes/LICENSE-oh-my-pi`): например `dark-tokyo-night`,
-`dark-gruvbox`, `light-github`, `light-solarized`.
+`dark-gruvbox`, `light-github`, `light-solarized`. Схемы `light-*` рассчитаны
+на светлый фон терминала, `dark-*` — на тёмный.
 
 **Headless / для агентов.** `gigaam transcribe FILE... [опции]` и
 `gigaam llm FILE... --mode summary [опции]` работают без интерфейса: одна

@@ -508,6 +508,15 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_names_are_ascii() {
+        // `complete_theme_name` slices names by byte offsets, so a non-ASCII name
+        // would need a char-aware common prefix.
+        for name in Theme::names() {
+            assert!(name.is_ascii(), "{name}");
+        }
+    }
+
+    #[test]
     fn mono_is_all_reset() {
         let palette = palette("mono");
         for colour in [
