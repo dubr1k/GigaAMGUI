@@ -772,6 +772,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private var pageScroll: NSScrollView!
     private var navigationButtons: [Page: NSButton] = [:]
     private var selectedFilesLabel: NSTextField?
+    private var selectedFilesRows: NSStackView?
+    private var selectedFilesCountLabel: NSTextField?
     private var settingsCategoryButtons: [String: NSButton] = [:]
     private var currentPage: Page = .processing
     private var settingsDetail: NSView?
@@ -952,6 +954,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private func buildWindowContent() {
         navigationButtons.removeAll()
         selectedFilesLabel = nil
+        selectedFilesRows = nil
+        selectedFilesCountLabel = nil
         settingsCategoryButtons.removeAll()
         window.appearance = NSAppearance(named: Palette.isDark ? .darkAqua : .aqua)
         let background = BlobBackgroundView()
@@ -1265,14 +1269,24 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
         let clear = button("Очистить", action: #selector(clearFiles(_:)), height: 30)
         clear.identifier = NSUserInterfaceItemIdentifier("processing.clear")
-        let selected = card("Выбранные файлы", trailing: clear)
+        // Счётчик в шапке карточки: «2 файла» рядом с «Очистить», чтобы размер очереди был
+        // виден без прокрутки списка.
+        let count = label("", size: 13, color: Palette.muted)
+        count.identifier = NSUserInterfaceItemIdentifier("processing.selected.count")
+        selectedFilesCountLabel = count
+        let selected = card("Выбранные файлы", trailing: horizontal([count, clear], spacing: 12))
         let selectedStack = contentStack(selected)
-        selectedStack.addArrangedSubview(columnHeadings([("Файл", 340), ("Состояние", 200)]))
+        selectedStack.addArrangedSubview(columnHeadings(selectedFileColumns))
         selectedStack.addArrangedSubview(divider())
         let filenames = wrappedLabel("Файлы не выбраны. Добавьте аудио или видео.", size: 14, color: Palette.body)
         filenames.preferredMaxLayoutWidth = 574
         selectedFilesLabel = filenames
-        selectedStack.addArrangedSubview(filenames)
+        // Пустая подпись и строки живут в одном стеке и подменяют друг друга: vertical()
+        // не отсоединяет скрытые view, и спрятанная подпись оставляла бы зазор над списком.
+        let rows = vertical([], spacing: 6)
+        rows.identifier = NSUserInterfaceItemIdentifier("processing.selected.rows")
+        selectedFilesRows = rows
+        selectedStack.addArrangedSubview(rows)
         refreshSelectedFiles()
         selected.widthAnchor.constraint(equalToConstant: 610).isActive = true
         selectedStack.bottomAnchor.constraint(equalTo: selected.bottomAnchor, constant: -16).isActive = true
@@ -3580,13 +3594,41 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         defaults.set(editor.string, forKey: key)
     }
 
+    /// Колонки списка выбранных файлов: номер, имя, состояние. Одни и те же ширины
+    /// для шапки и строк, иначе состояние не встаёт под свой заголовок.
+    private var selectedFileColumns: [(String, CGFloat)] { [("№", 28), ("Файл", 318), ("Состояние", 200)] }
+
+    private func selectedFileRow(index: Int, url: URL) -> NSView {
+        let widths = selectedFileColumns.map(\.1)
+        let number = label("\(index + 1).", size: 14, color: Palette.muted)
+        number.alignment = .right
+        number.widthAnchor.constraint(equalToConstant: widths[0]).isActive = true
+        let name = label(url.lastPathComponent, size: 14, color: Palette.body)
+        name.lineBreakMode = .byTruncatingMiddle
+        name.toolTip = url.path
+        name.widthAnchor.constraint(equalToConstant: widths[1]).isActive = true
+        let stateText = fileStates[url.standardizedFileURL] ?? "выбран, не обработан"
+        let state = label(stateText, size: 14, color: stateText == "Ошибка" ? Palette.ink : Palette.body)
+        state.widthAnchor.constraint(equalToConstant: widths[2]).isActive = true
+        let row = horizontal([number, name, state, flexibleSpace()], spacing: 8)
+        row.setAccessibilityLabel("\(index + 1). \(url.lastPathComponent) — \(L10n.text(stateText))")
+        return row
+    }
+
     private func refreshSelectedFiles() {
         refreshProcessingControls()
-        let rows = selectedFileURLs.map { "\($0.lastPathComponent)  —  \(L10n.text(fileStates[$0.standardizedFileURL] ?? "выбран, не обработан"))" }
-        selectedFilesLabel?.stringValue = rows.isEmpty ? L10n.text("Файлы не выбраны. Добавьте аудио или видео.") : rows.joined(separator: "\n")
-        selectedFilesLabel?.toolTip = selectedFileURLs.map(\.path).joined(separator: "\n")
-        selectedFilesLabel?.invalidateIntrinsicContentSize()
-        if let document = selectedFilesLabel?.enclosingScrollView?.documentView {
+        let empty = selectedFileURLs.isEmpty
+        selectedFilesCountLabel?.stringValue = empty ? "" : FileCount.text(selectedFileURLs.count, english: L10n.isEnglish)
+        if let rows = selectedFilesRows {
+            rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            if empty, let placeholder = selectedFilesLabel {
+                rows.addArrangedSubview(placeholder)
+            }
+            for (index, url) in selectedFileURLs.enumerated() {
+                rows.addArrangedSubview(selectedFileRow(index: index, url: url))
+            }
+        }
+        if let document = selectedFilesRows?.enclosingScrollView?.documentView {
             document.needsLayout = true
             document.layoutSubtreeIfNeeded()
         }

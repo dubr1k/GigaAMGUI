@@ -1,6 +1,7 @@
 import Foundation
 import CoreFoundation
 import Darwin
+import GigaAMLiquidCore
 
 struct NativeTranscriptionSettings {
     var formats: [String] = ["txt"]
@@ -186,7 +187,9 @@ final class NativeTranscriptionJob {
             case "progress":
                 let index = try fileIndex(message)
                 guard let stage = message["stage"] as? String else { throw WorkerFailure("Invalid worker progress stage.") }
-                let text = safeText(message["message"] as? String ?? stage)
+                // Без `message` воркер шлёт только id стадии — показываем его название,
+                // как PyQt (_STAGE_NAMES), а не «preprocessing».
+                let text = safeText(message["message"] as? String ?? StageLabel.text(stage, english: L10n.isEnglish))
                 let fraction: Double?
                 if message["stage_progress"] is NSNull || message["file_progress"] is NSNull {
                     fraction = nil

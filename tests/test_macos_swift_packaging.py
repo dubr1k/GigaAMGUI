@@ -495,3 +495,17 @@ def test_swift_progress_row_keeps_the_log_button_still() -> None:
     assert "percentage.widthAnchor.constraint(equalToConstant: 40)" in card
     assert "log.setContentHuggingPriority(.required, for: .horizontal)" in card
     assert "log.setContentCompressionResistancePriority(.required, for: .horizontal)" in card
+
+
+def test_swift_stage_labels_cover_every_progress_stage() -> None:
+    """Liquid показывал сырой id стадии («preprocessing») под прогрессом; таблица
+    StageLabel обязана знать каждую стадию из src/core/progress.py, как PyQt."""
+    progress = Path("src/core/progress.py").read_text(encoding="utf-8")
+    literal = progress.split("ProgressStage = Literal[", 1)[1].split("]", 1)[0]
+    stages = re.findall(r'"([a-z_]+)"', literal)
+    assert stages, "ProgressStage literal not found"
+    swift = Path("macos/GigaAMLiquid/Sources/GigaAMLiquidCore/StageLabel.swift").read_text(encoding="utf-8")
+    for stage in stages:
+        assert f'"{stage}": (' in swift, stage
+    transcription = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
+    assert "StageLabel.text(stage" in transcription
