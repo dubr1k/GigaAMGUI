@@ -213,6 +213,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     ("settings.language", "Язык", "Language"),
     ("settings.mouse", "Мышь", "Mouse"),
+    ("settings.theme", "Тема", "Theme"),
     ("settings.pets", "Пет", "Pet"),
     ("settings.backend", "Движок", "Engine"),
     ("settings.onnx_provider", "ONNX-провайдер", "ONNX provider"),
@@ -516,6 +517,22 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
         "interface language: ru or en",
     ),
     ("cmd.mouse", "мышь: on или off", "mouse support: on or off"),
+    (
+        "cmd.theme",
+        "цветовая схема: имя, без имени — меню",
+        "colour scheme: a name, or a menu without one",
+    ),
+    (
+        "usage.theme",
+        "Использование: /theme [имя]; без имени откроется список.",
+        "Usage: /theme [name]; without a name the list opens.",
+    ),
+    ("status.theme_set", "Тема: {value}", "Theme: {value}"),
+    (
+        "err.theme_unknown",
+        "Неизвестная тема «{value}».",
+        "Unknown theme `{value}`.",
+    ),
     (
         "cmd.exit",
         "выйти из терминального интерфейса",

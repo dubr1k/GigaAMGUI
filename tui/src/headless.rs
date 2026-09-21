@@ -82,6 +82,8 @@ pub(crate) fn apply_data_dir_argument() -> io::Result<()> {
 
 pub(crate) const HEADLESS_USAGE: &str = "Usage:
   gigaam                       launch the terminal UI
+  --lang ru|en                 interface language for this run
+  --theme NAME                 colour scheme for this run (`/theme` lists the names)
   gigaam transcribe FILE... [options]
   gigaam llm FILE... --mode MODE [--mode MODE ...] [options]
 

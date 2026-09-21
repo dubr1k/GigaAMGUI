@@ -94,11 +94,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             ))
             .right_aligned(),
         )
-        .border_style(Style::default().fg(if app.focus == Focus::Queue {
-            p.border_accent
-        } else {
-            p.border
-        }));
+        .border_style(p.border_focus(app.focus == Focus::Queue));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.add(area, Action::Scroll(AreaId::Queue, 0));
@@ -227,11 +223,7 @@ fn draw_params(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             format!(" {} ", t(app.lang, "params.title")),
             p.title(),
         ))
-        .border_style(Style::default().fg(if app.focus == Focus::Params {
-            p.border_accent
-        } else {
-            p.border
-        }));
+        .border_style(p.border_focus(app.focus == Focus::Params));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let rows: Vec<Row> = PARAM_ROWS

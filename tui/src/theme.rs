@@ -97,6 +97,21 @@ impl Palette {
         Style::new().fg(self.text).add_modifier(Modifier::BOLD)
     }
 
+    /// Рамка блока: акцентная в фокусе. Тема, где акцентная рамка не отличается
+    /// от обычной (`mono`), показывает фокус жирной линией.
+    pub(crate) fn border_focus(&self, focused: bool) -> Style {
+        let style = Style::new().fg(if focused {
+            self.border_accent
+        } else {
+            self.border
+        });
+        if focused && self.border_accent == self.border {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    }
+
     /// Выбранная строка или активная вкладка. Тема без фона выделения (`mono`)
     /// показывает выбор инверсией, иначе его было бы не отличить.
     pub(crate) fn emphasis(&self) -> Style {
@@ -120,7 +135,6 @@ pub(crate) struct Theme {
 
 impl Theme {
     /// Тема по точному имени; `None` для неизвестного.
-    #[allow(dead_code)] // removed in Task 3: `/theme` and `--theme` are the callers
     pub(crate) fn by_name(name: &str) -> Option<Theme> {
         if name == DEFAULT_THEME {
             return Some(Theme::default_theme());
@@ -141,7 +155,6 @@ impl Theme {
     }
 
     /// `default`, `mono`, затем каталог по алфавиту — порядок меню и автодополнения.
-    #[allow(dead_code)] // removed in Task 3: the `/theme` menu lists these
     pub(crate) fn names() -> Vec<&'static str> {
         let mut names = vec![DEFAULT_THEME, MONO_THEME];
         names.extend(THEMES.iter().map(|(name, _)| *name));
@@ -154,6 +167,35 @@ impl Theme {
             palette: Palette::DEFAULT,
         }
     }
+}
+
+/// Убирает `--theme X` / `--theme=X` из аргументов и возвращает тему на этот
+/// запуск (в настройки не пишется), как `i18n::strip_lang`. Неизвестное имя —
+/// ошибка, а не тихий откат к `default`.
+pub(crate) fn strip_theme(args: Vec<String>) -> Result<(Vec<String>, Option<Theme>), String> {
+    let mut result = Vec::with_capacity(args.len());
+    let mut theme = None;
+    let mut expect_value = false;
+    let parse = |value: &str| {
+        Theme::by_name(value)
+            .ok_or_else(|| format!("--theme: unknown theme `{value}` (see /theme for the list)"))
+    };
+    for arg in args {
+        if expect_value {
+            expect_value = false;
+            theme = Some(parse(&arg)?);
+        } else if arg == "--theme" {
+            expect_value = true;
+        } else if let Some(value) = arg.strip_prefix("--theme=") {
+            theme = Some(parse(value)?);
+        } else {
+            result.push(arg);
+        }
+    }
+    if expect_value {
+        return Err("--theme expects a theme name".into());
+    }
+    Ok((result, theme))
 }
 
 /// Палитра из JSON oh-my-pi.
@@ -422,6 +464,47 @@ mod tests {
         assert!(mono
             .add_modifier
             .contains(Modifier::BOLD | Modifier::REVERSED));
+    }
+
+    #[test]
+    fn strip_theme_removes_both_forms_and_rejects_unknown_names() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (rest, theme) = strip_theme(args(&["--theme", "mono", "transcribe", "a.wav"])).unwrap();
+        assert_eq!(rest, args(&["transcribe", "a.wav"]));
+        assert_eq!(theme.map(|theme| theme.name), Some("mono"));
+        let (rest, theme) = strip_theme(args(&["--theme=dark-monokai"])).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(theme.map(|theme| theme.name), Some("dark-monokai"));
+        let (rest, theme) = strip_theme(args(&["transcribe"])).unwrap();
+        assert_eq!(rest, args(&["transcribe"]));
+        assert!(theme.is_none());
+        let error = strip_theme(args(&["--theme", "nope"])).unwrap_err();
+        assert!(
+            error.contains("nope") && error.contains("/theme"),
+            "{error}"
+        );
+        assert!(strip_theme(args(&["--theme"])).is_err());
+    }
+
+    #[test]
+    fn border_focus_is_the_accent_border_or_bold_when_the_theme_has_no_accent() {
+        use ratatui::style::Modifier;
+        let default = Palette::DEFAULT;
+        assert_eq!(default.border_focus(true).fg, Some(default.border_accent));
+        assert_eq!(default.border_focus(false).fg, Some(default.border));
+        assert!(!default
+            .border_focus(true)
+            .add_modifier
+            .contains(Modifier::BOLD));
+        let mono = Palette::MONO;
+        assert!(mono
+            .border_focus(true)
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(!mono
+            .border_focus(false)
+            .add_modifier
+            .contains(Modifier::BOLD));
     }
 
     #[test]

@@ -68,6 +68,7 @@ pub(crate) fn rows(app: &App) -> Vec<SettingRow> {
             on_off(app, app.mouse_enabled),
             Action::ToggleSetting("mouse"),
         ),
+        row("settings.theme", app.theme.name, Action::OpenMenu("/theme")),
         row(
             "settings.pets",
             on_off(app, app.pet_enabled),
@@ -276,6 +277,28 @@ mod tests {
         assert_eq!(key.value, "••••");
         assert_eq!(key.action, Action::EditCommand("/llm-api-key"));
         assert_eq!(list[0].value, "English");
+    }
+
+    #[test]
+    fn theme_row_follows_the_mouse_row_and_opens_the_theme_menu() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.theme = crate::theme::Theme::by_name("dark-monokai").unwrap();
+        let list = rows(&app);
+        let mouse = list
+            .iter()
+            .position(|row| row.key == "settings.mouse")
+            .unwrap();
+        assert_eq!(list[mouse + 1].key, "settings.theme");
+        assert_eq!(list[mouse + 1].value, "dark-monokai");
+        dispatch(&mut app, Action::SettingsRow(mouse + 1));
+        assert_eq!(app.command_menu.as_deref(), Some("/theme"));
+        assert_eq!(app.settings_cursor, mouse + 1);
+        assert_eq!(
+            crate::commands::command_menu_options(&app)[app.command_menu_index],
+            "dark-monokai"
+        );
+        assert!(render(&mut app).contains("dark-monokai"));
     }
 
     #[test]

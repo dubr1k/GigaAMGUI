@@ -34,6 +34,7 @@ use headless::{apply_data_dir_argument, run_headless, strip_data_dir, HEADLESS_U
 use i18n::{strip_lang, t, tf};
 use keys::handle_key;
 use settings::{apply_settings, load_settings};
+use theme::strip_theme;
 use ui::{draw, Action, ButtonId};
 use worker::{llm_start_payload, send, spawn_worker};
 
@@ -88,6 +89,8 @@ fn main() -> io::Result<()> {
     apply_data_dir_argument()?;
     let (argv, lang_override) = strip_lang(strip_data_dir(std::env::args().skip(1).collect()))
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let (argv, theme_override) =
+        strip_theme(argv).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     match argv.first().map(String::as_str) {
         Some("transcribe" | "llm") => {
             let code = run_headless(&argv)?;
@@ -101,6 +104,9 @@ fn main() -> io::Result<()> {
     }
     let mut app = App::default();
     apply_settings(&mut app, load_settings(), lang_override);
+    if let Some(theme) = theme_override {
+        app.theme = theme; // this run only; a later save keeps it, like --lang
+    }
     let mut worker = start_worker(&mut app);
     enable_raw_mode()?;
     let mut stdout = io::stdout();

@@ -64,7 +64,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
         .clone()
         .map(|index| {
             let is_selected = index == selected;
-            if rows.menu.is_empty() {
+            let line = if rows.menu.is_empty() {
                 let (command, _) = rows.suggestions[index];
                 Line::from(vec![
                     Span::styled(
@@ -116,6 +116,13 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
                             }),
                     ),
                 ])
+            };
+            // The selected row is emphasised like every other list's selection,
+            // so it stays visible in a theme without colours.
+            if is_selected {
+                line.style(p.emphasis())
+            } else {
+                line
             }
         })
         .collect();
