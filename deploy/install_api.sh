@@ -208,7 +208,7 @@ echo -e "${YELLOW}Тестирование:${NC}"
 echo -e "  curl https://$DOMAIN/health"
 echo ""
 echo -e "${YELLOW}Полная документация:${NC}"
-echo -e "  $PROJECT_DIR/docs/API_GUIDE.md"
+echo -e "  $PROJECT_DIR/docs/API.md"
 echo ""
 echo -e "${GREEN}Готово! 🎉${NC}\n"
 

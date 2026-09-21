@@ -19,15 +19,21 @@ def test_tauri_dependencies_are_locked() -> None:
     assert (ROOT / "desktop/src-tauri/Cargo.lock").is_file()
 
 
-def test_tauri_api_examples_match_authenticated_v1_contract() -> None:
-    javascript = (ROOT / "desktop/ui/app.js").read_text(encoding="utf-8")
-    html = (ROOT / "desktop/ui/index.html").read_text(encoding="utf-8")
-    for text in (javascript, html):
-        assert "/api/v1/transcribe" in text
-        assert "X-API-Key" in text
-        assert "enable_diarization" in text
-        assert "/api/transcribe" not in text
-        assert '"diarize"' not in text
+def test_api_examples_use_openai_contract() -> None:
+    files = [
+        "desktop/ui/app.js",
+        "desktop/ui/index.html",
+        "src/gui/support_surfaces_mixin.py",
+        "macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift",
+        "macos/GigaAMLiquid/Sources/GigaAMLiquid/Localization.swift",
+    ]
+    for rel in files:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "/api/v1/" not in text, rel
+    for rel in files:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "/v1/audio/transcriptions" in text, rel
+        assert "Authorization: Bearer" in text or "Bearer " in text, rel
 
 
 def test_all_desktop_version_sources_match_release():

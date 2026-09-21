@@ -1,763 +1,457 @@
-# API Документация GigaAM v3 Transcriber
+# REST API (совместим с OpenAI Audio API)
 
-Документация программного интерфейса для разработчиков, желающих интегрировать или расширить функциональность приложения.
+GigaAM v3 Transcriber поднимает HTTP-сервер (`api.py`, FastAPI), который
+повторяет контракт OpenAI Audio API: `POST /v1/audio/transcriptions`,
+`GET /v1/models`, ошибки в конверте OpenAI. Любой клиент, написанный под
+`openai.audio.transcriptions.create(...)` — официальные SDK, `curl`, плагины
+Obsidian, n8n, Home Assistant, Open WebUI — работает с GigaAM, если поменять
+`base_url` на `http://127.0.0.1:8000/v1` и ключ. Ключ создаётся при первом
+запуске и печатается в консоль один раз (в `.api_keys` хранится только SHA-256
+хэш). Запуск: `python api.py` или `uvicorn api:app --host 127.0.0.1 --port 8000`;
+интерактивная OpenAPI-документация — `http://127.0.0.1:8000/docs`.
 
-## Содержание
+Содержание:
 
-- [Архитектура проекта](#архитектура-проекта)
-- [Основные модули](#основные-модули)
-- [API классов](#api-классов)
-- [Примеры использования](#примеры-использования)
-- [Расширение функциональности](#расширение-функциональности)
+- [Быстрый старт](#быстрый-старт)
+- [Авторизация](#авторизация)
+- [POST /v1/audio/transcriptions](#post-v1audiotranscriptions)
+- [Стриминг (stream=true)](#стриминг-streamtrue)
+- [GET /v1/models и GET /v1/models/{id}](#get-v1models-и-get-v1modelsid)
+- [Ошибки](#ошибки)
+- [Отличия от OpenAI](#отличия-от-openai)
+- [Расширения GigaAM](#расширения-gigaam)
+- [Postman](#postman)
+- [Переменные окружения](#переменные-окружения)
 
----
+## Быстрый старт
 
-## Архитектура проекта
+**curl** (ответ `json`):
 
-Проект построен по модульной архитектуре с разделением на слои:
-
-```
-src/
-├── config.py           # Конфигурация
-├── core/              # Бизнес-логика
-│   ├── model_loader.py
-│   └── processor.py
-├── gui/               # Графический интерфейс
-│   └── app.py
-└── utils/             # Вспомогательные утилиты
-    ├── audio_converter.py
-    ├── time_formatter.py
-    ├── processing_stats.py
-    └── pyannote_patch.py
-```
-
----
-
-## Основные модули
-
-### src/config.py
-
-Централизованная конфигурация приложения.
-
-**Константы:**
-```python
-HF_TOKEN: str              # Токен HuggingFace
-MODEL_NAME: str            # Имя модели GigaAM
-MODEL_REVISION: str        # Ревизия модели
-AUDIO_SAMPLE_RATE: int     # Частота дискретизации (16000 Hz)
-AUDIO_CHANNELS: int        # Количество каналов (1 - моно)
-APP_TITLE: str             # Название приложения
-APP_GEOMETRY: str          # Размеры окна
-STATS_FILE: str            # Файл статистики
-SUPPORTED_FORMATS: tuple   # Поддерживаемые форматы файлов
+```bash
+curl http://127.0.0.1:8000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $GIGAAM_API_KEY" \
+  -F "file=@speech.wav" \
+  -F "model=whisper-1"
 ```
 
-**Использование:**
-```python
-from src.config import HF_TOKEN, MODEL_NAME, AUDIO_SAMPLE_RATE
+```json
+{"text": "Привет, как дела?", "usage": {"type": "duration", "seconds": 4}}
 ```
 
----
-
-## API классов
-
-### ModelLoader
-
-Класс для загрузки и управления моделью GigaAM.
-
-**Расположение:** `src/core/model_loader.py`
-
-#### Конструктор
+**Python** (`pip install openai`):
 
 ```python
-ModelLoader()
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
+
+with open("speech.wav", "rb") as audio:
+    result = client.audio.transcriptions.create(model="whisper-1", file=audio)
+print(result.text)
 ```
 
-Создает экземпляр загрузчика модели. При инициализации модель еще не загружена.
+**Node.js** (`npm install openai`):
 
-#### Методы
+```js
+import fs from "node:fs";
+import OpenAI from "openai";
 
-##### load_model()
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8000/v1", apiKey: "gam_..." });
+
+const result = await client.audio.transcriptions.create({
+  file: fs.createReadStream("speech.wav"),
+  model: "whisper-1",
+});
+console.log(result.text);
+```
+
+## Авторизация
+
+Все маршруты `/v1/*` требуют ключ. Принимаются два заголовка:
+
+- `Authorization: Bearer <key>` — так шлют SDK OpenAI (регистр слова `Bearer`
+  не важен);
+- `X-API-Key: <key>` — для старых скриптов и примеров в GUI. Если есть оба
+  заголовка, `Authorization` проверяется первым; `X-API-Key` используется,
+  когда `Authorization` не начинается с `Bearer`.
+
+Ключи лежат в файле `.api_keys` (путь меняется переменной `API_KEYS_FILE`),
+по одному SHA-256 хэшу в строке, права `0600`. Если файла нет, при старте
+сервер создаёт ключ вида `gam_<32 hex>`, печатает его в консоль и сохраняет
+только хэш — восстановить ключ из файла нельзя. Чтобы добавить ключ вручную:
+
+```bash
+printf 'gam_my_second_key' | shasum -a 256 | cut -d' ' -f1 >> .api_keys
+```
+
+Строки без хэша (ключ открытым текстом) при следующем старте мигрируют в хэши.
+Сравнение хэшей — за постоянное время.
+
+`GET /health`, `GET /`, `/docs`, `/openapi.json` ключа не требуют.
+
+Без ключа или с неверным ключом — `401`:
+
+```json
+{
+  "error": {
+    "message": "Incorrect API key provided.",
+    "type": "authentication_error",
+    "param": null,
+    "code": "invalid_api_key"
+  }
+}
+```
+
+## POST /v1/audio/transcriptions
+
+`multipart/form-data`, один файл за запрос, ответ синхронный (или SSE при
+`stream=true`). Лимит: `RATE_LIMIT_UPLOAD` (10 запросов в минуту) с одного IP (см. [Ошибки](#ошибки)).
+
+| Поле | Тип | Поведение |
+|---|---|---|
+| `file` | file, обязательно | Аудио/видео: `mp3 wav m4a aac mp4 avi mov mkv webm flac ogg wma qta 3gp`. Другое расширение → `400 unsupported_file`; больше `MAX_FILE_SIZE` (2 ГБ по умолчанию) → `413 file_too_large`. Имя файла проходит защиту от path traversal. |
+| `model` | str, обязательно | Id из `GET /v1/models` (`v3_e2e_rnnt`, `multilingual_ctc`, `multilingual_large_ctc`) **или алиас** `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gigaam` → `v3_e2e_rnnt`. Неизвестное имя → `404 model_not_found`. |
+| `language` | str | Принимается; на распознавание не влияет (модель сама определяет язык, `v3_e2e_rnnt` — только русский). Значение возвращается как есть в `verbose_json.language`; без него — `ru`. По ISO-списку не проверяется. |
+| `prompt` | str | Принимается, игнорируется. |
+| `response_format` | enum | `json` (по умолчанию), `text`, `srt`, `vtt`, `verbose_json`, `diarized_json`. Другое → `400 unsupported_response_format`. |
+| `temperature` | float | Принимается, игнорируется. |
+| `stream` | bool | `true`/`1`/`yes`/`on` → SSE (см. [Стриминг](#стриминг-streamtrue)). Только с `json` и `verbose_json`; иначе `400 stream_not_supported`. |
+| `timestamp_granularities[]` | list | `segment` (по умолчанию) и/или `word`. Учитывается только в `verbose_json`. Другое значение → `400 unsupported_parameter`. |
+| `include[]` | list | Принимается, игнорируется (logprobs нет). |
+| `chunking_strategy` | str | Принимается, игнорируется — GigaAM всегда режет по VAD. |
+| `known_speaker_names[]`, `known_speaker_references[]` | list | Не поддерживаются: непустой список → `400 unsupported_parameter`. |
+| **`diarize`** | bool, расширение | Включить диаризацию (кто говорит). При `response_format=diarized_json` включается автоматически. |
+| **`diarization_backend`** | str, расширение | `pyannote` (по умолчанию), `sortformer` (алиас `nvidia`), `onnx`. `pyannote` требует `HF_TOKEN` на сервере, иначе `503 diarization_unavailable`. Неизвестное → `400 unsupported_parameter`. |
+| **`num_speakers`** | int ≥ 1, расширение | Число говорящих для `pyannote`/`onnx`. Вместе с `sortformer` → `400 unsupported_parameter`. |
+| **`asr_backend`** | str, расширение | `auto` \| `pytorch` \| `onnx` \| `mlx`. По умолчанию — движок сервера. Другой движок/модель загружаются отдельно на время запроса и выгружаются после. Неизвестное → `400 unsupported_parameter`. |
+| **`onnx_provider`** | str, расширение | `auto` \| `cpu` \| `cuda` \| `tensorrt` \| `coreml` \| `directml` (для `asr_backend=onnx`). |
+| **`audio_preprocessing`** | str, расширение | `off` \| `auto` \| `light` \| `denoise` (алиас `deepfilter`). По умолчанию — `AUDIO_PREPROCESSING_MODE` сервера. |
+
+Параметры-расширения удобно передавать из SDK через `extra_body`, см.
+[Расширения GigaAM](#расширения-gigaam). В OpenAPI (`/docs`) они помечены как
+«GigaAM extension».
+
+### Ответы по `response_format`
+
+Примеры ниже — для одного файла с двумя репликами: «Привет,» (0.0–1.5 с)
+и «как дела?» (1.5–3.25 с).
+
+`json` — `Content-Type: application/json`. `usage.seconds` — длительность
+файла, округлённая вверх:
+
+```json
+{"text": "Привет, как дела?", "usage": {"type": "duration", "seconds": 4}}
+```
+
+`text` — `text/plain; charset=utf-8`, реплики через пробел:
+
+```
+Привет, как дела?
+```
+
+`srt` — `application/x-subrip`; `vtt` — `text/vtt`. Собираются теми же
+форматтерами, что и в GUI/CLI (настройки субтитров по умолчанию). При
+включённой диаризации строки получают метку говорящего из диаризатора
+(`SPEAKER_00: …` в SRT, `<v SPEAKER_00>` в VTT):
+
+```
+1
+00:00:00,000 --> 00:00:01,500
+Привет,
+
+2
+00:00:01,500 --> 00:00:03,250
+как дела?
+```
+
+```
+WEBVTT
+
+00:00:00.000 --> 00:00:01.500
+Привет,
+
+00:00:01.500 --> 00:00:03.250
+как дела?
+```
+
+`verbose_json` — поля сегментов как у OpenAI; `seek`, `tokens`,
+`temperature`, `avg_logprob`, `compression_ratio`, `no_speech_prob` всегда
+нулевые/пустые (GigaAM их не считает). `words` появляется только при
+`timestamp_granularities[]=word` и содержит слова лишь для движков, которые
+отдают пословные тайминги, иначе `[]`. При `diarize=true` в каждый сегмент
+добавляется `speaker` (`A`, `B`, … по порядку появления):
+
+```json
+{
+  "task": "transcribe",
+  "language": "ru",
+  "duration": 3.25,
+  "text": "Привет, как дела?",
+  "segments": [
+    {"id": 0, "seek": 0, "start": 0.0, "end": 1.5, "text": "Привет,", "tokens": [],
+     "temperature": 0.0, "avg_logprob": 0.0, "compression_ratio": 0.0, "no_speech_prob": 0.0},
+    {"id": 1, "seek": 0, "start": 1.5, "end": 3.25, "text": "как дела?", "tokens": [],
+     "temperature": 0.0, "avg_logprob": 0.0, "compression_ratio": 0.0, "no_speech_prob": 0.0}
+  ],
+  "words": [
+    {"word": "как", "start": 1.5, "end": 2.0},
+    {"word": "дела?", "start": 2.0, "end": 3.25}
+  ],
+  "usage": {"type": "duration", "seconds": 4}
+}
+```
+
+`diarized_json` — диаризация включается автоматически; говорящие — буквы
+`A`, `B`, … в порядке первого появления (без диаризации все сегменты — `A`):
+
+```json
+{
+  "task": "transcribe",
+  "duration": 3.25,
+  "text": "Привет, как дела?",
+  "segments": [
+    {"id": 0, "type": "transcript.text.segment", "start": 0.0, "end": 1.5, "speaker": "A", "text": "Привет,"},
+    {"id": 1, "type": "transcript.text.segment", "start": 1.5, "end": 3.25, "speaker": "B", "text": "как дела?"}
+  ]
+}
+```
+
+## Стриминг (stream=true)
+
+`stream=true` даёт `text/event-stream` (заголовки `Cache-Control: no-cache`,
+`X-Accel-Buffering: no`). Разрешён только для `json` и `verbose_json`.
+Честно: GigaAM отдаёт текст после того, как файл распознан целиком, поэтому
+дельты приходят пакетом в конце, а не по мере распознавания. Смысл стрима —
+держать соединение живым за прокси и таймаутами клиента на длинных файлах.
+
+Пока идёт обработка, сервер шлёт SSE-комментарии (строки с `:` — SDK их
+игнорируют): `: progress <stage> <pct>` на каждое событие прогресса процессора
+(`preparing`, `conversion`, `preprocessing`, `transcription`, `diarization`, `export`, `finalizing`) и
+`: keepalive`, если событий не было 5 секунд. Затем по одному
+`transcript.text.delta` на реплику — у всех дельт, кроме последней, пробел на
+конце, так что конкатенация даёт полный текст, — и `transcript.text.done`:
+
+```
+: progress conversion 100%
+
+: progress transcription 42%
+
+: keepalive
+
+: progress transcription 100%
+
+data: {"type": "transcript.text.delta", "delta": "Привет, "}
+
+data: {"type": "transcript.text.delta", "delta": "как дела?"}
+
+data: {"type": "transcript.text.done", "text": "Привет, как дела?", "usage": {"type": "duration", "seconds": 4}}
+```
+
+При `response_format=verbose_json` событие `transcript.text.done` дополнительно
+несёт поля ответа `verbose_json` (`task`, `language`, `duration`, `segments`;
+`words` — при `timestamp_granularities[]=word`). Ошибка после начала стрима приходит последним событием со статусом
+`200` (заголовки уже отправлены):
+
+```
+data: {"type": "error", "error": {"message": "Transcription failed on the server. See the server log.", "type": "server_error", "param": null, "code": "processing_failed"}}
+```
+
+SDK:
 
 ```python
-def load_model() -> tuple
+with open("long-meeting.mp3", "rb") as audio:
+    stream = client.audio.transcriptions.create(model="whisper-1", file=audio, stream=True)
+    for event in stream:
+        if event.type == "transcript.text.delta":
+            print(event.delta, end="", flush=True)
+        elif event.type == "transcript.text.done":
+            print()
 ```
 
-Загружает модель GigaAM и pipeline для сегментации.
-
-**Возвращает:**
-- `tuple`: (model, sample_rate, pipeline, device)
-  - `model`: Модель GigaAM
-  - `sample_rate`: Частота дискретизации (16000)
-  - `pipeline`: Pipeline pyannote для сегментации
-  - `device`: Устройство (cpu/cuda/mps)
-
-**Исключения:**
-- `Exception`: При ошибке загрузки модели или токена
-
-**Пример:**
-```python
-from src.core.model_loader import ModelLoader
-
-loader = ModelLoader()
-model, sample_rate, pipeline, device = loader.load_model()
+```bash
+curl -N http://127.0.0.1:8000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $GIGAAM_API_KEY" \
+  -F "file=@long-meeting.mp3" -F "model=whisper-1" -F "stream=true"
 ```
 
----
+## GET /v1/models и GET /v1/models/{id}
 
-### TranscriptionProcessor
+`GET /v1/models` — список в формате OpenAI плюс объект `gigaam` — замена
+удалённого справочника параметров движка: какие `asr_backend` реально
+доступны на этой машине, список `onnx_provider` и активная конфигурация
+загруженной модели (`diagnostics()` загрузчика: движок, устройство,
+провайдер, причина отката …). Поле `created` всегда `0`.
 
-Класс для обработки транскрибации аудио/видео файлов.
-
-**Расположение:** `src/core/processor.py`
-
-#### Конструктор
-
-```python
-TranscriptionProcessor(
-    model,
-    sample_rate: int,
-    pipeline,
-    device,
-    progress_callback: callable = None
-)
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "v3_e2e_rnnt",
+      "object": "model",
+      "created": 0,
+      "owned_by": "gigaam",
+      "description": "GigaAM v3 e2e RNNT (current)",
+      "default": true,
+      "aliases": ["gigaam", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
+    },
+    {
+      "id": "multilingual_ctc",
+      "object": "model",
+      "created": 0,
+      "owned_by": "gigaam",
+      "description": "GigaAM Multilingual CTC (220M)",
+      "default": false,
+      "aliases": []
+    },
+    {
+      "id": "multilingual_large_ctc",
+      "object": "model",
+      "created": 0,
+      "owned_by": "gigaam",
+      "description": "GigaAM Multilingual Large CTC (600M)",
+      "default": false,
+      "aliases": []
+    }
+  ],
+  "gigaam": {
+    "backends": ["auto", "onnx", "mlx", "pytorch"],
+    "onnx_providers": ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"],
+    "active": {"requested_backend": "auto", "active_backend": "mlx", "model": "v3_e2e_rnnt", "device": "mps"}
+  }
+}
 ```
 
-**Параметры:**
-- `model`: Загруженная модель GigaAM
-- `sample_rate`: Частота дискретизации
-- `pipeline`: Pipeline для сегментации
-- `device`: Устройство для вычислений
-- `progress_callback`: Функция обратного вызова для прогресса (опционально)
+`GET /v1/models/{id}` принимает и id, и алиас (`/v1/models/whisper-1` →
+объект `v3_e2e_rnnt`); неизвестный → `404 model_not_found`.
 
-**Пример:**
-```python
-from src.core.processor import TranscriptionProcessor
+| Алиас | Модель |
+|---|---|
+| `whisper-1` | `v3_e2e_rnnt` |
+| `gpt-4o-transcribe` | `v3_e2e_rnnt` |
+| `gpt-4o-mini-transcribe` | `v3_e2e_rnnt` |
+| `gigaam` | `v3_e2e_rnnt` |
 
-processor = TranscriptionProcessor(
-    model, 
-    sample_rate, 
-    pipeline, 
-    device,
-    progress_callback=lambda p: print(f"Progress: {p}%")
-)
+Служебные маршруты без ключа: `GET /health` — `{"status", "version",
+"model_loaded", "runtime": {"platform", "machine"}, "asr": {...}}`; `GET /` —
+имя сервиса, версия и список маршрутов.
+
+## Ошибки
+
+Все ошибки, включая 404 неизвестного пути, 405, 422 валидации и необработанные
+исключения, приходят в конверте OpenAI:
+
+```json
+{"error": {"message": "...", "type": "invalid_request_error", "param": "file", "code": "unsupported_file"}}
 ```
 
-#### Методы
+`param` — имя поля формы, к которому относится ошибка, или `null`. Тексты
+сообщений — на английском.
 
-##### process_file()
+| HTTP | `type` | `code` | Когда |
+|---|---|---|---|
+| 400 | `invalid_request_error` | `unsupported_file` | расширение файла не из списка поддерживаемых |
+| 400 | `invalid_request_error` | `unsupported_response_format` | `response_format` вне списка |
+| 400 | `invalid_request_error` | `stream_not_supported` | `stream=true` с `text`/`srt`/`vtt`/`diarized_json` |
+| 400 | `invalid_request_error` | `unsupported_parameter` | `known_speaker_*`, неизвестная гранулярность, `diarization_backend`, `asr_backend`/`onnx_provider`, `num_speakers` + `sortformer` |
+| 400 | `invalid_request_error` | `translation_not_supported` | `POST /v1/audio/translations` |
+| 401 | `authentication_error` | `invalid_api_key` | нет ключа или ключ неверный. Для `POST /v1/audio/*` отсутствие заголовка `Authorization`/`X-API-Key` отклоняется по заголовкам, до чтения тела |
+| 404 | `invalid_request_error` | `model_not_found` | неизвестный `model` / `/v1/models/{id}` |
+| 404 | `invalid_request_error` | `null` | неизвестный путь (в том числе старые маршруты) |
+| 405 | `invalid_request_error` | `null` | неверный метод |
+| 413 | `invalid_request_error` | `file_too_large` | файл больше `MAX_FILE_SIZE`; если `Content-Length` превышает `MAX_FILE_SIZE` + 1 МиБ, ответ приходит по заголовкам, до чтения тела |
+| 422 | `invalid_request_error` | `null` | ошибка валидации формы: нет `file`/`model`, `num_speakers` < 1 …; `param` — имя поля |
+| 429 | `rate_limit_error` | `rate_limit_exceeded` | больше `RATE_LIMIT_UPLOAD` (10 в минуту) запросов на транскрибацию с одного IP |
+| 500 | `server_error` | `processing_failed` | конвертация/распознавание упали; подробности в журнале сервера |
+| 500 | `server_error` | `internal_error` | необработанное исключение; при `API_DEBUG=true` в `message` добавляется текст исключения |
+| 503 | `server_error` | `diarization_unavailable` | диаризация `pyannote` без `HF_TOKEN` на сервере |
+| 503 | `server_error` | `model_not_loaded` | модель ASR не загружена |
 
-```python
-def process_file(
-    file_path: str,
-    output_dir: str = None
-) -> tuple
-```
+Ответ `429` несёт заголовки `Retry-After` и `X-RateLimit-Limit` /
+`X-RateLimit-Remaining` / `X-RateLimit-Reset` — по ним SDK OpenAI делает
+повторы с backoff.
 
-Обрабатывает один аудио/видео файл.
+## Отличия от OpenAI
 
-**Параметры:**
-- `file_path`: Путь к файлу
-- `output_dir`: Директория для сохранения результатов (опционально)
+- Модель по умолчанию `v3_e2e_rnnt` распознаёт только русскую речь;
+  `whisper-1` и другие алиасы указывают на неё. Для других языков —
+  `multilingual_ctc` / `multilingual_large_ctc`.
+- `language`, `prompt`, `temperature`, `include[]`, `chunking_strategy`
+  принимаются и игнорируются.
+- `known_speaker_names[]` / `known_speaker_references[]` отклоняются (`400`).
+- `POST /v1/audio/translations` всегда отвечает `400 translation_not_supported`;
+  `/v1/audio/speech` и Realtime API нет.
+- В `verbose_json` `tokens`, `avg_logprob`, `compression_ratio`,
+  `no_speech_prob` не вычисляются; `words` пуст для движков без пословных
+  таймингов.
+- `stream=true` разрешён только для `json`/`verbose_json`, дельты приходят
+  после распознавания всего файла.
+- `usage` — только `{"type": "duration", "seconds"}`, токены не считаются.
+- Таймаута на запрос нет: длинный файл держит соединение столько, сколько
+  идёт обработка. За прокси (nginx, Cloudflare) используйте `stream=true` —
+  комментарии прогресса не дают соединению заснуть — или поднимайте таймауты
+  клиента (`OpenAI(timeout=...)`).
+- Лимит `RATE_LIMIT_UPLOAD` (10 запросов в минуту) на транскрибацию с одного
+  IP; одновременно обрабатываются `MAX_CONCURRENT_TASKS` файлов, остальные
+  ждут внутри запроса.
+- Ключ можно передавать и заголовком `X-API-Key`.
 
-**Возвращает:**
-- `tuple`: (text_output, timecodes_output)
-  - `text_output`: Путь к файлу с чистым текстом
-  - `timecodes_output`: Путь к файлу с таймкодами
+## Расширения GigaAM
 
-**Исключения:**
-- `FileNotFoundError`: Файл не найден
-- `Exception`: Ошибка при обработке
-
-**Пример:**
-```python
-text_file, timecodes_file = processor.process_file(
-    "audio.mp3",
-    output_dir="/path/to/output"
-)
-```
-
-##### process_multiple_files()
-
-```python
-def process_multiple_files(
-    file_paths: list,
-    output_dir: str = None
-) -> list
-```
-
-Обрабатывает несколько файлов последовательно.
-
-**Параметры:**
-- `file_paths`: Список путей к файлам
-- `output_dir`: Директория для сохранения (опционально)
-
-**Возвращает:**
-- `list`: Список кортежей (text_output, timecodes_output) для каждого файла
-
-**Пример:**
-```python
-files = ["audio1.mp3", "audio2.wav"]
-results = processor.process_multiple_files(files)
-```
-
----
-
-### AudioConverter
-
-Класс для конвертации аудио/видео через FFmpeg.
-
-**Расположение:** `src/utils/audio_converter.py`
-
-#### Методы
-
-##### convert_to_wav()
-
-```python
-@staticmethod
-def convert_to_wav(
-    input_path: str,
-    output_path: str = None,
-    sample_rate: int = 16000,
-    channels: int = 1
-) -> str
-```
-
-Конвертирует аудио/видео в WAV формат.
-
-**Параметры:**
-- `input_path`: Путь к исходному файлу
-- `output_path`: Путь для сохранения WAV (опционально)
-- `sample_rate`: Частота дискретизации (по умолчанию 16000)
-- `channels`: Количество каналов (по умолчанию 1)
-
-**Возвращает:**
-- `str`: Путь к созданному WAV файлу
-
-**Исключения:**
-- `FileNotFoundError`: FFmpeg не найден
-- `Exception`: Ошибка конвертации
-
-**Пример:**
-```python
-from src.utils.audio_converter import AudioConverter
-
-wav_path = AudioConverter.convert_to_wav(
-    "video.mp4",
-    sample_rate=16000,
-    channels=1
-)
-```
-
-##### check_ffmpeg()
+Дополнительные поля формы, которых нет у OpenAI (полное описание — в таблице
+параметров выше): `diarize`, `diarization_backend`, `num_speakers`,
+`asr_backend`, `onnx_provider`, `audio_preprocessing`. Из SDK они передаются
+через `extra_body`:
 
 ```python
-@staticmethod
-def check_ffmpeg() -> bool
+with open("meeting.wav", "rb") as audio:
+    result = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=audio,
+        response_format="verbose_json",
+        extra_body={"diarize": True, "num_speakers": 2, "audio_preprocessing": "auto"},
+    )
+for segment in result.segments:
+    print(segment.speaker, segment.text)  # speaker — расширение, есть только при diarize
 ```
 
-Проверяет доступность FFmpeg.
-
-**Возвращает:**
-- `bool`: True если FFmpeg доступен
-
-**Пример:**
-```python
-if AudioConverter.check_ffmpeg():
-    print("FFmpeg установлен")
+```bash
+curl http://127.0.0.1:8000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $GIGAAM_API_KEY" \
+  -F "file=@meeting.wav" -F "model=whisper-1" \
+  -F "response_format=diarized_json" -F "diarization_backend=sortformer" \
+  -F "asr_backend=onnx" -F "onnx_provider=coreml"
 ```
 
----
-
-### TimeFormatter
-
-Утилиты для форматирования времени.
-
-**Расположение:** `src/utils/time_formatter.py`
-
-#### Методы
-
-##### seconds_to_timestamp()
-
-```python
-@staticmethod
-def seconds_to_timestamp(seconds: float) -> str
-```
-
-Конвертирует секунды в формат HH:MM:SS.
-
-**Параметры:**
-- `seconds`: Количество секунд
-
-**Возвращает:**
-- `str`: Форматированная строка времени
-
-**Пример:**
-```python
-from src.utils.time_formatter import TimeFormatter
-
-timestamp = TimeFormatter.seconds_to_timestamp(125.5)
-# Результат: "00:02:05"
-```
-
-##### format_duration()
-
-```python
-@staticmethod
-def format_duration(seconds: float) -> str
-```
-
-Форматирует длительность в читаемый вид.
-
-**Параметры:**
-- `seconds`: Количество секунд
-
-**Возвращает:**
-- `str`: Читаемая строка (например, "2 мин 5 сек")
-
-**Пример:**
-```python
-duration = TimeFormatter.format_duration(125)
-# Результат: "2 мин 5 сек"
-```
-
----
-
-### ProcessingStats
-
-Класс для сбора и анализа статистики обработки.
-
-**Расположение:** `src/utils/processing_stats.py`
-
-#### Конструктор
-
-```python
-ProcessingStats(stats_file: str = "processing_stats.json")
-```
-
-**Параметры:**
-- `stats_file`: Путь к файлу статистики
-
-#### Методы
-
-##### add_record()
-
-```python
-def add_record(
-    file_size: int,
-    duration: float,
-    processing_time: float,
-    file_type: str
-) -> None
-```
-
-Добавляет запись о обработке файла.
-
-**Параметры:**
-- `file_size`: Размер файла в байтах
-- `duration`: Длительность аудио в секундах
-- `processing_time`: Время обработки в секундах
-- `file_type`: Тип файла (расширение)
-
-**Пример:**
-```python
-from src.utils.processing_stats import ProcessingStats
-
-stats = ProcessingStats()
-stats.add_record(
-    file_size=5000000,
-    duration=120,
-    processing_time=45,
-    file_type="mp3"
-)
-```
-
-##### estimate_time()
-
-```python
-def estimate_time(
-    file_size: int,
-    duration: float,
-    file_type: str
-) -> float
-```
-
-Оценивает время обработки на основе статистики.
-
-**Параметры:**
-- `file_size`: Размер файла
-- `duration`: Длительность аудио
-- `file_type`: Тип файла
-
-**Возвращает:**
-- `float`: Оценочное время в секундах
-
-**Пример:**
-```python
-estimated = stats.estimate_time(
-    file_size=10000000,
-    duration=300,
-    file_type="wav"
-)
-print(f"Примерное время: {estimated} секунд")
-```
-
----
-
-### GigaTranscriberApp
-
-Главный класс GUI приложения.
-
-**Расположение:** `src/gui/app.py`
-
-Класс наследуется от `customtkinter.CTk` и реализует графический интерфейс.
-
-#### Конструктор
-
-```python
-GigaTranscriberApp()
-```
-
-Создает и инициализирует GUI приложение.
-
-#### Основные методы
-
-##### select_files()
-
-```python
-def select_files() -> None
-```
-
-Открывает диалог выбора файлов.
-
-##### select_output_dir()
-
-```python
-def select_output_dir() -> None
-```
-
-Открывает диалог выбора директории для сохранения.
-
-##### start_processing()
-
-```python
-def start_processing() -> None
-```
-
-Запускает обработку выбранных файлов в отдельном потоке.
-
----
-
-## Примеры использования
-
-### Простая транскрибация файла
-
-```python
-from src.core.model_loader import ModelLoader
-from src.core.processor import TranscriptionProcessor
-
-# Загрузка модели
-loader = ModelLoader()
-model, sample_rate, pipeline, device = loader.load_model()
-
-# Создание процессора
-processor = TranscriptionProcessor(model, sample_rate, pipeline, device)
-
-# Обработка файла
-text_file, timecodes_file = processor.process_file("audio.mp3")
-
-print(f"Результат: {text_file}")
-```
-
-### Транскрибация с прогресс-баром
-
-```python
-from src.core.model_loader import ModelLoader
-from src.core.processor import TranscriptionProcessor
-
-def progress_callback(progress):
-    print(f"Прогресс: {progress}%", end='\r')
-
-loader = ModelLoader()
-model, sample_rate, pipeline, device = loader.load_model()
-
-processor = TranscriptionProcessor(
-    model, 
-    sample_rate, 
-    pipeline, 
-    device,
-    progress_callback=progress_callback
-)
-
-text_file, timecodes_file = processor.process_file("long_audio.mp3")
-```
-
-### Пакетная обработка файлов
-
-```python
-from src.core.model_loader import ModelLoader
-from src.core.processor import TranscriptionProcessor
-import glob
-
-loader = ModelLoader()
-model, sample_rate, pipeline, device = loader.load_model()
-processor = TranscriptionProcessor(model, sample_rate, pipeline, device)
-
-# Найти все MP3 файлы в папке
-files = glob.glob("audio/*.mp3")
-
-# Обработать все файлы
-results = processor.process_multiple_files(files, output_dir="results/")
-
-for text_file, timecodes_file in results:
-    print(f"Обработан: {text_file}")
-```
-
-### Конвертация видео в аудио
-
-```python
-from src.utils.audio_converter import AudioConverter
-
-# Проверка FFmpeg
-if not AudioConverter.check_ffmpeg():
-    raise Exception("FFmpeg не установлен")
-
-# Конвертация
-wav_file = AudioConverter.convert_to_wav(
-    "video.mp4",
-    sample_rate=16000,
-    channels=1
-)
-
-print(f"Создан WAV: {wav_file}")
-```
-
-### Использование статистики
-
-```python
-from src.utils.processing_stats import ProcessingStats
-import time
-
-stats = ProcessingStats()
-
-# Перед обработкой
-file_size = 10000000  # 10 MB
-duration = 300  # 5 минут
-estimated_time = stats.estimate_time(file_size, duration, "mp3")
-print(f"Ожидаемое время: {estimated_time:.1f} сек")
-
-# Обработка файла
-start = time.time()
-# ... обработка ...
-processing_time = time.time() - start
-
-# Сохранение статистики
-stats.add_record(file_size, duration, processing_time, "mp3")
-```
-
----
-
-## Расширение функциональности
-
-### Добавление нового формата вывода
-
-Создайте новый класс экспорта в `src/utils/`:
-
-```python
-# src/utils/exporter.py
-
-class TranscriptionExporter:
-    @staticmethod
-    def export_to_srt(segments: list, output_path: str) -> None:
-        """Экспорт в формат SRT субтитров"""
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for i, segment in enumerate(segments, 1):
-                start = TimeFormatter.seconds_to_timestamp(segment['start'])
-                end = TimeFormatter.seconds_to_timestamp(segment['end'])
-                text = segment['text']
-                
-                f.write(f"{i}\n")
-                f.write(f"{start} --> {end}\n")
-                f.write(f"{text}\n\n")
-    
-    @staticmethod
-    def export_to_json(segments: list, output_path: str) -> None:
-        """Экспорт в JSON формат"""
-        import json
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(segments, f, ensure_ascii=False, indent=2)
-```
-
-### Добавление предобработки аудио
-
-```python
-# src/utils/audio_processor.py
-
-import soundfile as sf
-import numpy as np
-
-class AudioPreprocessor:
-    @staticmethod
-    def remove_silence(audio_path: str, output_path: str) -> str:
-        """Удаление тишины из аудио"""
-        audio, sr = sf.read(audio_path)
-        
-        # Вычисление энергии
-        energy = np.abs(audio)
-        threshold = np.mean(energy) * 0.1
-        
-        # Удаление тихих участков
-        mask = energy > threshold
-        audio_trimmed = audio[mask]
-        
-        # Сохранение
-        sf.write(output_path, audio_trimmed, sr)
-        return output_path
-    
-    @staticmethod
-    def normalize_audio(audio_path: str, output_path: str) -> str:
-        """Нормализация громкости"""
-        audio, sr = sf.read(audio_path)
-        
-        # Нормализация
-        audio_normalized = audio / np.max(np.abs(audio))
-        
-        sf.write(output_path, audio_normalized, sr)
-        return output_path
-```
-
-### Создание плагина для постобработки
-
-```python
-# src/plugins/postprocessor.py
-
-class TextPostprocessor:
-    @staticmethod
-    def fix_punctuation(text: str) -> str:
-        """Исправление пунктуации"""
-        # Ваша логика
-        return text
-    
-    @staticmethod
-    def remove_filler_words(text: str) -> str:
-        """Удаление слов-паразитов"""
-        fillers = ['ээ', 'ммм', 'э-э', 'м-м']
-        for filler in fillers:
-            text = text.replace(filler, '')
-        return text
-    
-    @staticmethod
-    def apply_all(text: str) -> str:
-        """Применить всю постобработку"""
-        text = TextPostprocessor.fix_punctuation(text)
-        text = TextPostprocessor.remove_filler_words(text)
-        return text
-```
-
-### Интеграция с внешним API
-
-```python
-# src/integrations/api_client.py
-
-import requests
-
-class TranscriptionAPI:
-    def __init__(self, api_url: str, api_key: str):
-        self.api_url = api_url
-        self.api_key = api_key
-    
-    def upload_transcription(self, text: str, metadata: dict) -> dict:
-        """Отправка транскрибации на внешний сервер"""
-        headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        payload = {
-            'text': text,
-            'metadata': metadata
-        }
-        
-        response = requests.post(
-            f"{self.api_url}/transcriptions",
-            json=payload,
-            headers=headers
-        )
-        
-        return response.json()
-```
-
----
-
-## События и обратные вызовы
-
-### Подписка на события обработки
-
-```python
-class ProcessingEvents:
-    def on_start(self, file_path: str):
-        """Вызывается при начале обработки"""
-        print(f"Начата обработка: {file_path}")
-    
-    def on_progress(self, progress: int):
-        """Вызывается при обновлении прогресса"""
-        print(f"Прогресс: {progress}%")
-    
-    def on_complete(self, text_file: str, timecodes_file: str):
-        """Вызывается при завершении"""
-        print(f"Завершено: {text_file}")
-    
-    def on_error(self, error: Exception):
-        """Вызывается при ошибке"""
-        print(f"Ошибка: {error}")
-
-# Использование
-events = ProcessingEvents()
-processor = TranscriptionProcessor(
-    model, sample_rate, pipeline, device,
-    progress_callback=events.on_progress
-)
-```
-
----
-
-## Тестирование
-
-### Юнит-тесты
-
-```python
-# tests/test_processor.py
-
-import unittest
-from src.core.processor import TranscriptionProcessor
-
-class TestTranscriptionProcessor(unittest.TestCase):
-    def setUp(self):
-        # Настройка перед каждым тестом
-        pass
-    
-    def test_process_file(self):
-        # Тест обработки файла
-        pass
-    
-    def tearDown(self):
-        # Очистка после теста
-        pass
-
-if __name__ == '__main__':
-    unittest.main()
-```
-
----
-
-## Дополнительные ресурсы
-
-- [HuggingFace Transformers Документация](https://huggingface.co/docs/transformers)
-- [PyTorch Документация](https://pytorch.org/docs/stable/index.html)
-- [Pyannote Audio Документация](https://github.com/pyannote/pyannote-audio)
-- [CustomTkinter Документация](https://customtkinter.tomschimansky.com/)
-
----
-
-Для вопросов и предложений создавайте issue на GitHub.
-
+`diarize=true` без `diarization_backend` использует `pyannote` — серверу нужен
+`HF_TOKEN` с доступом к моделям pyannote. `sortformer` и `onnx` токена не
+требуют, но `sortformer` не принимает `num_speakers`.
+
+## Postman
+
+Импортируйте `postman/GigaAM_API.postman_collection.json` (File → Import),
+откройте переменные коллекции и задайте `baseUrl` (по умолчанию
+`http://127.0.0.1:8000`) и `apiKey`. Авторизация `Bearer {{apiKey}}` задана на
+уровне коллекции; в запросах транскрибации выберите файл в поле `file`.
+Коллекция содержит `Health`, `Models`, `Model by alias`, транскрибацию во всех
+форматах, стрим и два запроса с ожидаемыми ошибками. Подробнее —
+`postman/README.md`.
+
+## Переменные окружения
+
+Читаются из `.env` в корне проекта (или окружения процесса) при старте `api.py`.
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `API_HOST` | `127.0.0.1` | Адрес, на котором слушает uvicorn при `python api.py`. |
+| `API_PORT` | `8000` | Порт. |
+| `API_WORKERS` | `2` | Читается, но `python api.py` запускает один процесс; несколько воркеров — `uvicorn api:app --workers N` (лимит запросов и семафор тогда действуют на каждый процесс отдельно). |
+| `MAX_FILE_SIZE` | `2147483648` (2 ГБ) | Лимит размера загрузки в байтах; превышение → `413 file_too_large`. |
+| `MAX_CONCURRENT_TASKS` | `3` | Сколько файлов обрабатывается одновременно; остальные запросы ждут семафор. |
+| `RATE_LIMIT_UPLOAD` | `10/minute` | Лимит `POST /v1/audio/transcriptions` с одного IP в формате slowapi (`число/период`: `10/minute`, `100/hour`); превышение → `429 rate_limit_exceeded`. Неразборное значение (например, `abc`) останавливает сервер при старте, а не отключает лимит молча. |
+| `CORS_ORIGINS` | пусто | Разрешённые origin через запятую; пусто — кросс-доменные запросы из браузера запрещены. |
+| `UPLOAD_DIR` | `uploads` | Куда кладутся временные директории запросов `req_*` (удаляются после ответа). |
+| `API_KEYS_FILE` | `.api_keys` | Файл с SHA-256 хэшами ключей. |
+| `API_DEBUG` | `false` | `true` — текст необработанного исключения попадает в `message` ответа `500` (только для отладки). |
+| `HF_TOKEN` | пусто | Токен Hugging Face для `diarization_backend=pyannote`. |
+| `AUDIO_PREPROCESSING_MODE` | `auto` | Режим подготовки аудио по умолчанию (`off`/`auto`/`light`/`denoise`). |

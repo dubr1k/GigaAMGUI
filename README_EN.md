@@ -141,7 +141,7 @@ For the Web UI, build the extended image with
 |---|---|---|
 | Desktop GUI | `python app.py` | Regular interactive work |
 | CLI | `python cli.py -f audio.wav -o output` | Scripts and automation |
-| REST API | `python api.py` | Integrations; docs at `http://127.0.0.1:8000/docs` |
+| REST API | `python api.py` | Integrations, OpenAI Audio API compatible: [docs/API.md](docs/API.md) |
 | Web GUI | `docker compose up -d --build gigaam-web` | Local web panel at `http://127.0.0.1:8001/` |
 | TUI *(preview)* | `cd tui && cargo run --release` | Interactive terminal queue |
 
@@ -343,18 +343,29 @@ python cli.py --backend onnx --onnx-provider auto -f audio.wav
 python cli.py --backend pytorch -f audio.wav
 ```
 
-The same settings are available in the Desktop GUI and Web UI. The REST API
-accepts them as optional query parameters and uses server defaults when omitted:
+The same settings are available in the Desktop GUI and Web UI.
+
+### REST API (OpenAI-compatible)
+
+`python api.py` serves the OpenAI Audio API contract: OpenAI SDK clients work
+after changing `base_url` and the key (printed at first start). Backend,
+provider and diarization are optional form fields (`asr_backend`,
+`onnx_provider`, `diarize`, ...); `GET /v1/models` lists the accepted values and
+the active configuration. A selection different from the server default gets an
+isolated model loader for that request and does not reconfigure concurrent ones.
 
 ```bash
-curl -H "X-API-Key: $GIGAAM_API_KEY" \
-  -F "file=@audio.wav" \
-  "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=onnx&asr_model=v3_e2e_rnnt&onnx_provider=coreml"
+curl http://127.0.0.1:8000/v1/audio/transcriptions -H "Authorization: Bearer $GIGAAM_API_KEY" \
+  -F "file=@audio.wav" -F "model=whisper-1" -F "response_format=srt" -F "asr_backend=onnx"
 ```
 
-Use `GET /api/v1/asr/options` for accepted values and active configuration.
-A selection different from the server default gets an isolated task loader and
-does not reconfigure concurrent requests.
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
+print(client.audio.transcriptions.create(model="whisper-1", file=open("audio.wav", "rb")).text)
+```
+
+Response formats, streaming, errors and extensions: [docs/API.md](docs/API.md) (Russian).
 
 ONNX diarization is also available without PyTorch or an HF token:
 

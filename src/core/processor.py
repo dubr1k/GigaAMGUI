@@ -619,6 +619,8 @@ class TranscriptionProcessor:
             # Успех
             result['success'] = True
             result['saved_files'] = saved_files
+            # Реплики нужны API, который собирает ответ в памяти, не читая файлы.
+            result['utterances'] = utterances
             result['total_time'] = time.time() - file_start_time
 
             # Логируем сохраненные файлы
