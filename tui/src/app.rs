@@ -16,10 +16,11 @@ use crate::{
     commands::{
         accept_command_suggestion, apply_command_menu, clear_queue, command_menu_options,
         command_suggestions, is_command, open_command_menu, remove_selected_file, short_name,
+        toggle_pets,
     },
     i18n::{t, tf, Lang},
     settings::save_app_settings,
-    ui::{Action, AreaId, ButtonId, HitMap},
+    ui::{llm::MODES, settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
     worker::{llm_start_payload, start_payload, LlmTool},
 };
 
@@ -75,8 +76,13 @@ pub(crate) struct App {
     pub(crate) mouse_enabled: bool,
     /// Scroll offsets of the scrollable areas, in lines.
     pub(crate) scroll: HashMap<AreaId, u16>,
-    /// The help overlay is drawn from Task 7 on; `?` and the button already toggle it.
+    /// The `?` overlay is drawn over the current page and swallows other keys.
     pub(crate) help_open: bool,
+    /// The highlighted row of the Settings page.
+    pub(crate) settings_cursor: usize,
+    /// The Log page shows the newest lines while this is set; scrolling up clears
+    /// it and reaching the end (or `End`) sets it again.
+    pub(crate) log_follow: bool,
     pub(crate) focus: Focus,
     /// The highlighted row of the parameter panel while `focus == Focus::Params`.
     pub(crate) params_cursor: usize,
@@ -147,6 +153,10 @@ pub(crate) struct App {
     pub(crate) llm_extra_files: Vec<String>,
     /// The highlighted row of the «Транскрипты» table on the LLM page.
     pub(crate) llm_input_cursor: usize,
+    /// `Some(i)` while the LLM-page cursor is on mode row `i` (`Space` toggles it);
+    /// `None` while it is on the transcripts table. `Up`/`Down` walk the table
+    /// first and then the modes, so one cursor covers both blocks.
+    pub(crate) llm_mode_cursor: Option<usize>,
     /// The mode the worker is streaming right now, from `llm_started`.
     pub(crate) llm_stream_mode: String,
     /// Where the last completed run saved its answers (`session_llm_<mode>.txt`).
@@ -163,6 +173,8 @@ impl Default for App {
             mouse_enabled: true,
             scroll: HashMap::new(),
             help_open: false,
+            settings_cursor: 0,
+            log_follow: true,
             focus: Focus::Input,
             params_cursor: 0,
             worker_down: false,
@@ -227,6 +239,7 @@ impl Default for App {
             llm_cancel_requested: false,
             llm_extra_files: Vec::new(),
             llm_input_cursor: 0,
+            llm_mode_cursor: None,
             llm_stream_mode: String::new(),
             llm_saved_files: Vec::new(),
             audio_preprocessing_mode: "auto".into(),
@@ -575,6 +588,8 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             | Action::ToggleMode(_)
             | Action::RemoveLlmInput(_)
             | Action::EditCommand(_)
+            | Action::SettingsRow(_)
+            | Action::ToggleSetting(_)
     );
     if edits_idle_state && app.running {
         return Vec::new();
@@ -613,6 +628,7 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             }
         }
         Action::ToggleMode(mode) => {
+            app.llm_mode_cursor = MODES.iter().position(|(id, _)| *id == mode);
             if let Some(position) = app.llm_modes.iter().position(|item| item == mode) {
                 app.llm_modes.remove(position);
             } else {
@@ -664,13 +680,24 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             save_app_settings(app);
         }
         Action::Help => app.help_open = !app.help_open,
+        // The Settings list is a cursor list: the wheel moves the cursor and the list
+        // slides to keep it visible, so wheel and arrows can never fight each other.
+        Action::Scroll(AreaId::Settings, delta) => {
+            let last = setting_rows(app).len().saturating_sub(1);
+            app.settings_cursor =
+                (app.settings_cursor as i64 + i64::from(delta)).clamp(0, last as i64) as usize;
+        }
         Action::Scroll(area, delta) => {
+            if area == AreaId::Log && delta < 0 {
+                app.log_follow = false;
+            }
             let offset = app.scroll.entry(area).or_default();
             *offset = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX)) as u16;
         }
         Action::LlmInput(index) => {
             if index < llm_input_files(app).len() {
                 app.llm_input_cursor = index;
+                app.llm_mode_cursor = None;
             }
         }
         Action::RemoveLlmInput(index) => {
@@ -694,7 +721,55 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             app.selected_command = 0;
             app.focus = Focus::Input;
         }
-        Action::SettingsRow(_) => {}
+        Action::SettingsRow(index) => {
+            let rows = setting_rows(app);
+            if let Some(row) = rows.get(index) {
+                let action = row.action.clone();
+                app.settings_cursor = index;
+                return dispatch(app, action);
+            }
+        }
+        Action::ToggleSetting(name) => {
+            // Each flip is exactly what the matching command does, status included.
+            match name {
+                "mouse" => {
+                    app.mouse_enabled = !app.mouse_enabled;
+                    app.status = t(
+                        app.lang,
+                        if app.mouse_enabled {
+                            "settings.mouse_on"
+                        } else {
+                            "settings.mouse_off"
+                        },
+                    )
+                    .into();
+                }
+                "pets" => {
+                    toggle_pets(app);
+                    return Vec::new();
+                }
+                "subtitle_split" => {
+                    app.subtitle_sentence_split = !app.subtitle_sentence_split;
+                    app.status = format!(
+                        "Subtitle sentence splitting: {}",
+                        if app.subtitle_sentence_split {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    );
+                }
+                "llm_tools" => {
+                    app.llm_allow_tools = !app.llm_allow_tools;
+                    app.status = format!(
+                        "Agent tools and sessions {}",
+                        if app.llm_allow_tools { "on" } else { "off" }
+                    );
+                }
+                _ => return Vec::new(),
+            }
+            save_app_settings(app);
+        }
     }
     Vec::new()
 }

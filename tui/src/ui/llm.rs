@@ -106,7 +106,12 @@ fn draw_inputs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         })
         .collect();
     app.llm_input_cursor = app.llm_input_cursor.min(files.len() - 1);
-    let mut state = TableState::default().with_selected(Some(app.llm_input_cursor));
+    // The cursor is either here or on a mode row, never in both places.
+    let selected = app
+        .llm_mode_cursor
+        .is_none()
+        .then_some(app.llm_input_cursor);
+    let mut state = TableState::default().with_selected(selected);
     let table = Table::new(
         rows,
         [
@@ -203,15 +208,19 @@ fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let value = Style::default().fg(Color::White);
     let mut lines: Vec<(Line, Action)> = MODES
         .iter()
-        .map(|(mode, key)| {
+        .enumerate()
+        .map(|(index, (mode, key))| {
             let on = app.llm_modes.iter().any(|item| item == mode);
-            let line = Line::from(vec![
+            let mut line = Line::from(vec![
                 Span::styled(
                     if on { "[x] " } else { "[ ] " },
                     Style::default().fg(if on { ACCENT } else { SECONDARY }),
                 ),
                 Span::styled(t(app.lang, key), if on { value } else { label }),
             ]);
+            if app.llm_mode_cursor == Some(index) {
+                line = line.style(HIGHLIGHT);
+            }
             (line, Action::ToggleMode(mode))
         })
         .collect();
@@ -300,7 +309,7 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         return;
     }
     let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
-    let lines = paragraph.line_count(inner.width) as u16;
+    let lines = paragraph.line_count(inner.width).min(usize::from(u16::MAX)) as u16;
     let max_offset = lines.saturating_sub(inner.height);
     let offset = app.scroll.entry(AreaId::LlmOutput).or_default();
     // The stream follows its tail; a finished answer keeps where the wheel left it.

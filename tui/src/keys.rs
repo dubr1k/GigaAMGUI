@@ -16,17 +16,31 @@ use crate::{
         open_command_menu, queue_paths, remove_selected_file, run_command, COMMANDS,
     },
     settings::save_app_settings,
-    ui::{processing::PARAM_ROWS, Action, AreaId, ButtonId},
+    ui::{llm::MODES, processing::PARAM_ROWS, Action, AreaId, ButtonId},
 };
 
-/// Lines `PgUp` / `PgDn` move the LLM answer by.
+/// Lines `PgUp` / `PgDn` move the LLM answer, the log and the help by.
 const ANSWER_PAGE: i32 = 10;
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
+    // The help overlay is modal: it scrolls, closes, and swallows everything else.
+    if app.help_open {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Char('?') => dispatch(app, Action::Help),
+            KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Help, -1)),
+            KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Help, 1)),
+            KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::Help, -ANSWER_PAGE)),
+            KeyCode::PageDown => dispatch(app, Action::Scroll(AreaId::Help, ANSWER_PAGE)),
+            _ => Vec::new(),
+        };
+    }
     let idle = !app.running;
     let no_input = app.input.is_empty();
     let menu_open = app.command_menu.is_some();
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let on_page = |page: Page| app.page == page && no_input && !menu_open;
     match key.code {
+        KeyCode::Char('l') if ctrl => return dispatch(app, Action::Button(ButtonId::ClearLog)),
         KeyCode::Char('c') if idle && key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.request_exit("ctrl-c", "Ctrl+C");
         }
@@ -39,8 +53,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             return dispatch(app, Action::Tab(app.page.next()));
         }
         KeyCode::BackTab => return dispatch(app, Action::Tab(app.page.previous())),
-        KeyCode::Right if no_input && !menu_open => app.focus = Focus::Params,
-        KeyCode::Left if no_input && !menu_open => app.focus = Focus::Queue,
+        KeyCode::Right if on_page(Page::Processing) => app.focus = Focus::Params,
+        KeyCode::Left if on_page(Page::Processing) => app.focus = Focus::Queue,
         KeyCode::Char('L') if idle && no_input => {
             return dispatch(app, Action::Button(ButtonId::RunLlm));
         }
@@ -57,6 +71,54 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         }
         KeyCode::PageDown if app.page == Page::Llm && !menu_open => {
             return dispatch(app, Action::Scroll(AreaId::LlmOutput, ANSWER_PAGE));
+        }
+        // The Log page: the wheel keys move the view, `End` re-arms the follow.
+        KeyCode::Up if on_page(Page::Log) => return dispatch(app, Action::Scroll(AreaId::Log, -1)),
+        KeyCode::Down if on_page(Page::Log) => {
+            return dispatch(app, Action::Scroll(AreaId::Log, 1))
+        }
+        KeyCode::PageUp if on_page(Page::Log) => {
+            return dispatch(app, Action::Scroll(AreaId::Log, -ANSWER_PAGE));
+        }
+        KeyCode::PageDown if on_page(Page::Log) => {
+            return dispatch(app, Action::Scroll(AreaId::Log, ANSWER_PAGE));
+        }
+        KeyCode::End if on_page(Page::Log) => app.log_follow = true,
+        // The Settings page: a cursor list, `Enter` performs the row's action.
+        KeyCode::Up if on_page(Page::Settings) => {
+            return dispatch(app, Action::Scroll(AreaId::Settings, -1));
+        }
+        KeyCode::Down if on_page(Page::Settings) => {
+            return dispatch(app, Action::Scroll(AreaId::Settings, 1));
+        }
+        KeyCode::Enter if idle && on_page(Page::Settings) => {
+            return dispatch(app, Action::SettingsRow(app.settings_cursor));
+        }
+        // The LLM page: one cursor walks the transcripts and then the mode rows.
+        KeyCode::Up if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
+            Some(0) => app.llm_mode_cursor = None,
+            Some(index) => app.llm_mode_cursor = Some(index - 1),
+            None => {
+                let index = app.llm_input_cursor.saturating_sub(1);
+                return dispatch(app, Action::LlmInput(index));
+            }
+        },
+        KeyCode::Down if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
+            Some(index) => app.llm_mode_cursor = Some((index + 1).min(MODES.len() - 1)),
+            None if app.llm_input_cursor + 1 < crate::app::llm_input_files(app).len() => {
+                return dispatch(app, Action::LlmInput(app.llm_input_cursor + 1));
+            }
+            None => app.llm_mode_cursor = Some(0),
+        },
+        KeyCode::Char(' ') if idle && on_page(Page::Llm) => {
+            if let Some(index) = app.llm_mode_cursor {
+                return dispatch(app, Action::ToggleMode(MODES[index.min(MODES.len() - 1)].0));
+            }
+        }
+        KeyCode::Delete | KeyCode::Backspace
+            if idle && on_page(Page::Llm) && app.llm_mode_cursor.is_none() =>
+        {
+            return dispatch(app, Action::RemoveLlmInput(app.llm_input_cursor));
         }
         KeyCode::Char('d') if idle && no_input => {
             app.diarization = !app.diarization;
@@ -107,7 +169,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             }
         }
         KeyCode::Char(' ') | KeyCode::Enter if idle && menu_open => apply_command_menu(app),
-        KeyCode::Enter if idle && no_input && app.focus == Focus::Params => {
+        KeyCode::Enter if idle && on_page(Page::Processing) && app.focus == Focus::Params => {
             let (_, command) = PARAM_ROWS[app.params_cursor.min(PARAM_ROWS.len() - 1)];
             return dispatch(app, Action::OpenMenu(command));
         }
@@ -154,24 +216,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             let count = command_suggestions(&app.input).len();
             app.selected_command = (app.selected_command + 1) % count;
         }
-        KeyCode::Up if no_input && app.focus == Focus::Params => {
+        KeyCode::Up if on_page(Page::Processing) && app.focus == Focus::Params => {
             app.params_cursor = (app.params_cursor + PARAM_ROWS.len() - 1) % PARAM_ROWS.len();
         }
-        KeyCode::Down if no_input && app.focus == Focus::Params => {
+        KeyCode::Down if on_page(Page::Processing) && app.focus == Focus::Params => {
             app.params_cursor = (app.params_cursor + 1) % PARAM_ROWS.len();
         }
-        KeyCode::Up if idle && no_input && app.page == Page::Llm => {
-            let index = app.llm_input_cursor.saturating_sub(1);
-            return dispatch(app, Action::LlmInput(index));
-        }
-        KeyCode::Down if idle && no_input && app.page == Page::Llm => {
-            return dispatch(app, Action::LlmInput(app.llm_input_cursor + 1));
-        }
-        KeyCode::Delete | KeyCode::Backspace if idle && no_input && app.page == Page::Llm => {
-            return dispatch(app, Action::RemoveLlmInput(app.llm_input_cursor));
-        }
-        KeyCode::Up if idle && no_input => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+        KeyCode::Up if idle && on_page(Page::Processing) => {
+            if ctrl {
                 if let Some(index) = app.selected_file.filter(|index| *index > 0) {
                     app.files.swap(index, index - 1);
                     app.selected_file = Some(index - 1);
@@ -181,8 +233,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
                 return dispatch(app, Action::SelectFile(index));
             }
         }
-        KeyCode::Down if idle && no_input => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+        KeyCode::Down if idle && on_page(Page::Processing) => {
+            if ctrl {
                 if let Some(index) = app
                     .selected_file
                     .filter(|index| *index + 1 < app.files.len())
@@ -195,8 +247,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
                 return dispatch(app, Action::SelectFile(index));
             }
         }
-        KeyCode::Delete | KeyCode::Backspace if idle && no_input && app.focus != Focus::Params => {
-            remove_selected_file(app)
+        KeyCode::Delete | KeyCode::Backspace
+            if idle && on_page(Page::Processing) && app.focus != Focus::Params =>
+        {
+            match app.selected_file {
+                Some(index) => return dispatch(app, Action::RemoveFile(index)),
+                None => remove_selected_file(app),
+            }
         }
         KeyCode::Backspace if idle => {
             app.input.pop();
@@ -298,6 +355,73 @@ mod tests {
         press(&mut app, KeyCode::Delete);
         assert_eq!(app.files, vec!["/tmp/a.wav"]);
         assert!(app.llm_extra_files.is_empty());
+    }
+
+    #[test]
+    fn llm_page_cursor_walks_transcripts_then_modes_and_space_toggles() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.page = Page::Llm;
+        app.result_files = vec!["/tmp/a.txt".into(), "/tmp/b.txt".into()];
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.focus,
+            Focus::Input,
+            "Left/Right belong to the Processing page"
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!((app.llm_input_cursor, app.llm_mode_cursor), (1, None));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.llm_mode_cursor,
+            Some(0),
+            "past the last transcript come the modes"
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.llm_mode_cursor, Some(1));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.llm_modes, vec!["summary", "tasks"]);
+        assert!(app.input.is_empty(), "Space is not typed");
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(
+            app.result_files.len(),
+            2,
+            "Delete is for the transcripts only"
+        );
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!((app.llm_input_cursor, app.llm_mode_cursor), (1, None));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.command_menu, None,
+            "Enter does not open a Processing menu"
+        );
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        );
+        assert!(app.logs.is_empty(), "Ctrl+L clears the log from any page");
+    }
+
+    #[test]
+    fn settings_page_keys_move_the_cursor_and_enter_acts() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.files = vec!["/tmp/a.wav".into()];
+        app.selected_file = Some(0);
+        press(&mut app, KeyCode::F(3));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.settings_cursor, 1);
+        assert_eq!(app.selected_file, Some(0), "the queue cursor is untouched");
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.mouse_enabled, "row 1 is the mouse toggle");
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(app.files.len(), 1, "Delete belongs to the Processing page");
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.settings_cursor, 0, "Up clamps at the first row");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.command_menu.as_deref(), Some("/lang"));
     }
 
     #[test]

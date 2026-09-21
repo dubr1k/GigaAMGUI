@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    app::{llm_input_files, request_llm, App},
+    app::{llm_input_files, request_llm, App, Page},
     i18n::{t, Lang},
     settings::save_app_settings,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
@@ -186,7 +186,7 @@ pub(crate) const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-pub(crate) const COMMANDS: [(&str, &str); 31] = [
+pub(crate) const COMMANDS: [(&str, &str); 32] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -211,7 +211,8 @@ pub(crate) const COMMANDS: [(&str, &str); 31] = [
         "/llm-file",
         "add a transcript file (.txt/.md/.srt/.vtt) for the LLM",
     ),
-    ("/settings", "show current processing settings"),
+    ("/settings", "open the Settings tab"),
+    ("/help", "show the keys and commands"),
     ("/pets", "toggle the animated unicorn companion"),
     ("/llm-mode", "summary, tasks, terms, or custom"),
     ("/llm-prompt", "set a custom LLM prompt"),
@@ -296,7 +297,7 @@ pub(crate) fn accept_command_suggestion(app: &mut App, command: &str) {
         return;
     }
     app.input = command.into();
-    if matches!(command, "/clear" | "/pets") {
+    if matches!(command, "/clear" | "/pets" | "/settings" | "/help") {
         run_command(app);
     } else {
         app.input.push(' ');
@@ -355,59 +356,13 @@ pub(crate) fn command_menu_options(app: &App) -> Vec<String> {
         .into_iter()
         .map(str::to_owned)
         .collect(),
-        Some("/settings") => vec![
-            format!("LLM provider · {}", app.llm_provider),
-            format!(
-                "API URL · {}",
-                if app.llm_api_url.is_empty() {
-                    "not set"
-                } else {
-                    "configured"
-                }
-            ),
-            format!(
-                "API key · {}",
-                if app.llm_api_key.is_empty() {
-                    "not set"
-                } else {
-                    "configured"
-                }
-            ),
-            format!(
-                "LLM model · {}",
-                if app.llm_model.is_empty() {
-                    "not set"
-                } else {
-                    &app.llm_model
-                }
-            ),
-            format!("Temperature · {}", app.llm_temperature),
-            format!(
-                "Binary path · {}",
-                app.llm_tool_paths
-                    .get(provider_prefix(&app.llm_provider))
-                    .map_or("auto", String::as_str)
-            ),
-            format!(
-                "Internal provider · {}",
-                app.llm_internal_providers
-                    .get(provider_prefix(&app.llm_provider))
-                    .map_or("default", String::as_str)
-            ),
-            format!(
-                "Extra args · {}",
-                app.llm_extra_args
-                    .get(provider_prefix(&app.llm_provider))
-                    .map_or("none", String::as_str)
-            ),
-            format!(
-                "Agent tools · {}",
-                if app.llm_allow_tools { "on" } else { "off" }
-            ),
-            BACK_MENU_OPTION.into(),
-        ],
         Some("/settings-provider") => provider_menu_options(app),
         Some("/settings-model") => llm_model_options(&app.llm_provider),
+        Some("/lang") => vec![
+            t(Lang::Ru, "lang.name").to_owned(),
+            t(Lang::En, "lang.name").to_owned(),
+            BACK_MENU_OPTION.to_owned(),
+        ],
         Some("/llm-mode") => ["summary", "tasks", "terms", "custom"]
             .into_iter()
             .map(|mode| {
@@ -479,7 +434,7 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
             | "/formats"
             | "/speakers"
             | "/llm-mode"
-            | "/settings"
+            | "/lang"
             | "/settings-provider"
             | "/settings-model"
     ) {
@@ -499,6 +454,8 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
                 .iter()
                 .position(|option| option == &app.audio_preprocessing_mode)
                 .unwrap_or(0)
+        } else if command == "/lang" {
+            usize::from(app.lang == Lang::En)
         } else {
             0
         };
@@ -549,45 +506,22 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             app.input.clear();
             save_app_settings(app);
         }
-        "/settings" => {
-            app.command_menu = None;
-            app.input = match app.command_menu_index {
-                0 => {
-                    app.command_menu = Some("/settings-provider".into());
-                    app.status = "Choose LLM provider".into();
-                    return;
-                }
-                1 => "/llm-api-url ".into(),
-                2 => "/llm-api-key ".into(),
-                3 => {
-                    app.command_menu = Some("/settings-model".into());
-                    app.status = "Choose LLM model".into();
-                    return;
-                }
-                4 => "/llm-temperature ".into(),
-                5 => "/llm-path ".into(),
-                6 => "/llm-provider-name ".into(),
-                7 => "/llm-args ".into(),
-                8 => {
-                    app.llm_allow_tools = !app.llm_allow_tools;
-                    save_app_settings(app);
-                    app.command_menu = Some("/settings".into());
-                    app.command_menu_index = 8;
-                    app.status = format!(
-                        "Agent tools {}",
-                        if app.llm_allow_tools { "on" } else { "off" }
-                    );
-                    return;
-                }
-                _ => String::new(),
-            };
-            app.status = "Enter value and press Enter".into();
-        }
         "/settings-provider" => {
             app.llm_provider = provider_from_menu_option(option).to_owned();
-            app.command_menu = Some("/settings".into());
-            app.command_menu_index = 0;
+            app.command_menu = None;
+            app.input.clear();
             app.status = format!("LLM provider: {}", app.llm_provider);
+            save_app_settings(app);
+        }
+        "/lang" => {
+            app.lang = if app.command_menu_index == 1 {
+                Lang::En
+            } else {
+                Lang::Ru
+            };
+            app.command_menu = None;
+            app.input.clear();
+            app.status = t(app.lang, "settings.language_changed").into();
             save_app_settings(app);
         }
         "/settings-model" if option == "Enter manually" => {
@@ -601,8 +535,8 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             } else {
                 option.clone()
             };
-            app.command_menu = Some("/settings".into());
-            app.command_menu_index = 0;
+            app.command_menu = None;
+            app.input.clear();
             app.status = if app.llm_model.is_empty() {
                 "LLM default model selected".into()
             } else {
@@ -693,8 +627,10 @@ pub(crate) fn run_command(app: &mut App) {
             app.status = "Exiting…".into();
         }
         "/settings" => {
-            let _ = open_command_menu(app, "/settings");
+            app.page = Page::Settings;
+            app.status = t(app.lang, "settings.opened").into();
         }
+        "/help" => app.help_open = !app.help_open,
         "/lang" => match Lang::parse(argument) {
             Some(lang) => {
                 app.lang = lang;
@@ -822,22 +758,7 @@ pub(crate) fn run_command(app: &mut App) {
             save_app_settings(app);
         }
         "/llm-tools" => app.status = "Usage: /llm-tools on|off".into(),
-        "/pets" => {
-            if app.pet_enabled {
-                app.clear_pet_layer();
-                app.pet_enabled = false;
-                app.pet_image = None;
-                app.status = "Pets off".into();
-                save_app_settings(app);
-            } else if let Err(error) = app.refresh_pet_image() {
-                app.status = error;
-            } else {
-                app.pet_enabled = true;
-                app.pet_running = app.running;
-                app.status = "Pets on · /pets to hide".into();
-                save_app_settings(app);
-            }
-        }
+        "/pets" => toggle_pets(app),
         "/output" => {
             if argument.is_empty() {
                 app.status = "Usage: /output <directory>".into();
@@ -982,6 +903,24 @@ pub(crate) fn run_command(app: &mut App) {
     }
     app.log(app.status.clone());
     app.input.clear();
+}
+
+/// `/pets` and the Settings row: shows or hides the companion and persists it.
+pub(crate) fn toggle_pets(app: &mut App) {
+    if app.pet_enabled {
+        app.clear_pet_layer();
+        app.pet_enabled = false;
+        app.pet_image = None;
+        app.status = "Pets off".into();
+        save_app_settings(app);
+    } else if let Err(error) = app.refresh_pet_image() {
+        app.status = error;
+    } else {
+        app.pet_enabled = true;
+        app.pet_running = app.running;
+        app.status = "Pets on · /pets to hide".into();
+        save_app_settings(app);
+    }
 }
 
 pub(crate) fn clear_queue(app: &mut App) {
@@ -1147,8 +1086,11 @@ mod tests {
     #[test]
     fn settings_menu_offers_all_llm_providers() {
         let mut app = App::default();
-        assert!(open_command_menu(&mut app, "/settings"));
-        app.command_menu = Some("/settings-provider".into());
+        assert!(
+            !open_command_menu(&mut app, "/settings"),
+            "/settings is a tab now"
+        );
+        assert!(open_command_menu(&mut app, "/settings-provider"));
 
         assert_eq!(
             command_menu_options(&app),

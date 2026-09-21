@@ -6,6 +6,8 @@ description = "Terminal UI for GigaAM Transcriber"
 
 [dependencies]
 crossterm = "0.29"
+# `unstable-rendered-line-info` gives `Paragraph::line_count`, which the LLM answer,
+# the log and the help use to clamp their scroll offset to the wrapped text height.
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm", "image-defaults"] }
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -1,8 +1,11 @@
 //! Rendering of the terminal UI.
 
+pub(crate) mod help;
 pub(crate) mod llm;
+pub(crate) mod log;
 pub(crate) mod menu;
 pub(crate) mod processing;
+pub(crate) mod settings;
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -22,8 +25,6 @@ pub(crate) const SECONDARY: Color = Color::Rgb(180, 195, 220);
 
 /// Everything the user can do with a click or a key. Keys and mouse clicks both go
 /// through `app::dispatch`, so a click can never drift from its keyboard twin.
-// `SettingsRow` is registered by the Settings page (Task 7).
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     Tab(Page),
@@ -38,7 +39,10 @@ pub(crate) enum Action {
     Help,
     Scroll(AreaId, i32),
     FocusInput,
+    /// Highlights a row of the Settings page and performs its action.
     SettingsRow(usize),
+    /// Flips a boolean setting: `mouse`, `pets`, `subtitle_split` or `llm_tools`.
+    ToggleSetting(&'static str),
     /// Highlights a row of the LLM «Транскрипты» table.
     LlmInput(usize),
     /// Drops a `/llm-file` transcript from that table (session results stay).
@@ -47,8 +51,6 @@ pub(crate) enum Action {
     EditCommand(&'static str),
 }
 
-// `ClearLog` is wired by the Log page (Task 7).
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ButtonId {
     Start,
@@ -59,8 +61,6 @@ pub(crate) enum ButtonId {
     ClearLog,
 }
 
-// The other areas belong to the pages of Tasks 6–7.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AreaId {
     Queue,
@@ -143,7 +143,8 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     match app.page {
         Page::Processing => processing::draw(frame, page_area, app),
         Page::Llm => llm::draw(frame, page_area, app),
-        Page::Settings | Page::Log => draw_placeholder(frame, page_area, app),
+        Page::Settings => settings::draw(frame, page_area, app),
+        Page::Log => log::draw(frame, page_area, app),
     }
     draw_pet(frame, main, app);
     frame.render_widget(
@@ -158,6 +159,10 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     );
     menu::draw(frame, input, app, &rows);
     draw_footer(frame, footer, app);
+    // Last, so that it covers the page and its hit areas sit on top of theirs.
+    if app.help_open {
+        help::draw(frame, area, app);
+    }
 }
 
 fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -244,20 +249,6 @@ fn draw_tabs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .add(Rect::new(x, area.y, width, 1), Action::Tab(page));
         x += width + 1;
     }
-}
-
-fn draw_placeholder(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    if area.height == 0 {
-        return;
-    }
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            t(app.lang, "page.coming"),
-            Style::default().fg(SECONDARY),
-        ))
-        .centered(),
-        Rect::new(area.x, area.y + area.height / 2, area.width, 1),
-    );
 }
 
 fn draw_pet(frame: &mut ratatui::Frame, main: Rect, app: &mut App) {
