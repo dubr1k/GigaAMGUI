@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     io::{self, BufRead, BufReader, Cursor, Write},
     path::{Path, PathBuf},
@@ -40,11 +41,19 @@ struct TuiSettings {
     subtitle_sentence_split: bool,
     subtitle_max_lines: u8,
     subtitle_max_width: u16,
+    formats: Vec<String>,
+    diarization: bool,
+    num_speakers: Option<u32>,
     llm_provider: String,
     llm_api_url: String,
     llm_api_key: String,
     llm_model: String,
     llm_temperature: f64,
+    llm_internal_providers: HashMap<String, String>,
+    llm_extra_args: HashMap<String, String>,
+    llm_tool_paths: HashMap<String, String>,
+    llm_allow_tools: bool,
+    audio_preprocessing_mode: String,
 }
 
 impl Default for TuiSettings {
@@ -58,6 +67,9 @@ impl Default for TuiSettings {
             subtitle_sentence_split: true,
             subtitle_max_lines: 2,
             subtitle_max_width: 64,
+            formats: vec!["txt".into()],
+            diarization: false,
+            num_speakers: None,
             llm_provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "API".into()),
             llm_api_url: std::env::var("LLM_API_URL").unwrap_or_default(),
             llm_api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
@@ -66,8 +78,135 @@ impl Default for TuiSettings {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0.2),
+            llm_internal_providers: HashMap::new(),
+            llm_extra_args: HashMap::new(),
+            llm_tool_paths: HashMap::new(),
+            llm_allow_tools: false,
+            audio_preprocessing_mode: "auto".into(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+struct LlmTool {
+    id: String,
+    provider: String,
+    status: String, // found | missing | broken | not_applicable
+    path: Option<String>,
+    version: Option<String>,
+    install_hint: String,
+}
+
+impl Default for LlmTool {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            provider: String::new(),
+            status: "missing".into(),
+            path: None,
+            version: None,
+            install_hint: String::new(),
+        }
+    }
+}
+
+/// Запасной список на случай, если воркер ещё не ответил на `llm_tools`.
+const FALLBACK_PROVIDERS: [&str; 7] = [
+    "API",
+    "Claude Code",
+    "Codex",
+    "OpenCode",
+    "Pi",
+    "oh-my-pi",
+    "Other",
+];
+
+/// Префикс ключей settings для провайдера — совпадает с `cli_tools.PROVIDERS`.
+fn provider_prefix(provider: &str) -> &'static str {
+    match provider {
+        "Claude Code" => "claude",
+        "Codex" => "codex",
+        "OpenCode" => "opencode",
+        "Pi" => "pi",
+        "oh-my-pi" => "omp",
+        "Other" => "other",
+        _ => "api",
+    }
+}
+
+fn llm_tool_for<'a>(app: &'a App, provider: &str) -> Option<&'a LlmTool> {
+    app.llm_tools.iter().find(|tool| tool.provider == provider)
+}
+
+fn provider_menu_options(app: &App) -> Vec<String> {
+    let providers: Vec<String> = if app.llm_providers.is_empty() {
+        FALLBACK_PROVIDERS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    } else {
+        app.llm_providers.clone()
+    };
+    providers
+        .into_iter()
+        .map(|provider| match llm_tool_for(app, &provider) {
+            Some(tool) if tool.status == "found" => format!(
+                "{provider} · {}",
+                tool.version.as_deref().unwrap_or("found")
+            ),
+            Some(tool) if tool.status == "broken" => format!("{provider} · broken"),
+            Some(tool) if tool.status == "missing" => format!("{provider} · not installed"),
+            _ => provider,
+        })
+        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+        .collect()
+}
+
+fn provider_from_menu_option(option: &str) -> &str {
+    option.split(" · ").next().unwrap_or(option).trim()
+}
+
+fn llm_settings_payload(app: &App) -> Value {
+    llm_settings_from(&TuiSettings::from(app), &app.llm_tools)
+}
+
+/// The `settings` object of `llm_start`, built from persisted settings plus the
+/// tool registry (empty in headless mode: the worker then locates binaries itself).
+fn llm_settings_from(settings: &TuiSettings, tools: &[LlmTool]) -> Value {
+    let mut payload = json!({
+        "provider": settings.llm_provider,
+        "api_url": settings.llm_api_url,
+        "api_key": settings.llm_api_key,
+        "model": if settings.llm_provider == "Codex" { String::new() } else { settings.llm_model.clone() },
+        "temperature": settings.llm_temperature,
+    });
+    for (provider, binary) in [
+        ("Claude Code", "claude"),
+        ("Codex", "codex"),
+        ("OpenCode", "opencode"),
+        ("Pi", "pi"),
+        ("oh-my-pi", "omp"),
+    ] {
+        let path = tools
+            .iter()
+            .find(|tool| tool.provider == provider)
+            .and_then(|tool| tool.path.clone())
+            .unwrap_or_else(|| binary.to_owned());
+        payload[format!("{}_path", provider_prefix(provider))] = Value::String(path);
+    }
+    payload["other_path"] = Value::String(String::new());
+    for (prefix, path) in &settings.llm_tool_paths {
+        payload[format!("{prefix}_path")] = Value::String(path.clone());
+    }
+    for (prefix, provider) in &settings.llm_internal_providers {
+        payload[format!("{prefix}_provider")] = Value::String(provider.clone());
+    }
+    for (prefix, args) in &settings.llm_extra_args {
+        payload[format!("{prefix}_args")] = Value::String(args.clone());
+    }
+    payload["llm_allow_tools"] = Value::Bool(settings.llm_allow_tools);
+    payload
 }
 
 struct App {
@@ -116,6 +255,20 @@ struct App {
     llm_api_key: String,
     llm_model: String,
     llm_temperature: f64,
+    llm_providers: Vec<String>,
+    llm_tools: Vec<LlmTool>,
+    llm_internal_providers: HashMap<String, String>,
+    llm_extra_args: HashMap<String, String>,
+    llm_tool_paths: HashMap<String, String>,
+    llm_allow_tools: bool,
+    llm_tool_check_requested: Option<(String, String)>,
+    llm_running: bool,
+    llm_stream: String,
+    llm_results: Vec<(String, String)>,
+    show_llm_result: bool,
+    llm_cancel_requested: bool,
+    llm_extra_files: Vec<String>,
+    audio_preprocessing_mode: String,
 }
 
 impl Default for App {
@@ -166,6 +319,20 @@ impl Default for App {
             llm_api_key: String::new(),
             llm_model: String::new(),
             llm_temperature: 0.2,
+            llm_providers: Vec::new(),
+            llm_tools: Vec::new(),
+            llm_internal_providers: HashMap::new(),
+            llm_extra_args: HashMap::new(),
+            llm_tool_paths: HashMap::new(),
+            llm_allow_tools: false,
+            llm_tool_check_requested: None,
+            llm_running: false,
+            llm_stream: String::new(),
+            llm_results: Vec::new(),
+            show_llm_result: false,
+            llm_cancel_requested: false,
+            llm_extra_files: Vec::new(),
+            audio_preprocessing_mode: "auto".into(),
         }
     }
 }
@@ -273,21 +440,109 @@ impl App {
             }
             "llm_started" => {
                 self.running = true;
-                self.status = "LLM processing…".into();
+                self.llm_running = true;
+                self.llm_stream.clear();
+                // A new run must never show the previous run's results: `llm_completed`
+                // without `results` (worker failure, cancel) leaves `llm_results` alone.
+                self.llm_results.clear();
+                self.show_llm_result = false;
+                self.status = format!(
+                    "LLM {} ({}/{})…",
+                    value["mode"].as_str().unwrap_or("summary"),
+                    value["index"].as_u64().unwrap_or(1),
+                    value["total"].as_u64().unwrap_or(1)
+                );
             }
-            "llm_completed" if value["success"].as_bool().unwrap_or(false) => {
-                self.running = false;
-                let saved = value["saved_files"].as_array().map_or(0, Vec::len);
-                self.status = format!("LLM saved {saved} result(s)");
-                self.log(self.status.clone());
+            "llm_chunk" => {
+                if let Some(text) = value["text"].as_str() {
+                    self.llm_stream.push_str(text);
+                    if self.llm_stream.len() > 8_000 {
+                        let cut = self.llm_stream.len() - 8_000;
+                        let boundary = self
+                            .llm_stream
+                            .char_indices()
+                            .map(|(index, _)| index)
+                            .find(|index| *index >= cut)
+                            .unwrap_or(cut);
+                        self.llm_stream.drain(..boundary);
+                    }
+                }
             }
             "llm_completed" => {
                 self.running = false;
-                self.status = format!(
-                    "LLM error: {}",
-                    value["message"].as_str().unwrap_or("unknown error")
-                );
+                self.llm_running = false;
+                self.llm_cancel_requested = false;
+                self.llm_stream.clear();
+                if let Some(results) = value["results"].as_array() {
+                    self.llm_results = results
+                        .iter()
+                        .filter_map(|item| {
+                            Some((
+                                item["mode"].as_str()?.to_owned(),
+                                item["text"].as_str()?.to_owned(),
+                            ))
+                        })
+                        .collect();
+                }
+                if value["cancelled"].as_bool().unwrap_or(false) {
+                    self.status = "LLM cancelled".into();
+                } else if value["success"].as_bool().unwrap_or(false) {
+                    let saved = value["saved_files"].as_array().map_or(0, Vec::len);
+                    self.status = format!("LLM saved {saved} result(s) · r to view");
+                    self.show_llm_result = !self.llm_results.is_empty();
+                } else {
+                    self.status = format!(
+                        "LLM error: {}",
+                        value["message"].as_str().unwrap_or("unknown error")
+                    );
+                }
                 self.log(self.status.clone());
+            }
+            "llm_tools" => {
+                self.llm_providers = value["providers"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.llm_tools = value["tools"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| serde_json::from_value::<LlmTool>(v.clone()).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            "llm_tool_check" => {
+                if let Ok(tool) = serde_json::from_value::<LlmTool>(value["tool"].clone()) {
+                    self.status = match tool.status.as_str() {
+                        "found" => format!(
+                            "{} · {} at {}",
+                            tool.provider,
+                            tool.version.as_deref().unwrap_or("found"),
+                            tool.path.as_deref().unwrap_or("?")
+                        ),
+                        _ => format!(
+                            "{} · {} · {}",
+                            tool.provider, tool.status, tool.install_hint
+                        ),
+                    };
+                    self.log(self.status.clone());
+                    if let Some(slot) = self
+                        .llm_tools
+                        .iter_mut()
+                        .find(|t| t.provider == tool.provider)
+                    {
+                        *slot = tool;
+                    } else {
+                        self.llm_tools.push(tool);
+                    }
+                }
             }
             "error" => {
                 self.status = value["message"].as_str().unwrap_or("Worker error").into();
@@ -299,14 +554,17 @@ impl App {
 }
 
 fn llm_input_files(app: &App) -> Vec<String> {
+    let mut seen = HashSet::new();
     app.result_files
         .iter()
+        .chain(app.llm_extra_files.iter())
         .filter(|path| {
             matches!(
                 Path::new(path).extension().and_then(|value| value.to_str()),
                 Some("txt" | "md" | "srt" | "vtt")
             )
         })
+        .filter(|path| seen.insert((*path).clone()))
         .cloned()
         .collect()
 }
@@ -319,7 +577,7 @@ fn llm_can_run(app: &App) -> bool {
 
 fn request_llm(app: &mut App) {
     if llm_input_files(app).is_empty() {
-        app.status = "No saved text results in this session".into();
+        app.status = "No transcripts: run a transcription or /llm-file <path>".into();
     } else if app.llm_modes.is_empty() {
         app.status = "Select at least one LLM mode first".into();
     } else if app.llm_modes.iter().any(|mode| mode == "custom") && app.llm_prompt.is_empty() {
@@ -331,6 +589,25 @@ fn request_llm(app: &mut App) {
             llm_input_files(app).len()
         );
     }
+}
+
+fn start_payload(app: &App) -> Value {
+    json!({
+        "type": "start",
+        "files": app.files,
+        "output_dir": app.output_dir,
+        "formats": app.formats,
+        "diarization": app.diarization,
+        "diarization_backend": app.diarization_backend,
+        "num_speakers": app.num_speakers,
+        "backend": app.backend,
+        "model": app.model,
+        "onnx_provider": app.onnx_provider,
+        "audio_preprocessing_mode": app.audio_preprocessing_mode,
+        "subtitle_sentence_split": app.subtitle_sentence_split,
+        "subtitle_max_lines": app.subtitle_max_lines,
+        "subtitle_max_width": app.subtitle_max_width,
+    })
 }
 
 fn data_dir_from_args<I, S>(args: I) -> Result<Option<String>, String>
@@ -385,9 +662,10 @@ fn apply_data_dir_argument() -> io::Result<()> {
     Ok(())
 }
 
-fn settings_path() -> Option<PathBuf> {
+/// The `GigaAMTranscriber` config directory shared with the desktop app.
+fn config_dir() -> Option<PathBuf> {
     if let Some(directory) = std::env::var_os("GIGAAM_CONFIG_DIR") {
-        return Some(PathBuf::from(directory).join("tui_settings.json"));
+        return Some(PathBuf::from(directory));
     }
     #[cfg(target_os = "macos")]
     {
@@ -396,37 +674,356 @@ fn settings_path() -> Option<PathBuf> {
                 .join("Library")
                 .join("Application Support")
                 .join("GigaAMTranscriber")
-                .join("tui_settings.json")
         })
     }
     #[cfg(target_os = "windows")]
     {
         std::env::var_os("APPDATA")
             .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(|directory| {
-                PathBuf::from(directory)
-                    .join("GigaAMTranscriber")
-                    .join("tui_settings.json")
-            })
+            .map(|directory| PathBuf::from(directory).join("GigaAMTranscriber"))
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|directory| {
-                directory
-                    .join("GigaAMTranscriber")
-                    .join("tui_settings.json")
-            })
+            .map(|directory| directory.join("GigaAMTranscriber"))
     }
 }
 
+fn settings_path() -> Option<PathBuf> {
+    config_dir().map(|directory| directory.join("tui_settings.json"))
+}
+
+/// `user_settings.json` of the desktop app; its presence means the app is installed.
+fn main_app_settings_path() -> Option<PathBuf> {
+    config_dir().map(|directory| directory.join("user_settings.json"))
+}
+
+/// The desktop app keeps `LLM_API_KEY` here, not in `user_settings.json`.
+fn env_file_path() -> Option<PathBuf> {
+    config_dir().map(|directory| directory.join(".env"))
+}
+
+/// The single "desktop app is installed" predicate shared by load and save: the
+/// file exists, whether or not it currently parses.
+fn main_app_installed() -> bool {
+    main_app_settings_path().is_some_and(|path| path.is_file())
+}
+
+const FORMAT_KEYS: [&str; 7] = [
+    "txt",
+    "txt_timecodes",
+    "txt_diarize",
+    "txt_diarize_timecodes",
+    "md",
+    "srt",
+    "vtt",
+];
+/// (settings-key prefix, bare binary name); a path equal to the bare name is not an override.
+const CLI_PREFIXES: [(&str, &str); 5] = [
+    ("claude", "claude"),
+    ("codex", "codex"),
+    ("opencode", "opencode"),
+    ("pi", "pi"),
+    ("omp", "omp"),
+];
+
+/// Copies the keys shared with the desktop app from its `user_settings.json` map.
+fn shared_settings_from_main_app(map: &serde_json::Map<String, Value>, settings: &mut TuiSettings) {
+    let text = |key: &str| map.get(key).and_then(Value::as_str).map(str::to_owned);
+    if let Some(v) = text("asr_backend") {
+        settings.backend = v;
+    }
+    if let Some(v) = text("onnx_provider") {
+        settings.onnx_provider = v;
+    }
+    if let Some(v) = text("diarization_backend") {
+        settings.diarization_backend = v;
+    }
+    if let Some(v) = text("asr_model") {
+        settings.model = v;
+    }
+    if let Some(v) = text("audio_preprocessing_mode") {
+        settings.audio_preprocessing_mode = v;
+    }
+    if let Some(v) = map.get("subtitle_sentence_split").and_then(Value::as_bool) {
+        settings.subtitle_sentence_split = v;
+    }
+    if let Some(v) = map.get("subtitle_max_line_count").and_then(Value::as_u64) {
+        settings.subtitle_max_lines = v.clamp(1, 4) as u8;
+    }
+    if let Some(v) = map.get("subtitle_max_line_width").and_then(Value::as_u64) {
+        settings.subtitle_max_width = v.clamp(20, 100) as u16;
+    }
+    if let Some(formats) = map.get("output_formats").and_then(Value::as_object) {
+        let selected: Vec<String> = FORMAT_KEYS
+            .iter()
+            .filter(|key| formats.get(**key).and_then(Value::as_bool).unwrap_or(false))
+            .map(|key| (*key).to_owned())
+            .collect();
+        if !selected.is_empty() {
+            settings.formats = selected;
+        }
+    }
+    if let Some(v) = map.get("enable_diarization").and_then(Value::as_bool) {
+        settings.diarization = v;
+    }
+    if let Some(v) = map.get("num_speakers").and_then(Value::as_u64) {
+        settings.num_speakers = (v > 0).then_some(v as u32);
+    }
+    if let Some(v) = text("llm_provider") {
+        settings.llm_provider = v;
+    }
+    if let Some(v) = text("llm_api_url") {
+        settings.llm_api_url = v;
+    }
+    if let Some(v) = text("llm_model") {
+        settings.llm_model = v;
+    }
+    if let Some(v) = map.get("llm_temperature") {
+        // PyQt stores the temperature as a string ("0.2"); accept a number too.
+        if let Some(t) = v
+            .as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        {
+            settings.llm_temperature = t;
+        }
+    }
+    if let Some(v) = map.get("llm_allow_tools").and_then(Value::as_bool) {
+        settings.llm_allow_tools = v;
+    }
+    for (prefix, binary) in CLI_PREFIXES {
+        match text(&format!("llm_{prefix}_path")).map(|p| p.trim().to_owned()) {
+            Some(p) if !p.is_empty() && p != binary => {
+                settings.llm_tool_paths.insert(prefix.into(), p);
+            }
+            Some(_) => {
+                settings.llm_tool_paths.remove(prefix);
+            }
+            None => {}
+        }
+        match text(&format!("llm_{prefix}_args")) {
+            Some(a) if !a.trim().is_empty() => {
+                settings.llm_extra_args.insert(prefix.into(), a);
+            }
+            Some(_) => {
+                settings.llm_extra_args.remove(prefix);
+            }
+            None => {}
+        }
+        if matches!(prefix, "pi" | "omp") {
+            match text(&format!("llm_{prefix}_provider")) {
+                Some(p) if !p.trim().is_empty() => {
+                    settings.llm_internal_providers.insert(prefix.into(), p);
+                }
+                Some(_) => {
+                    settings.llm_internal_providers.remove(prefix);
+                }
+                None => {}
+            }
+        }
+    }
+    match text("llm_other_path") {
+        Some(p) if !p.trim().is_empty() => {
+            settings.llm_tool_paths.insert("other".into(), p);
+        }
+        Some(_) => {
+            settings.llm_tool_paths.remove("other");
+        }
+        None => {}
+    }
+    match text("llm_other_args") {
+        Some(a) if !a.trim().is_empty() => {
+            settings.llm_extra_args.insert("other".into(), a);
+        }
+        Some(_) => {
+            settings.llm_extra_args.remove("other");
+        }
+        None => {}
+    }
+}
+
+/// Writes the shared keys into the desktop app's map, leaving its other keys and order alone.
+fn shared_settings_into_main_app(settings: &TuiSettings, map: &mut serde_json::Map<String, Value>) {
+    let mut put = |key: &str, value: Value| {
+        map.insert(key.to_owned(), value);
+    };
+    put("asr_backend", json!(settings.backend));
+    put("onnx_provider", json!(settings.onnx_provider));
+    put("diarization_backend", json!(settings.diarization_backend));
+    put("asr_model", json!(settings.model));
+    put(
+        "audio_preprocessing_mode",
+        json!(settings.audio_preprocessing_mode),
+    );
+    put(
+        "subtitle_sentence_split",
+        json!(settings.subtitle_sentence_split),
+    );
+    put(
+        "subtitle_max_line_count",
+        json!(settings.subtitle_max_lines),
+    );
+    put(
+        "subtitle_max_line_width",
+        json!(settings.subtitle_max_width),
+    );
+    let mut formats = serde_json::Map::new();
+    for key in FORMAT_KEYS {
+        formats.insert(
+            key.to_owned(),
+            json!(settings.formats.iter().any(|selected| selected == key)),
+        );
+    }
+    put("output_formats", Value::Object(formats));
+    put("enable_diarization", json!(settings.diarization));
+    put("num_speakers", json!(settings.num_speakers.unwrap_or(0)));
+    put("llm_provider", json!(settings.llm_provider));
+    put("llm_api_url", json!(settings.llm_api_url));
+    put("llm_model", json!(settings.llm_model));
+    // Stored as a string, exactly like the PyQt settings dialog does.
+    put(
+        "llm_temperature",
+        Value::String(format!("{}", settings.llm_temperature)),
+    );
+    put("llm_allow_tools", json!(settings.llm_allow_tools));
+    let lookup =
+        |table: &HashMap<String, String>, key: &str| table.get(key).cloned().unwrap_or_default();
+    // Empty strings mean "cleared" so that a reset in the TUI reaches the desktop app.
+    for (prefix, _) in CLI_PREFIXES {
+        put(
+            &format!("llm_{prefix}_path"),
+            json!(lookup(&settings.llm_tool_paths, prefix)),
+        );
+        put(
+            &format!("llm_{prefix}_args"),
+            json!(lookup(&settings.llm_extra_args, prefix)),
+        );
+        if matches!(prefix, "pi" | "omp") {
+            put(
+                &format!("llm_{prefix}_provider"),
+                json!(lookup(&settings.llm_internal_providers, prefix)),
+            );
+        }
+    }
+    put(
+        "llm_other_path",
+        json!(lookup(&settings.llm_tool_paths, "other")),
+    );
+    put(
+        "llm_other_args",
+        json!(lookup(&settings.llm_extra_args, "other")),
+    );
+}
+
+/// Reads `KEY=value` from a dotenv-style file; quotes and surrounding spaces are stripped.
+fn read_env_value(path: &Path, key: &str) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| value.trim().trim_matches(['\'', '"']).to_owned())
+    })
+}
+
+/// Replaces (or appends) `KEY=value` in a dotenv-style file; an empty value removes the line.
+fn write_env_value(path: &Path, key: &str, value: &str) -> Result<(), String> {
+    let contents = fs::read_to_string(path).unwrap_or_default();
+    let mut lines: Vec<String> = contents.lines().map(str::to_owned).collect();
+    let is_key = |line: &str| {
+        line.trim()
+            .split_once('=')
+            .is_some_and(|(name, _)| name.trim() == key)
+    };
+    let value = value.trim();
+    match lines.iter().position(|line| is_key(line)) {
+        Some(index) if value.is_empty() => {
+            lines.remove(index);
+        }
+        Some(index) => lines[index] = format!("{key}={value}"),
+        None if value.is_empty() => return Ok(()), // nothing to clear, nothing to create
+        None => lines.push(format!("{key}={value}")),
+    }
+    let mut text = lines.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    write_text_atomic(path, &text)
+}
+
+/// Same temp-file-then-rename scheme as `save_json_atomic` in the Python side.
+fn write_json_atomic(path: &Path, value: &Value) -> Result<(), String> {
+    let contents = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("Cannot encode settings: {error}"))?;
+    write_text_atomic(path, &format!("{contents}\n"))
+}
+
+/// Per-process temp name so two TUI instances never rename over each other's file;
+/// `sync_all` before the rename so a crash cannot leave a truncated settings file.
+fn write_text_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Cannot save {}: no file name", path.display()))?;
+    let temp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
+    let written = fs::File::create(&temp)
+        .and_then(|mut file| {
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()
+        })
+        .map_err(|error| format!("Cannot write {}: {error}", temp.display()))
+        .and_then(|_| {
+            fs::rename(&temp, path)
+                .map_err(|error| format!("Cannot save {}: {error}", path.display()))
+        });
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
+}
+
 fn load_settings() -> TuiSettings {
-    settings_path()
+    let mut settings: TuiSettings = settings_path()
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|contents| serde_json::from_str(&contents).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if main_app_installed() {
+        // The desktop app is installed: its file wins for the shared keys, its .env for
+        // the key. The key is read even when the JSON is corrupt, so that the next save
+        // never treats "could not read" as "the user cleared it".
+        if let Some(map) = main_app_settings_path()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+            .and_then(|value| value.as_object().cloned())
+        {
+            shared_settings_from_main_app(&map, &mut settings);
+        }
+        if let Some(key) = env_file_path().and_then(|path| read_env_value(&path, "LLM_API_KEY")) {
+            settings.llm_api_key = key;
+        }
+    }
+    settings
+}
+
+/// The first Esc during an LLM run asks the worker to stop politely; once that request is
+/// pending, Esc must fall through to the double-Esc kill/restart path, otherwise a CLI
+/// provider that ignores the cancel (up to the worker's 600 s timeout) or a dead worker
+/// locks the UI: `running` only clears on `llm_completed`, and `q`/Ctrl+C wait for it.
+fn esc_should_soft_cancel(app: &App) -> bool {
+    app.llm_running && !app.llm_cancel_requested
+}
+
+/// After the worker is killed and respawned nothing it was doing survives, so every
+/// "in flight" flag and buffer of both the transcription and the LLM run must go back to
+/// idle; the fresh worker will never send the `completed`/`llm_completed` that would.
+fn reset_after_worker_restart(app: &mut App) {
+    app.running = false;
+    app.cancelled = true;
+    app.llm_running = false;
+    app.llm_cancel_requested = false;
+    app.llm_requested = false;
+    app.llm_stream.clear();
 }
 
 fn save_settings(settings: &TuiSettings) -> Result<(), String> {
@@ -436,27 +1033,79 @@ fn save_settings(settings: &TuiSettings) -> Result<(), String> {
         .ok_or("Cannot determine the settings directory")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Cannot create settings directory: {error}"))?;
-    let contents = serde_json::to_string_pretty(settings)
+    let mut own = serde_json::to_value(settings)
         .map_err(|error| format!("Cannot encode settings: {error}"))?;
-    fs::write(path, contents).map_err(|error| format!("Cannot save settings: {error}"))
+    if main_app_installed() {
+        // The main app is installed: shared keys live in its file, the key in its .env.
+        let main_path =
+            main_app_settings_path().ok_or("Cannot determine the settings directory")?;
+        let contents = fs::read_to_string(&main_path)
+            .map_err(|error| format!("Cannot read {}: {error}", main_path.display()))?;
+        match serde_json::from_str::<Value>(&contents)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+        {
+            Some(mut map) => {
+                shared_settings_into_main_app(settings, &mut map);
+                write_json_atomic(&main_path, &Value::Object(map))?;
+            }
+            // Corrupt or empty: leave the user's file for inspection rather than replace
+            // it with a bare object of TUI keys; the shared values still reach
+            // tui_settings.json below.
+            None => {}
+        }
+        // Like config.save_env_value, only a non-empty key is ever written: an empty one
+        // means "not loaded", never "delete the desktop app's key". And only a key that
+        // differs from the stored one: `TuiSettings::default()` seeds the key from the
+        // shell's LLM_API_KEY, so an unconditional write would copy a shell secret into
+        // the desktop app's .env on any unrelated save and rewrite the file when nothing
+        // changed.
+        if !settings.llm_api_key.is_empty() {
+            if let Some(env_path) = env_file_path() {
+                if read_env_value(&env_path, "LLM_API_KEY").as_deref()
+                    != Some(settings.llm_api_key.as_str())
+                {
+                    write_env_value(&env_path, "LLM_API_KEY", &settings.llm_api_key)?;
+                }
+            }
+        }
+        if let Some(object) = own.as_object_mut() {
+            object.remove("llm_api_key"); // never duplicate the secret into tui_settings.json
+        }
+    }
+    write_json_atomic(&path, &own)
+}
+
+impl From<&App> for TuiSettings {
+    fn from(app: &App) -> Self {
+        Self {
+            pet_enabled: app.pet_enabled,
+            backend: app.backend.clone(),
+            onnx_provider: app.onnx_provider.clone(),
+            diarization_backend: app.diarization_backend.clone(),
+            model: app.model.clone(),
+            subtitle_sentence_split: app.subtitle_sentence_split,
+            subtitle_max_lines: app.subtitle_max_lines,
+            subtitle_max_width: app.subtitle_max_width,
+            formats: app.formats.clone(),
+            diarization: app.diarization,
+            num_speakers: app.num_speakers,
+            llm_provider: app.llm_provider.clone(),
+            llm_api_url: app.llm_api_url.clone(),
+            llm_api_key: app.llm_api_key.clone(),
+            llm_model: app.llm_model.clone(),
+            llm_temperature: app.llm_temperature,
+            llm_internal_providers: app.llm_internal_providers.clone(),
+            llm_extra_args: app.llm_extra_args.clone(),
+            llm_tool_paths: app.llm_tool_paths.clone(),
+            llm_allow_tools: app.llm_allow_tools,
+            audio_preprocessing_mode: app.audio_preprocessing_mode.clone(),
+        }
+    }
 }
 
 fn save_app_settings(app: &mut App) {
-    if let Err(error) = save_settings(&TuiSettings {
-        pet_enabled: app.pet_enabled,
-        backend: app.backend.clone(),
-        onnx_provider: app.onnx_provider.clone(),
-        diarization_backend: app.diarization_backend.clone(),
-        model: app.model.clone(),
-        subtitle_sentence_split: app.subtitle_sentence_split,
-        subtitle_max_lines: app.subtitle_max_lines,
-        subtitle_max_width: app.subtitle_max_width,
-        llm_provider: app.llm_provider.clone(),
-        llm_api_url: app.llm_api_url.clone(),
-        llm_api_key: app.llm_api_key.clone(),
-        llm_model: app.llm_model.clone(),
-        llm_temperature: app.llm_temperature,
-    }) {
+    if let Err(error) = save_settings(&TuiSettings::from(&*app)) {
         app.status = error;
         app.log(app.status.clone());
     }
@@ -636,7 +1285,7 @@ const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-const COMMANDS: [(&str, &str); 23] = [
+const COMMANDS: [(&str, &str); 29] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -647,12 +1296,20 @@ const COMMANDS: [(&str, &str); 23] = [
     ("/subtitle-width", "set 20-100 characters per subtitle line"),
     ("/diarize", "turn speaker diarization on or off"),
     (
+        "/audio-mode",
+        "audio preprocessing: auto, off, light, denoise",
+    ),
+    (
         "/diarization-backend",
         "select ONNX, pyannote, or NVIDIA Sortformer",
     ),
     ("/speakers", "auto or a fixed speaker count"),
     ("/remove", "remove a file from the queue by number"),
     ("/clear", "clear the queue and result list"),
+    (
+        "/llm-file",
+        "add a transcript file (.txt/.md/.srt/.vtt) for the LLM",
+    ),
     ("/settings", "show current processing settings"),
     ("/pets", "toggle the animated unicorn companion"),
     ("/llm-mode", "summary, tasks, terms, or custom"),
@@ -662,6 +1319,19 @@ const COMMANDS: [(&str, &str); 23] = [
     ("/llm-api-key", "set LLM API key"),
     ("/llm-model", "set LLM model"),
     ("/llm-temperature", "set LLM temperature"),
+    (
+        "/llm-provider-name",
+        "Pi/oh-my-pi internal provider, e.g. anthropic",
+    ),
+    (
+        "/llm-args",
+        "extra CLI arguments for the current LLM provider",
+    ),
+    ("/llm-path", "path to the current provider's CLI binary"),
+    (
+        "/llm-tools",
+        "on|off · let the CLI agent use tools and sessions",
+    ),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -759,6 +1429,10 @@ fn command_menu_options(app: &App) -> Vec<String> {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+        Some("/audio-mode") => ["auto", "off", "light", "denoise", BACK_MENU_OPTION]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         Some("/diarization-backend") => ["pyannote", "onnx", "sortformer", BACK_MENU_OPTION]
             .into_iter()
             .map(str::to_owned)
@@ -805,21 +1479,31 @@ fn command_menu_options(app: &App) -> Vec<String> {
                 }
             ),
             format!("Temperature · {}", app.llm_temperature),
+            format!(
+                "Binary path · {}",
+                app.llm_tool_paths
+                    .get(provider_prefix(&app.llm_provider))
+                    .map_or("auto", String::as_str)
+            ),
+            format!(
+                "Internal provider · {}",
+                app.llm_internal_providers
+                    .get(provider_prefix(&app.llm_provider))
+                    .map_or("default", String::as_str)
+            ),
+            format!(
+                "Extra args · {}",
+                app.llm_extra_args
+                    .get(provider_prefix(&app.llm_provider))
+                    .map_or("none", String::as_str)
+            ),
+            format!(
+                "Agent tools · {}",
+                if app.llm_allow_tools { "on" } else { "off" }
+            ),
             BACK_MENU_OPTION.into(),
         ],
-        Some("/settings-provider") => [
-            "API",
-            "Claude Code",
-            "Codex",
-            "OpenCode",
-            "Pi",
-            "oh-my-pi",
-            "Other",
-            BACK_MENU_OPTION,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect(),
+        Some("/settings-provider") => provider_menu_options(app),
         Some("/settings-model") => llm_model_options(&app.llm_provider),
         Some("/llm-mode") => ["summary", "tasks", "terms", "custom"]
             .into_iter()
@@ -888,6 +1572,7 @@ fn open_command_menu(app: &mut App, command: &str) -> bool {
             | "/model"
             | "/diarize"
             | "/diarization-backend"
+            | "/audio-mode"
             | "/formats"
             | "/speakers"
             | "/llm-mode"
@@ -905,6 +1590,11 @@ fn open_command_menu(app: &mut App, command: &str) -> bool {
             command_menu_options(app)
                 .iter()
                 .position(|option| option == &app.onnx_provider)
+                .unwrap_or(0)
+        } else if command == "/audio-mode" {
+            command_menu_options(app)
+                .iter()
+                .position(|option| option == &app.audio_preprocessing_mode)
                 .unwrap_or(0)
         } else {
             0
@@ -972,12 +1662,26 @@ fn apply_command_menu(app: &mut App) {
                     return;
                 }
                 4 => "/llm-temperature ".into(),
+                5 => "/llm-path ".into(),
+                6 => "/llm-provider-name ".into(),
+                7 => "/llm-args ".into(),
+                8 => {
+                    app.llm_allow_tools = !app.llm_allow_tools;
+                    save_app_settings(app);
+                    app.command_menu = Some("/settings".into());
+                    app.command_menu_index = 8;
+                    app.status = format!(
+                        "Agent tools {}",
+                        if app.llm_allow_tools { "on" } else { "off" }
+                    );
+                    return;
+                }
                 _ => String::new(),
             };
             app.status = "Enter value and press Enter".into();
         }
         "/settings-provider" => {
-            app.llm_provider = option.clone();
+            app.llm_provider = provider_from_menu_option(option).to_owned();
             app.command_menu = Some("/settings".into());
             app.command_menu_index = 0;
             app.status = format!("LLM provider: {}", app.llm_provider);
@@ -1019,6 +1723,14 @@ fn apply_command_menu(app: &mut App) {
             app.status = format!("Diarization {option}");
             app.command_menu = None;
             app.input.clear();
+            save_app_settings(app);
+        }
+        "/audio-mode" => {
+            app.audio_preprocessing_mode = option.clone();
+            app.status = format!("Audio preprocessing: {option}");
+            app.command_menu = None;
+            app.input.clear();
+            save_app_settings(app);
         }
         "/diarization-backend" => {
             app.diarization_backend = option.clone();
@@ -1035,12 +1747,14 @@ fn apply_command_menu(app: &mut App) {
             app.status = "Sortformer detects the speaker count automatically".into();
             app.command_menu = None;
             app.input.clear();
+            save_app_settings(app);
         }
         "/speakers" => {
             app.num_speakers = option.parse().ok();
             app.status = format!("Speaker count: {option}");
             app.command_menu = None;
             app.input.clear();
+            save_app_settings(app);
         }
         "/formats" => {
             let format = option.trim_start_matches("[x] ").trim_start_matches("[ ] ");
@@ -1053,6 +1767,7 @@ fn apply_command_menu(app: &mut App) {
                 app.formats.push("txt".into());
             }
             app.status = format!("Formats: {}", app.formats.join(", "));
+            save_app_settings(app);
         }
         _ => {}
     }
@@ -1088,6 +1803,21 @@ fn run_command(app: &mut App) {
         }
         "/llm-prompt" => app.status = "Usage: /llm-prompt <instruction>".into(),
         "/llm-run" => request_llm(app),
+        "/llm-file" => match normalize_path(argument) {
+            Ok(path)
+                if matches!(
+                    Path::new(&path)
+                        .extension()
+                        .and_then(|value| value.to_str()),
+                    Some("txt" | "md" | "srt" | "vtt")
+                ) =>
+            {
+                app.llm_extra_files.push(path);
+                app.status = format!("LLM inputs: {}", llm_input_files(app).len());
+            }
+            Ok(_) => app.status = "LLM input must be .txt, .md, .srt or .vtt".into(),
+            Err(error) => app.status = error,
+        },
         "/llm-api-url" if !argument.is_empty() => {
             app.llm_api_url = argument.into();
             app.status = "LLM API URL saved".into();
@@ -1114,6 +1844,57 @@ fn run_command(app: &mut App) {
             }
             _ => app.status = "Temperature must be between 0 and 2".into(),
         },
+        "/llm-provider-name" if !matches!(provider_prefix(&app.llm_provider), "pi" | "omp") => {
+            app.status = "Internal provider applies to Pi and oh-my-pi only".into();
+        }
+        "/llm-provider-name" => {
+            let prefix = provider_prefix(&app.llm_provider).to_owned();
+            if argument.is_empty() {
+                app.llm_internal_providers.remove(&prefix);
+                app.status = "Internal provider cleared (CLI default)".into();
+            } else {
+                app.llm_internal_providers.insert(prefix, argument.into());
+                app.status = format!("Internal provider: {argument}");
+            }
+            save_app_settings(app);
+        }
+        "/llm-args" if app.llm_provider == "API" => {
+            app.status = "Extra arguments apply to CLI providers only".into();
+        }
+        "/llm-args" => {
+            let prefix = provider_prefix(&app.llm_provider).to_owned();
+            if argument.is_empty() {
+                app.llm_extra_args.remove(&prefix);
+                app.status = "Extra arguments cleared".into();
+            } else {
+                app.llm_extra_args.insert(prefix, argument.into());
+                app.status = format!("Extra arguments: {argument}");
+            }
+            save_app_settings(app);
+        }
+        "/llm-path" if app.llm_provider == "API" => {
+            app.status = "Binary path applies to CLI providers only".into();
+        }
+        "/llm-path" => {
+            let prefix = provider_prefix(&app.llm_provider).to_owned();
+            if argument.is_empty() {
+                app.llm_tool_paths.remove(&prefix);
+                app.status = "Binary path reset to auto-discovery".into();
+            } else {
+                app.llm_tool_paths.insert(prefix, argument.into());
+                app.status = format!("Binary path: {argument} · checking…");
+            }
+            if app.llm_provider != "Other" {
+                app.llm_tool_check_requested = Some((app.llm_provider.clone(), argument.into()));
+            }
+            save_app_settings(app);
+        }
+        "/llm-tools" if matches!(argument, "on" | "off") => {
+            app.llm_allow_tools = argument == "on";
+            app.status = format!("Agent tools and sessions {argument}");
+            save_app_settings(app);
+        }
+        "/llm-tools" => app.status = "Usage: /llm-tools on|off".into(),
         "/pets" => {
             if app.pet_enabled {
                 app.clear_pet_layer();
@@ -1190,6 +1971,7 @@ fn run_command(app: &mut App) {
             } else {
                 app.formats = formats;
                 app.status = format!("Formats: {}", app.formats.join(", "));
+                save_app_settings(app);
             }
         }
         "/subtitle-split" if matches!(argument, "on" | "off") => {
@@ -1217,8 +1999,15 @@ fn run_command(app: &mut App) {
         "/diarize" if matches!(argument, "on" | "off") => {
             app.diarization = argument == "on";
             app.status = format!("Diarization {}", argument);
+            save_app_settings(app);
         }
         "/diarize" => app.status = "Usage: /diarize on|off".into(),
+        "/audio-mode" if matches!(argument, "auto" | "off" | "light" | "denoise") => {
+            app.audio_preprocessing_mode = argument.into();
+            app.status = format!("Audio preprocessing: {argument}");
+            save_app_settings(app);
+        }
+        "/audio-mode" => app.status = "Usage: /audio-mode auto|off|light|denoise".into(),
         "/diarization-backend" if matches!(argument, "pyannote" | "onnx" | "sortformer") => {
             app.diarization_backend = argument.into();
             if app.diarization_backend == "sortformer" {
@@ -1233,15 +2022,18 @@ fn run_command(app: &mut App) {
         "/speakers" if app.diarization_backend == "sortformer" => {
             app.num_speakers = None;
             app.status = "Sortformer detects the speaker count automatically".into();
+            save_app_settings(app);
         }
         "/speakers" if argument == "auto" => {
             app.num_speakers = None;
             app.status = "Speaker count: auto".into();
+            save_app_settings(app);
         }
         "/speakers" => match argument.parse::<u32>() {
             Ok(value) if value > 0 => {
                 app.num_speakers = Some(value);
                 app.status = format!("Speaker count: {value}");
+                save_app_settings(app);
             }
             _ => app.status = "Usage: /speakers auto|<positive number>".into(),
         },
@@ -1249,6 +2041,9 @@ fn run_command(app: &mut App) {
             app.files.clear();
             app.selected_file = None;
             app.result_files.clear();
+            app.llm_extra_files.clear();
+            app.llm_results.clear();
+            app.show_llm_result = false;
             app.status = "Queue cleared".into();
         }
         "/remove" => match argument.parse::<usize>() {
@@ -1353,6 +2148,12 @@ fn bundled_worker() -> Option<PathBuf> {
 }
 
 fn spawn_worker() -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
+    spawn_worker_with(Stdio::inherit())
+}
+
+/// `stderr` is what the worker's diagnostics (Python warnings, model downloads)
+/// go to: the terminal for the TUI and human headless output, nowhere for `--json`.
+fn spawn_worker_with(stderr: Stdio) -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
     let module = std::env::var("GIGAAM_TUI_WORKER").unwrap_or_else(|_| "src.tui_worker".into());
     let project_root = std::env::var("GIGAAM_PROJECT_ROOT")
         .map(std::path::PathBuf::from)
@@ -1374,7 +2175,7 @@ fn spawn_worker() -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
         .current_dir(project_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(stderr)
         .spawn()?;
     let stdin = child.stdin.take().expect("worker stdin");
     let stdout = child.stdout.take().expect("worker stdout");
@@ -1396,6 +2197,580 @@ fn send(stdin: &mut ChildStdin, message: Value) -> io::Result<()> {
         serde_json::to_string(&message).expect("JSON command")
     )?;
     stdin.flush()
+}
+
+// ---------------------------------------------------------------------------
+// Headless mode: `gigaam transcribe …` / `gigaam llm …` for scripts and agents.
+// The same worker and the same persisted settings as the TUI, but with a
+// deterministic stdout, no terminal and exit codes instead of a status line.
+// ---------------------------------------------------------------------------
+
+const HEADLESS_USAGE: &str = "Usage:
+  gigaam                       launch the terminal UI
+  gigaam transcribe FILE... [options]
+  gigaam llm FILE... --mode MODE [--mode MODE ...] [options]
+
+transcribe options (defaults come from the saved settings):
+  --output DIR                 write results into DIR (default: next to each input)
+  --formats LIST               comma-separated: txt,txt_timecodes,srt,vtt,md,txt_diarize,txt_diarize_timecodes
+  --diarize                    enable speaker diarization
+  --speakers N|auto            fixed speaker count or automatic detection
+  --diarization-backend NAME   pyannote|onnx|sortformer
+  --backend NAME               auto|pytorch|mlx|onnx (mlx: macOS only)
+  --model ID                   v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc
+  --audio-mode MODE            auto|off|light|denoise
+  --json                       one JSON worker event per line on stdout; the worker's stderr is
+                               silenced (use human mode without --quiet to see model/download diagnostics)
+  --quiet                      no progress or log lines, worker stderr silenced
+
+llm options:
+  --mode MODE                  summary|tasks|terms|custom (repeatable)
+  --prompt TEXT                the prompt for --mode custom
+  --output DIR                 where session_llm_<mode>.txt is saved (default: next to the last file)
+  --json                       one JSON worker event per line on stdout; worker stderr silenced
+
+exit codes: 0 all files succeeded, 1 at least one file failed,
+            2 bad arguments or an input file that does not exist
+              (message on stderr; nothing on stdout even with --json),
+            3 worker unavailable (run `gigaam --update`)";
+
+#[derive(Debug)]
+enum HeadlessCommand {
+    Transcribe(TranscribeArgs),
+    Llm(LlmArgs),
+}
+
+#[derive(Debug, Default)]
+struct TranscribeArgs {
+    files: Vec<String>,
+    output_dir: Option<String>,
+    formats: Option<Vec<String>>,
+    diarize: Option<bool>,
+    /// `None`: not given; `Some(None)`: `auto`; `Some(Some(n))`: fixed count.
+    num_speakers: Option<Option<u32>>,
+    diarization_backend: Option<String>,
+    backend: Option<String>,
+    model: Option<String>,
+    audio_mode: Option<String>,
+    json: bool,
+    quiet: bool,
+}
+
+#[derive(Debug, Default)]
+struct LlmArgs {
+    files: Vec<String>,
+    modes: Vec<String>,
+    prompt: String,
+    output_dir: Option<String>,
+    json: bool,
+}
+
+/// Removes `--data-dir X` / `--data-dir=X`, which `apply_data_dir_argument` has
+/// already consumed, so that the headless parser only sees its own arguments.
+fn strip_data_dir(args: Vec<String>) -> Vec<String> {
+    let mut result = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+        } else if arg == "--data-dir" {
+            skip_next = true;
+        } else if !arg.starts_with("--data-dir=") {
+            result.push(arg);
+        }
+    }
+    result
+}
+
+fn parse_headless_args(argv: &[String]) -> Result<HeadlessCommand, String> {
+    let (subcommand, rest) = argv
+        .split_first()
+        .ok_or_else(|| "expected `transcribe` or `llm`".to_string())?;
+    // Flags accept both `--flag value` and `--flag=value`.
+    let mut items = rest.iter().map(|arg| match arg.split_once('=') {
+        Some((flag, value)) if flag.starts_with("--") => {
+            (flag.to_string(), Some(value.to_string()))
+        }
+        _ => (arg.clone(), None),
+    });
+    let mut files = Vec::new();
+    let mut options: Vec<(String, String)> = Vec::new();
+    let mut switches: Vec<String> = Vec::new();
+    let value_flags: &[&str] = match subcommand.as_str() {
+        "transcribe" => &[
+            "--output",
+            "--formats",
+            "--speakers",
+            "--diarization-backend",
+            "--backend",
+            "--model",
+            "--audio-mode",
+        ],
+        "llm" => &["--mode", "--prompt", "--output"],
+        other => {
+            return Err(format!(
+                "unknown command `{other}`; expected `transcribe` or `llm`"
+            ))
+        }
+    };
+    let switch_flags: &[&str] = if subcommand == "transcribe" {
+        &["--diarize", "--json", "--quiet"]
+    } else {
+        &["--json"]
+    };
+    while let Some((flag, inline_value)) = items.next() {
+        if !flag.starts_with('-') || flag == "-" {
+            files.push(flag);
+        } else if switch_flags.contains(&flag.as_str()) {
+            if inline_value.is_some() {
+                return Err(format!("{flag} does not take a value"));
+            }
+            switches.push(flag);
+        } else if value_flags.contains(&flag.as_str()) {
+            let value = match inline_value {
+                Some(value) => value,
+                None => items
+                    .next()
+                    .map(|(value, _)| value)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("{flag} requires a value"))?,
+            };
+            options.push((flag, value));
+        } else {
+            return Err(format!("unknown option {flag}"));
+        }
+    }
+    if files.is_empty() {
+        return Err(format!("{subcommand} needs at least one file"));
+    }
+    if subcommand == "llm" {
+        let mut args = LlmArgs {
+            files,
+            json: switches.iter().any(|flag| flag == "--json"),
+            ..LlmArgs::default()
+        };
+        for (flag, value) in options {
+            match flag.as_str() {
+                "--mode" if matches!(value.as_str(), "summary" | "tasks" | "terms" | "custom") => {
+                    if !args.modes.contains(&value) {
+                        args.modes.push(value);
+                    }
+                }
+                "--mode" => {
+                    return Err(format!(
+                        "--mode must be summary|tasks|terms|custom, got `{value}`"
+                    ))
+                }
+                "--prompt" => args.prompt = value,
+                _ => args.output_dir = Some(value),
+            }
+        }
+        if args.modes.is_empty() {
+            return Err("llm needs at least one --mode (summary|tasks|terms|custom)".into());
+        }
+        let custom = args.modes.iter().any(|mode| mode == "custom");
+        if custom && args.prompt.trim().is_empty() {
+            return Err("--mode custom requires --prompt TEXT".into());
+        }
+        if !custom && !args.prompt.is_empty() {
+            return Err("--prompt requires --mode custom".into());
+        }
+        return Ok(HeadlessCommand::Llm(args));
+    }
+    let mut args = TranscribeArgs {
+        files,
+        diarize: switches
+            .iter()
+            .any(|flag| flag == "--diarize")
+            .then_some(true),
+        json: switches.iter().any(|flag| flag == "--json"),
+        quiet: switches.iter().any(|flag| flag == "--quiet"),
+        ..TranscribeArgs::default()
+    };
+    for (flag, value) in options {
+        match flag.as_str() {
+            "--output" => args.output_dir = Some(value),
+            "--formats" => {
+                let formats: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|format| !format.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if let Some(unknown) = formats
+                    .iter()
+                    .find(|format| !FORMAT_KEYS.contains(&format.as_str()))
+                {
+                    return Err(format!(
+                        "--formats: unknown format `{unknown}` (expected {})",
+                        FORMAT_KEYS.join(",")
+                    ));
+                }
+                if formats.is_empty() {
+                    return Err("--formats requires at least one format".into());
+                }
+                args.formats = Some(formats);
+            }
+            "--speakers" if value == "auto" => args.num_speakers = Some(None),
+            "--speakers" => match value.parse::<u32>() {
+                Ok(count) if count > 0 => args.num_speakers = Some(Some(count)),
+                _ => {
+                    return Err(format!(
+                        "--speakers must be auto or a positive number, got `{value}`"
+                    ))
+                }
+            },
+            "--diarization-backend"
+                if matches!(value.as_str(), "pyannote" | "onnx" | "sortformer") =>
+            {
+                args.diarization_backend = Some(value)
+            }
+            "--diarization-backend" => {
+                return Err(format!(
+                    "--diarization-backend must be pyannote|onnx|sortformer, got `{value}`"
+                ))
+            }
+            "--backend" if backend_is_supported(&value.to_ascii_lowercase()) => {
+                args.backend = Some(value.to_ascii_lowercase())
+            }
+            "--backend" => {
+                return Err(format!(
+                    "--backend must be one of {}, got `{value}`",
+                    selectable_backends().join("|")
+                ))
+            }
+            "--model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == value) => {
+                args.model = Some(value)
+            }
+            "--model" => {
+                return Err(format!(
+                    "--model must be one of {}, got `{value}`",
+                    MODEL_OPTIONS
+                        .iter()
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>()
+                        .join("|")
+                ))
+            }
+            "--audio-mode" if matches!(value.as_str(), "auto" | "off" | "light" | "denoise") => {
+                args.audio_mode = Some(value)
+            }
+            _ => {
+                return Err(format!(
+                    "--audio-mode must be auto|off|light|denoise, got `{value}`"
+                ))
+            }
+        }
+    }
+    Ok(HeadlessCommand::Transcribe(args))
+}
+
+/// The same `start` command the TUI sends, from persisted settings plus flag overrides.
+fn headless_start_payload(settings: &TuiSettings, args: &TranscribeArgs) -> Value {
+    let backend = args
+        .backend
+        .clone()
+        .or_else(|| backend_is_supported(&settings.backend).then(|| settings.backend.clone()))
+        .unwrap_or_else(|| "auto".into());
+    let model = args
+        .model
+        .clone()
+        .or_else(|| {
+            MODEL_OPTIONS
+                .iter()
+                .any(|(id, _)| *id == settings.model)
+                .then(|| settings.model.clone())
+        })
+        .unwrap_or_else(|| "v3_e2e_rnnt".into());
+    let diarization_backend = args
+        .diarization_backend
+        .clone()
+        .unwrap_or_else(|| settings.diarization_backend.clone());
+    // Sortformer always detects the speaker count itself (mirrors `/speakers` in the TUI).
+    let num_speakers = if diarization_backend == "sortformer" {
+        None
+    } else {
+        args.num_speakers.unwrap_or(settings.num_speakers)
+    };
+    let formats = args.formats.clone().unwrap_or_else(|| {
+        if settings.formats.is_empty() {
+            vec!["txt".into()]
+        } else {
+            settings.formats.clone()
+        }
+    });
+    json!({
+        "type": "start",
+        "files": args.files,
+        "output_dir": args.output_dir,
+        "formats": formats,
+        "diarization": args.diarize.unwrap_or(settings.diarization),
+        "diarization_backend": diarization_backend,
+        "num_speakers": num_speakers,
+        "backend": backend,
+        "model": model,
+        "onnx_provider": settings.onnx_provider,
+        "audio_preprocessing_mode": args.audio_mode.clone().unwrap_or_else(|| settings.audio_preprocessing_mode.clone()),
+        "subtitle_sentence_split": settings.subtitle_sentence_split,
+        "subtitle_max_lines": settings.subtitle_max_lines.clamp(1, 4),
+        "subtitle_max_width": settings.subtitle_max_width.clamp(20, 100),
+    })
+}
+
+fn headless_llm_payload(settings: &TuiSettings, args: &LlmArgs) -> Value {
+    json!({
+        "type": "llm_start",
+        "files": args.files,
+        "modes": args.modes,
+        "prompt": args.prompt,
+        "output_dir": args.output_dir,
+        "settings": llm_settings_from(settings, &[]),
+    })
+}
+
+/// One human-readable line for the events that end a file or the run; `None` for the rest.
+fn format_headless_line(event: &Value) -> Option<String> {
+    let message = |value: &Value| value.as_str().unwrap_or("").to_string();
+    match event["type"].as_str()? {
+        "file_completed" => {
+            let name = short_name(event["file"].as_str().unwrap_or("?"));
+            let result = &event["result"];
+            if result["success"].as_bool().unwrap_or(false) {
+                let saved: Vec<&str> = result["saved_files"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                Some(format!("✓ {name} → {}", saved.join(", ")))
+            } else {
+                Some(format!("× {name}: {}", message(&result["error"])))
+            }
+        }
+        "error" => Some(format!("error: {}", message(&event["message"]))),
+        "completed" | "llm_completed" if event["cancelled"].as_bool().unwrap_or(false) => {
+            Some("cancelled".into())
+        }
+        "completed" | "llm_completed" if !event["success"].as_bool().unwrap_or(false) => event
+            ["message"]
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .map(|text| format!("error: {text}")),
+        _ => None,
+    }
+}
+
+/// The worker runs with cwd = the repo checkout, so every path must be made
+/// absolute against the caller's cwd before it is sent. Output directories are
+/// created here (as `/output` does in the TUI) and canonicalised.
+fn resolve_headless_paths(command: &mut HeadlessCommand) -> Result<(), String> {
+    let (files, output_dir) = match command {
+        HeadlessCommand::Transcribe(args) => (&mut args.files, &mut args.output_dir),
+        HeadlessCommand::Llm(args) => (&mut args.files, &mut args.output_dir),
+    };
+    for file in files.iter_mut() {
+        *file = normalize_path(file)?;
+    }
+    if let Some(directory) = output_dir.as_mut() {
+        fs::create_dir_all(&*directory)
+            .map_err(|error| format!("cannot create output directory {directory}: {error}"))?;
+        let canonical = fs::canonicalize(&*directory)
+            .map_err(|error| format!("cannot resolve output directory {directory}: {error}"))?;
+        *directory = canonical.to_string_lossy().into_owned();
+    }
+    Ok(())
+}
+
+fn run_headless(argv: &[String]) -> io::Result<i32> {
+    let mut command = match parse_headless_args(argv) {
+        Ok(command) => command,
+        Err(message) => {
+            eprintln!("gigaam: {message}\n\n{HEADLESS_USAGE}");
+            return Ok(2);
+        }
+    };
+    if let Err(message) = resolve_headless_paths(&mut command) {
+        eprintln!("gigaam: {message}");
+        return Ok(2);
+    }
+    let settings = load_settings();
+    let (payload, json_output, quiet, started_type, terminal_type) = match &command {
+        HeadlessCommand::Transcribe(args) => (
+            headless_start_payload(&settings, args),
+            args.json,
+            args.quiet,
+            "started",
+            "completed",
+        ),
+        HeadlessCommand::Llm(args) => (
+            headless_llm_payload(&settings, args),
+            args.json,
+            false,
+            "llm_started",
+            "llm_completed",
+        ),
+    };
+    // `--json` promises a clean stderr and `--quiet` a silent run; the worker's own
+    // diagnostics (Python warnings, download progress) would break both.
+    let worker_stderr = if json_output || quiet {
+        Stdio::null()
+    } else {
+        Stdio::inherit()
+    };
+    let (mut child, mut worker, events) = match spawn_worker_with(worker_stderr) {
+        Ok(parts) => parts,
+        Err(error) => {
+            eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
+            return Ok(3);
+        }
+    };
+    if let Err(error) = send(&mut worker, payload) {
+        eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
+        let _ = child.kill();
+        return Ok(3);
+    }
+    let result = headless_event_loop(&events, json_output, quiet, started_type, terminal_type);
+    let _ = child.kill();
+    let _ = child.wait();
+    match result {
+        Ok(code) => Ok(code),
+        // `gigaam transcribe … | head -1`: the reader went away; nothing to report.
+        Err((code, error)) if error.kind() == io::ErrorKind::BrokenPipe => Ok(code),
+        Err((_, error)) => Err(error),
+    }
+}
+
+/// Consumes worker events until the terminal one; on a write failure returns the
+/// exit code computed so far together with the error.
+fn headless_event_loop(
+    events: &Receiver<Value>,
+    json_output: bool,
+    quiet: bool,
+    started_type: &str,
+    terminal_type: &str,
+) -> Result<i32, (i32, io::Error)> {
+    let mut exit_code = 1;
+    let mut batch_started = false;
+    let mut progress_line_open = false;
+    let mut streamed_modes: HashSet<String> = HashSet::new();
+    let stdout = io::stdout();
+    loop {
+        let event = match events.recv_timeout(Duration::from_secs(3600)) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!("gigaam: worker stopped responding");
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                eprintln!("gigaam: worker exited unexpectedly (try `gigaam --update`)");
+                exit_code = 3;
+                break;
+            }
+        };
+        let kind = event["type"].as_str().unwrap_or("").to_string();
+        if kind == started_type {
+            batch_started = true;
+        }
+        let terminal = kind == terminal_type;
+        if terminal {
+            exit_code = if event["success"].as_bool().unwrap_or(false) {
+                0
+            } else {
+                1
+            };
+        }
+        let written = if json_output {
+            let mut out = stdout.lock();
+            writeln!(out, "{}", serde_json::to_string(&event).unwrap_or_default())
+        } else {
+            if progress_line_open && kind != "progress" {
+                eprint!("\r\x1b[K");
+                progress_line_open = false;
+            }
+            let mut out = stdout.lock();
+            let written = match kind.as_str() {
+                "progress" if !quiet => {
+                    let percent = (event["file_progress"].as_f64().unwrap_or(0.0) * 100.0) as u16;
+                    eprint!(
+                        "\r{:<12} {:>3}%",
+                        event["stage"].as_str().unwrap_or(""),
+                        percent.min(100)
+                    );
+                    progress_line_open = true;
+                    Ok(())
+                }
+                "log" if !quiet => {
+                    eprintln!("{}", event["message"].as_str().unwrap_or(""));
+                    Ok(())
+                }
+                "llm_chunk" => {
+                    // Streaming providers (API) deliver the text here; CLI providers
+                    // only deliver it in `llm_completed.results`, so the heading is
+                    // printed lazily, right before the first text of each mode.
+                    let mode = event["mode"].as_str().unwrap_or("").to_string();
+                    let mut heading = Ok(());
+                    if !streamed_modes.contains(&mode) {
+                        if !streamed_modes.is_empty() {
+                            heading = writeln!(out);
+                        }
+                        heading = heading.and_then(|_| writeln!(out, "## {mode}"));
+                        streamed_modes.insert(mode);
+                    }
+                    heading
+                        .and_then(|_| write!(out, "{}", event["text"].as_str().unwrap_or("")))
+                        .and_then(|_| out.flush())
+                }
+                "llm_completed" => {
+                    let results = event["results"].as_array().cloned().unwrap_or_default();
+                    let mut written = if streamed_modes.is_empty() {
+                        Ok(())
+                    } else {
+                        writeln!(out) // streamed text ends without a newline
+                    };
+                    let mut printed = streamed_modes.len();
+                    for result in &results {
+                        let mode = result["mode"].as_str().unwrap_or("");
+                        if streamed_modes.contains(mode) {
+                            continue;
+                        }
+                        if printed > 0 {
+                            written = written.and_then(|_| writeln!(out));
+                        }
+                        written = written.and_then(|_| {
+                            writeln!(
+                                out,
+                                "## {mode}\n{}",
+                                result["text"].as_str().unwrap_or("").trim_end()
+                            )
+                        });
+                        printed += 1;
+                    }
+                    written.and_then(|_| out.flush())
+                }
+                _ => Ok(()),
+            };
+            match format_headless_line(&event) {
+                Some(line) if kind == "file_completed" => {
+                    written.and_then(|_| writeln!(out, "{line}"))
+                }
+                Some(line) => {
+                    eprintln!("{line}");
+                    written
+                }
+                None => written,
+            }
+        };
+        if let Err(error) = written {
+            return Err((exit_code, error));
+        }
+        if terminal {
+            break;
+        }
+        if kind == "error" && !batch_started {
+            // The worker rejected the request before starting (missing file, bad
+            // formats, …): no `completed` will follow, so the run ends here.
+            break;
+        }
+    }
+    Ok(exit_code)
 }
 
 fn draw(frame: &mut ratatui::Frame, app: &mut App) {
@@ -1440,7 +2815,12 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             Style::default().fg(if app.running { Color::Green } else { secondary }),
         ),
         Span::styled(
-            format!("   {} · {}", app.backend, app.formats.join(",")),
+            format!(
+                "   {} · {} · audio {}",
+                app.backend,
+                app.formats.join(","),
+                app.audio_preprocessing_mode
+            ),
             Style::default().fg(secondary),
         ),
     ]);
@@ -1525,6 +2905,47 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 format!("  {}", file),
                 Style::default().fg(Color::Gray),
             ));
+        }
+    }
+    if app.llm_running && !app.llm_stream.is_empty() {
+        body.push(Line::raw(""));
+        body.push(Line::styled(
+            "  LLM · streaming",
+            Style::default().fg(accent),
+        ));
+        for line in app
+            .llm_stream
+            .lines()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            body.push(Line::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::White),
+            ));
+        }
+    } else if app.show_llm_result {
+        for (mode, text) in &app.llm_results {
+            body.push(Line::raw(""));
+            body.push(Line::styled(
+                format!("  LLM · {mode}"),
+                Style::default().fg(Color::Green),
+            ));
+            for line in text.lines().take(12) {
+                body.push(Line::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::White),
+                ));
+            }
+            if text.lines().count() > 12 {
+                body.push(Line::styled(
+                    "  … (full text in the saved file)",
+                    Style::default().fg(Color::Gray),
+                ));
+            }
         }
     }
     if app.show_logs {
@@ -1668,7 +3089,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                 }),
         ),
         Span::styled(
-            " · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs",
+            " · Esc cancel · Esc×2 / Ctrl+C×2 exit · l logs · r LLM result",
             Style::default().fg(Color::Gray),
         ),
     ]);
@@ -1677,6 +3098,18 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
 
 fn main() -> io::Result<()> {
     apply_data_dir_argument()?;
+    let argv = strip_data_dir(std::env::args().skip(1).collect());
+    match argv.first().map(String::as_str) {
+        Some("transcribe" | "llm") => {
+            let code = run_headless(&argv)?;
+            std::process::exit(code);
+        }
+        Some("--help" | "-h") => {
+            println!("{HEADLESS_USAGE}");
+            return Ok(());
+        }
+        _ => {}
+    }
     let (mut child, mut worker, mut events) = spawn_worker()?;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1704,14 +3137,33 @@ fn main() -> io::Result<()> {
     if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
         app.model = settings.model;
     }
+    if matches!(
+        settings.audio_preprocessing_mode.as_str(),
+        "auto" | "off" | "light" | "denoise"
+    ) {
+        app.audio_preprocessing_mode = settings.audio_preprocessing_mode;
+    }
     app.llm_provider = settings.llm_provider;
     app.llm_api_url = settings.llm_api_url;
     app.llm_api_key = settings.llm_api_key;
     app.llm_model = settings.llm_model;
     app.llm_temperature = settings.llm_temperature;
+    app.llm_internal_providers = settings.llm_internal_providers;
+    app.llm_extra_args = settings.llm_extra_args;
+    app.llm_tool_paths = settings.llm_tool_paths;
+    app.llm_allow_tools = settings.llm_allow_tools;
+    let _ = send(
+        &mut worker,
+        json!({"type": "llm_tools", "overrides": app.llm_tool_paths}),
+    );
     app.subtitle_sentence_split = settings.subtitle_sentence_split;
     app.subtitle_max_lines = settings.subtitle_max_lines.clamp(1, 4);
     app.subtitle_max_width = settings.subtitle_max_width.clamp(20, 100);
+    if !settings.formats.is_empty() {
+        app.formats = settings.formats;
+    }
+    app.diarization = settings.diarization;
+    app.num_speakers = settings.num_speakers;
     app.pet_picker = Picker::from_query_stdio()
         .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
@@ -1731,25 +3183,19 @@ fn main() -> io::Result<()> {
         }
         if app.llm_requested {
             app.llm_requested = false;
-            let settings = json!({
-                "provider": app.llm_provider,
-                "api_url": app.llm_api_url,
-                "api_key": app.llm_api_key,
-                "model": if app.llm_provider == "Codex" { String::new() } else { app.llm_model.clone() },
-                "temperature": app.llm_temperature,
-                "claude_path": "claude",
-                "codex_path": "codex",
-                "opencode_path": "opencode",
-                "pi_path": "pi",
-                "omp_path": "omp",
-                "other_path": "",
-            });
+            let settings = llm_settings_payload(&app);
             if let Err(error) = send(
                 &mut worker,
                 json!({"type":"llm_start", "files":llm_input_files(&app), "modes":app.llm_modes, "prompt":app.llm_prompt, "settings":settings, "output_dir":app.output_dir}),
             ) {
                 app.status = format!("Worker unavailable: {error}");
             }
+        }
+        if let Some((provider, path)) = app.llm_tool_check_requested.take() {
+            let _ = send(
+                &mut worker,
+                json!({"type": "llm_tool_check", "provider": provider, "path": path}),
+            );
         }
         // Animated image frames are safe for Kitty after explicitly deleting the
         // prior layer. Other protocols remain stable rather than leaving pixels.
@@ -1820,12 +3266,20 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('l') if app.input.is_empty() => {
                             app.show_logs = !app.show_logs
                         }
+                        KeyCode::Char('r')
+                            if !app.running
+                                && app.input.is_empty()
+                                && !app.llm_results.is_empty() =>
+                        {
+                            app.show_llm_result = !app.show_llm_result;
+                        }
                         KeyCode::Char('d') if !app.running && app.input.is_empty() => {
                             app.diarization = !app.diarization;
                             app.log(format!(
                                 "Diarization {}",
                                 if app.diarization { "on" } else { "off" }
                             ));
+                            save_app_settings(&mut app);
                         }
                         KeyCode::Char('f') if !app.running && app.input.is_empty() => {
                             app.formats = if app.formats.len() == 1 {
@@ -1834,15 +3288,20 @@ fn main() -> io::Result<()> {
                                 vec!["txt".into()]
                             };
                             app.log(format!("Formats: {}", app.formats.join(", ")));
+                            save_app_settings(&mut app);
                         }
                         KeyCode::Char('s')
                             if !app.running && app.input.is_empty() && !app.files.is_empty() =>
                         {
-                            if let Err(error) = send(
-                                &mut worker,
-                                json!({"type":"start", "files":app.files, "output_dir":app.output_dir, "formats":app.formats, "diarization":app.diarization, "diarization_backend":app.diarization_backend, "num_speakers":app.num_speakers, "backend":app.backend, "model":app.model, "onnx_provider":app.onnx_provider, "subtitle_sentence_split":app.subtitle_sentence_split, "subtitle_max_lines":app.subtitle_max_lines, "subtitle_max_width":app.subtitle_max_width}),
-                            ) {
+                            if let Err(error) = send(&mut worker, start_payload(&app)) {
                                 app.log(format!("Worker unavailable: {error}"));
+                            }
+                        }
+                        KeyCode::Esc if esc_should_soft_cancel(&app) => {
+                            app.llm_cancel_requested = true;
+                            app.status = "Cancelling LLM… Esc again to kill the worker".into();
+                            if let Err(error) = send(&mut worker, json!({"type": "llm_cancel"})) {
+                                app.status = format!("Worker unavailable: {error}");
                             }
                         }
                         KeyCode::Esc if app.running => {
@@ -1855,9 +3314,12 @@ fn main() -> io::Result<()> {
                                         child = new_child;
                                         worker = new_worker;
                                         events = new_events;
-                                        app.running = false;
-                                        app.cancelled = true;
-                                        app.status = "Transcription cancelled immediately".into();
+                                        let _ = send(
+                                            &mut worker,
+                                            json!({"type": "llm_tools", "overrides": app.llm_tool_paths}),
+                                        );
+                                        reset_after_worker_restart(&mut app);
+                                        app.status = "Worker restarted, run cancelled".into();
                                         app.log(app.status.clone());
                                     }
                                     Err(error) => {
@@ -1868,7 +3330,11 @@ fn main() -> io::Result<()> {
                                 last_exit_request = None;
                             } else {
                                 last_exit_request = Some(("cancel", Instant::now()));
-                                app.status = "Press Esc again to cancel transcription".into();
+                                app.status = if app.llm_running {
+                                    "Press Esc again to kill the worker".into()
+                                } else {
+                                    "Press Esc again to cancel transcription".into()
+                                };
                             }
                         }
                         KeyCode::Esc if app.command_menu.is_some() => {
@@ -2008,7 +3474,48 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
     use super::*;
+
+    /// Guards a per-test settings directory: `GIGAAM_CONFIG_DIR` is process-global, so
+    /// every test that reads or writes settings must hold this until it is done.
+    struct IsolatedConfigDir {
+        path: PathBuf,
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl std::ops::Deref for IsolatedConfigDir {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    static CONFIG_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Tests must never touch the developer's real settings directory.
+    fn isolated_config_dir() -> IsolatedConfigDir {
+        let guard = CONFIG_DIR_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let directory = std::env::temp_dir().join(format!(
+            "gigaam-tui-config-{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace("::", "-")
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        std::env::set_var("GIGAAM_CONFIG_DIR", &directory);
+        IsolatedConfigDir {
+            path: directory,
+            _guard: guard,
+        }
+    }
 
     #[test]
     fn data_directory_argument_accepts_separate_and_equals_forms() {
@@ -2059,6 +3566,7 @@ mod tests {
 
     #[test]
     fn subtitle_commands_validate_and_update_limits() {
+        let _config = isolated_config_dir();
         let mut app = App::default();
         app.input = "/subtitle-split off".into();
         run_command(&mut app);
@@ -2105,6 +3613,7 @@ mod tests {
 
     #[test]
     fn sortformer_rejects_fixed_speaker_count() {
+        let _config = isolated_config_dir();
         let mut app = App::default();
         app.diarization_backend = "sortformer".into();
         app.input = "/speakers 2".into();
@@ -2134,6 +3643,7 @@ mod tests {
 
     #[test]
     fn llm_model_command_is_accepted() {
+        let _config = isolated_config_dir();
         let mut app = App::default();
         app.input = "/llm-model gpt-4.1-mini".into();
 
@@ -2165,7 +3675,228 @@ mod tests {
     }
 
     #[test]
+    fn llm_tools_message_fills_providers_and_menu_shows_status() {
+        let mut app = App::default();
+        app.handle_message(json!({
+            "type": "llm_tools",
+            "providers": ["API", "Claude Code", "Other"],
+            "tools": [
+                {"id": "claude", "provider": "Claude Code", "status": "found",
+                 "path": "/opt/homebrew/bin/claude", "version": "2.1.275",
+                 "detail": null, "install_hint": "npm install -g @anthropic-ai/claude-code"},
+                {"id": "codex", "provider": "Codex", "status": "missing",
+                 "path": null, "version": null, "detail": null,
+                 "install_hint": "npm install -g @openai/codex"}
+            ]
+        }));
+
+        assert_eq!(app.llm_providers, vec!["API", "Claude Code", "Other"]);
+        assert_eq!(app.llm_tools.len(), 2);
+        app.command_menu = Some("/settings-provider".into());
+        assert_eq!(
+            command_menu_options(&app),
+            vec!["API", "Claude Code · 2.1.275", "Other", BACK_MENU_OPTION]
+        );
+        assert_eq!(
+            provider_from_menu_option("Claude Code · 2.1.275"),
+            "Claude Code"
+        );
+        assert_eq!(provider_from_menu_option("Codex · not installed"), "Codex");
+    }
+
+    #[test]
+    fn llm_settings_payload_uses_discovered_tool_paths() {
+        let mut app = App::default();
+        app.llm_provider = "Claude Code".into();
+        app.llm_tools.push(LlmTool {
+            id: "claude".into(),
+            provider: "Claude Code".into(),
+            status: "found".into(),
+            path: Some("/opt/homebrew/bin/claude".into()),
+            version: Some("2.1.275".into()),
+            install_hint: String::new(),
+        });
+
+        let payload = llm_settings_payload(&app);
+
+        assert_eq!(payload["provider"], "Claude Code");
+        assert_eq!(payload["claude_path"], "/opt/homebrew/bin/claude");
+        assert_eq!(payload["codex_path"], "codex");
+        assert_eq!(payload["temperature"], 0.2);
+    }
+
+    #[test]
+    fn provider_extras_reach_the_worker_settings_payload() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.llm_provider = "oh-my-pi".into();
+        app.input = "/llm-provider-name anthropic".into();
+        run_command(&mut app);
+        app.input = "/llm-args --thinking low".into();
+        run_command(&mut app);
+        app.input = "/llm-tools on".into();
+        run_command(&mut app);
+        app.input = "/llm-path /opt/homebrew/bin/omp".into();
+        run_command(&mut app);
+
+        let payload = llm_settings_payload(&app);
+        assert_eq!(payload["omp_provider"], "anthropic");
+        assert_eq!(payload["omp_args"], "--thinking low");
+        assert_eq!(payload["omp_path"], "/opt/homebrew/bin/omp");
+        assert_eq!(payload["llm_allow_tools"], true);
+        assert!(app.llm_tool_check_requested.is_some());
+    }
+
+    #[test]
+    fn other_provider_uses_its_path_and_args() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.llm_provider = "Other".into();
+        app.input = "/llm-path /usr/local/bin/my-llm".into();
+        run_command(&mut app);
+        app.input = "/llm-args --stdin {stdin}".into();
+        run_command(&mut app);
+
+        let payload = llm_settings_payload(&app);
+        assert_eq!(payload["other_path"], "/usr/local/bin/my-llm");
+        assert_eq!(payload["other_args"], "--stdin {stdin}");
+    }
+
+    #[test]
+    fn provider_name_command_is_only_for_pi_like_providers() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.llm_provider = "Claude Code".into();
+        app.input = "/llm-provider-name openai".into();
+        run_command(&mut app);
+        assert_eq!(
+            app.status,
+            "Internal provider applies to Pi and oh-my-pi only"
+        );
+    }
+
+    #[test]
+    fn provider_extras_survive_settings_roundtrip() {
+        let mut settings = TuiSettings::default();
+        settings
+            .llm_internal_providers
+            .insert("pi".into(), "google".into());
+        settings
+            .llm_extra_args
+            .insert("claude".into(), "--verbose".into());
+        settings
+            .llm_tool_paths
+            .insert("other".into(), "/x/llm".into());
+        settings.llm_allow_tools = true;
+        let restored: TuiSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.llm_internal_providers["pi"], "google");
+        assert_eq!(restored.llm_extra_args["claude"], "--verbose");
+        assert_eq!(restored.llm_tool_paths["other"], "/x/llm");
+        assert!(restored.llm_allow_tools);
+    }
+
+    #[test]
+    fn llm_chunks_stream_into_the_view_and_results_are_kept() {
+        let mut app = App::default();
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        assert!(app.llm_running && app.running);
+        app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "Итог: "}));
+        app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "всё хорошо"}));
+        assert_eq!(app.llm_stream, "Итог: всё хорошо");
+        app.handle_message(json!({
+            "type": "llm_completed", "success": true, "saved_files": ["/tmp/session_llm_summary.txt"],
+            "results": [{"mode": "summary", "text": "Итог: всё хорошо"}]
+        }));
+        assert!(!app.llm_running && !app.running);
+        assert_eq!(
+            app.llm_results,
+            vec![("summary".to_string(), "Итог: всё хорошо".to_string())]
+        );
+        assert!(app.show_llm_result);
+        assert!(app.llm_stream.is_empty());
+    }
+
+    #[test]
+    fn a_new_llm_run_clears_the_previous_results() {
+        let mut app = App::default();
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        app.handle_message(json!({
+            "type": "llm_completed", "success": true, "saved_files": [],
+            "results": [{"mode": "summary", "text": "old"}]
+        }));
+        assert!(app.show_llm_result && !app.llm_results.is_empty());
+
+        app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 1}));
+        assert!(app.llm_results.is_empty());
+        assert!(!app.show_llm_result);
+        // A completion without `results` (worker failure) must not resurrect the old run.
+        app.handle_message(json!({"type": "llm_completed", "success": false, "error": "boom"}));
+        assert!(app.llm_results.is_empty());
+        assert!(!app.show_llm_result);
+    }
+
+    #[test]
+    fn esc_soft_cancels_an_llm_run_only_once_then_falls_through_to_the_kill_path() {
+        let mut app = App::default();
+        assert!(
+            !esc_should_soft_cancel(&app),
+            "idle: Esc is not an LLM cancel"
+        );
+
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        assert!(esc_should_soft_cancel(&app), "first Esc sends llm_cancel");
+
+        app.llm_cancel_requested = true; // what the first Esc arm sets
+        assert!(app.llm_running && app.running);
+        assert!(
+            !esc_should_soft_cancel(&app),
+            "second Esc must reach the `running` double-Esc kill/restart arm"
+        );
+    }
+
+    #[test]
+    fn worker_restart_resets_every_in_flight_flag() {
+        let mut app = App::default();
+        app.handle_message(
+            json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
+        );
+        app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "partial"}));
+        app.llm_cancel_requested = true;
+        app.llm_requested = true;
+        app.cancelled = false;
+
+        reset_after_worker_restart(&mut app);
+
+        assert!(!app.running);
+        assert!(app.cancelled);
+        assert!(!app.llm_running);
+        assert!(!app.llm_cancel_requested);
+        assert!(!app.llm_requested);
+        assert!(app.llm_stream.is_empty());
+    }
+
+    #[test]
+    fn cancelled_llm_run_is_reported_without_an_error() {
+        let mut app = App::default();
+        app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 2}));
+        app.handle_message(
+            json!({"type": "llm_completed", "success": false, "cancelled": true,
+                                  "saved_files": [], "results": []}),
+        );
+        assert_eq!(app.status, "LLM cancelled");
+        assert!(!app.llm_running);
+    }
+
+    #[test]
     fn clear_suggestion_executes_without_an_extra_enter() {
+        let _config = isolated_config_dir();
         let mut app = App::default();
         app.files.push("/tmp/input.wav".into());
         app.result_files.push("/tmp/output.txt".into());
@@ -2179,6 +3910,7 @@ mod tests {
 
     #[test]
     fn pets_suggestion_executes_without_an_extra_enter() {
+        let _config = isolated_config_dir();
         let mut app = App::default();
 
         accept_command_suggestion(&mut app, "/pets");
@@ -2192,6 +3924,7 @@ mod tests {
 
     #[test]
     fn back_option_closes_a_settings_menu_without_applying_a_change() {
+        let _config = isolated_config_dir();
         let mut app = App::default();
         app.command_menu = Some("/diarize".into());
         app.command_menu_index = command_menu_options(&app)
@@ -2231,5 +3964,464 @@ mod tests {
             .iter()
             .any(|path| path.ends_with("second file.mp3")));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn llm_file_command_adds_text_inputs_and_rejects_media() {
+        let _config = isolated_config_dir();
+        let directory =
+            std::env::temp_dir().join(format!("gigaam-tui-llm-file-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let transcript = directory.join("meeting.txt");
+        let audio = directory.join("meeting.wav");
+        fs::write(&transcript, "hello").unwrap();
+        fs::write(&audio, []).unwrap();
+
+        let mut app = App::default();
+        app.input = format!("/llm-file {}", transcript.display());
+        run_command(&mut app);
+        assert_eq!(llm_input_files(&app).len(), 1);
+        assert!(llm_can_run(&app));
+
+        app.input = format!("/llm-file {}", audio.display());
+        run_command(&mut app);
+        assert_eq!(app.status, "LLM input must be .txt, .md, .srt or .vtt");
+        assert_eq!(llm_input_files(&app).len(), 1);
+
+        app.input = "/clear".into();
+        run_command(&mut app);
+        assert!(llm_input_files(&app).is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn audio_mode_is_selectable_persisted_and_sent_to_the_worker() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        assert!(open_command_menu(&mut app, "/audio-mode"));
+        assert_eq!(
+            command_menu_options(&app),
+            vec!["auto", "off", "light", "denoise", BACK_MENU_OPTION]
+        );
+        app.input = "/audio-mode denoise".into();
+        run_command(&mut app);
+        assert_eq!(app.audio_preprocessing_mode, "denoise");
+        app.input = "/audio-mode loud".into();
+        run_command(&mut app);
+        assert_eq!(app.status, "Usage: /audio-mode auto|off|light|denoise");
+
+        let payload = start_payload(&app);
+        assert_eq!(payload["audio_preprocessing_mode"], "denoise");
+        let restored: TuiSettings = serde_json::from_str(
+            &serde_json::to_string(&TuiSettings {
+                audio_preprocessing_mode: "light".into(),
+                ..TuiSettings::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored.audio_preprocessing_mode, "light");
+    }
+
+    #[test]
+    fn settings_come_from_the_main_app_when_it_is_installed() {
+        let directory = isolated_config_dir();
+        fs::write(
+            directory.join("user_settings.json"),
+            r#"{"asr_backend":"mlx","asr_model":"multilingual_ctc","output_formats":{"txt":true,"srt":true,"md":false},
+                "enable_diarization":true,"num_speakers":3,"llm_provider":"oh-my-pi","llm_temperature":"0.7",
+                "llm_omp_provider":"anthropic","llm_omp_args":"--thinking low","llm_claude_path":"claude",
+                "llm_opencode_path":"/opt/homebrew/bin/opencode","llm_allow_tools":true,
+                "subtitle_max_line_count":3,"window_geometry":"keep-me"}"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.join(".env"),
+            "HF_TOKEN=hf_x\nLLM_API_KEY=sk-main\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.join("tui_settings.json"),
+            r#"{"pet_enabled":true,"backend":"onnx"}"#,
+        )
+        .unwrap();
+
+        let settings = load_settings();
+
+        assert!(settings.pet_enabled);
+        assert_eq!(
+            settings.backend, "mlx",
+            "main app wins over tui_settings.json for shared keys"
+        );
+        assert_eq!(settings.model, "multilingual_ctc");
+        assert_eq!(settings.formats, vec!["txt", "srt"]);
+        assert!(settings.diarization);
+        assert_eq!(settings.num_speakers, Some(3));
+        assert_eq!(settings.llm_provider, "oh-my-pi");
+        assert_eq!(settings.llm_temperature, 0.7);
+        assert_eq!(settings.llm_internal_providers["omp"], "anthropic");
+        assert_eq!(settings.llm_extra_args["omp"], "--thinking low");
+        assert!(
+            !settings.llm_tool_paths.contains_key("claude"),
+            "bare binary name is not an override"
+        );
+        assert_eq!(
+            settings.llm_tool_paths["opencode"],
+            "/opt/homebrew/bin/opencode"
+        );
+        assert!(settings.llm_allow_tools);
+        assert_eq!(settings.subtitle_max_lines, 3);
+        assert_eq!(settings.llm_api_key, "sk-main");
+    }
+
+    #[test]
+    fn saving_writes_shared_keys_back_to_the_main_app_and_keeps_its_other_keys() {
+        let directory = isolated_config_dir();
+        fs::write(
+            directory.join("user_settings.json"),
+            "{\n  \"window_geometry\": \"keep-me\",\n  \"asr_backend\": \"auto\",\n  \"theme\": \"dark\"\n}\n",
+        )
+        .unwrap();
+        fs::write(directory.join(".env"), "HF_TOKEN=hf_x\n").unwrap();
+        let settings = TuiSettings {
+            pet_enabled: true,
+            backend: "mlx".into(),
+            formats: vec!["txt".into(), "vtt".into()],
+            num_speakers: Some(2),
+            llm_temperature: 0.3,
+            llm_api_key: "sk-new".into(),
+            ..TuiSettings::default()
+        };
+
+        save_settings(&settings).unwrap();
+
+        let main: Value = serde_json::from_str(
+            &fs::read_to_string(directory.join("user_settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(main["window_geometry"], "keep-me");
+        assert_eq!(main["theme"], "dark");
+        assert_eq!(main["asr_backend"], "mlx");
+        assert_eq!(main["output_formats"]["vtt"], true);
+        assert_eq!(main["output_formats"]["srt"], false);
+        assert_eq!(main["num_speakers"], 2);
+        assert_eq!(main["llm_temperature"], "0.3");
+        assert!(
+            main.get("pet_enabled").is_none(),
+            "TUI-only keys stay out of the main app file"
+        );
+        let keys: Vec<&String> = main.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys[0], "window_geometry",
+            "existing key order is preserved"
+        );
+        let tui: Value =
+            serde_json::from_str(&fs::read_to_string(directory.join("tui_settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(tui["pet_enabled"], true);
+        let env = fs::read_to_string(directory.join(".env")).unwrap();
+        assert!(env.contains("HF_TOKEN=hf_x\n"));
+        assert!(env.contains("LLM_API_KEY=sk-new\n"));
+    }
+
+    #[test]
+    fn without_the_main_app_everything_lives_in_tui_settings() {
+        let directory = isolated_config_dir();
+        let settings = TuiSettings {
+            backend: "onnx".into(),
+            llm_api_key: "sk-only".into(),
+            ..TuiSettings::default()
+        };
+
+        save_settings(&settings).unwrap();
+
+        assert!(!directory.join("user_settings.json").exists());
+        assert!(
+            !directory.join(".env").exists(),
+            "no main app → no .env is created"
+        );
+        let restored = load_settings();
+        assert_eq!(restored.backend, "onnx");
+        assert_eq!(restored.llm_api_key, "sk-only");
+    }
+
+    #[test]
+    fn unchanged_api_key_leaves_the_desktop_env_file_untouched() {
+        let directory = isolated_config_dir();
+        fs::write(
+            directory.join("user_settings.json"),
+            "{\"theme\": \"dark\"}\n",
+        )
+        .unwrap();
+        let original = "HF_TOKEN=hf_x\nLLM_API_KEY=sk-same\n";
+        fs::write(directory.join(".env"), original).unwrap();
+        let before = fs::metadata(directory.join(".env"))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        let settings = TuiSettings {
+            llm_api_key: "sk-same".into(),
+            ..TuiSettings::default()
+        };
+        save_settings(&settings).unwrap();
+
+        assert_eq!(
+            fs::read(directory.join(".env")).unwrap(),
+            original.as_bytes()
+        );
+        assert_eq!(
+            fs::metadata(directory.join(".env"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before,
+            "an unchanged key must not rewrite .env"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&*directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp file may be left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn corrupt_main_settings_file_never_wipes_the_desktop_api_key() {
+        let directory = isolated_config_dir();
+        fs::write(directory.join("user_settings.json"), "{not json").unwrap();
+        fs::write(
+            directory.join(".env"),
+            "HF_TOKEN=hf_x\nLLM_API_KEY=sk-keep\n",
+        )
+        .unwrap();
+
+        let loaded = load_settings();
+        assert_eq!(loaded.llm_api_key, "sk-keep");
+
+        save_settings(&TuiSettings::default()).unwrap();
+
+        let env = fs::read_to_string(directory.join(".env")).unwrap();
+        assert!(env.contains("LLM_API_KEY=sk-keep\n"));
+        assert!(env.contains("HF_TOKEN=hf_x\n"));
+        assert_eq!(
+            fs::read_to_string(directory.join("user_settings.json")).unwrap(),
+            "{not json",
+            "a corrupt desktop file is left alone, not replaced by an empty object"
+        );
+        let tui: Value =
+            serde_json::from_str(&fs::read_to_string(directory.join("tui_settings.json")).unwrap())
+                .unwrap();
+        assert!(tui.get("llm_api_key").is_none());
+    }
+
+    #[test]
+    fn strip_data_dir_removes_both_argument_forms() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            strip_data_dir(args(&["--data-dir", "/x", "transcribe", "a.wav"])),
+            args(&["transcribe", "a.wav"])
+        );
+        assert_eq!(
+            strip_data_dir(args(&["transcribe", "--data-dir=/x", "a.wav"])),
+            args(&["transcribe", "a.wav"])
+        );
+    }
+
+    #[test]
+    fn headless_transcribe_args_override_settings() {
+        let args: Vec<String> = [
+            "transcribe",
+            "/tmp/a.wav",
+            "/tmp/b.mp3",
+            "--formats",
+            "txt,srt",
+            "--diarize",
+            "--speakers",
+            "2",
+            "--backend",
+            "onnx",
+            "--audio-mode",
+            "denoise",
+            "--output",
+            "/tmp/out",
+            "--json",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let HeadlessCommand::Transcribe(parsed) = parse_headless_args(&args).unwrap() else {
+            panic!("transcribe")
+        };
+        let settings = TuiSettings {
+            backend: "mlx".into(),
+            model: "multilingual_ctc".into(),
+            ..TuiSettings::default()
+        };
+        let payload = headless_start_payload(&settings, &parsed);
+        assert_eq!(payload["type"], "start");
+        assert_eq!(payload["files"], json!(["/tmp/a.wav", "/tmp/b.mp3"]));
+        assert_eq!(payload["formats"], json!(["txt", "srt"]));
+        assert_eq!(payload["diarization"], true);
+        assert_eq!(payload["num_speakers"], 2);
+        assert_eq!(payload["backend"], "onnx", "flag overrides settings");
+        assert_eq!(
+            payload["model"], "multilingual_ctc",
+            "settings fill what flags omit"
+        );
+        assert_eq!(payload["audio_preprocessing_mode"], "denoise");
+        assert_eq!(payload["output_dir"], "/tmp/out");
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn headless_args_reject_unknown_flags_and_missing_files() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(parse_headless_args(&args(&["transcribe"]))
+            .unwrap_err()
+            .contains("at least one file"));
+        assert!(
+            parse_headless_args(&args(&["transcribe", "a.wav", "--bogus"]))
+                .unwrap_err()
+                .contains("--bogus")
+        );
+        assert!(
+            parse_headless_args(&args(&["transcribe", "a.wav", "--audio-mode", "loud"]))
+                .unwrap_err()
+                .contains("audio-mode")
+        );
+        assert!(parse_headless_args(&args(&["llm", "a.txt"]))
+            .unwrap_err()
+            .contains("--mode"));
+        assert!(
+            parse_headless_args(&args(&["llm", "a.txt", "--mode", "custom"]))
+                .unwrap_err()
+                .contains("--prompt")
+        );
+        assert!(
+            parse_headless_args(&args(&["--data-dir", "/x"])).is_err(),
+            "not a headless command"
+        );
+    }
+
+    #[test]
+    fn headless_llm_payload_uses_saved_provider_settings() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let HeadlessCommand::Llm(parsed) = parse_headless_args(&args(&[
+            "llm",
+            "/tmp/a.txt",
+            "--mode",
+            "summary",
+            "--mode",
+            "custom",
+            "--prompt",
+            "Why?",
+        ]))
+        .unwrap() else {
+            panic!("llm")
+        };
+        let settings = TuiSettings {
+            llm_provider: "Other".into(),
+            llm_tool_paths: HashMap::from([("other".to_string(), "/bin/cat".to_string())]),
+            llm_extra_args: HashMap::from([("other".to_string(), "-".to_string())]),
+            ..TuiSettings::default()
+        };
+        let payload = headless_llm_payload(&settings, &parsed);
+        assert_eq!(payload["type"], "llm_start");
+        assert_eq!(payload["files"], json!(["/tmp/a.txt"]));
+        assert_eq!(payload["modes"], json!(["summary", "custom"]));
+        assert_eq!(payload["prompt"], "Why?");
+        assert_eq!(payload["settings"]["provider"], "Other");
+        assert_eq!(payload["settings"]["other_path"], "/bin/cat");
+        assert_eq!(payload["settings"]["other_args"], "-");
+        assert_eq!(payload["settings"]["claude_path"], "claude");
+    }
+
+    #[test]
+    fn headless_human_lines_name_saved_files_and_errors() {
+        let done = json!({"type":"file_completed","file":"/tmp/a.wav","result":{"success":true,"saved_files":["/tmp/a.txt","/tmp/a.srt"]}});
+        assert_eq!(
+            format_headless_line(&done).unwrap(),
+            "✓ a.wav → /tmp/a.txt, /tmp/a.srt"
+        );
+        let failed = json!({"type":"file_completed","file":"/tmp/b.mp3","result":{"success":false,"error":"boom","saved_files":[]}});
+        assert_eq!(format_headless_line(&failed).unwrap(), "× b.mp3: boom");
+        let error = json!({"type":"error","message":"Input file does not exist: /tmp/c.wav"});
+        assert_eq!(
+            format_headless_line(&error).unwrap(),
+            "error: Input file does not exist: /tmp/c.wav"
+        );
+        assert!(format_headless_line(&json!({"type":"progress","stage":"asr"})).is_none());
+    }
+
+    #[test]
+    fn headless_paths_become_absolute_before_the_worker_sees_them() {
+        // The worker runs with cwd = the repo checkout, so relative paths must be
+        // resolved by the binary against the caller's cwd.
+        let directory =
+            std::env::temp_dir().join(format!("gigaam-headless-paths-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("a.wav"), b"").unwrap();
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let relative_file = format!("{}/./a.wav", directory.display());
+        let relative_out = format!("{}/./out", directory.display());
+        let mut command = parse_headless_args(&args(&[
+            "transcribe",
+            &relative_file,
+            "--output",
+            &relative_out,
+        ]))
+        .unwrap();
+        resolve_headless_paths(&mut command).unwrap();
+        let HeadlessCommand::Transcribe(parsed) = &command else {
+            panic!("transcribe")
+        };
+        let canonical = fs::canonicalize(&directory).unwrap();
+        assert_eq!(
+            parsed.files,
+            vec![canonical.join("a.wav").to_string_lossy().into_owned()]
+        );
+        assert_eq!(
+            parsed.output_dir.as_deref(),
+            Some(canonical.join("out").to_string_lossy().as_ref()),
+            "output directory is created and canonicalised"
+        );
+        let mut llm =
+            parse_headless_args(&args(&["llm", &relative_file, "--mode", "summary"])).unwrap();
+        resolve_headless_paths(&mut llm).unwrap();
+        let HeadlessCommand::Llm(parsed) = &llm else {
+            panic!("llm")
+        };
+        assert_eq!(
+            parsed.files,
+            vec![canonical.join("a.wav").to_string_lossy().into_owned()]
+        );
+        let mut missing = parse_headless_args(&args(&[
+            "transcribe",
+            &format!("{}/missing.wav", directory.display()),
+        ]))
+        .unwrap();
+        assert!(resolve_headless_paths(&mut missing)
+            .unwrap_err()
+            .contains("missing.wav"));
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn headless_prompt_requires_custom_mode() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let error = parse_headless_args(&args(&[
+            "llm", "a.txt", "--mode", "summary", "--prompt", "x",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("--prompt requires --mode custom"), "{error}");
+        assert!(parse_headless_args(&args(&[
+            "llm", "a.txt", "--mode", "custom", "--prompt", "x"
+        ]))
+        .is_ok());
     }
 }
