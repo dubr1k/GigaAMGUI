@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -431,14 +430,19 @@ def _save_upload(file: UploadFile) -> tuple[Path, Path]:
     work_dir = Path(tempfile.mkdtemp(prefix="req_", dir=UPLOAD_DIR))
     target = work_dir / filename
     written = 0
+    too_large = False
     with open(target, "wb") as out:
         while chunk := file.file.read(1024 * 1024):
             written += len(chunk)
             if written > MAX_FILE_SIZE:
-                shutil.rmtree(work_dir, ignore_errors=True)
-                raise openai_error(413, f"File exceeds the maximum size of {MAX_FILE_SIZE} bytes.",
-                                   param="file", code="file_too_large")
+                too_large = True
+                break
             out.write(chunk)
+    if too_large:
+        # rmtree только после закрытия файла: на Windows открытый файл не даст удалить директорию
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise openai_error(413, f"File exceeds the maximum size of {MAX_FILE_SIZE} bytes.",
+                           param="file", code="file_too_large")
     return work_dir, target
 
 
@@ -469,6 +473,20 @@ def _run_processor(request_loader, file_path: Path, work_dir: Path, *, enable_di
     if not result.get("success"):
         raise RuntimeError("processing failed")
     return result
+
+
+def _queue_progress(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, event_or_stage, progress=None) -> None:
+    """SSE-комментарий о прогрессе. Процессор шлёт ProgressEvent одним аргументом
+    (или (stage, value) — legacy) из executor-потока — переключаемся в loop."""
+    stage = getattr(event_or_stage, "stage", None) or (event_or_stage if isinstance(event_or_stage, str) else "processing")
+    value = getattr(event_or_stage, "file_progress", None)
+    if value is None:
+        value = progress
+    pct = f"{int(float(value) * 100)}%" if isinstance(value, (int, float)) else "…"
+    try:
+        loop.call_soon_threadsafe(queue.put_nowait, f": progress {stage} {pct}\n\n")
+    except RuntimeError:
+        pass  # loop закрыт (сервер останавливается) — прогресс уже некому отдавать
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -543,26 +561,23 @@ async def create_transcription(
     progress_queue: asyncio.Queue[str] = asyncio.Queue()
 
     def progress_callback(event_or_stage, progress=None, **_):
-        # Процессор шлёт ProgressEvent одним аргументом (или (stage, value) — legacy).
-        # Вызывается из executor-потока — переключаемся в loop.
-        stage = getattr(event_or_stage, "stage", None) or (event_or_stage if isinstance(event_or_stage, str) else "processing")
-        value = getattr(event_or_stage, "file_progress", None)
-        if value is None:
-            value = progress
-        pct = f"{int(float(value) * 100)}%" if isinstance(value, (int, float)) else "…"
-        loop.call_soon_threadsafe(progress_queue.put_nowait, f": progress {stage} {pct}\n\n")
+        _queue_progress(loop, progress_queue, event_or_stage, progress)
 
     def blocking() -> dict[str, Any]:
         request_loader, owns = model_loader, False
         if asr_selection is not None:
             request_loader, owns = transcription_service.acquire_request_model_loader(
                 model_loader, asr_selection, loader_factory=ModelLoader)
-        if owns and not request_loader.load_model(logger=(logger.info if logger else None)):
-            raise RuntimeError("could not load the requested ASR backend")
-        return _run_processor(
-            request_loader, file_path, work_dir, enable_diarization=enable_diarization,
-            diarization_backend=diarization_backend, num_speakers=num_speakers,
-            audio_preprocessing=preprocessing, progress_callback=progress_callback)
+        try:
+            if owns and not request_loader.load_model(logger=(logger.info if logger else None)):
+                raise RuntimeError("could not load the requested ASR backend")
+            return _run_processor(
+                request_loader, file_path, work_dir, enable_diarization=enable_diarization,
+                diarization_backend=diarization_backend, num_speakers=num_speakers,
+                audio_preprocessing=preprocessing, progress_callback=progress_callback)
+        finally:
+            if owns:  # иначе модель под нестандартный backend/model живёт до остановки процесса
+                request_loader.unload()
 
     async def run() -> dict[str, Any]:
         async with processing_semaphore:
@@ -593,8 +608,18 @@ async def create_transcription(
             return JSONResponse(body)
         return Response(content=body, media_type=media_type)
 
+    def finished(task: asyncio.Future) -> None:
+        # Уборка привязана к завершению работы в executor, а не к закрытию генератора:
+        # при обрыве соединения поток ещё пишет в work_dir. Результат забираем всегда,
+        # иначе asyncio ругается «Task exception was never retrieved».
+        exc = None if task.cancelled() else task.exception()
+        if exc is not None and logger:
+            logger.error(f"[api] streamed transcription failed: {exc}", exc_info=exc)
+        _cleanup(work_dir)
+
     async def events():
         task = asyncio.ensure_future(run())
+        task.add_done_callback(finished)
         getter = asyncio.ensure_future(progress_queue.get())
         try:
             while not task.done():
@@ -604,7 +629,10 @@ async def create_transcription(
                     getter = asyncio.ensure_future(progress_queue.get())
                 elif not done:
                     yield ": keepalive\n\n"
-            while not progress_queue.empty():  # комментарии, пришедшие вместе с завершением
+            # Свежий getter мог забрать комментарий, пришедший вместе с завершением
+            if getter.done() and not getter.cancelled():
+                yield getter.result()
+            while not progress_queue.empty():
                 yield progress_queue.get_nowait()
             result = task.result()
             utts = result.get("utterances") or []
@@ -619,18 +647,19 @@ async def create_transcription(
                 done_event.update({k: v for k, v in render(result)[0].items() if k not in done_event})
             yield _sse(done_event)
         except Exception as exc:
-            if logger:
+            # Ошибку самой задачи уже залогировал finished; остальное (render) — здесь
+            from_task = task.done() and not task.cancelled() and exc is task.exception()
+            if logger and not from_task:
                 logger.error(f"[api] streamed transcription failed: {exc}", exc_info=True)
+            # Клиенту — SSE-событие без внутренностей
             err = openai_error(500, "Transcription failed on the server. See the server log.",
                                type_="server_error", code="processing_failed")
             yield _sse({"type": "error", "error": err.payload()["error"]})
         finally:
             getter.cancel()  # и при обрыве соединения клиентом (GeneratorExit)
-            _cleanup(work_dir)
 
     return StreamingResponse(events(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-                             background=BackgroundTask(_cleanup, work_dir))
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ==================== ЗАПУСК ====================

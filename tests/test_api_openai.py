@@ -1,8 +1,12 @@
 """OpenAI-compatible API: auth, models, error envelope. Model and processor are fakes."""
+import asyncio
+import gc
 import importlib
 import json
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 try:
@@ -339,3 +343,150 @@ def test_stream_error_event(client, fake_processor, monkeypatch):
     r = _post(client, {"stream": "true"})
     events = _sse_events(r.text)
     assert events[-1]["type"] == "error" and events[-1]["error"]["type"] == "server_error"
+
+
+# ---------- fix round 1: owned loader release, stream cleanup, partial uploads ----------
+
+
+class _OwnedLoader(_FakeModelLoader):
+    instances: list = []
+
+    def __init__(self, *_, **kw):
+        self.kw = kw
+        self.unloaded = 0
+        _OwnedLoader.instances.append(self)
+
+    def unload(self):
+        self.unloaded += 1
+
+
+@pytest.fixture
+def owned_loader(monkeypatch):
+    _OwnedLoader.instances = []
+    monkeypatch.setattr(api, "ModelLoader", _OwnedLoader)
+    return _OwnedLoader
+
+
+def test_owned_request_loader_is_unloaded_on_success(client, fake_processor, owned_loader):
+    r = _post(client, {"asr_backend": "pytorch"})  # default loader is "auto" → per-request loader
+    assert r.status_code == 200, r.text
+    assert len(owned_loader.instances) == 1 and owned_loader.instances[0].kw["requested_backend"] == "pytorch"
+    assert owned_loader.instances[0].unloaded == 1
+
+
+def test_owned_request_loader_is_unloaded_on_failure(client, fake_processor, owned_loader, monkeypatch):
+    monkeypatch.setattr(_FakeProcessor, "process_file", lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("x")))
+    r = _post(client, {"asr_backend": "pytorch"})
+    assert r.status_code == 500
+    assert len(owned_loader.instances) == 1 and owned_loader.instances[0].unloaded == 1
+
+
+def test_default_loader_is_never_unloaded(client, fake_processor, owned_loader, monkeypatch):
+    calls = []
+    monkeypatch.setattr(api.model_loader, "unload", lambda: calls.append(1), raising=False)
+    assert _post(client).status_code == 200
+    assert owned_loader.instances == [] and calls == []
+
+
+def test_oversized_upload_leaves_nothing_behind(client, fake_processor, monkeypatch):
+    monkeypatch.setattr(api, "MAX_FILE_SIZE", 4)
+    before = set(api.UPLOAD_DIR.glob("req_*"))
+    r = _post(client)
+    assert r.status_code == 413
+    assert set(api.UPLOAD_DIR.glob("req_*")) == before
+
+
+def test_stream_disconnect_cleans_up_after_task_completes(fake_processor, monkeypatch):
+    """Клиент отваливается после первого чанка; work_dir живёт, пока executor не закончит."""
+    monkeypatch.setattr(api, "ModelLoader", _FakeModelLoader)
+    monkeypatch.setattr(api, "HF_TOKEN", "hf_dummytoken")
+    monkeypatch.setattr(api, "VALID_API_KEY_HASHES", {api._hash_key(VALID_KEY)})
+    monkeypatch.setattr(api.limiter, "enabled", False)
+    monkeypatch.setattr(api, "model_loader", _FakeModelLoader())
+    monkeypatch.setattr(api, "stats_manager", None)
+
+    def slow_fail(self, filepath, output_dir, *a, **kw):
+        _FakeProcessor.calls.append({"output_dir": output_dir})
+        self.progress_callback("transcription", 0.1)
+        time.sleep(0.4)
+        raise RuntimeError("client is long gone")
+    monkeypatch.setattr(_FakeProcessor, "process_file", slow_fail)
+
+    req = httpx.Request("POST", "http://test/v1/audio/transcriptions", headers=BEARER,
+                        files={"file": ("speech.wav", b"RIFF....", "audio/wav")},
+                        data={"model": "whisper-1", "stream": "true"})
+    body = req.read()
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "scheme": "http",
+             "path": "/v1/audio/transcriptions", "raw_path": b"/v1/audio/transcriptions", "query_string": b"",
+             "root_path": "", "headers": [(k.lower().encode(), v.encode()) for k, v in req.headers.items()],
+             "client": ("127.0.0.1", 1234), "server": ("test", 80)}
+    unhandled = []
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _l, ctx: unhandled.append(ctx.get("message")))
+        monkeypatch.setattr(api, "processing_semaphore", asyncio.Semaphore(2))
+        disconnected = asyncio.Event()
+        delivered = []
+
+        async def receive():
+            if not delivered:
+                delivered.append(1)
+                return {"type": "http.request", "body": body, "more_body": False}
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message["type"] == "http.response.body" and message.get("body"):
+                disconnected.set()  # первый же чанк (": progress …") — и клиент ушёл
+
+        await api.app(scope, receive, send)
+        work_dir = Path(_FakeProcessor.calls[0]["output_dir"])
+        assert work_dir.exists(), "cleanup ran while the executor job was still running"
+        for _ in range(60):
+            if not work_dir.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert not work_dir.exists()
+        gc.collect()
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    gc.collect()
+    assert unhandled == []
+
+
+def test_stream_keeps_progress_comment_that_arrives_with_completion(client, fake_processor, monkeypatch):
+    def two_comments(self, filepath, output_dir, *a, **kw):
+        _FakeProcessor.calls.append({"output_dir": output_dir})
+        self.progress_callback("conversion", 0.2)
+        self.progress_callback("transcription", 0.9)
+        return {"success": True, "media_duration": 1.0, "utterances": list(UTTS)}
+    monkeypatch.setattr(_FakeProcessor, "process_file", two_comments)
+    r = _post(client, {"stream": "true"})
+    assert ": progress conversion 20%" in r.text and ": progress transcription 90%" in r.text
+    assert _sse_events(r.text)[-1]["type"] == "transcript.text.done"
+
+
+def test_progress_comment_survives_closed_loop():
+    # Сервер остановлен (loop закрыт), а процессор в executor ещё шлёт прогресс — не падаем
+    loop = asyncio.new_event_loop()
+    loop.close()
+    api._queue_progress(loop, asyncio.Queue(), "transcription", 0.5)
+
+
+def test_progress_comment_formats_event_and_legacy_pair():
+    class Event:
+        stage = "conversion"
+        file_progress = 0.25
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.new_event_loop()
+    try:
+        api._queue_progress(loop, queue, Event())
+        api._queue_progress(loop, queue, "transcription", 0.5)
+        api._queue_progress(loop, queue, "diarization", None)
+        loop.run_until_complete(asyncio.sleep(0))
+    finally:
+        loop.close()
+    assert [queue.get_nowait() for _ in range(3)] == [
+        ": progress conversion 25%\n\n", ": progress transcription 50%\n\n", ": progress diarization …\n\n"]
