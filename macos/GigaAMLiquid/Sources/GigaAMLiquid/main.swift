@@ -2092,41 +2092,42 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         case 1:
             return """
             # Пример: задайте GIGAAM_API_KEY и путь к файлу
-            curl -X POST \\
-              "http://127.0.0.1:8000/api/v1/transcribe" \\
-              -H "X-API-Key: $GIGAAM_API_KEY" \\
-              -F "file=@audio.mp3"
+            curl http://127.0.0.1:8000/v1/audio/transcriptions \\
+              -H "Authorization: Bearer $GIGAAM_API_KEY" \\
+              -F file=@meeting.mp3 -F model=whisper-1 -F response_format=verbose_json
             """
         case 2:
             return """
             // Пример для Node.js; задайте GIGAAM_API_KEY
-            import { readFile } from "node:fs/promises";
+            import OpenAI from "openai";
+            import fs from "node:fs";
 
-            const data = new FormData();
-            data.append("file",
-              new Blob([await readFile("audio.mp3")]),
-              "audio.mp3");
-            const response = await fetch(
-              "http://127.0.0.1:8000/api/v1/transcribe",
-              { method: "POST", body: data, headers: {
-                "X-API-Key": process.env.GIGAAM_API_KEY
-              }});
-            console.log(await response.json());
+            const client = new OpenAI({
+              baseURL: "http://127.0.0.1:8000/v1",
+              apiKey: process.env.GIGAAM_API_KEY,
+            });
+            const result = await client.audio.transcriptions.create({
+              model: "whisper-1",
+              file: fs.createReadStream("meeting.mp3"),
+              response_format: "verbose_json",
+            });
+            console.log(result.text);
             """
         default:
             return """
             # Пример: задайте GIGAAM_API_KEY и путь к файлу
             import os
-            import requests
+            from openai import OpenAI
 
-            url = "http://127.0.0.1:8000/api/v1/transcribe"
-            headers = {"X-API-Key": os.environ["GIGAAM_API_KEY"]}
-            with open("audio.mp3", "rb") as audio:
-                response = requests.post(
-                    url, headers=headers,
-                    files={"file": audio}, timeout=120)
-            response.raise_for_status()
-            print(response.json())
+            client = OpenAI(
+                base_url="http://127.0.0.1:8000/v1",
+                api_key=os.environ["GIGAAM_API_KEY"],
+            )
+            with open("meeting.mp3", "rb") as audio:
+                result = client.audio.transcriptions.create(
+                    model="whisper-1", file=audio,
+                    response_format="verbose_json")
+            print(result.text)
             """
         }
     }
@@ -3548,15 +3549,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let detail: String
         switch title {
         case "Параметры":
-            detail = "POST /api/v1/transcribe принимает multipart-поле file. Необязательные query-параметры: asr_backend, asr_model, enable_diarization, diarization_backend, num_speakers. Требуется заголовок X-API-Key."
+            detail = "POST /v1/audio/transcriptions принимает multipart-поле file. Основные поля: model (whisper-1 и другие алиасы), response_format (json/text/srt/vtt/verbose_json/diarized_json), stream, timestamp_granularities[]. Расширения GigaAM: diarize, diarization_backend, num_speakers, asr_backend, onnx_provider, audio_preprocessing. Требуется заголовок Authorization: Bearer <ключ>."
         case "Форматы ответов":
             detail = "Успешная загрузка возвращает HTTP 202 и task_id. Это постановка в очередь, а не готовая транскрипция. Статус и результат запрашиваются отдельно."
         case "Эндпоинты":
-            detail = "POST /api/v1/transcribe — загрузка одного файла.\nPOST /api/v1/transcribe/batch — пакетная загрузка.\nGET /health — состояние сервиса."
+            detail = "POST /v1/audio/transcriptions — распознать файл.\nGET /v1/models — доступные модели.\nGET /health — состояние сервиса."
         case "Примеры":
             detail = "Выберите Python, cURL или JavaScript слева. Кнопка «Копировать пример» копирует показанный код. Задайте свой API-ключ и путь к аудиофайлу."
         default:
-            detail = "Отдельный REST API запускается из api.py. Для запросов нужен X-API-Key. Примеры на этой странице соответствуют POST /api/v1/transcribe.\n\nЭтот нативный клиент не запускает сервер и не проверял его доступность."
+            detail = "Отдельный REST API запускается командой python api.py. REST API совместим с OpenAI Audio API: укажите base_url http://127.0.0.1:8000/v1 в любом клиенте OpenAI. Примеры на этой странице соответствуют POST /v1/audio/transcriptions.\n\nЭтот нативный клиент не запускает сервер и не проверял его доступность."
         }
         showNotice(title, detail)
     }

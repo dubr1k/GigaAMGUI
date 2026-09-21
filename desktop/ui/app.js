@@ -30,30 +30,18 @@ const pages = new Map([
   ["settings", "Настройки"],
 ]);
 const apiExamples = {
-  python: `import os
-import requests
-
-url = "http://127.0.0.1:8000/api/v1/transcribe"
-files = {"file": open("audio.mp3", "rb")}
-params = {"asr_backend": "auto", "enable_diarization": "true"}
-headers = {"X-API-Key": os.environ["GIGAAM_API_KEY"]}
-response = requests.post(url, files=files, params=params, headers=headers)`,
-  curl: `curl -X POST "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=auto&enable_diarization=true" \\
-  -H "X-API-Key: $GIGAAM_API_KEY" \\
-  -F "file=@audio.mp3"`,
-  javascript: `const apiKey = "replace-with-your-api-key";
-const url = new URL("http://127.0.0.1:8000/api/v1/transcribe");
-url.searchParams.set("asr_backend", "auto");
-url.searchParams.set("enable_diarization", "true");
-
-const form = new FormData();
-form.append("file", audioFile);
-
-const response = await fetch(url, {
-  method: "POST",
-  headers: { "X-API-Key": apiKey },
-  body: form,
-});`,
+  python: `from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
+with open("meeting.mp3", "rb") as f:
+    result = client.audio.transcriptions.create(model="whisper-1", file=f, response_format="verbose_json")
+print(result.text)`,
+  curl: `curl http://127.0.0.1:8000/v1/audio/transcriptions \\
+  -H "Authorization: Bearer gam_..." \\
+  -F file=@meeting.mp3 -F model=whisper-1 -F diarize=true -F response_format=diarized_json`,
+  javascript: `import OpenAI from "openai";
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8000/v1", apiKey: "gam_..." });
+const result = await client.audio.transcriptions.create({ model: "whisper-1", file: fs.createReadStream("meeting.mp3") });
+console.log(result.text);`,
 };
 
 let settings = loadSettings();

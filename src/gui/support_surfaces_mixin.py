@@ -179,39 +179,43 @@ class SupportSurfacesMixin:
             self._t("Быстрый старт", "Quick start"),
             self._t(
                 "Запустите отдельный API-сервис командой <code>python api.py</code>. "
-                "Передавайте ключ в заголовке <code>X-API-Key</code>.",
+                "Передавайте ключ в заголовке <code>Authorization: Bearer &lt;ключ&gt;</code>.",
                 "Start the separate API service with <code>python api.py</code>. "
-                "Send the key in the <code>X-API-Key</code> header.",
+                "Send the key in the <code>Authorization: Bearer &lt;key&gt;</code> header.",
             ),
             expanded=True,
         ))
         layout.addWidget(self._api_documentation_section(
             self._t("Эндпоинты", "Endpoints"),
             self._t(
-                "<code>POST /api/v1/transcribe</code> — один файл.<br>"
-                "<code>POST /api/v1/transcribe/batch</code> — до 10 файлов.<br>"
-                "<code>GET /api/v1/tasks/{task_id}</code> — статус.<br>"
-                "<code>GET /api/v1/tasks/{task_id}/result</code> — готовый текст.<br>"
-                "<code>GET /api/v1/tasks/{task_id}/download?format=txt|timecodes</code> — скачать файл.",
-                "<code>POST /api/v1/transcribe</code> — one file.<br>"
-                "<code>POST /api/v1/transcribe/batch</code> — up to 10 files.<br>"
-                "<code>GET /api/v1/tasks/{task_id}</code> — status.<br>"
-                "<code>GET /api/v1/tasks/{task_id}/result</code> — completed text.<br>"
-                "<code>GET /api/v1/tasks/{task_id}/download?format=txt|timecodes</code> — download a file.",
+                "<code>POST /v1/audio/transcriptions</code> — распознать файл (multipart: file, model, response_format).<br>"
+                "<code>GET /v1/models</code> — доступные модели.<br>"
+                "<code>GET /health</code> — состояние сервера.<br>"
+                "Совместимо с OpenAI Audio API: base_url <code>http://127.0.0.1:8000/v1</code>, "
+                "заголовок <code>Authorization: Bearer &lt;ключ&gt;</code>.",
+                "<code>POST /v1/audio/transcriptions</code> — transcribe a file (multipart: file, model, response_format).<br>"
+                "<code>GET /v1/models</code> — available models.<br>"
+                "<code>GET /health</code> — server status.<br>"
+                "OpenAI Audio API-compatible: base_url <code>http://127.0.0.1:8000/v1</code>, "
+                "header <code>Authorization: Bearer &lt;key&gt;</code>.",
             ),
         ))
         layout.addWidget(self._api_documentation_section(
             self._t("Параметры и ответы", "Parameters and responses"),
             self._t(
-                "Загрузка принимает <code>file</code>; необязательные параметры: "
-                "<code>asr_backend</code>, <code>asr_model</code>, <code>onnx_provider</code>, "
-                "<code>enable_diarization</code>, <code>diarization_backend</code>, <code>num_speakers</code>.<br><br>"
-                "Успешная загрузка возвращает <code>202</code> и <code>task_id</code>. "
+                "Загрузка принимает <code>file</code> и <code>model</code>; необязательные параметры: "
+                "<code>response_format</code>, <code>stream</code>, <code>timestamp_granularities[]</code>, "
+                "<code>diarize</code>, <code>diarization_backend</code>, <code>num_speakers</code>, "
+                "<code>asr_backend</code>, <code>onnx_provider</code>, <code>audio_preprocessing</code>.<br><br>"
+                "Ответ возвращается синхронно, в формате, заданном <code>response_format</code> "
+                "(<code>json</code>/<code>text</code>/<code>srt</code>/<code>vtt</code>/<code>verbose_json</code>/<code>diarized_json</code>). "
                 "Интерактивная схема доступна в <code>/docs</code>, когда сервис запущен.",
-                "Uploads require <code>file</code>; optional parameters are "
-                "<code>asr_backend</code>, <code>asr_model</code>, <code>onnx_provider</code>, "
-                "<code>enable_diarization</code>, <code>diarization_backend</code>, and <code>num_speakers</code>.<br><br>"
-                "A successful upload returns <code>202</code> and <code>task_id</code>. "
+                "Uploads require <code>file</code> and <code>model</code>; optional parameters are "
+                "<code>response_format</code>, <code>stream</code>, <code>timestamp_granularities[]</code>, "
+                "<code>diarize</code>, <code>diarization_backend</code>, <code>num_speakers</code>, "
+                "<code>asr_backend</code>, <code>onnx_provider</code>, and <code>audio_preprocessing</code>.<br><br>"
+                "The response is returned synchronously, in the format set by <code>response_format</code> "
+                "(<code>json</code>/<code>text</code>/<code>srt</code>/<code>vtt</code>/<code>verbose_json</code>/<code>diarized_json</code>). "
                 "The interactive schema is available at <code>/docs</code> while the service runs.",
             ),
         ))
@@ -222,39 +226,30 @@ class SupportSurfacesMixin:
         base_url = self._api_base_url()
         return {
             "Python": (
-                "import os\nimport requests\n\n"
-                f"base_url = \"{base_url}\"\n"
-                "headers = {\"X-API-Key\": os.environ[\"GIGAAM_API_KEY\"]}\n"
+                "import os\n"
+                "from openai import OpenAI\n\n"
+                f"client = OpenAI(base_url=\"{base_url}/v1\", api_key=os.environ[\"GIGAAM_API_KEY\"])\n"
                 "with open(\"meeting.mp3\", \"rb\") as audio:\n"
-                "    response = requests.post(\n"
-                "        f\"{base_url}/api/v1/transcribe\",\n"
-                "        headers=headers, files={\"file\": audio}, timeout=30,\n"
+                "    result = client.audio.transcriptions.create(\n"
+                "        model=\"whisper-1\", file=audio, response_format=\"verbose_json\",\n"
                 "    )\n"
-                "response.raise_for_status()\n"
-                "task_id = response.json()[\"task_id\"]\n"
-                "status = requests.get(\n"
-                "    f\"{base_url}/api/v1/tasks/{task_id}\", headers=headers, timeout=30\n"
-                ").json()\n"
+                "print(result.text)\n"
             ),
             "cURL": (
                 f"BASE_URL={base_url}\n"
-                "curl -X POST \"$BASE_URL/api/v1/transcribe\" \\\n"
-                "  -H \"X-API-Key: $GIGAAM_API_KEY\" \\\n"
-                "  -F \"file=@meeting.mp3\"\n\n"
-                "curl \"$BASE_URL/api/v1/tasks/TASK_ID\" \\\n"
-                "  -H \"X-API-Key: $GIGAAM_API_KEY\"\n"
+                "curl \"$BASE_URL/v1/audio/transcriptions\" \\\n"
+                "  -H \"Authorization: Bearer $GIGAAM_API_KEY\" \\\n"
+                "  -F \"file=@meeting.mp3\" -F \"model=whisper-1\" -F \"response_format=verbose_json\"\n"
             ),
             "JavaScript": (
-                f"const baseUrl = \"{base_url}\";\n"
-                "const form = new FormData();\n"
-                "form.append(\"file\", fileInput.files[0]);\n\n"
-                "const response = await fetch(`${baseUrl}/api/v1/transcribe`, {\n"
-                "  method: \"POST\",\n"
-                "  headers: { \"X-API-Key\": apiKey },\n"
-                "  body: form,\n"
+                "import OpenAI from \"openai\";\n\n"
+                f"const client = new OpenAI({{ baseURL: \"{base_url}/v1\", apiKey }});\n"
+                "const result = await client.audio.transcriptions.create({\n"
+                "  model: \"whisper-1\",\n"
+                "  file: fs.createReadStream(\"meeting.mp3\"),\n"
+                "  response_format: \"verbose_json\",\n"
                 "});\n"
-                "if (!response.ok) throw new Error(await response.text());\n"
-                "const { task_id } = await response.json();\n"
+                "console.log(result.text);\n"
             ),
         }
 
