@@ -3,10 +3,17 @@
 import re
 from pathlib import Path
 
-TUI_SOURCE = Path("tui/src/main.rs")
+TUI_SOURCE_DIR = Path("tui/src")
 TUI_REQUIREMENTS = Path("requirements-tui.txt")
 MACOS_MLX_REQUIREMENTS = Path("requirements-macos-mlx.txt")
 INSTALL_TUI_SCRIPT = Path("scripts/install_tui.sh")
+
+
+def _tui_source() -> str:
+    """Весь Rust-исходник TUI: после разбиения на модули команды живут не в main.rs."""
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(TUI_SOURCE_DIR.rglob("*.rs"))
+    )
 
 
 def _requirement_names() -> set[str]:
@@ -21,7 +28,7 @@ def _requirement_names() -> set[str]:
 
 def test_tui_offers_onnx_and_the_worker_can_run_it():
     """Команды /backend onnx и /onnx-provider есть — значит нужен onnx-asr."""
-    source = TUI_SOURCE.read_text(encoding="utf-8")
+    source = _tui_source()
     assert '"onnx"' in source
     assert "/onnx-provider" in source
 
@@ -36,8 +43,8 @@ def test_worker_requirements_cover_onnx_diarization():
 
 
 def test_tui_offers_mlx_and_the_worker_can_run_it():
-    """Команда /backend mlx есть в tui/src/main.rs — значит installer должен ставить mlx/gigaam-mlx."""
-    source = TUI_SOURCE.read_text(encoding="utf-8")
+    """Команда /backend mlx есть в tui/src — значит installer должен ставить mlx/gigaam-mlx."""
+    source = _tui_source()
     assert '"mlx"' in source
 
     mlx_text = MACOS_MLX_REQUIREMENTS.read_text(encoding="utf-8")
