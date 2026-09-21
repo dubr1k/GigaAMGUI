@@ -34,14 +34,18 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты проекта
 from src import __version__
-from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, SUPPORTED_FORMATS
-from src.core.asr.models import ASR_MODELS
+from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
-from src.services import file_policy, transcript_formats, transcription_service
+from src.services import (  # noqa: I001
+    file_policy,
+    mcp_backend,
+    transcript_formats,
+    transcription_service,  # noqa: F401  (тесты подменяют api.transcription_service.build_processor)
+)
 from src.services import health as health_service
 from src.services.api_keys import KeyStore, hash_key, key_from_headers
+from src.services.mcp_backend import BackendError
 from src.utils.audio_converter import ffmpeg_available
-from src.utils.diarization import normalize_diarization_backend
 from src.utils.logger import setup_logger
 from src.utils.processing_stats import ProcessingStats
 
@@ -205,46 +209,15 @@ def safe_filename(filename: str | None) -> str:
 
 # ==================== МОДЕЛИ ====================
 
-DEFAULT_MODEL = "v3_e2e_rnnt"
-MODEL_ALIASES = {
-    "whisper-1": DEFAULT_MODEL,
-    "gpt-4o-transcribe": DEFAULT_MODEL,
-    "gpt-4o-mini-transcribe": DEFAULT_MODEL,
-    "gigaam": DEFAULT_MODEL,
-}
-
-
-def resolve_model(model: str | None) -> str:
-    name = (model or DEFAULT_MODEL).strip()
-    name = MODEL_ALIASES.get(name, name)
-    if name not in ASR_MODELS:
-        raise openai_error(404, f"The model '{model}' does not exist.", param="model", code="model_not_found")
-    return name
-
-
-def _model_object(model_id: str) -> dict[str, Any]:
-    aliases = sorted(alias for alias, target in MODEL_ALIASES.items() if target == model_id)
-    return {
-        "id": model_id,
-        "object": "model",
-        "created": 0,
-        "owned_by": "gigaam",
-        "description": ASR_MODELS[model_id],
-        "default": model_id == DEFAULT_MODEL,
-        "aliases": aliases,
-    }
+# Реестр моделей и алиасов живёт в mcp_backend (общий с MCP); здесь — реэкспорт.
+DEFAULT_MODEL = mcp_backend.DEFAULT_MODEL
+MODEL_ALIASES = mcp_backend.MODEL_ALIASES
+resolve_model = mcp_backend.resolve_model
+_model_object = mcp_backend.model_object
 
 
 def models_payload() -> dict[str, Any]:
-    return {
-        "object": "list",
-        "data": [_model_object(m) for m in ASR_MODELS],
-        "gigaam": {
-            "backends": transcription_service.available_asr_backends(),
-            "onnx_providers": list(transcription_service.ONNX_PROVIDERS),
-            "active": model_loader.diagnostics() if model_loader is not None else {},
-        },
-    }
+    return mcp_backend.models_payload(model_loader)
 
 
 # ==================== LIFESPAN ====================
@@ -371,6 +344,13 @@ async def _openai_error_handler(_: Request, exc: OpenAIError):
     return JSONResponse(exc.payload(), status_code=exc.status_code)
 
 
+@app.exception_handler(BackendError)
+async def _backend_error_handler(_: Request, exc: BackendError):
+    # Ошибки общего с MCP слоя — те же коды и параметры, что раньше поднимал api.py сам
+    err = openai_error(exc.status, exc.message, type_=_type_for_status(exc.status), param=exc.param, code=exc.code)
+    return JSONResponse(err.payload(), status_code=exc.status)
+
+
 @app.exception_handler(StarletteHTTPException)
 async def _http_error_handler(_: Request, exc: StarletteHTTPException):
     err = openai_error(exc.status_code, str(exc.detail), type_=_type_for_status(exc.status_code))
@@ -450,6 +430,10 @@ async def create_translation():
 
 _GRANULARITIES = {"segment", "word"}
 _STREAM_FORMATS = {"json", "verbose_json"}
+# response_format REST → format общего слоя (нужен только для нормализации параметров;
+# сам ответ по-прежнему рендерит transcript_formats.render)
+_BACKEND_FORMATS = {"json": "json", "text": "text", "srt": "srt", "vtt": "vtt",
+                    "verbose_json": "verbose", "diarized_json": "diarized"}
 
 
 def _save_upload(file: UploadFile) -> tuple[Path, Path]:
@@ -485,25 +469,6 @@ def _parse_bool(value: str | bool | None) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _run_processor(request_loader, file_path: Path, work_dir: Path, *, enable_diarization: bool,
-                   diarization_backend: str, num_speakers: int | None, audio_preprocessing: str,
-                   progress_callback) -> dict[str, Any]:
-    """Синхронно: грузит модель под запрос (если нужна другая) и запускает процессор."""
-    processor = transcription_service.build_processor(
-        request_loader, stats_manager,
-        logger=lambda msg: logger.debug(f"[api] {msg}") if logger else None,
-        progress_callback=progress_callback,
-    )
-    result = processor.process_file(
-        str(file_path), str(work_dir), 0, 1, file_path.name,
-        enable_diarization=enable_diarization, num_speakers=num_speakers, output_formats=[],
-        diarization_backend=diarization_backend, audio_preprocessing_mode=audio_preprocessing,
-    )
-    if not result.get("success"):
-        raise RuntimeError("processing failed")
-    return result
 
 
 def _queue_progress(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, event_or_stage, progress=None) -> None:
@@ -564,51 +529,25 @@ async def create_transcription(
     if bad:
         raise openai_error(400, f"Unknown timestamp granularity: {', '.join(sorted(bad))}.",
                            param="timestamp_granularities", code="unsupported_parameter")
-    model_id = resolve_model(model)
-    enable_diarization = _parse_bool(diarize) or response_format == "diarized_json"
-    try:
-        diarization_backend = normalize_diarization_backend(diarization_backend)
-    except ValueError as exc:
-        raise openai_error(400, f"Unknown diarization_backend '{diarization_backend}'. Use pyannote or sortformer.",
-                           param="diarization_backend", code="unsupported_parameter") from exc
-    if enable_diarization and diarization_backend == "sortformer" and num_speakers is not None:
-        raise openai_error(400, "num_speakers cannot be combined with diarization_backend=sortformer.",
-                           param="num_speakers", code="unsupported_parameter")
-    if enable_diarization and not (HF_TOKEN and HF_TOKEN.startswith("hf_")) and diarization_backend == "pyannote":
-        raise openai_error(503, "Diarization is unavailable: HF_TOKEN is not configured on the server.",
-                           type_="server_error", code="diarization_unavailable")
-    if model_loader is None:
-        raise openai_error(503, "ASR model is not loaded.", type_="server_error", code="model_not_loaded")
-    try:
-        asr_selection = transcription_service.normalize_asr_selection(
-            model_loader, backend=asr_backend, model=model_id, onnx_provider=onnx_provider)
-    except ValueError as exc:
-        raise openai_error(400, str(exc), param="asr_backend", code="unsupported_parameter") from exc
-    preprocessing = (audio_preprocessing or AUDIO_PREPROCESSING_MODE)
+    # Проверка и нормализация параметров — общий с MCP код; BackendError → конверт OpenAI в обработчике
+    opts = mcp_backend.prepare_options(
+        mcp_backend.TranscribeOptions(
+            model=model, language=language, format=_BACKEND_FORMATS[response_format],
+            word_timestamps="word" in granularities, diarize=_parse_bool(diarize),
+            diarization_backend=diarization_backend, num_speakers=num_speakers,
+            audio_preprocessing=audio_preprocessing, asr_backend=asr_backend, onnx_provider=onnx_provider),
+        model_loader, hf_token=HF_TOKEN)
 
     loop = asyncio.get_running_loop()
     # Запись на диск — в executor, чтобы гигабайтная загрузка не блокировала loop
     work_dir, file_path = await loop.run_in_executor(None, _save_upload, file)
     progress_queue: asyncio.Queue[str] = asyncio.Queue()
 
-    def progress_callback(event_or_stage, progress=None, **_):
-        _queue_progress(loop, progress_queue, event_or_stage, progress)
-
     def blocking() -> dict[str, Any]:
-        request_loader, owns = model_loader, False
-        if asr_selection is not None:
-            request_loader, owns = transcription_service.acquire_request_model_loader(
-                model_loader, asr_selection, loader_factory=ModelLoader)
-        try:
-            if owns and not request_loader.load_model(logger=(logger.info if logger else None)):
-                raise RuntimeError("could not load the requested ASR backend")
-            return _run_processor(
-                request_loader, file_path, work_dir, enable_diarization=enable_diarization,
-                diarization_backend=diarization_backend, num_speakers=num_speakers,
-                audio_preprocessing=preprocessing, progress_callback=progress_callback)
-        finally:
-            if owns:  # иначе модель под нестандартный backend/model живёт до остановки процесса
-                request_loader.unload()
+        return mcp_backend.run_transcription(
+            file_path, work_dir, opts, model_loader=model_loader, stats_manager=stats_manager,
+            loader_factory=ModelLoader, logger=logger,
+            progress=lambda stage, fraction: _queue_progress(loop, progress_queue, stage, fraction))
 
     async def run() -> dict[str, Any]:
         async with processing_semaphore:
@@ -618,7 +557,7 @@ async def create_transcription(
         return transcript_formats.render(
             response_format, result.get("utterances") or [], result.get("media_duration") or 0.0,
             language=language, granularities=granularities,
-            diarized=bool(result.get("diarization", {}).get("applied")) or enable_diarization,
+            diarized=bool(result.get("diarization", {}).get("applied")) or opts.diarize,
             subtitle_options=None)
 
     if not streaming:
