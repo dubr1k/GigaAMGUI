@@ -30,13 +30,16 @@ _TEST_VARIANTS = {
 }
 
 
-def _write_stack(path, versions=None) -> None:
-    versions = versions or rm.VARIANTS[path.name]["packages"]
+def _write_stack(path, versions=None, ext_suffix: str | None = None) -> None:
+    """Раскладка torch-колеса: пакеты, dist-info и C-расширение под интерпретатор."""
+    variant = path.name.split("-", 1)[0]
+    versions = versions or rm.VARIANTS[variant]["packages"]
     for package, version in versions.items():
         package_dir = path / package / "__init__.py"
         package_dir.parent.mkdir(parents=True, exist_ok=True)
         package_dir.write_text("", encoding="utf-8")
         (path / f"{package}-{version}.dist-info").mkdir(parents=True, exist_ok=True)
+    (path / "torch" / f"_C{ext_suffix or rm._EXT_SUFFIX}").write_bytes(b"")
 
 
 def _mark_installed(variant: str) -> None:
@@ -119,6 +122,36 @@ def test_is_installed_rejects_mixed_runtime_versions(monkeypatch, tmp_path):
     (path / ".installed_ok").write_text("ok", encoding="utf-8")
 
     assert rm.is_installed("cpu") is False
+
+
+def test_is_installed_rejects_a_runtime_built_for_another_python(monkeypatch, tmp_path):
+    """v2.3.0: PyQt-сборка на Python 3.12 положила cp312-колёса в общий кэш, а
+    CI-компаньон на 3.11 счёл их установленными и импортировал папку-заглушку
+    torch/_C вместо расширения."""
+    monkeypatch.setenv("GIGAAM_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(rm, "VARIANTS", dict(_TEST_VARIANTS))
+    path = rm._runtimes_root() / "cpu"
+    _write_stack(path, ext_suffix=".cpython-399-darwin.so")
+    (path / ".installed_ok").write_text("ok", encoding="utf-8")
+
+    assert rm.is_installed("cpu") is False
+
+
+def test_variant_dir_sidesteps_a_runtime_built_for_another_python(monkeypatch, tmp_path):
+    """Две сборки с разными Python на одной машине не должны перезаписывать
+    torch друг друга: чужой ABI получает свою папку с суффиксом интерпретатора."""
+    monkeypatch.setenv("GIGAAM_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(rm, "VARIANTS", dict(_TEST_VARIANTS))
+    legacy = rm._runtimes_root() / "cpu"
+
+    assert rm.variant_dir("cpu") == legacy, "nothing installed yet → legacy path"
+
+    _write_stack(legacy)
+    assert rm.variant_dir("cpu") == legacy, "our own ABI → keep using the legacy dir"
+
+    (legacy / "torch" / f"_C{rm._EXT_SUFFIX}").unlink()
+    (legacy / "torch" / "_C.cpython-399-darwin.so").write_bytes(b"")
+    assert rm.variant_dir("cpu") == rm._runtimes_root() / f"cpu-{rm._python_tag()}"
 
 
 def test_install_variant_replaces_stale_runtime_transactionally(monkeypatch, tmp_path):
