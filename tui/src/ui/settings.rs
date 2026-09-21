@@ -99,6 +99,13 @@ pub(crate) fn rows(app: &App) -> Vec<SettingRow> {
             Action::OpenMenu("/audio-mode"),
         ),
         row(
+            "settings.output",
+            app.output_dir
+                .clone()
+                .unwrap_or_else(|| t(app.lang, "value.next_to_file").to_owned()),
+            Action::EditCommand("/output"),
+        ),
+        row(
             "settings.subtitle_split",
             on_off(app, app.subtitle_sentence_split),
             Action::ToggleSetting("subtitle_split"),
@@ -306,13 +313,21 @@ mod tests {
             .unwrap();
         dispatch(&mut app, Action::SettingsRow(url));
         assert_eq!(app.input, "/llm-api-url ");
+        let output = rows(&app)
+            .iter()
+            .position(|row| row.key == "settings.output")
+            .unwrap();
+        dispatch(&mut app, Action::SettingsRow(output));
+        assert_eq!(app.input, "/output ");
+        app.output_dir = Some("/tmp/out".into());
+        assert_eq!(rows(&app)[output].value, "/tmp/out");
 
         dispatch(&mut app, Action::ToggleSetting("subtitle_split"));
         assert!(!app.subtitle_sentence_split);
         dispatch(&mut app, Action::ToggleSetting("llm_tools"));
         assert!(app.llm_allow_tools);
         dispatch(&mut app, Action::SettingsRow(999));
-        assert_eq!(app.settings_cursor, url, "an unknown row is ignored");
+        assert_eq!(app.settings_cursor, output, "an unknown row is ignored");
     }
 
     #[test]
@@ -345,6 +360,8 @@ mod tests {
             "Русский",
             "Мышь",
             "Движок диаризации",
+            "Папка результатов",
+            "рядом с файлом",
             "Субтитры: разбиение",
             "LLM: ключ API",
             "••••",
@@ -366,10 +383,15 @@ mod tests {
         let mut app = App::default();
         app.page = Page::Settings;
         let last = rows(&app).len() - 1;
-        dispatch(&mut app, Action::Scroll(AreaId::Settings, 500));
+        // A wheel tick is `Scroll(_, ±3)` (main.rs): it moves one row, never three.
+        dispatch(&mut app, Action::Scroll(AreaId::Settings, 3));
+        assert_eq!(app.settings_cursor, 1, "one wheel tick is one row");
+        for _ in 0..last + 5 {
+            dispatch(&mut app, Action::Scroll(AreaId::Settings, 3));
+        }
         assert_eq!(
             app.settings_cursor, last,
-            "the wheel moves the cursor, clamped"
+            "the cursor clamps at the last row"
         );
         let backend = ratatui::backend::TestBackend::new(60, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -377,8 +399,10 @@ mod tests {
         let offset = app.scroll[&AreaId::Settings];
         assert!(offset > 0 && usize::from(offset) < last, "{offset}");
         dispatch(&mut app, Action::Scroll(AreaId::Settings, -3));
-        assert_eq!(app.settings_cursor, last - 3);
-        dispatch(&mut app, Action::Scroll(AreaId::Settings, -500));
+        assert_eq!(app.settings_cursor, last - 1);
+        for _ in 0..last + 5 {
+            dispatch(&mut app, Action::Scroll(AreaId::Settings, -3));
+        }
         assert_eq!(app.settings_cursor, 0);
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();
         assert_eq!(app.scroll[&AreaId::Settings], 0);

@@ -538,6 +538,13 @@ pub(crate) fn esc_should_soft_cancel(app: &App) -> bool {
     app.llm_running && !app.llm_cancel_requested
 }
 
+/// Whether `main` must handle this Esc itself (graceful cancel, then kill/restart on
+/// the second press). The help overlay wins: it can be opened during a run with a
+/// click on the header button, and its Esc closes the overlay, not the run.
+pub(crate) fn esc_is_cancel(app: &App) -> bool {
+    app.running && !app.help_open && !esc_should_soft_cancel(app)
+}
+
 /// The one-line hint under the main area, as an i18n key. The first matching
 /// situation wins: a dead worker outranks everything, then the two kinds of run,
 /// then the furthest stage the session has reached.
@@ -682,10 +689,11 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
         Action::Help => app.help_open = !app.help_open,
         // The Settings list is a cursor list: the wheel moves the cursor and the list
         // slides to keep it visible, so wheel and arrows can never fight each other.
+        // One tick (any magnitude: the wheel sends ±3 lines) moves exactly one row.
         Action::Scroll(AreaId::Settings, delta) => {
             let last = setting_rows(app).len().saturating_sub(1);
-            app.settings_cursor =
-                (app.settings_cursor as i64 + i64::from(delta)).clamp(0, last as i64) as usize;
+            app.settings_cursor = (app.settings_cursor as i64 + i64::from(delta.signum()))
+                .clamp(0, last as i64) as usize;
         }
         Action::Scroll(area, delta) => {
             if area == AreaId::Log && delta < 0 {
@@ -990,6 +998,34 @@ mod tests {
             !esc_should_soft_cancel(&app),
             "second Esc must reach the `running` double-Esc kill/restart arm"
         );
+    }
+
+    #[test]
+    fn esc_closes_the_help_before_it_cancels_a_run() {
+        let mut app = App::default();
+        assert!(!esc_is_cancel(&app), "idle: Esc is not a cancel");
+        app.handle_message(json!({"type": "started", "total_files": 1, "backend": "auto"}));
+        assert!(esc_is_cancel(&app));
+        dispatch(&mut app, Action::Help);
+        assert!(
+            app.help_open,
+            "the header button opens the help during a run"
+        );
+        assert!(
+            !esc_is_cancel(&app),
+            "Esc goes to handle_key, which closes the overlay"
+        );
+        let commands = crate::keys::handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        assert!(commands.is_empty(), "no cancel was sent");
+        assert!(!app.help_open);
+        assert!(!app.cancelled);
+        assert!(esc_is_cancel(&app), "the next Esc is the cancel again");
     }
 
     #[test]

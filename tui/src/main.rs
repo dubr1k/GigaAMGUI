@@ -27,7 +27,7 @@ mod settings;
 mod ui;
 mod worker;
 
-use app::{dispatch, esc_should_soft_cancel, reset_after_worker_restart, App};
+use app::{dispatch, esc_is_cancel, reset_after_worker_restart, App};
 use headless::{apply_data_dir_argument, run_headless, strip_data_dir, HEADLESS_USAGE};
 use i18n::strip_lang;
 use keys::handle_key;
@@ -214,7 +214,7 @@ fn main() -> io::Result<()> {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // The second Esc within 700 ms of the first during a run kills the
                 // worker and starts a fresh one: the only key that needs the child.
-                if key.code == KeyCode::Esc && app.running && !esc_should_soft_cancel(&app) {
+                if key.code == KeyCode::Esc && esc_is_cancel(&app) {
                     if app.last_exit_request.is_some_and(|(trigger, at)| {
                         trigger == "cancel" && at.elapsed() <= Duration::from_millis(700)
                     }) {

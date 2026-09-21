@@ -223,6 +223,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
         "Diarization engine",
     ),
     ("settings.audio", "Звук", "Audio"),
+    ("settings.output", "Папка результатов", "Results folder"),
     (
         "settings.subtitle_split",
         "Субтитры: разбиение по предложениям",

@@ -23,8 +23,10 @@ use crate::{
 const ANSWER_PAGE: i32 = 10;
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
-    // The help overlay is modal: it scrolls, closes, and swallows everything else.
-    if app.help_open {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // The help overlay is modal: it scrolls, closes, and swallows everything else
+    // except Ctrl+C, which must always reach the quit path.
+    if app.help_open && !(ctrl && key.code == KeyCode::Char('c')) {
         return match key.code {
             KeyCode::Esc | KeyCode::Char('?') => dispatch(app, Action::Help),
             KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Help, -1)),
@@ -37,7 +39,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
     let idle = !app.running;
     let no_input = app.input.is_empty();
     let menu_open = app.command_menu.is_some();
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let on_page = |page: Page| app.page == page && no_input && !menu_open;
     match key.code {
         KeyCode::Char('l') if ctrl => return dispatch(app, Action::Button(ButtonId::ClearLog)),
@@ -422,6 +423,23 @@ mod tests {
         assert_eq!(app.settings_cursor, 0, "Up clamps at the first row");
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.command_menu.as_deref(), Some("/lang"));
+    }
+
+    #[test]
+    fn ctrl_c_quits_through_the_open_help() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help_open);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        handle_key(&mut app, ctrl_c);
+        assert!(!app.exit_requested, "the first Ctrl+C only asks");
+        assert!(app.status.contains("Ctrl+C"), "{}", app.status);
+        handle_key(&mut app, ctrl_c);
+        assert!(
+            app.exit_requested,
+            "the second Ctrl+C quits even with the help open"
+        );
     }
 
     #[test]
