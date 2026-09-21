@@ -16,6 +16,8 @@ use crate::{app::App, commands::FORMAT_KEYS};
 #[serde(default)]
 pub(crate) struct TuiSettings {
     pub(crate) pet_enabled: bool,
+    /// Interface language, `ru` or `en`; shared with the desktop app's `language`.
+    pub(crate) language: String,
     pub(crate) backend: String,
     pub(crate) onnx_provider: String,
     pub(crate) diarization_backend: String,
@@ -42,6 +44,7 @@ impl Default for TuiSettings {
     fn default() -> Self {
         Self {
             pet_enabled: false,
+            language: "ru".into(),
             backend: "auto".into(),
             onnx_provider: "auto".into(),
             diarization_backend: "pyannote".into(),
@@ -130,6 +133,9 @@ const CLI_PREFIXES: [(&str, &str); 5] = [
 /// Copies the keys shared with the desktop app from its `user_settings.json` map.
 fn shared_settings_from_main_app(map: &serde_json::Map<String, Value>, settings: &mut TuiSettings) {
     let text = |key: &str| map.get(key).and_then(Value::as_str).map(str::to_owned);
+    if let Some(v) = text("language").filter(|v| v == "ru" || v == "en") {
+        settings.language = v;
+    }
     if let Some(v) = text("asr_backend") {
         settings.backend = v;
     }
@@ -247,6 +253,7 @@ fn shared_settings_into_main_app(settings: &TuiSettings, map: &mut serde_json::M
     let mut put = |key: &str, value: Value| {
         map.insert(key.to_owned(), value);
     };
+    put("language", json!(settings.language));
     put("asr_backend", json!(settings.backend));
     put("onnx_provider", json!(settings.onnx_provider));
     put("diarization_backend", json!(settings.diarization_backend));
@@ -458,6 +465,7 @@ impl From<&App> for TuiSettings {
     fn from(app: &App) -> Self {
         Self {
             pet_enabled: app.pet_enabled,
+            language: app.lang.code().to_owned(),
             backend: app.backend.clone(),
             onnx_provider: app.onnx_provider.clone(),
             diarization_backend: app.diarization_backend.clone(),
@@ -684,6 +692,22 @@ mod tests {
         let env = fs::read_to_string(directory.join(".env")).unwrap();
         assert!(env.contains("HF_TOKEN=hf_x\n"));
         assert!(env.contains("LLM_API_KEY=sk-new\n"));
+    }
+
+    #[test]
+    fn language_round_trips_and_syncs_with_the_desktop_app() {
+        let directory = isolated_config_dir();
+        fs::write(directory.join("user_settings.json"), r#"{"language":"en"}"#).unwrap();
+        let settings = load_settings();
+        assert_eq!(settings.language, "en");
+        let mut updated = settings;
+        updated.language = "ru".into();
+        save_settings(&updated).unwrap();
+        let main: Value = serde_json::from_str(
+            &fs::read_to_string(directory.join("user_settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(main["language"], "ru");
     }
 
     #[test]

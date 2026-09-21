@@ -11,6 +11,7 @@ use ratatui_image::StatefulImage;
 use crate::{
     app::{llm_can_run, App},
     commands::{command_menu_options, command_suggestions, short_name, BACK_MENU_OPTION},
+    i18n::t,
 };
 
 fn timecode(seconds: f64) -> String {
@@ -283,7 +284,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
             suggestions
                 .iter()
                 .enumerate()
-                .map(|(index, (command, description))| {
+                .map(|(index, (command, _))| {
                     let selected = index
                         == app
                             .selected_command
@@ -298,7 +299,10 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
                             }),
                         ),
                         Span::styled(
-                            *description,
+                            t(
+                                app.lang,
+                                &format!("cmd.{}", command.trim_start_matches('/')),
+                            ),
                             Style::default().fg(if selected { Color::White } else { Color::Gray }),
                         ),
                     ])

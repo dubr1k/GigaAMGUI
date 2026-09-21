@@ -15,6 +15,7 @@ use serde_json::json;
 mod app;
 mod commands;
 mod headless;
+mod i18n;
 mod pets;
 mod settings;
 mod ui;
@@ -30,6 +31,7 @@ use commands::{
     remove_selected_file, run_command, COMMANDS, MODEL_OPTIONS,
 };
 use headless::{apply_data_dir_argument, run_headless, strip_data_dir, HEADLESS_USAGE};
+use i18n::{strip_lang, Lang};
 use settings::{load_settings, save_app_settings};
 use ui::draw;
 use worker::{llm_settings_payload, send, spawn_worker, start_payload};
@@ -53,7 +55,8 @@ fn request_exit(
 
 fn main() -> io::Result<()> {
     apply_data_dir_argument()?;
-    let argv = strip_data_dir(std::env::args().skip(1).collect());
+    let (argv, lang_override) = strip_lang(strip_data_dir(std::env::args().skip(1).collect()))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     match argv.first().map(String::as_str) {
         Some("transcribe" | "llm") => {
             let code = run_headless(&argv)?;
@@ -73,6 +76,9 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::default();
     let settings = load_settings();
+    app.lang = lang_override
+        .or_else(|| Lang::parse(&settings.language))
+        .unwrap_or(Lang::Ru);
     app.pet_enabled = settings.pet_enabled;
     if backend_is_supported(&settings.backend) {
         app.backend = settings.backend;

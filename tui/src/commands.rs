@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     app::{llm_input_files, request_llm, App},
+    i18n::{t, Lang},
     settings::save_app_settings,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
 };
@@ -185,7 +186,7 @@ pub(crate) const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-pub(crate) const COMMANDS: [(&str, &str); 29] = [
+pub(crate) const COMMANDS: [(&str, &str); 30] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -232,6 +233,7 @@ pub(crate) const COMMANDS: [(&str, &str); 29] = [
         "/llm-tools",
         "on|off · let the CLI agent use tools and sessions",
     ),
+    ("/lang", "interface language: ru or en"),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -692,6 +694,14 @@ pub(crate) fn run_command(app: &mut App) {
         "/settings" => {
             let _ = open_command_menu(app, "/settings");
         }
+        "/lang" => match Lang::parse(argument) {
+            Some(lang) => {
+                app.lang = lang;
+                app.status = t(lang, "settings.language_changed").into();
+                save_app_settings(app);
+            }
+            None => app.status = t(app.lang, "usage.lang").into(),
+        },
         "/llm-mode" if matches!(argument, "summary" | "tasks" | "terms" | "custom") => {
             app.llm_modes = vec![argument.into()];
             app.status = format!("LLM modes: {}", app.llm_modes.join(", "));
@@ -984,9 +994,25 @@ mod tests {
     use super::*;
     use crate::{
         app::llm_can_run,
-        settings::{isolated_config_dir, TuiSettings},
+        i18n::Lang,
+        settings::{isolated_config_dir, load_settings, TuiSettings},
         worker::{llm_settings_payload, start_payload},
     };
+
+    #[test]
+    fn lang_command_switches_and_persists() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.input = "/lang en".into();
+        run_command(&mut app);
+        assert_eq!(app.lang, Lang::En);
+        assert_eq!(app.status, "Language: English");
+        assert_eq!(load_settings().language, "en");
+        app.input = "/lang xx".into();
+        run_command(&mut app);
+        assert_eq!(app.status, "Usage: /lang ru|en");
+        assert_eq!(app.lang, Lang::En);
+    }
 
     #[test]
     fn shell_path_split_keeps_escaped_and_quoted_spaces() {

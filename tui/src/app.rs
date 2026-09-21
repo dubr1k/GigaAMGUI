@@ -11,9 +11,10 @@ use ratatui_image::{
 };
 use serde_json::Value;
 
-use crate::{commands::short_name, worker::LlmTool};
+use crate::{commands::short_name, i18n::Lang, worker::LlmTool};
 
 pub(crate) struct App {
+    pub(crate) lang: Lang,
     pub(crate) input: String,
     pub(crate) files: Vec<String>,
     pub(crate) logs: Vec<String>,
@@ -78,6 +79,7 @@ pub(crate) struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
+            lang: Lang::Ru,
             input: String::new(),
             files: Vec::new(),
             logs: vec!["Ready. Paste a media path and press Enter.".into()],
