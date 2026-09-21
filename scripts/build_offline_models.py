@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -28,15 +30,58 @@ OFFLINE_REPOS = (
 )
 
 
+# HuggingFace с shared-раннеров GitHub периодически отвечает ошибкой сети или
+# лимитом; huggingface_hub превращает это в LocalEntryNotFoundError, и без
+# повтора офлайн-сборка падает на одной неудачной попытке (CI v2.3.0, Intel).
+DOWNLOAD_ATTEMPTS = 4
+RETRY_DELAYS = (10, 30, 60)
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _download_with_retries(download: Callable[[], tuple[list[str], list[str]]], *, what: str):
+    """Повторить загрузку, пока список неудач не опустеет или не кончатся попытки."""
+    ok: list[str] = []
+    failed: list[str] = []
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        ok, failed = download()
+        if not failed:
+            return ok, failed
+        if attempt < DOWNLOAD_ATTEMPTS:
+            delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS)) - 1]
+            print(f"{what}: не скачано {failed}, попытка {attempt}/{DOWNLOAD_ATTEMPTS}, повтор через {delay} с")
+            _sleep(delay)
+    return ok, failed
+
+
+def _retry_engine(load: Callable[[], object], *, what: str) -> None:
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            load()
+            return
+        except Exception as exc:  # noqa: BLE001 — сетевые ошибки HF не имеют общего базового класса
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS)) - 1]
+            print(f"{what}: {exc}, попытка {attempt}/{DOWNLOAD_ATTEMPTS}, повтор через {delay} с")
+            _sleep(delay)
+
+
 def fetch_models(provider: str = "cpu") -> None:
     """Прогреть кэш: ASR, VAD и обе ONNX-модели кластерной диаризации."""
     from download_models import download_onnx_models, download_onnx_vad
 
-    _, failed = download_onnx_models(("v3_e2e_rnnt",), provider=provider)
+    _, failed = _download_with_retries(
+        lambda: download_onnx_models(("v3_e2e_rnnt",), provider=provider), what="ASR"
+    )
     if failed:
         raise SystemExit(f"не скачаны ASR-модели: {failed}")
 
-    _, vad_failed = download_onnx_vad(model="silero", provider=provider)
+    _, vad_failed = _download_with_retries(
+        lambda: download_onnx_vad(model="silero", provider=provider), what="VAD"
+    )
     if vad_failed:
         raise SystemExit(f"не скачан VAD: {vad_failed}")
 
@@ -44,8 +89,8 @@ def fetch_models(provider: str = "cpu") -> None:
     from src.core.diarization.onnx_embeddings import OnnxSpeakerEmbeddings
     from src.core.diarization.onnx_segmentation import OnnxSegmentation
 
-    OnnxSegmentation(provider=provider)._ensure_session()
-    OnnxSpeakerEmbeddings(provider=provider)._ensure_model()
+    _retry_engine(lambda: OnnxSegmentation(provider=provider)._ensure_session(), what="сегментация")
+    _retry_engine(lambda: OnnxSpeakerEmbeddings(provider=provider)._ensure_model(), what="эмбеддинги")
     print("✓ модели диаризации загружены")
 
 

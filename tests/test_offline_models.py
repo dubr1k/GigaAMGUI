@@ -101,6 +101,44 @@ def test_offline_builder_covers_the_whole_onnx_chain():
         assert repo in text
 
 
+def _load_builder():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("build_offline_models", BUILDER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_offline_builder_retries_a_transient_hub_failure(monkeypatch):
+    """CI v2.3.0: silero VAD не скачался с первой попытки на shared-раннере
+    (HF вернул ошибку сети → LocalEntryNotFoundError), и офлайн-сборка Intel
+    упала целиком. Одна неудачная попытка — не повод пересобирать релиз."""
+    builder = _load_builder()
+    calls = {"vad": 0}
+
+    def flaky_vad(**kwargs):
+        calls["vad"] += 1
+        if calls["vad"] < 3:
+            return [], ["silero"]
+        return ["silero"], []
+
+    monkeypatch.setattr(builder, "_sleep", lambda seconds: None)
+    ok, failed = builder._download_with_retries(lambda: flaky_vad(), what="VAD")
+
+    assert (ok, failed) == (["silero"], [])
+    assert calls["vad"] == 3
+
+
+def test_offline_builder_gives_up_after_the_last_attempt(monkeypatch):
+    builder = _load_builder()
+    monkeypatch.setattr(builder, "_sleep", lambda seconds: None)
+
+    ok, failed = builder._download_with_retries(lambda: ([], ["silero"]), what="VAD")
+
+    assert failed == ["silero"]
+
+
 def test_offline_builder_skips_blobs():
     """Копирование вместе с blobs почти удваивает и без того большой архив."""
     text = BUILDER_PATH.read_text(encoding="utf-8")
