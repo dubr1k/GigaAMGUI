@@ -4,6 +4,7 @@ Processor, model loader, downloader and LLM provider are fakes — no hardware, 
 """
 import asyncio
 import base64
+import threading
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,11 @@ from src.services.mcp_backend import (
     BackendError,
     LocalBackend,
     TranscribeOptions,
+    prepare_options,
     render_result,
     run_transcription,
 )
+from src.utils.media_downloader import DownloadResult
 
 UTTS = [
     {"transcription": "Привет,", "boundaries": (0.0, 1.5), "speaker": "SPEAKER_01"},
@@ -73,13 +76,13 @@ class _FakeDownloader:
     def __init__(self):
         self.calls = []
 
-    def download(self, url, target_dir, progress_callback=None, **_):
-        self.calls.append((url, Path(target_dir)))
+    def download(self, url, target_dir, progress_callback=None, **kw):
+        self.calls.append((url, Path(target_dir), kw))
         target = Path(target_dir) / "downloaded.wav"
         target.write_bytes(b"RIFF")
         if progress_callback:
             progress_callback(50)
-        return mcp_backend.DownloadResult(files=[str(target)])
+        return DownloadResult(files=[str(target)])
 
 
 @pytest.fixture
@@ -104,6 +107,7 @@ def _backend(upload_dir, tmp_path, **kw):
         upload_dir=upload_dir, media_downloader=_FakeDownloader(), loader_factory=_OwnedLoader,
         logger=None, http_mode=False, allow_paths=False, path_root=None,
         max_file_size=10_000, max_inline_bytes=1000, hf_token="hf_dummy", llm_config_dir=tmp_path / "cfg",
+        max_concurrent=1,
     )
     params.update(kw)
     return LocalBackend(**params)
@@ -157,8 +161,9 @@ def test_url_source_downloads_into_work_dir_and_reports_progress(backend, upload
     assert result["source"] == {"kind": "url", "name": "downloaded.wav"}
     assert events[0] == ("downloading", None) and events[1] == ("downloading", 0.5)
     assert ("transcription", 0.5) in events
-    url, target_dir = backend.media_downloader.calls[0]
+    url, target_dir, kw = backend.media_downloader.calls[0]
     assert url == "https://example.org/a.mp4" and target_dir.parent == upload_dir
+    assert kw == {"max_filesize": 10_000}  # yt-dlp пропускает файлы больше MAX_FILE_SIZE
     assert fake_processor.calls[0]["filepath"].endswith("downloaded.wav")
     assert _leftovers(upload_dir) == []
 
@@ -169,6 +174,11 @@ def test_url_download_failure_maps_to_download_failed(backend, upload_dir):
     backend.media_downloader.download = boom
     err = _err(backend.transcribe(url="https://example.org/x", opts=TranscribeOptions(), progress=None))
     assert err.code == "download_failed" and err.status == 502
+    assert _leftovers(upload_dir) == []
+    # max_filesize превышен: yt-dlp молча ничего не скачивает
+    backend.media_downloader.download = lambda *a, **kw: DownloadResult(files=[])
+    err = _err(backend.transcribe(url="https://example.org/x", opts=TranscribeOptions(), progress=None))
+    assert err.code == "download_failed"
     assert _leftovers(upload_dir) == []
 
 
@@ -257,6 +267,9 @@ def test_model_and_option_validation(backend, tmp_path):
     err = call(diarize=True, diarization_backend="sortformer", num_speakers=2)
     assert err.code == "unsupported_parameter" and err.param == "num_speakers"
     assert call(diarization_backend="magic").param == "diarization_backend"
+    for bad in (0, -1, True, 1.5, "2"):
+        err = call(num_speakers=bad)
+        assert err.code == "unsupported_parameter" and err.param == "num_speakers" and err.status == 400
     assert call(asr_backend="quantum").param == "asr_backend"
     assert call(audio_preprocessing="loud").code == "unsupported_parameter"
 
@@ -367,11 +380,17 @@ def test_run_transcription_adapts_progress_event_objects(tmp_path, fake_processo
     events = []
     work = tmp_path / "work"
     work.mkdir()
-    result = run_transcription(_wav(tmp_path), work, TranscribeOptions(), model_loader=_FakeModelLoader(),
+    loader = _FakeModelLoader()
+    opts = prepare_options(TranscribeOptions(), loader, hf_token="hf_x")
+    assert (opts.asr_backend, opts.onnx_provider, opts.model) == ("auto", "auto", "v3_e2e_rnnt")
+    result = run_transcription(_wav(tmp_path), work, opts, model_loader=loader,
                                stats_manager=None, loader_factory=_OwnedLoader, logger=None,
                                progress=lambda s, v: events.append((s, v)))
     assert result["utterances"] == UTTS
     assert events == [("conversion", 0.25), ("diarization", None)]
+    with pytest.raises(ValueError):  # сырые опции без prepare_options не принимаются
+        run_transcription(_wav(tmp_path), work, TranscribeOptions(), model_loader=loader, stats_manager=None,
+                          loader_factory=_OwnedLoader, logger=None, progress=None)
 
 
 def test_transcribe_runs_under_the_semaphore(backend, tmp_path, fake_processor):
@@ -382,10 +401,58 @@ def test_transcribe_runs_under_the_semaphore(backend, tmp_path, fake_processor):
             task = asyncio.ensure_future(backend.transcribe(path=str(src), opts=TranscribeOptions(), progress=None))
             await asyncio.sleep(0.05)
             assert not task.done() and fake_processor.calls == []
-            assert backend.status()["busy"] is True
+            assert backend.status()["busy"] == {"active": 0, "max": 1}
         return await task
 
     assert _run(scenario())["text"]
+
+
+def test_cancel_leaves_cleanup_and_permit_to_the_worker_thread(backend, upload_dir, tmp_path, fake_processor, monkeypatch):
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow(self, *a, **kw):
+        started.set()
+        release.wait(5)
+        return {"success": True, "media_duration": 1.0, "utterances": list(UTTS), "diarization": {}}
+
+    monkeypatch.setattr(_FakeProcessor, "process_file", slow)
+
+    async def scenario():
+        task = asyncio.ensure_future(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+        await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+        assert backend.status()["busy"] == {"active": 1, "max": 1} and backend.semaphore.locked()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Поток ещё пишет — директория и разрешение семафора остаются за ним
+        await asyncio.sleep(0.05)
+        assert len(_leftovers(upload_dir)) == 1 and backend.semaphore.locked()
+        assert backend.status()["busy"] == {"active": 1, "max": 1}
+        release.set()
+        for _ in range(100):
+            if not _leftovers(upload_dir) and not backend.semaphore.locked():
+                break
+            await asyncio.sleep(0.02)
+        assert _leftovers(upload_dir) == [] and not backend.semaphore.locked()
+        assert backend.status()["busy"] == {"active": 0, "max": 1}
+
+    _run(scenario())
+
+
+def test_cancel_while_waiting_for_the_semaphore_cleans_up_immediately(backend, upload_dir, tmp_path, fake_processor):
+    async def scenario():
+        async with backend.semaphore:
+            task = asyncio.ensure_future(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+            await asyncio.sleep(0.05)
+            assert len(_leftovers(upload_dir)) == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert _leftovers(upload_dir) == [] and fake_processor.calls == []
+        assert not backend.semaphore.locked()
+
+    _run(scenario())
 
 
 # ---------- render_result ----------
@@ -403,18 +470,24 @@ def test_render_result_json_and_text():
 
 def test_render_result_verbose_segments_and_words():
     out = render_result(RESULT, TranscribeOptions(format="verbose", language="en"))
-    assert set(out) == {"text", "duration", "language", "usage", "segments"}
+    assert set(out) == {"text", "duration", "language", "usage", "segments", "diarization"}
     assert out["language"] == "en" and [s["text"] for s in out["segments"]] == ["Привет,", "как дела?"]
     assert "speaker" not in out["segments"][0]
+    assert out["diarization"] == {"requested": False, "applied": False}
     out = render_result(RESULT, TranscribeOptions(format="verbose", word_timestamps=True, diarize=True))
     assert [w["word"] for w in out["words"]] == ["как", "дела?"]
     assert out["segments"][0]["speaker"] == "A"
+    assert out["diarization"] == {"requested": True, "applied": False}
 
 
 def test_render_result_diarized():
-    out = render_result({**RESULT, "diarization": {"applied": True}}, TranscribeOptions(format="diarized"))
-    assert set(out) == {"text", "duration", "language", "usage", "segments"}
+    out = render_result({**RESULT, "diarization": {"requested": True, "applied": True}}, TranscribeOptions(format="diarized"))
+    assert set(out) == {"text", "duration", "language", "usage", "segments", "diarization"}
     assert [(s["speaker"], s["start"], s["end"]) for s in out["segments"]] == [("A", 0.0, 1.5), ("B", 1.5, 3.25)]
+    assert out["diarization"] == {"requested": True, "applied": True}
+    # диаризация не применилась (нет токена/бэкенда) — спикеры-заглушки, и агент это видит
+    out = render_result(RESULT, TranscribeOptions(format="diarized"))
+    assert out["diarization"] == {"requested": False, "applied": False}
 
 
 def test_render_result_subtitles():
@@ -534,11 +607,12 @@ def test_llm_providers(backend, monkeypatch, tmp_path):
 def test_status(backend, upload_dir, tmp_path):
     out = backend.status()
     assert set(out) == {"version", "runtime", "asr", "busy", "limits"}
-    assert out["busy"] is False and out["asr"]["active_backend"] == "mlx"
+    assert out["busy"] == {"active": 0, "max": 1} and out["asr"]["active_backend"] == "mlx"
     assert out["limits"] == {"max_file_mb": 10_000 / (1024 * 1024), "max_inline_mb": 1000 / (1024 * 1024),
                              "max_concurrent": 1}
-    assert _backend(upload_dir, tmp_path, semaphore=None).status()["busy"] is False
-    assert _backend(upload_dir, tmp_path, semaphore=None).status()["limits"]["max_concurrent"] is None
+    unlimited = _backend(upload_dir, tmp_path, semaphore=None, max_concurrent=None)
+    assert unlimited.status()["busy"] == {"active": 0, "max": None}
+    assert unlimited.status()["limits"]["max_concurrent"] is None
 
 
 def test_backend_error_str_is_prefixed_with_code():

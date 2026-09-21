@@ -32,7 +32,6 @@ from src.services import health as health_service
 from src.services.llm_worker_service import PROMPTS
 from src.utils.audio_preprocessing import normalize_preprocessing_mode
 from src.utils.diarization import normalize_diarization_backend
-from src.utils.media_downloader import DownloadResult  # noqa: F401  (re-export for fakes and callers)
 
 ProgressFn = Callable[[str, "float | None"], None]
 
@@ -130,6 +129,9 @@ def prepare_options(opts: TranscribeOptions, model_loader, *, hf_token: str | No
         raise BackendError("unsupported_parameter",
                            f"Unknown diarization_backend '{opts.diarization_backend}'. Use pyannote or sortformer.",
                            param="diarization_backend") from exc
+    if opts.num_speakers is not None and (isinstance(opts.num_speakers, bool)
+                                          or not isinstance(opts.num_speakers, int) or opts.num_speakers < 1):
+        raise BackendError("unsupported_parameter", "num_speakers must be an integer >= 1.", param="num_speakers")
     if diarize and diarization_backend == "sortformer" and opts.num_speakers is not None:
         raise BackendError("unsupported_parameter", "num_speakers cannot be combined with diarization_backend=sortformer.",
                            param="num_speakers")
@@ -139,7 +141,7 @@ def prepare_options(opts: TranscribeOptions, model_loader, *, hf_token: str | No
     if model_loader is None:
         raise BackendError("model_not_loaded", "ASR model is not loaded.", 503)
     try:
-        transcription_service.normalize_asr_selection(
+        selection = transcription_service.normalize_asr_selection(
             model_loader, backend=opts.asr_backend, model=model, onnx_provider=opts.onnx_provider)
     except ValueError as exc:
         raise BackendError("unsupported_parameter", str(exc), param="asr_backend") from exc
@@ -149,8 +151,9 @@ def prepare_options(opts: TranscribeOptions, model_loader, *, hf_token: str | No
         raise BackendError("unsupported_parameter",
                            f"Unknown audio_preprocessing '{opts.audio_preprocessing}'. Use off, auto, light or denoise.",
                            param="audio_preprocessing") from exc
-    return dataclasses.replace(opts, model=model, diarize=diarize, diarization_backend=diarization_backend,
-                               audio_preprocessing=preprocessing)
+    return dataclasses.replace(opts, model=selection.model, asr_backend=selection.backend,
+                               onnx_provider=selection.onnx_provider, diarize=diarize,
+                               diarization_backend=diarization_backend, audio_preprocessing=preprocessing)
 
 
 # ==================== ЯДРО ====================
@@ -173,14 +176,16 @@ def _adapt_progress(progress: ProgressFn | None):
 
 def run_transcription(file_path: Path, work_dir: Path, opts: TranscribeOptions, *, model_loader, stats_manager,
                       loader_factory, logger, progress: ProgressFn | None) -> dict[str, Any]:
-    """Блокирующая транскрибация `file_path` (`opts` — из `prepare_options`).
+    """Блокирующая транскрибация `file_path`; `opts` — только из `prepare_options`
+    (там уже проверен и нормализован ASR-выбор: backend/model/onnx_provider заполнены).
 
     Берёт загрузчик под запрос, если backend/модель/провайдер отличаются от
     серверного, и выгружает его в `finally`; результат процессора возвращается
     как есть (`utterances`, `media_duration`, `diarization`).
     """
-    asr_selection = transcription_service.normalize_asr_selection(
-        model_loader, backend=opts.asr_backend, model=opts.model, onnx_provider=opts.onnx_provider)
+    if not (opts.asr_backend and opts.onnx_provider):
+        raise ValueError("run_transcription() expects options prepared by prepare_options()")
+    asr_selection = transcription_service.AsrSelection(opts.asr_backend, opts.model, opts.onnx_provider)
     request_loader, owns = transcription_service.acquire_request_model_loader(
         model_loader, asr_selection, loader_factory=loader_factory)
     try:
@@ -208,7 +213,9 @@ def render_result(result: dict[str, Any], opts: TranscribeOptions) -> dict[str, 
     """Результат MCP: `text/duration/language/usage` плюс `segments`/`words`/`subtitles` по формату."""
     utts = result.get("utterances") or []
     duration = float(result.get("media_duration") or 0.0)
-    diarized = bool((result.get("diarization") or {}).get("applied")) or bool(opts.diarize)
+    diarization = result.get("diarization") or {}
+    applied = bool(diarization.get("applied"))
+    diarized = applied or bool(opts.diarize)
     out: dict[str, Any] = {
         "text": transcript_formats.full_text(utts),
         "duration": duration,
@@ -223,6 +230,9 @@ def render_result(result: dict[str, Any], opts: TranscribeOptions) -> dict[str, 
             out["words"] = verbose["words"]
     elif opts.format == "diarized":
         out["segments"] = transcript_formats.build_diarized(utts, duration)["segments"]
+    if opts.format in ("verbose", "diarized"):
+        # applied=False при diarized — спикеры-заглушки ("A" у всех), агенту важно это видеть
+        out["diarization"] = {"requested": bool(diarization.get("requested")) or bool(opts.diarize), "applied": applied}
     elif opts.format == "srt":
         out["subtitles"] = transcript_formats.build_srt(utts)
     elif opts.format == "vtt":
@@ -247,6 +257,61 @@ def _too_large(limit: int) -> BackendError:
     return BackendError("file_too_large", f"File exceeds the maximum size of {limit} bytes.", 413, param="file")
 
 
+class _Job:
+    """Рабочая директория одного запроса + разрешение семафора.
+
+    Отмена MCP-задачи (`notifications/cancelled`) не останавливает поток в executor:
+    процессор продолжает писать в `work_dir`. Поэтому уборка и освобождение
+    семафора привязаны к done-callback future, а корутина ждёт через
+    `asyncio.shield` — как `finished()` в `api.py`.
+    """
+
+    def __init__(self, work_dir: Path, backend: LocalBackend):
+        self.work_dir = work_dir
+        self.backend = backend
+        self.running = False        # в executor есть незавершённый шаг
+        self.cancelled = False      # ожидающую корутину отменили
+        self.holds_permit = False
+        self.finalized = False
+
+    def finalize(self) -> None:
+        if self.finalized:
+            return
+        self.finalized = True
+        shutil.rmtree(self.work_dir, ignore_errors=True)
+        if self.holds_permit:
+            self.holds_permit = False
+            self.backend._active -= 1
+            self.backend.semaphore.release()
+
+    async def run(self, loop: asyncio.AbstractEventLoop, fn):
+        """Один блокирующий шаг в executor; результат/ошибка — как у `fn`, но
+        `BackendError`-неизвестные исключения переводятся в `processing_failed`."""
+        self.running = True
+        future = loop.run_in_executor(None, fn)
+
+        def done(f: asyncio.Future) -> None:
+            self.running = False
+            exc = None if f.cancelled() else f.exception()  # забираем всегда — иначе «never retrieved»
+            if exc is not None and not isinstance(exc, BackendError) and self.backend.logger:
+                self.backend.logger.error(f"[transcribe] failed: {exc}", exc_info=exc)
+            if exc is not None or self.cancelled:
+                self.finalize()
+
+        future.add_done_callback(done)
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            if future.done():  # callback уже отработал, не зная об отмене
+                self.finalize()
+            raise
+        except BackendError:
+            raise
+        except Exception as exc:
+            raise BackendError("processing_failed", "Transcription failed on the server. See the server log.", 500) from exc
+
+
 class LocalBackend:
     """Реализация на процесс: тот же `model_loader` и семафор, что у REST/веб."""
 
@@ -269,10 +334,8 @@ class LocalBackend:
         self.max_inline_bytes = max_inline_bytes
         self.hf_token = hf_token
         self.llm_config_dir = llm_config_dir
-        if max_concurrent is None and semaphore is not None:
-            # asyncio.Semaphore не отдаёт ёмкость; при создании бэкенда он ещё свободен
-            max_concurrent = semaphore._value
-        self.max_concurrent = max_concurrent
+        self.max_concurrent = max_concurrent  # ёмкость семафора — asyncio её не отдаёт, задаёт вызывающий
+        self._active = 0  # задач в executor под семафором
 
     # ---------- transcribe ----------
 
@@ -291,35 +354,39 @@ class LocalBackend:
         loop = asyncio.get_running_loop()
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         work_dir = Path(await loop.run_in_executor(None, lambda: tempfile.mkdtemp(prefix="mcp_", dir=self.upload_dir)))
-        try:
-            if kind == "url":
+        job = _Job(work_dir, self)
+
+        if kind == "url":
+            def resolve() -> Path:
                 if progress:
                     progress("downloading", None)
-                file_path = await loop.run_in_executor(None, self._download, url, work_dir, progress)
-            elif kind == "path":
-                file_path = await loop.run_in_executor(None, self._local_file, path)
-            else:
-                file_path = await loop.run_in_executor(None, self._write_inline, audio_base64, filename, work_dir)
+                return self._download(url, work_dir, progress)
+        elif kind == "path":
+            def resolve() -> Path:
+                return self._local_file(path)
+        else:
+            def resolve() -> Path:
+                return self._write_inline(audio_base64, filename, work_dir)
 
-            def blocking() -> dict[str, Any]:
-                return run_transcription(file_path, work_dir, opts, model_loader=self.model_loader,
-                                         stats_manager=self.stats_manager, loader_factory=self.loader_factory,
-                                         logger=self.logger, progress=progress)
+        def blocking() -> dict[str, Any]:
+            return run_transcription(file_path, work_dir, opts, model_loader=self.model_loader,
+                                     stats_manager=self.stats_manager, loader_factory=self.loader_factory,
+                                     logger=self.logger, progress=progress)
 
-            try:
-                if self.semaphore is not None:
-                    async with self.semaphore:
-                        result = await loop.run_in_executor(None, blocking)
-                else:
-                    result = await loop.run_in_executor(None, blocking)
-            except BackendError:
-                raise
-            except Exception as exc:
-                if self.logger:
-                    self.logger.error(f"[transcribe] failed: {exc}", exc_info=True)
-                raise BackendError("processing_failed", "Transcription failed on the server. See the server log.", 500) from exc
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+        try:
+            file_path = await job.run(loop, resolve)
+            if self.semaphore is not None:
+                await self.semaphore.acquire()
+                job.holds_permit = True
+                self._active += 1
+            result = await job.run(loop, blocking)
+        except BaseException:
+            # Отмена или ошибка, пока в executor ничего не крутится — убираем сразу; если поток
+            # ещё работает, уборка и освобождение семафора привязаны к его done-callback (job.run)
+            if not job.running:
+                job.finalize()
+            raise
+        job.finalize()
         out = render_result(result, opts)
         out["source"] = {"kind": kind, "name": file_path.name}
         return out
@@ -368,7 +435,8 @@ class LocalBackend:
                 progress("downloading", max(0.0, min(float(percent) / 100.0, 1.0)))
 
         try:
-            downloaded = self.media_downloader.download(url, str(work_dir), progress_callback=on_percent)
+            downloaded = self.media_downloader.download(url, str(work_dir), progress_callback=on_percent,
+                                                        max_filesize=self.max_file_size)
         except Exception as exc:
             if self.logger:
                 self.logger.error(f"[transcribe] download failed: {exc}", exc_info=True)
@@ -438,7 +506,7 @@ class LocalBackend:
             "version": __version__,
             "runtime": health_service.runtime_info(_platform, _machine),
             "asr": health_service.asr_health(self.model_loader),
-            "busy": self.semaphore.locked() if self.semaphore is not None else False,
+            "busy": {"active": self._active, "max": self.max_concurrent},
             "limits": {
                 "max_file_mb": self.max_file_size / _MiB,
                 "max_inline_mb": self.max_inline_bytes / _MiB,
