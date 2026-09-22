@@ -271,6 +271,20 @@ docker compose up -d --build gigaam-web
 curl -fsS http://127.0.0.1:8001/health
 ```
 
+The container listens on **8000**; Compose publishes it on the host as
+`127.0.0.1:8001`, so point your reverse proxy at 8001. The panel also serves the
+MCP endpoint `/mcp` (Streamable HTTP); its key comes from `API_KEYS_FILE`
+(`/data/.api_keys` under Compose, so it survives container recreation) and is
+printed once on first start:
+
+```bash
+docker compose logs gigaam-web | grep -m1 'gam_'
+```
+
+This container does not serve `/v1/audio/transcriptions` — that is the separate
+`api.py` service. The nginx snippet for `/mcp` (unbuffered SSE, long timeouts,
+`client_max_body_size`) is `deploy/nginx-mcp-location.conf`.
+
 Compose mounts the host-side `GIGAAM_DATA_DIR` at `/data` inside the container.
 Do not put host absolute paths into `HF_HOME`, `TORCH_HOME`, `NEMO_HOME`,
 `ONNX_MODEL_DIR`, or `GIGAAM_RUNTIME_DIR`: container caches must remain below
@@ -281,16 +295,31 @@ When upgrading, rebuild the container but preserve `GIGAAM_DATA_DIR`, `uploads`,
 `results`, and `logs`. Models and user files live in those mounts, and the new
 container reuses them automatically; they do not need to be copied into a backup
 of the container itself. If root created the bind-mount directories, grant UID
-`1000` write access before starting the service.
+`1000` write access before starting the service. `src/` and `web/` are mounted
+read-only, so new code reaches the container without a rebuild but new
+dependencies do not: a container that restarts with `ModuleNotFoundError` after
+an update needs `build`, not `restart`.
 
 After an upgrade, check the health endpoint and logs in addition to container
 status:
 
 ```bash
+docker compose build gigaam-web && docker compose up -d gigaam-web
 docker compose ps gigaam-web
 docker compose logs --tail=200 gigaam-web
 curl -fsS http://127.0.0.1:8001/health
 ```
+
+Confirm that the GPU and the word-timestamp path are alive:
+
+```bash
+docker compose exec gigaam-web python -c "import torch; print(torch.cuda.is_available())"
+docker compose exec gigaam-web python -c "from gigaam.model import GigaAMASR; print(hasattr(GigaAMASR, '_decode'))"
+```
+
+The second command must print `True`. Without `_decode` the ASR returns no word
+timestamps, and speaker labels then collapse to a single speaker per recognition
+block. The GigaAM revision is pinned in the `Dockerfile` and must match CI.
 
 For diarization workloads, also confirm that the log contains neither `Read-only
 file system` nor `VAD unavailable`, and that ASR segmentation uses VAD instead of
@@ -377,7 +406,14 @@ client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
 print(client.audio.transcriptions.create(model="whisper-1", file=open("audio.wav", "rb")).text)
 ```
 
+The key is stored as a hash in `.api_keys` (override the path with
+`API_KEYS_FILE`); the raw value is printed once on first start — save it then.
+`/mcp` uses the same key file.
+
 Response formats, streaming, errors and extensions: [docs/API.md](docs/API.md) (Russian).
+
+> `api.py` is its own process. `docker compose` starts the **web panel**
+> (`gigaam-web`), which serves the UI and `/mcp` but **not** the `/v1/*` routes.
 
 ### MCP server for agents
 

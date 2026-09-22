@@ -471,7 +471,15 @@ client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
 print(client.audio.transcriptions.create(model="whisper-1", file=open("audio.wav", "rb")).text)
 ```
 
+Ключ хранится хэшем в `.api_keys` (путь переопределяется `API_KEYS_FILE`);
+сырое значение печатается один раз при первом старте — сохраните его сразу.
+Тот же файл ключей использует `/mcp`.
+
 Форматы ответа, стрим, ошибки и расширения — в [docs/API.md](docs/API.md).
+
+> `api.py` — отдельный процесс. В `docker compose` поднимается **веб-панель**
+> (`gigaam-web`), которая отдаёт свой интерфейс и `/mcp`, но **не** маршруты
+> `/v1/*`. Нужен REST в контейнере — запускайте `api.py` рядом (см. ниже).
 
 ### MCP-сервер для агентов
 
@@ -559,6 +567,20 @@ docker compose up -d --build gigaam-web
 curl -fsS http://127.0.0.1:8001/health
 ```
 
+Контейнер слушает **8000**, Compose пробрасывает его на хост как
+`127.0.0.1:8001` — reverse proxy настраивайте на 8001. Панель отдаёт и
+MCP-эндпойнт `/mcp` (Streamable HTTP): ключ берётся из `API_KEYS_FILE`
+(в Compose — `/data/.api_keys`, чтобы переживать пересоздание контейнера) и
+печатается один раз в журнале при первом старте:
+
+```bash
+docker compose logs gigaam-web | grep -m1 'gam_'
+```
+
+Маршрутов `/v1/audio/transcriptions` в этом контейнере нет — это отдельный
+сервис `api.py`. Фрагмент nginx для `/mcp` (SSE без буферизации, длинные
+таймауты, `client_max_body_size`) — `deploy/nginx-mcp-location.conf`.
+
 `GIGAAM_DATA_DIR` для Compose — путь **на хосте**; внутри контейнера он
 монтируется как `/data`. Корневая файловая система контейнера read-only,
 поэтому кэши (`HF_HOME`, `TORCH_HOME`, `NEMO_HOME`, `ONNX_MODEL_DIR`,
@@ -567,15 +589,29 @@ curl -fsS http://127.0.0.1:8001/health
 При обновлении пересобирайте контейнер, но сохраняйте `GIGAAM_DATA_DIR`,
 `uploads`, `results` и `logs` — модели и файлы пользователей лежат в этих
 томах. Если каталоги создавались от root, дайте UID `1000` права на запись.
-После обновления проверяйте `/health` и журнал:
+`src/` и `web/` монтируются в контейнер только для чтения, поэтому новый код
+попадает внутрь без пересборки, а новые зависимости — нет: контейнер, упавший
+после обновления с `ModuleNotFoundError`, лечится именно `build`, а не
+`restart`. После обновления проверяйте `/health` и журнал:
 
 ```bash
+docker compose build gigaam-web && docker compose up -d gigaam-web
 docker compose ps gigaam-web
 docker compose logs --tail=200 gigaam-web
 ```
 
 В логе не должно быть `Read-only file system` или `VAD недоступен`.
-Reverse proxy к `127.0.0.1:8001` настраивается отдельно.
+Проверить, что GPU и диаризация в контейнере живы:
+
+```bash
+docker compose exec gigaam-web python -c "import torch; print(torch.cuda.is_available())"
+docker compose exec gigaam-web python -c "from gigaam.model import GigaAMASR; print(hasattr(GigaAMASR, '_decode'))"
+```
+
+Второй вызов должен печатать `True`: без `_decode` ASR не отдаёт пословные
+тайминги, и тогда разметка по говорящим схлопывается в одного спикера на весь
+блок распознавания. Ревизия GigaAM закреплена в `Dockerfile` и обязана
+совпадать с CI.
 
 ## Структура репозитория
 
