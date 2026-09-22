@@ -20,3 +20,19 @@ scripts/create_desktop_shortcut.ps1
 .pytest_cache
 .ruff_cache
 cache
+
+# Локальные артефакты сборок, модели и окружения — не часть образа (COPY . /app)
+.venv
+.worktrees
+.superpowers
+build
+dist
+out
+offline
+models
+tui
+macos
+packaging
+graphify-out
+*.sync-conflict-*
+docker-compose.override.yml*
