@@ -142,6 +142,7 @@ For the Web UI, build the extended image with
 | Desktop GUI | `python app.py` | Regular interactive work |
 | CLI | `python cli.py -f audio.wav -o output` | Scripts and automation |
 | REST API | `python api.py` | Integrations, OpenAI Audio API compatible: [docs/API.md](docs/API.md) |
+| MCP server | `gigaam mcp` | AI agents (Claude Code, Codex, Cursor): [docs/MCP.md](docs/MCP.md) |
 | Web GUI | `docker compose up -d --build gigaam-web` | Local web panel at `http://127.0.0.1:8001/` |
 | TUI *(preview)* | `cd tui && cargo run --release` | Interactive terminal queue |
 
@@ -366,6 +367,24 @@ print(client.audio.transcriptions.create(model="whisper-1", file=open("audio.wav
 ```
 
 Response formats, streaming, errors and extensions: [docs/API.md](docs/API.md) (Russian).
+
+### MCP server for agents
+
+The same engine is available to AI agents over the Model Context Protocol:
+tools `transcribe` (url / path / base64 → text, segments, speakers, SRT/VTT),
+`summarize` (summary, tasks, terms, custom prompt), `list_models`,
+`list_llm_providers`, `server_status`; resources `gigaam://models`,
+`gigaam://status`; prompts `meeting_notes`, `subtitles_review`.
+
+```bash
+claude mcp add gigaam -- gigaam mcp                       # local stdio (ships with the TUI install)
+claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp \
+  --header "Authorization: Bearer gam_..."                # remote: /mcp in api.py and the web panel
+```
+
+Agent skills (`skills/gigaam`, `skills/gigaam-mcp`) are installed by
+`gigaam --install-skill`. Clients, limits, errors and the nginx snippet:
+[docs/MCP.md](docs/MCP.md) (Russian; the skills are English).
 
 ONNX diarization is also available without PyTorch or an HF token:
 

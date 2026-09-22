@@ -23,6 +23,18 @@ description: Transcribe audio/video to text or subtitles and summarise transcrip
 
 Prints each mode's text under a `## <mode>` heading; also saves `session_llm_<mode>.txt` in DIR (default: next to the last transcript). Uses the provider configured in GigaAM settings (API or a CLI agent).
 
+## MCP server (prefer when connected)
+
+If a `gigaam` MCP server is connected (Claude Code `/mcp` lists it), call its tools instead of shelling out: `transcribe` (source `url` | `path` | `audio_base64`+`filename`; `format` `text|json|verbose|diarized|srt|vtt`; `diarize`, `num_speakers`, `diarization_backend`), `summarize` (`mode` `summary|tasks|terms|custom`), `list_models`, `list_llm_providers`, `server_status`; resources `gigaam://models`, `gigaam://status`; prompts `meeting_notes`, `subtitles_review`. Results come back as JSON in the tool result — no files to read. Long recordings take minutes: keep the call open (progress notifications arrive), do not retry. Full contract: the `gigaam-mcp` skill / `docs/MCP.md`.
+
+Connect it once:
+
+- Claude Code: `claude mcp add gigaam -- gigaam mcp` (local stdio; `path` to files on this machine works) or `claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp --header "Authorization: Bearer <key>"` (remote; use `url` sources).
+- Codex `~/.codex/config.toml`: `[mcp_servers.gigaam]` `command = "gigaam"`, `args = ["mcp"]`.
+- Cursor `.cursor/mcp.json`: `{"mcpServers": {"gigaam": {"command": "gigaam", "args": ["mcp"]}}}`.
+
+`gigaam mcp --http --port 8765` serves the same server as Streamable HTTP on `http://127.0.0.1:8765/mcp` behind an API key (`.api_keys`).
+
 ## Exit codes
 
 0 success · 1 at least one file failed (see lines starting with `×` or `error:`) · 2 bad arguments or an input file that does not exist (message on stderr; nothing on stdout even with `--json`) · 3 worker unavailable → run `gigaam --update` and retry.

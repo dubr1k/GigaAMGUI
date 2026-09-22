@@ -14,7 +14,7 @@ Installs the Rust TUI, an isolated Python worker environment, and ~/.local/bin/g
 Required tools: git, cargo, Python 3.10–3.12, ffmpeg, and a C/C++ build toolchain.
 
   --no-path  do not touch shell rc files to add ~/.local/bin to PATH
-  --no-skill do not copy the agent skill into ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
+  --no-skill do not copy the agent skills (gigaam, gigaam-mcp) into ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
   --no-mlx   skip requirements-macos-mlx.txt on Apple Silicon (the TUI's "mlx" backend will be unavailable)
   --fresh    wipe the repo checkout and rebuild the venv from scratch
 EOF
@@ -266,9 +266,11 @@ EOF
 chmod +x "$BIN_DIR/gigaam"
 
 echo "Installed GigaAM TUI. Run: gigaam"
-# Agents (Claude Code, Codex, ...) learn `gigaam transcribe` / `gigaam llm` from
-# the skill file; it only goes into skill directories that already exist.
+# Agents (Claude Code, Codex, ...) learn `gigaam transcribe` / `gigaam llm` and
+# the MCP server from the skill files; they only go into skill directories that
+# already exist.
 if [[ "$INSTALL_SKILL" == true ]]; then
   GIGAAM_TUI_PREFIX="$PREFIX" bash "$REPO_DIR/scripts/tui/gigaam-launcher.sh" --install-skill
 fi
+echo "MCP server for agents: claude mcp add gigaam -- gigaam mcp   (details: docs/MCP.md)"
 if [[ "$ADD_PATH" == true ]]; then ensure_path_in_shell; fi
