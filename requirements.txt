@@ -165,6 +165,9 @@ python-multipart>=0.0.9
 slowapi>=0.1.9
 aiofiles>=23.0.0
 
+# MCP server (python -m src.mcp_server, /mcp in api.py and the web panel)
+mcp>=2,<3
+
 # CLI (cli.py)
 click>=8.1.0
 questionary>=2.0.0

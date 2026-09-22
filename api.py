@@ -44,9 +44,11 @@ from src.services import (  # noqa: I001
 )
 from src.services import health as health_service
 from src.services.api_keys import KeyStore, hash_key, key_from_headers
-from src.services.mcp_backend import BackendError
+from src.services.mcp_backend import BackendError, LocalBackend
+from src.services.mcp_http import backend_options_from_env, mount_mcp
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
+from src.utils.media_downloader import MediaDownloader
 from src.utils.processing_stats import ProcessingStats
 
 if HF_TOKEN and HF_TOKEN.startswith("hf_"):
@@ -630,6 +632,30 @@ async def create_transcription(
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ==================== MCP ====================
+# /mcp — Streamable HTTP того же MCP-сервера, что у `python -m src.mcp_server`: общий
+# model_loader и семафор. Бэкенд строится после lifespan (модель к тому моменту
+# загружена); ключи — те же, что у verify_api_key.
+
+
+def _mcp_backend() -> LocalBackend:
+    return LocalBackend(
+        model_loader=model_loader, stats_manager=stats_manager, semaphore=processing_semaphore,
+        upload_dir=UPLOAD_DIR, media_downloader=MediaDownloader(), loader_factory=ModelLoader, logger=logger,
+        http_mode=True, max_file_size=MAX_FILE_SIZE, hf_token=HF_TOKEN, max_concurrent=MAX_CONCURRENT_TASKS,
+        **backend_options_from_env())
+
+
+def _mcp_key_store() -> KeyStore:
+    """Тот же набор хэшей, что у verify_api_key (тесты подменяют VALID_API_KEY_HASHES до старта)."""
+    store = KeyStore(API_KEYS_FILE)
+    store.hashes = VALID_API_KEY_HASHES
+    return store
+
+
+mount_mcp(app, "/mcp", _mcp_backend, _mcp_key_store)
 
 
 # ==================== ЗАПУСК ====================

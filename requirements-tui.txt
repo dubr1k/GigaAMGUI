@@ -21,5 +21,8 @@ onnx-asr==0.12.0
 onnxruntime==1.23.2
 soxr>=1.0.0
 
+# `gigaam mcp` runs python -m src.mcp_server from the TUI venv (stdio / --http).
+mcp>=2,<3
+
 # GigaAM is installed separately by each bootstrap with --no-build-isolation:
 # its pinned revision still imports pkg_resources during setup.

@@ -29,6 +29,7 @@ def web_state(tmp_path, monkeypatch):
     monkeypatch.setattr(web_app, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(web_app, "TASKS_INDEX_PATH", results_dir / ".tasks_index.json")
     monkeypatch.setattr(web_app, "DELETED_TASKS_PATH", results_dir / ".deleted_tasks.json")
+    monkeypatch.setattr(web_app, "API_KEYS_FILE", tmp_path / ".api_keys")  # lifespan создаёт файл ключей
     web_app.tasks_storage.clear()
     web_app.log_queues.clear()
     web_app.deleted_task_ids.clear()
