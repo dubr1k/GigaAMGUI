@@ -59,7 +59,7 @@ class KeyStore:
         self.hashes = hashes
         if migrated:
             self.save()
-            print("API-ключи мигрированы в хэшированный вид (.api_keys)")
+            print("API-ключи мигрированы в хэшированный вид (.api_keys)", flush=True)
         return self
 
     def save(self) -> None:
@@ -78,11 +78,13 @@ class KeyStore:
         key = f"gam_{uuid.uuid4().hex}"
         self.hashes = {hash_key(key)}
         self.save()
-        print(f"\n{'=' * 60}")
-        print("ПЕРВЫЙ API КЛЮЧ СОЗДАН (показывается только один раз):")
-        print(f"  {key}")
-        print("Сохраните его в безопасном месте! В файле хранится только хэш.")
-        print(f"{'=' * 60}\n")
+        # flush: при stdout в файл/пайп (`gigaam mcp --http > log`, docker) буфер иначе
+        # не сбрасывается до остановки сервера — ключ так и не появляется в логе
+        print(f"\n{'=' * 60}\n"
+              "ПЕРВЫЙ API КЛЮЧ СОЗДАН (показывается только один раз):\n"
+              f"  {key}\n"
+              "Сохраните его в безопасном месте! В файле хранится только хэш.\n"
+              f"{'=' * 60}\n", flush=True)
         return key
 
     def verify(self, key: str | None) -> bool:

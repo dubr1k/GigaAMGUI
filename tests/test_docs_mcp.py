@@ -99,6 +99,16 @@ def test_mcp_skill_frontmatter_and_source_rules():
         assert needle in text, needle
 
 
+def test_error_code_contract_is_documented_as_contains():
+    """Провод: `Error executing tool X: [code] msg` — агенты не должны делать startswith."""
+    from src.services.mcp_server import INSTRUCTIONS
+    assert "Error executing tool" in INSTRUCTIONS and "start with" not in INSTRUCTIONS
+    assert "Error executing tool transcribe: [file_too_large]" in _read(MCP_DOC)
+    assert "начинается с кода" not in _read(MCP_DOC)
+    skill = _read(MCP_SKILL)
+    assert "Error executing tool transcribe: [file_too_large]" in skill and "Tool errors are `[code]" not in skill
+
+
 @pytest.mark.parametrize("path", [CLI_SKILL, ROOT / "README.md", ROOT / "README_EN.md"],
                          ids=["skills/gigaam", "README.md", "README_EN.md"])
 def test_overviews_mention_the_launcher_command_and_the_mount(path):

@@ -24,7 +24,7 @@ The `gigaam` MCP server runs GigaAM v3 (Russian ASR) either on this machine (std
 | `audio_base64`, `filename` | — | Inline file for short clips only; must fit `server_status().limits.max_inline_mb` (25 MB default). `filename` needs a media extension. |
 | `model` | `v3_e2e_rnnt` | Or an alias (`whisper-1`, `gigaam`); see `list_models`. |
 | `language` | `ru` | Echoed into the result; GigaAM recognises Russian. |
-| `format` | `json` | `text` (text only), `json` (text + duration), `verbose` (`segments`, `words` with `word_timestamps=true`), `diarized` (`segments` with `speaker` A/B/…), `srt` / `vtt` (`subtitles` string). |
+| `format` | `json` | `text` / `json` (same object: text + duration + usage), `verbose` (`segments`, `words` with `word_timestamps=true`), `diarized` (`segments` with `speaker` A/B/…), `srt` / `vtt` (`subtitles` string). |
 | `word_timestamps` | `false` | Per-word timestamps in `verbose`. |
 | `diarize` | `false` | Speaker labels; implied by `format="diarized"`. |
 | `diarization_backend` | `pyannote` | `pyannote` needs `HF_TOKEN` on the server; `sortformer` and `onnx` do not. |
@@ -36,7 +36,7 @@ Returns `{text, duration, language, usage: {type: "duration", seconds}, source: 
 
 `summarize(text, mode="summary"|"tasks"|"terms"|"custom", prompt=None, provider=None, model=None)` — LLM post-processing with the server's configured provider. `prompt` is required for `custom`; `provider` is one of `API`, `Claude Code`, `Codex`, `OpenCode`, `Pi`, `oh-my-pi`, `Other` (check `list_llm_providers` first). Returns `{mode, provider, model, answer}`.
 
-`list_models()` — model ids, aliases, backends, ONNX providers, active selection. `list_llm_providers()` — which CLI providers are installed and whether an API key is configured. `server_status()` — `{version, runtime, asr, busy: {active, max}, limits: {max_file_mb, max_inline_mb, max_concurrent}}`.
+`list_models()` — model ids, aliases, backends, ONNX providers, active selection. `list_llm_providers()` — which CLI providers are installed and whether an API key is configured. `server_status()` — `{version, runtime, asr, busy: {active, max}, limits: {max_file_mb, max_inline_mb, max_concurrent}}`; `busy.active` counts every job holding the server's shared slots (REST and web-panel jobs included, not only MCP calls).
 
 Resources (JSON): `gigaam://models`, `gigaam://status`. Prompts: `meeting_notes` (`transcript`, `language="ru"|"en"`) → meeting minutes (decisions, action items, open questions); `subtitles_review` (`srt`) → phrase-break / punctuation review of SRT.
 
@@ -54,7 +54,7 @@ Supported extensions: mp3 wav m4a aac mp4 avi mov mkv webm flac ogg wma qta 3gp.
 
 ## Errors
 
-Tool errors are `[code] message`:
+Tool errors contain a bracketed code — match `[code]` anywhere in the text, not at the start (the transport prefixes it: `Error executing tool transcribe: [file_too_large] ...`):
 
 - `[invalid_request]` — not exactly one source, `audio_base64` without `filename` / not base64, empty `text`. Fix the arguments.
 - `[unsupported_parameter]` — bad `diarization_backend`, `audio_preprocessing`, `mode`, `provider`, `num_speakers` (< 1 or with `sortformer`), `asr_backend`/`onnx_provider` pair. Use values from `list_models` / `list_llm_providers`.

@@ -42,7 +42,9 @@ gigaam mcp [--http] [--host 127.0.0.1] [--port 8765] [--config-dir DIR]
   файл журнала;
 - `--http` — тот же сервер как Streamable HTTP на `http://127.0.0.1:8765/mcp`
   за ключом из `API_KEYS_FILE` (для локального HTTP-клиента, который не умеет
-  stdio);
+  stdio). Для `gigaam mcp --http` ключ лежит в `$PREFIX/repo/.api_keys`
+  (по умолчанию `~/.local/share/gigaam-tui/repo/.api_keys`), при первом старте
+  файл создаётся и ключ печатается в stdout один раз — сохраните его;
 - `--config-dir DIR` — откуда брать настройки LLM для `summarize`
   (`user_settings.json` / `tui_settings.json` / `.env`); по умолчанию —
   каталог настроек приложения или `GIGAAM_CONFIG_DIR`.
@@ -84,8 +86,9 @@ args = ["mcp"]
 
 ## Удалённое подключение
 
-`/mcp` смонтирован в `api.py` (порт 8000) и в веб-панели (в контейнере —
-порт 8001, снаружи — `https://gigaam-site.dubr1k.space/mcp`). Транспорт —
+`/mcp` смонтирован в `api.py` (порт 8000) и в веб-панели (внутри контейнера —
+порт 8000, на хосте `docker-compose.yml` пробрасывает его как `127.0.0.1:8001`,
+снаружи — `https://gigaam-site.dubr1k.space/mcp`). Транспорт —
 Streamable HTTP без сессий (`stateless`), поэтому за nginx и с несколькими
 воркерами работает без общего хранилища.
 
@@ -156,7 +159,7 @@ curl -N -X POST https://gigaam-site.dubr1k.space/mcp \
 | `filename` | string | — | Имя файла с расширением для `audio_base64` (`clip.wav`, `call.mp3`). |
 | `model` | string | `v3_e2e_rnnt` | Id модели или алиас (`whisper-1`, `gigaam` и другие алиасы → модель по умолчанию); список — `list_models`. |
 | `language` | string | `ru` | Подсказка языка, возвращается в ответе как есть; GigaAM распознаёт русский. |
-| `format` | `text` \| `json` \| `verbose` \| `diarized` \| `srt` \| `vtt` | `json` | Форма ответа (см. ниже). |
+| `format` | `text` \| `json` \| `verbose` \| `diarized` \| `srt` \| `vtt` | `json` | Форма ответа (см. ниже). `text` и `json` возвращают один и тот же объект (текст + длительность + `usage`); `text` оставлен для симметрии с REST. |
 | `word_timestamps` | bool | `false` | Добавить `words` в `verbose`. |
 | `diarize` | bool | `false` | Разметить говорящих; для `format="diarized"` включается автоматически. |
 | `diarization_backend` | `pyannote` \| `sortformer` \| `onnx` | `pyannote` | `pyannote` требует `HF_TOKEN` на сервере. |
@@ -260,6 +263,8 @@ curl -N -X POST https://gigaam-site.dubr1k.space/mcp \
 ### `server_status`
 
 Без параметров. Версия, рантайм, состояние ASR-модели, занятость и лимиты.
+`busy.active` — занятые слоты общего семафора процесса: в `api.py` и веб-панели
+он один на REST, задачи панели и `/mcp`, так что число включает чужие задачи.
 Вызывайте перед большой задачей: `busy.active == busy.max` означает, что
 `transcribe` встанет в очередь за семафором.
 
@@ -327,8 +332,10 @@ notifications (`notifications/progress` с `progress` 0–100, `total` 100 и
 
 ## Ошибки
 
-Ошибка инструмента приходит как результат с `isError: true`, текст начинается
-с кода в квадратных скобках — те же коды, что в REST API:
+Ошибка инструмента приходит как результат с `isError: true`; текст содержит
+код в квадратных скобках — те же коды, что в REST API. Транспорт добавляет
+префикс (`Error executing tool transcribe: [file_too_large] …`), поэтому ищите
+`[code]` в тексте, а не проверяйте его начало:
 
 | Код | Причина | Что делать |
 |---|---|---|
@@ -362,7 +369,7 @@ notifications (`notifications/progress` с `progress` 0–100, `total` 100 и
 |---|---|---|
 | `GIGAAM_MCP_ALLOW_PATHS` | не задана | `1` — разрешить источник `path` в HTTP-режиме. В stdio-режиме пути разрешены всегда. |
 | `GIGAAM_MCP_PATH_ROOT` | не задана | Каталог, внутри которого должны лежать файлы для `path` (после раскрытия `~` и симлинков); вне корня → `path_outside_root`. |
-| `GIGAAM_MCP_MAX_INLINE_MB` | `25` | Лимит `audio_base64` в мегабайтах (десятичная дробь допустима). Тело HTTP-запроса ограничено 64 МиБ — с запасом под base64 при значении по умолчанию. |
+| `GIGAAM_MCP_MAX_INLINE_MB` | `25` | Лимит `audio_base64` в мегабайтах (десятичная дробь допустима). Лимит тела HTTP-запроса выводится из него: `max(64 МиБ, лимит × 4/3 + 1 МиБ)`; при большем значении поднимите `client_max_body_size` в nginx до того же числа (см. [Деплой за nginx](#деплой-за-nginx)), иначе nginx ответит 413 до сервера. |
 | `API_KEYS_FILE` | `.api_keys` | Файл с SHA-256 хэшами ключей для `/mcp` (общий с REST API; в контейнере `/data/.api_keys`). |
 | `MAX_FILE_SIZE` | `2147483648` | Лимит `url`/`path` в байтах (общий с REST API). |
 | `MAX_CONCURRENT_TASKS` | `3` | Ёмкость семафора транскрибации (общий с REST API). |
@@ -394,6 +401,9 @@ location /mcp {
 ```
 
 `8001` — порт веб-панели из `docker-compose.yml`; для `api.py` — `8000`.
+`client_max_body_size` должен быть не меньше лимита тела сервера — 64m при
+`GIGAAM_MCP_MAX_INLINE_MB` до 45; выше — `лимит × 4/3 + 1` МиБ (например,
+`100` → `135m`), иначе nginx отвечает голым 413 вместо `[file_too_large]`.
 После правки: `sudo nginx -t && sudo systemctl reload nginx`, затем `curl`
 из раздела [Удалённое подключение](#удалённое-подключение) и вызов
 `server_status` из клиента.

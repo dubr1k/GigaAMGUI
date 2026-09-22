@@ -57,7 +57,9 @@ for long recordings. The server sends MCP progress notifications (stage + percen
 the call is running, so keep the request open instead of retrying. Call `list_models` or \
 `server_status` first if you need to know which model is loaded or whether the server is busy.
 
-Errors start with a bracketed code, e.g. `[file_too_large] ...` or `[model_not_found] ...`.\
+Tool errors contain a bracketed code such as `[file_too_large]` or `[model_not_found]`; match \
+the code anywhere in the message (the transport prefixes it with `Error executing tool ...:`), \
+do not rely on the message starting with it.\
 """
 
 
@@ -75,7 +77,7 @@ def _tool_error(exc: BaseException, what: str) -> ToolError:
 async def _guarded(what: str, call: Callable[[], Awaitable[T]]) -> T:
     try:
         return await call()
-    except (BackendError, Exception) as exc:  # noqa: BLE001 — контракт: наружу только ToolError
+    except Exception as exc:  # noqa: BLE001 — контракт: наружу только ToolError
         raise _tool_error(exc, what) from exc
 
 
@@ -170,7 +172,7 @@ def build_server(backend, *, name: str = "GigaAM", version: str | None = None) -
         language: Annotated[str | None, Field(description=(
             "Language hint echoed into the result (`ru` by default); GigaAM recognises Russian."))] = None,
         format: Annotated[Format, Field(description=(
-            "`text` (plain text), `json` (text + duration), `verbose` (segments, optional words), "
+            "`text` / `json` (same object: text + duration + usage), `verbose` (segments, optional words), "
             "`diarized` (segments with `speaker`), `srt` / `vtt` (subtitles in `subtitles`)."))] = "json",
         word_timestamps: Annotated[bool, Field(description="Include per-word timestamps in `verbose` output.")] = False,
         diarize: Annotated[bool, Field(description=(
