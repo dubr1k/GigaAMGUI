@@ -26,6 +26,11 @@
     ответы с заголовками);
   - мышь: вкладки, кнопки, строки очереди и настроек, колёсико; `/mouse off`
     возвращает выделение текста терминалу;
+  - цветовые темы: `/theme` (меню без аргумента, имя с аргументом, Tab
+    дописывает имя), строка «Тема» в настройках, `--theme NAME` на один
+    запуск, выбор хранится в `tui_settings.json`; 102 схемы — `default`,
+    `mono`, `dark-hermes-pink` и 99 палитр oh-my-pi (MIT,
+    `tui/themes/LICENSE-oh-my-pi`);
   - обновление до ratatui 0.30 / crossterm 0.29 / ratatui-image 11.
 - **REST API по образцу OpenAI Audio API.** `POST /v1/audio/transcriptions`
   (multipart `file` + `model` с алиасами `whisper-1` и др.; форматы json /

@@ -260,6 +260,17 @@ LLM → `r` показать ответ); `?` открывает справку 
 (Linux/Windows) или Option (macOS). `/settings` открывает вкладку «Настройки»
 (это список строк: Enter или клик меняет значение), а не отдельное меню.
 
+**Цветовые темы.** `/theme` без аргумента открывает прокручиваемый список
+из 102 схем, `/theme dark-monokai` включает схему по имени (Tab дописывает
+имя), строка «Тема» в настройках открывает тот же список, а флаг
+`--theme NAME` задаёт схему на один запуск. Выбор хранится в
+`tui_settings.json`. В комплекте `default` (прежние цвета), `mono` (только
+цвета терминала, выделение — жирным и инверсией), наша `dark-hermes-pink` и
+99 палитр из [oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT, текст
+лицензии — `tui/themes/LICENSE-oh-my-pi`): например `dark-tokyo-night`,
+`dark-gruvbox`, `light-github`, `light-solarized`. Схемы `light-*` рассчитаны
+на светлый фон терминала, `dark-*` — на тёмный.
+
 **Headless / для агентов.** `gigaam transcribe FILE... [опции]` и
 `gigaam llm FILE... --mode summary [опции]` работают без интерфейса: одна
 строка на файл на stdout, `--json` — построчный поток событий воркера, коды
@@ -585,3 +596,5 @@ GigaAMGUI/
   потокового Sortformer на ONNX
 - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT,
   нейросетевое шумоподавление
+- [oh-my-pi](https://github.com/can1357/oh-my-pi) — MIT, цветовые палитры
+  терминального интерфейса (`tui/themes/`)

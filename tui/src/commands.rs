@@ -9,6 +9,7 @@ use crate::{
     app::{llm_input_files, on_off, request_llm, App, Page},
     i18n::{t, tf, tn, Lang},
     settings::save_app_settings,
+    theme::Theme,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
 };
 
@@ -209,7 +210,7 @@ pub(crate) const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-pub(crate) const COMMANDS: [(&str, &str); 32] = [
+pub(crate) const COMMANDS: [(&str, &str); 33] = [
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -259,6 +260,7 @@ pub(crate) const COMMANDS: [(&str, &str); 32] = [
     ),
     ("/lang", "interface language: ru or en"),
     ("/mouse", "mouse support: on or off"),
+    ("/theme", "colour scheme: a name, or a menu without one"),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -305,6 +307,28 @@ pub(crate) fn command_suggestions(input: &str) -> Vec<(&'static str, &'static st
         .into_iter()
         .filter(|(name, _)| name.starts_with(command))
         .collect()
+}
+
+/// Tab completion of `/theme <prefix>`: the longest common prefix of the matching
+/// theme names (the full name when only one matches).
+pub(crate) fn complete_theme_name(input: &str) -> Option<String> {
+    let prefix = input.strip_prefix("/theme ")?.trim_start();
+    let matches: Vec<&str> = Theme::names()
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .collect();
+    let first = matches.first()?;
+    // Byte offsets are char boundaries here: theme names are ASCII (asserted by a
+    // theme.rs test).
+    let common = matches.iter().fold(first.len(), |common, name| {
+        first
+            .bytes()
+            .zip(name.bytes())
+            .take(common)
+            .take_while(|(a, b)| a == b)
+            .count()
+    });
+    Some(format!("/theme {}", &first[..common]))
 }
 
 pub(crate) fn is_command(input: &str) -> bool {
@@ -383,6 +407,11 @@ pub(crate) fn command_menu_options(app: &App) -> Vec<String> {
             t(Lang::En, "lang.name").to_owned(),
             BACK_MENU_OPTION.to_owned(),
         ],
+        Some("/theme") => Theme::names()
+            .into_iter()
+            .map(str::to_owned)
+            .chain([BACK_MENU_OPTION.to_owned()])
+            .collect(),
         Some("/llm-mode") => ["summary", "tasks", "terms", "custom"]
             .into_iter()
             .map(|mode| {
@@ -458,6 +487,7 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
             | "/speakers"
             | "/llm-mode"
             | "/lang"
+            | "/theme"
             | "/settings-provider"
             | "/settings-model"
     ) {
@@ -479,6 +509,11 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
                 .unwrap_or(0)
         } else if command == "/lang" {
             usize::from(app.lang == Lang::En)
+        } else if command == "/theme" {
+            Theme::names()
+                .iter()
+                .position(|name| *name == app.theme.name)
+                .unwrap_or(0)
         } else {
             0
         };
@@ -487,6 +522,12 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Switches the palette; `Theme` is parsed once here, never per frame.
+fn set_theme(app: &mut App, theme: Theme) {
+    app.status = tf(app.lang, "status.theme_set", &[("value", theme.name)]);
+    app.theme = theme;
 }
 
 pub(crate) fn apply_command_menu(app: &mut App) {
@@ -554,6 +595,14 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             app.input.clear();
             app.status = t(app.lang, "settings.language_changed").into();
             save_app_settings(app);
+        }
+        "/theme" => {
+            if let Some(theme) = Theme::by_name(option) {
+                set_theme(app, theme);
+                app.command_menu = None;
+                app.input.clear();
+                save_app_settings(app);
+            }
         }
         "/settings-model" if option == ENTER_MANUALLY_OPTION => {
             app.command_menu = None;
@@ -685,6 +734,22 @@ pub(crate) fn run_command(app: &mut App) {
                 save_app_settings(app);
             }
             None => app.status = t(app.lang, "usage.lang").into(),
+        },
+        "/theme" if argument.is_empty() => {
+            open_command_menu(app, "/theme");
+        }
+        "/theme" => match Theme::by_name(argument) {
+            Some(theme) => {
+                set_theme(app, theme);
+                save_app_settings(app);
+            }
+            None => {
+                app.status = format!(
+                    "{} {}",
+                    tf(app.lang, "err.theme_unknown", &[("value", argument)]),
+                    t(app.lang, "usage.theme")
+                );
+            }
         },
         "/mouse" => match argument {
             "on" | "off" => {
@@ -1049,8 +1114,82 @@ mod tests {
         app::llm_can_run,
         i18n::Lang,
         settings::{isolated_config_dir, load_settings, TuiSettings},
+        theme::Theme,
         worker::{llm_settings_payload, start_payload},
     };
+
+    #[test]
+    fn theme_command_applies_the_theme_and_persists_it() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        assert_eq!(app.theme.name, "default");
+        app.input = "/theme dark-monokai".into();
+        run_command(&mut app);
+        assert_eq!(app.theme.name, "dark-monokai");
+        assert_eq!(
+            app.palette().accent,
+            Theme::by_name("dark-monokai").unwrap().palette.accent
+        );
+        assert_eq!(
+            app.status,
+            t(Lang::Ru, "status.theme_set").replace("{value}", "dark-monokai")
+        );
+        assert_eq!(load_settings().theme, "dark-monokai");
+    }
+
+    #[test]
+    fn theme_command_rejects_an_unknown_name_and_points_at_the_menu() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.input = "/theme nope".into();
+        run_command(&mut app);
+        assert_eq!(app.theme.name, "default");
+        assert!(app.status.contains("nope"), "{}", app.status);
+        assert!(app.status.contains("/theme"), "{}", app.status);
+        assert_eq!(load_settings().theme, "default");
+    }
+
+    #[test]
+    fn theme_command_without_a_name_opens_the_menu_on_the_current_theme() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.theme = Theme::by_name("dark-nord").unwrap();
+        app.input = "/theme".into();
+        run_command(&mut app);
+        assert_eq!(app.command_menu.as_deref(), Some("/theme"));
+        let options = command_menu_options(&app);
+        let mut expected: Vec<String> = Theme::names().into_iter().map(str::to_owned).collect();
+        expected.push(BACK_MENU_OPTION.to_owned());
+        assert_eq!(options, expected);
+        assert_eq!(options[app.command_menu_index], "dark-nord");
+
+        app.command_menu_index = options.iter().position(|o| o == "mono").unwrap();
+        apply_command_menu(&mut app);
+        assert_eq!(app.theme.name, "mono");
+        assert!(app.command_menu.is_none());
+        assert!(app.input.is_empty());
+        assert_eq!(load_settings().theme, "mono");
+    }
+
+    #[test]
+    fn theme_name_completion_extends_the_common_prefix() {
+        assert_eq!(
+            complete_theme_name("/theme dark-mono"),
+            Some("/theme dark-mono".into())
+        );
+        assert_eq!(
+            complete_theme_name("/theme dark-monok"),
+            Some("/theme dark-monokai".into())
+        );
+        assert_eq!(
+            complete_theme_name("/theme light-gr"),
+            Some("/theme light-gruvbox".into())
+        );
+        assert_eq!(complete_theme_name("/theme zzz"), None);
+        assert_eq!(complete_theme_name("/backend a"), None);
+        assert_eq!(complete_theme_name("/theme"), None);
+        assert!(complete_theme_name("/theme ").is_some());
+    }
 
     #[test]
     fn mouse_setting_persists_and_defaults_on() {

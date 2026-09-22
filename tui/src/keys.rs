@@ -12,8 +12,9 @@ use serde_json::Value;
 use crate::{
     app::{dispatch, esc_should_soft_cancel, llm_can_run, on_off, App, Focus, Page},
     commands::{
-        apply_command_menu, command_menu_options, command_suggestions, complete_path, is_command,
-        open_command_menu, queue_paths, remove_selected_file, run_command, COMMANDS,
+        apply_command_menu, command_menu_options, command_suggestions, complete_path,
+        complete_theme_name, is_command, open_command_menu, queue_paths, remove_selected_file,
+        run_command, COMMANDS,
     },
     i18n::{t, tf},
     settings::save_app_settings,
@@ -198,7 +199,9 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         }
         KeyCode::Tab if idle => {
             let suggestions = command_suggestions(&app.input);
-            if !suggestions.is_empty() {
+            if let Some(completed) = complete_theme_name(&app.input) {
+                app.input = completed;
+            } else if !suggestions.is_empty() {
                 let index = app.selected_command.min(suggestions.len() - 1);
                 app.input = format!("{} ", suggestions[index].0);
                 app.selected_command = 0;

@@ -7,7 +7,7 @@
 
 use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
 };
@@ -16,7 +16,8 @@ use crate::{
     app::App,
     commands::COMMANDS,
     i18n::t,
-    ui::{Action, AreaId, ACCENT, SECONDARY},
+    theme::Palette,
+    ui::{Action, AreaId},
 };
 
 /// The key legend, top to bottom: the key as shown and the description key.
@@ -77,9 +78,9 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 }
 
 /// `key` in the accent colour, then `description` wrapped with a hanging indent.
-fn entry<'a>(key: &str, description: &str, pad: usize, width: usize) -> Vec<Line<'a>> {
-    let key_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
-    let text_style = Style::default().fg(Color::White);
+fn entry<'a>(p: &Palette, key: &str, description: &str, pad: usize, width: usize) -> Vec<Line<'a>> {
+    let key_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(p.text);
     wrap_words(description, width.saturating_sub(pad + 2))
         .into_iter()
         .enumerate()
@@ -115,6 +116,7 @@ fn overlay_rect(area: Rect) -> Rect {
 }
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     // Any click closes the overlay; the wheel anywhere scrolls it (the page
     // underneath is covered, so its scroll areas must not catch the wheel).
     app.hits.add(area, Action::Scroll(AreaId::Help, 0));
@@ -125,19 +127,17 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", t(app.lang, "help.title")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            p.title(),
         ))
         .title_bottom(
             Line::from(Span::styled(
                 format!(" {} ", t(app.lang, "help.close")),
-                Style::default().fg(SECONDARY),
+                Style::default().fg(p.muted),
             ))
             .right_aligned(),
         )
-        .border_style(Style::default().fg(ACCENT))
-        .style(Style::default().bg(Color::Rgb(20, 24, 34)));
+        .border_style(Style::default().fg(p.border_accent))
+        .style(Style::default().bg(p.status_bg));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     if inner.height == 0 || inner.width < 10 {
@@ -153,14 +153,14 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         Line::from(Span::styled(
             t(app.lang, key).to_owned(),
             Style::default()
-                .fg(SECONDARY)
+                .fg(p.muted)
                 .add_modifier(Modifier::UNDERLINED),
         ))
     };
     let key_width = usize::from(keys_area.width);
     let mut keys: Vec<Line> = vec![heading("help.keys")];
     for (key, description) in KEYS {
-        keys.extend(entry(key, t(app.lang, description), 13, key_width));
+        keys.extend(entry(&p, key, t(app.lang, description), 13, key_width));
     }
     keys.push(Line::raw(""));
     keys.extend(
@@ -169,7 +169,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .map(|chunk| {
                 Line::from(Span::styled(
                     format!(" {chunk}"),
-                    Style::default().fg(SECONDARY),
+                    Style::default().fg(p.muted),
                 ))
             }),
     );
@@ -177,7 +177,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let mut commands: Vec<Line> = vec![heading("help.commands")];
     for (name, _) in COMMANDS {
         let description = t(app.lang, &format!("cmd.{}", name.trim_start_matches('/')));
-        commands.extend(entry(name, description, 20, command_width));
+        commands.extend(entry(&p, name, description, 20, command_width));
     }
     if !two_columns {
         keys.push(Line::raw(""));

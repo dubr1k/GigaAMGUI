@@ -14,6 +14,7 @@ use crate::{
     app::App,
     commands::{backend_is_supported, FORMAT_KEYS, MODEL_OPTIONS},
     i18n::{t, tf, Lang},
+    theme::{Theme, DEFAULT_THEME},
 };
 
 #[derive(Deserialize, Serialize)]
@@ -44,6 +45,8 @@ pub(crate) struct TuiSettings {
     pub(crate) llm_tool_paths: HashMap<String, String>,
     pub(crate) llm_allow_tools: bool,
     pub(crate) audio_preprocessing_mode: String,
+    /// Colour scheme name (`default`, `mono` or a catalogue theme).
+    pub(crate) theme: String,
 }
 
 impl Default for TuiSettings {
@@ -75,6 +78,7 @@ impl Default for TuiSettings {
             llm_tool_paths: HashMap::new(),
             llm_allow_tools: false,
             audio_preprocessing_mode: "auto".into(),
+            theme: DEFAULT_THEME.into(),
         }
     }
 }
@@ -400,6 +404,8 @@ fn write_text_atomic(path: &Path, contents: &str) -> Result<(), String> {
 /// offers a choice the worker would reject.
 pub(crate) fn apply_settings(app: &mut App, settings: TuiSettings, lang_override: Option<Lang>) {
     app.mouse_enabled = settings.mouse;
+    // A theme this build does not know (renamed, removed) must not break the start.
+    app.theme = Theme::by_name(&settings.theme).unwrap_or_else(Theme::default_theme);
     app.lang = lang_override
         .or_else(|| Lang::parse(&settings.language))
         .unwrap_or(Lang::Ru);
@@ -550,6 +556,7 @@ impl From<&App> for TuiSettings {
             llm_tool_paths: app.llm_tool_paths.clone(),
             llm_allow_tools: app.llm_allow_tools,
             audio_preprocessing_mode: app.audio_preprocessing_mode.clone(),
+            theme: app.theme.name.to_owned(),
         }
     }
 }
@@ -756,6 +763,34 @@ mod tests {
         let env = fs::read_to_string(directory.join(".env")).unwrap();
         assert!(env.contains("HF_TOKEN=hf_x\n"));
         assert!(env.contains("LLM_API_KEY=sk-new\n"));
+    }
+
+    #[test]
+    fn theme_defaults_when_missing_and_round_trips() {
+        let directory = isolated_config_dir();
+        let old: TuiSettings = serde_json::from_str(r#"{"mouse": false}"#).unwrap();
+        assert_eq!(old.theme, "default");
+        assert!(!old.mouse);
+
+        let mut app = App::default();
+        apply_settings(&mut app, old, None);
+        assert_eq!(app.theme.name, "default");
+
+        let mut settings = TuiSettings::default();
+        settings.theme = "dark-gruvbox".into();
+        save_settings(&settings).unwrap();
+        let text = fs::read_to_string(directory.join("tui_settings.json")).unwrap();
+        assert!(text.contains("\"theme\": \"dark-gruvbox\""), "{text}");
+        assert_eq!(load_settings().theme, "dark-gruvbox");
+        apply_settings(&mut app, load_settings(), None);
+        assert_eq!(app.theme.name, "dark-gruvbox");
+        assert_eq!(TuiSettings::from(&app).theme, "dark-gruvbox");
+
+        // A name this build does not know falls back to the default look.
+        let mut settings = TuiSettings::default();
+        settings.theme = "removed-theme".into();
+        apply_settings(&mut app, settings, None);
+        assert_eq!(app.theme.name, "default");
     }
 
     #[test]

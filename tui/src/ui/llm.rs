@@ -7,7 +7,7 @@
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
@@ -16,7 +16,7 @@ use crate::{
     app::{esc_should_soft_cancel, llm_can_run, llm_input_files, App},
     commands::short_name,
     i18n::{t, tf, Lang},
-    ui::{processing::fit_middle, Action, AreaId, ButtonId, ACCENT, SECONDARY},
+    ui::{processing::fit_middle, Action, AreaId, ButtonId},
     worker::llm_tool_for,
 };
 
@@ -31,11 +31,6 @@ pub(crate) const MODES: [(&str, &str); 4] = [
 /// Rows of the «Что сделать» block plus its border: four modes, prompt, provider.
 const TASKS_HEIGHT: u16 = MODES.len() as u16 + 2 + 2;
 
-const HIGHLIGHT: Style = Style::new()
-    .fg(Color::White)
-    .bg(Color::Rgb(40, 60, 100))
-    .add_modifier(Modifier::BOLD);
-
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let [top, bottom] =
         Layout::vertical([Constraint::Length(TASKS_HEIGHT), Constraint::Min(3)]).areas(area);
@@ -46,13 +41,8 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     draw_answer(frame, bottom, app);
 }
 
-fn title_style() -> Style {
-    Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD)
-}
-
 fn draw_inputs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let files = llm_input_files(app);
     let title = if files.is_empty() {
         t(app.lang, "llm.inputs").to_owned()
@@ -64,8 +54,8 @@ fn draw_inputs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         )
     };
     let block = Block::bordered()
-        .title(Span::styled(format!(" {title} "), title_style()))
-        .border_style(Style::default().fg(Color::DarkGray));
+        .title(Span::styled(format!(" {title} "), p.title()))
+        .border_style(Style::default().fg(p.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if files.is_empty() {
@@ -73,7 +63,7 @@ fn draw_inputs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 t(app.lang, "llm.inputs_empty"),
-                Style::default().fg(SECONDARY),
+                Style::default().fg(p.muted),
             ))
             .centered()
             .wrap(Wrap { trim: true }),
@@ -93,13 +83,12 @@ fn draw_inputs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(index, file)| {
             let (key, colour) = if app.result_files.contains(file) {
-                ("llm.src_session", Color::Green)
+                ("llm.src_session", p.success)
             } else {
-                ("llm.src_file", SECONDARY)
+                ("llm.src_file", p.muted)
             };
             Row::new(vec![
-                Cell::from(format!("{:>2}.", index + 1))
-                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:>2}.", index + 1)).style(Style::default().fg(p.disabled)),
                 Cell::from(fit_middle(&short_name(file), name_width)),
                 Cell::from(t(app.lang, key)).style(Style::default().fg(colour)),
             ])
@@ -128,11 +117,11 @@ fn draw_inputs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         ])
         .style(
             Style::default()
-                .fg(SECONDARY)
+                .fg(p.muted)
                 .add_modifier(Modifier::UNDERLINED),
         ),
     )
-    .row_highlight_style(HIGHLIGHT);
+    .row_highlight_style(p.emphasis());
     frame.render_stateful_widget(table, inner, &mut state);
     let offset = state.offset();
     let visible = usize::from(inner.height.saturating_sub(1));
@@ -161,13 +150,14 @@ fn provider_line(app: &App) -> String {
 }
 
 fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let can_run = !app.running && llm_can_run(app);
     let can_cancel = esc_should_soft_cancel(app);
     let run = format!("[{}]", t(app.lang, "btn.run_llm"));
     let cancel = format!("[{}]", t(app.lang, "btn.cancel_llm"));
     let button_style = |active: bool| {
         Style::default()
-            .fg(if active { ACCENT } else { Color::DarkGray })
+            .fg(if active { p.accent } else { p.disabled })
             .add_modifier(if active {
                 Modifier::BOLD
             } else {
@@ -177,7 +167,7 @@ fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", t(app.lang, "llm.tasks")),
-            title_style(),
+            p.title(),
         ))
         .title_top(
             Line::from(vec![
@@ -187,7 +177,7 @@ fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             ])
             .right_aligned(),
         )
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(p.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     // Right-aligned titles end one cell before the corner.
@@ -204,8 +194,8 @@ fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         Action::Button(ButtonId::CancelLlm),
     );
 
-    let label = Style::default().fg(SECONDARY);
-    let value = Style::default().fg(Color::White);
+    let label = Style::default().fg(p.muted);
+    let value = Style::default().fg(p.text);
     let mut lines: Vec<(Line, Action)> = MODES
         .iter()
         .enumerate()
@@ -214,12 +204,12 @@ fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let mut line = Line::from(vec![
                 Span::styled(
                     if on { "[x] " } else { "[ ] " },
-                    Style::default().fg(if on { ACCENT } else { SECONDARY }),
+                    Style::default().fg(if on { p.accent } else { p.muted }),
                 ),
                 Span::styled(t(app.lang, key), if on { value } else { label }),
             ]);
             if app.llm_mode_cursor == Some(index) {
-                line = line.style(HIGHLIGHT);
+                line = line.style(p.emphasis());
             }
             (line, Action::ToggleMode(mode))
         })
@@ -296,6 +286,7 @@ fn results_text(app: &App) -> String {
 }
 
 fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     // Streaming shows the mode in flight; a single answer shows its mode and file;
     // several answers keep those per result inside the pane (see `results_text`).
     let (mode, body): (Option<&str>, String) = if app.llm_running {
@@ -319,12 +310,8 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
     title.push(' ');
     let block = Block::bordered()
-        .title(Span::styled(title, title_style()))
-        .border_style(Style::default().fg(if app.llm_running {
-            Color::Green
-        } else {
-            Color::DarkGray
-        }));
+        .title(Span::styled(title, p.title()))
+        .border_style(Style::default().fg(if app.llm_running { p.success } else { p.border }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.add(area, Action::Scroll(AreaId::LlmOutput, 0));
@@ -335,7 +322,7 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 t(app.lang, "llm.answer_empty"),
-                Style::default().fg(SECONDARY),
+                Style::default().fg(p.muted),
             ))
             .centered()
             .wrap(Wrap { trim: true }),

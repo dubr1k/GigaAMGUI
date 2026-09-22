@@ -7,7 +7,7 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, List, ListItem, ListState},
 };
@@ -15,7 +15,7 @@ use ratatui::{
 use crate::{
     app::App,
     i18n::t,
-    ui::{Action, AreaId, SECONDARY},
+    ui::{Action, AreaId},
     worker::provider_prefix,
 };
 
@@ -68,6 +68,7 @@ pub(crate) fn rows(app: &App) -> Vec<SettingRow> {
             on_off(app, app.mouse_enabled),
             Action::ToggleSetting("mouse"),
         ),
+        row("settings.theme", app.theme.name, Action::OpenMenu("/theme")),
         row(
             "settings.pets",
             on_off(app, app.pet_enabled),
@@ -173,21 +174,20 @@ pub(crate) fn rows(app: &App) -> Vec<SettingRow> {
 }
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let p = *app.palette();
     let block = Block::bordered()
         .title(Span::styled(
             format!(" {} ", t(app.lang, "settings.title")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            p.title(),
         ))
         .title_bottom(
             Line::from(Span::styled(
                 format!(" {} ", t(app.lang, "settings.hint")),
-                Style::default().fg(SECONDARY),
+                Style::default().fg(p.muted),
             ))
             .right_aligned(),
         )
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(p.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.add(area, Action::Scroll(AreaId::Settings, 0));
@@ -207,9 +207,9 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!(" {:<label_width$}", t(app.lang, row.key)),
-                    Style::default().fg(SECONDARY),
+                    Style::default().fg(p.muted),
                 ),
-                Span::styled(row.value.clone(), Style::default().fg(Color::White)),
+                Span::styled(row.value.clone(), Style::default().fg(p.text)),
             ]))
         })
         .collect();
@@ -220,12 +220,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let mut state = ListState::default()
         .with_offset(offset)
         .with_selected(Some(app.settings_cursor));
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(40, 60, 100))
-            .add_modifier(Modifier::BOLD),
-    );
+    let list = List::new(items).highlight_style(p.emphasis());
     frame.render_stateful_widget(list, inner, &mut state);
     // The wheel moves the cursor (`dispatch`), and the list slides to keep it
     // visible; the window it chose is what the next frame starts from.
@@ -282,6 +277,28 @@ mod tests {
         assert_eq!(key.value, "••••");
         assert_eq!(key.action, Action::EditCommand("/llm-api-key"));
         assert_eq!(list[0].value, "English");
+    }
+
+    #[test]
+    fn theme_row_follows_the_mouse_row_and_opens_the_theme_menu() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.theme = crate::theme::Theme::by_name("dark-monokai").unwrap();
+        let list = rows(&app);
+        let mouse = list
+            .iter()
+            .position(|row| row.key == "settings.mouse")
+            .unwrap();
+        assert_eq!(list[mouse + 1].key, "settings.theme");
+        assert_eq!(list[mouse + 1].value, "dark-monokai");
+        dispatch(&mut app, Action::SettingsRow(mouse + 1));
+        assert_eq!(app.command_menu.as_deref(), Some("/theme"));
+        assert_eq!(app.settings_cursor, mouse + 1);
+        assert_eq!(
+            crate::commands::command_menu_options(&app)[app.command_menu_index],
+            "dark-monokai"
+        );
+        assert!(render(&mut app).contains("dark-monokai"));
     }
 
     #[test]
