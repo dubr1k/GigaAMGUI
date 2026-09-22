@@ -41,6 +41,28 @@
   авторизация `Authorization: Bearer` (`X-API-Key` принимается), ошибки в
   конверте OpenAI, 429 с `Retry-After`. Работает с официальными SDK через
   `base_url=".../v1"`. Справочник — `docs/API.md`, Postman-коллекция обновлена.
+- **MCP-сервер для ИИ-агентов** (`src/services/mcp_server.py`,
+  `src/services/mcp_backend.py`, `src/mcp_server.py`; SDK `mcp>=2,<3`).
+  Инструменты `transcribe` (источник `url` / `path` / `audio_base64`,
+  форматы `text|json|verbose|diarized|srt|vtt`, диаризация, прогресс через
+  MCP progress notifications), `summarize` (`summary|tasks|terms|custom`
+  через настроенный LLM-провайдер), `list_models`, `list_llm_providers`,
+  `server_status`; ресурсы `gigaam://models`, `gigaam://status`; промпты
+  `meeting_notes`, `subtitles_review`. Ошибки — `[code] message` с кодами
+  REST-контракта. Транспорты: stdio (`gigaam mcp` в лаунчере TUI,
+  `python -m src.mcp_server`) и Streamable HTTP `/mcp` в `api.py` и
+  веб-панели (ключ `Authorization: Bearer` из общего `.api_keys`; без ключа
+  — 401 в конверте OpenAI). Один путь транскрибации для REST и MCP:
+  `api.py` вызывает `mcp_backend.run_transcription`. В HTTP-режиме `path`
+  запрещён, пока не задан `GIGAAM_MCP_ALLOW_PATHS=1` (с ограничением
+  `GIGAAM_MCP_PATH_ROOT`); лимит base64 — `GIGAAM_MCP_MAX_INLINE_MB`.
+  Хранилище ключей вынесено в `src/services/api_keys.py`, настройки LLM для
+  Python-слоя — `src/services/llm_settings.py`. Скиллы для агентов:
+  `skills/gigaam` получил раздел MCP, новый `skills/gigaam-mcp` описывает
+  контракт для агентов без локальной установки; `gigaam --install-skill`
+  и установщик ставят оба. Документация — `docs/MCP.md`, фрагмент nginx —
+  `deploy/nginx-mcp-location.conf`, тест `tests/test_docs_mcp.py` следит,
+  чтобы каждый инструмент был описан.
 
 ### Изменено (breaking)
 

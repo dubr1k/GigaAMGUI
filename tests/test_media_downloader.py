@@ -184,3 +184,11 @@ def test_progress_from_bytes(tmp_path):
     downloader.download("https://example.test/v", str(tmp_path), progress_callback=progress.append)
     # 50/200 -> 25%, 200/200 -> 100%, finished -> 100%
     assert progress == [25, 100, 100]
+
+
+def test_download_passes_max_filesize_only_when_given(tmp_path):
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDL)
+    downloader.download("https://example.test/video", str(tmp_path))
+    assert "max_filesize" not in FakeYoutubeDL.instances[0].opts
+    downloader.download("https://example.test/video", str(tmp_path), max_filesize=1024)
+    assert FakeYoutubeDL.instances[1].opts["max_filesize"] == 1024

@@ -7,6 +7,7 @@ GigaAM v3 Transcriber - Web GUI
 import asyncio
 import hashlib
 import hmac
+import logging
 import os
 import shutil
 import traceback
@@ -45,6 +46,9 @@ from src.core.model_loader import ModelLoader
 from src.core.subtitles import SubtitleOptions
 from src.services import file_policy, llm_service, task_store, transcription_service
 from src.services import health as health_service
+from src.services.api_keys import KeyStore
+from src.services.mcp_backend import LocalBackend
+from src.services.mcp_http import backend_options_from_env, mount_mcp
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.diarization import normalize_diarization_backend
@@ -98,6 +102,8 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(2 * 1024 * 1024 * 1024)))
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
+# Ключи для /mcp — тот же файл, что у api.py (в контейнере API_KEYS_FILE=/data/.api_keys, persist)
+API_KEYS_FILE = Path(__file__).parent.parent / os.getenv("API_KEYS_FILE", ".api_keys")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -107,6 +113,7 @@ stats_manager: ProcessingStats | None = None
 media_downloader: MediaDownloader | None = None
 time_formatter = TimeFormatter()
 processing_semaphore: asyncio.Semaphore | None = None
+key_store: KeyStore | None = None
 
 # Хранилище задач
 tasks_storage: dict[str, dict] = {}
@@ -762,11 +769,14 @@ def _detect_format(filename: str, stem: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model_loader, stats_manager, media_downloader, processing_semaphore
+    global model_loader, stats_manager, media_downloader, processing_semaphore, key_store
 
     print("=" * 60)
     print("GigaAM v3 Transcriber - Web GUI")
     print("=" * 60)
+
+    # Ключи /mcp; при первом старте создаётся и печатается (один раз) первый ключ
+    key_store = KeyStore(API_KEYS_FILE).load()
 
     if not ffmpeg_available():
         print("ВНИМАНИЕ: ffmpeg/ffprobe не найдены в PATH!")
@@ -798,6 +808,20 @@ async def lifespan(app: FastAPI):
     print("Остановка Web GUI...")
 
 
+# ==================== MCP ====================
+# /mcp — Streamable HTTP MCP-сервера над тем же model_loader и семафором; вход только по
+# API-ключу (сессии веб-панели здесь не действуют). Бэкенд строится после lifespan.
+
+
+def _mcp_backend() -> LocalBackend:
+    return LocalBackend(
+        model_loader=model_loader, stats_manager=stats_manager, semaphore=processing_semaphore,
+        upload_dir=UPLOAD_DIR, media_downloader=media_downloader, loader_factory=ModelLoader,
+        logger=logging.getLogger("GigaAM"),  # веб-панель логгер не настраивает: ошибки уходят в stderr
+        http_mode=True, max_file_size=MAX_FILE_SIZE, hf_token=HF_TOKEN, max_concurrent=MAX_CONCURRENT_TASKS,
+        **backend_options_from_env())
+
+
 # ==================== ПРИЛОЖЕНИЕ ====================
 
 app = FastAPI(
@@ -823,6 +847,8 @@ app.add_middleware(
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+mount_mcp(app, "/mcp", _mcp_backend, lambda: key_store)
 
 
 # ==================== ЭНДПОИНТЫ АВТОРИЗАЦИИ ====================

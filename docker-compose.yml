@@ -36,6 +36,8 @@ services:
       - UPLOAD_DIR=uploads
       - RESULTS_DIR=results
       - STATS_FILE=results/processing_stats.json
+      # Ключи для /mcp (Streamable HTTP MCP); файл живёт на persist-томе /data.
+      - API_KEYS_FILE=/data/.api_keys
       - HF_HUB_DISABLE_SYMLINKS_WARNING=1
       - PYTHONDONTWRITEBYTECODE=1
       - MPLCONFIGDIR=/tmp/matplotlib

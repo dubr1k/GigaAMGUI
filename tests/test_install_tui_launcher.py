@@ -181,19 +181,34 @@ def test_installer_settings_dir_ignores_xdg_on_darwin(tmp_path):
     assert result.stdout.strip() == "multilingual_ctc"
 
 
-def test_launcher_installs_the_skill_into_existing_agent_dirs(tmp_path):
+def test_launcher_installs_both_skills_into_existing_agent_dirs(tmp_path):
     prefix = _fake_install(tmp_path)
-    skill = prefix / "repo" / "skills" / "gigaam" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text("---\nname: gigaam\n---\nbody\n")
+    skills = {}
+    for name in ("gigaam", "gigaam-mcp"):
+        skill = prefix / "repo" / "skills" / name / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(f"---\nname: {name}\n---\nbody\n")
+        skills[name] = skill
     home = tmp_path / "home"
     (home / ".claude" / "skills").mkdir(parents=True)
     (home / ".agents" / "skills").mkdir(parents=True)
     result = _run(prefix, "--install-skill", env={"HOME": str(home)})
     assert result.returncode == 0, result.stderr
-    assert (home / ".claude" / "skills" / "gigaam" / "SKILL.md").read_text() == skill.read_text()
-    assert (home / ".agents" / "skills" / "gigaam" / "SKILL.md").exists()
+    for name, skill in skills.items():
+        assert (home / ".claude" / "skills" / name / "SKILL.md").read_text() == skill.read_text()
+        assert (home / ".agents" / "skills" / name / "SKILL.md").exists()
     assert not (home / ".codex").exists(), "directories that do not exist are not created"
+
+
+def test_launcher_mcp_runs_the_python_module_from_the_repo(tmp_path):
+    prefix = _fake_install(tmp_path)
+    python = prefix / "repo" / ".venv" / "bin" / "python"
+    python.write_text('#!/usr/bin/env bash\necho "python:$*"; echo "cwd=$PWD"\n')
+    result = _run(prefix, "mcp", "--http", "--port", "9000")
+    assert result.returncode == 0, result.stderr
+    assert "python:-m src.mcp_server --http --port 9000" in result.stdout
+    assert f"cwd={prefix / 'repo'}" in result.stdout
+    assert "tui:" not in result.stdout, "mcp must not reach the TUI binary"
 
 
 def test_launcher_forwards_headless_subcommands_to_the_binary(tmp_path):

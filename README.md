@@ -226,6 +226,7 @@ python -m pip install -r requirements.txt
 | Классический GUI (PyQt) | `python app.py` | Windows, Linux, macOS |
 | CLI | `python cli.py -f audio.wav -o output` | Скрипты и пакетная автоматизация |
 | REST API | `python api.py` | Интеграции, совместим с OpenAI Audio API: [docs/API.md](docs/API.md) |
+| MCP-сервер | `gigaam mcp` | ИИ-агенты (Claude Code, Codex, Cursor): [docs/MCP.md](docs/MCP.md) |
 | Веб-панель | `docker compose up -d --build gigaam-web` | Сервер в локальной сети: `http://127.0.0.1:8001/` |
 | TUI *(preview)* | `cd tui && cargo run --release` | Очередь задач в терминале |
 
@@ -471,6 +472,24 @@ print(client.audio.transcriptions.create(model="whisper-1", file=open("audio.wav
 ```
 
 Форматы ответа, стрим, ошибки и расширения — в [docs/API.md](docs/API.md).
+
+### MCP-сервер для агентов
+
+Тот же движок доступен ИИ-агентам по Model Context Protocol: инструменты
+`transcribe` (url / путь / base64 → текст, сегменты, говорящие, SRT/VTT),
+`summarize` (выжимка, задачи, термины, свой промпт), `list_models`,
+`list_llm_providers`, `server_status`; ресурсы `gigaam://models`,
+`gigaam://status`; промпты `meeting_notes`, `subtitles_review`.
+
+```bash
+claude mcp add gigaam -- gigaam mcp                       # локально, stdio (входит в установку TUI)
+claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp \
+  --header "Authorization: Bearer gam_..."                # удалённо: /mcp в api.py и веб-панели
+```
+
+Скиллы для агентов (`skills/gigaam`, `skills/gigaam-mcp`) ставятся командой
+`gigaam --install-skill`. Клиенты, лимиты, ошибки и деплой за nginx — в
+[docs/MCP.md](docs/MCP.md).
 
 Сравнить движки на своём корпусе:
 

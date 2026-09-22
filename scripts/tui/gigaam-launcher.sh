@@ -10,9 +10,14 @@ Usage: gigaam [--data-dir PATH]        launch the terminal UI
                                        transcribe files without the UI (scripts, agents)
        gigaam llm FILE... --mode summary [--mode tasks|terms|custom] [options]
                                        summarise transcripts without the UI
+       gigaam mcp [--http --host H --port N] [--config-dir DIR]
+                                       MCP server for agents: stdio by default
+                                       (claude mcp add gigaam -- gigaam mcp),
+                                       --http serves /mcp on 127.0.0.1:8765
        gigaam --help                   full option list of transcribe / llm
        gigaam --update [--ref REF]     update the TUI, worker environment and PATH
-       gigaam --install-skill          (re)install the agent skill into ~/.claude, ~/.codex, ~/.agents
+       gigaam --install-skill          (re)install the agent skills (gigaam, gigaam-mcp) into
+                                       ~/.claude, ~/.codex, ~/.agents
        gigaam --version                show the installed revision
 EOF
 }
@@ -68,19 +73,31 @@ case "${1:-}" in
     bash "$installer" --prefix "$PREFIX" "$@" || status=$?
     exit "$status" ;;
   --install-skill)
-    skill="$REPO_DIR/skills/gigaam/SKILL.md"
-    if [[ ! -f "$skill" ]]; then
-      echo "Skill file not found: $skill (run gigaam --update to refresh the checkout)" >&2
-      exit 1
-    fi
+    # Two skills: `gigaam` teaches the headless CLI, `gigaam-mcp` the MCP server
+    # (also useful on machines without a local install). Only into skill
+    # directories that already exist.
     installed=0
-    for target in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.agents/skills"; do
-      [[ -d "$target" ]] || continue
-      mkdir -p "$target/gigaam" && cp "$skill" "$target/gigaam/SKILL.md" \
-        && echo "Installed skill: $target/gigaam/SKILL.md" && installed=$((installed + 1))
+    for name in gigaam gigaam-mcp; do
+      skill="$REPO_DIR/skills/$name/SKILL.md"
+      if [[ ! -f "$skill" ]]; then
+        echo "Skill file not found: $skill (run gigaam --update to refresh the checkout)" >&2
+        exit 1
+      fi
+      for target in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.agents/skills"; do
+        [[ -d "$target" ]] || continue
+        mkdir -p "$target/$name" && cp "$skill" "$target/$name/SKILL.md" \
+          && echo "Installed skill: $target/$name/SKILL.md" && installed=$((installed + 1))
+      done
     done
     [[ $installed -gt 0 ]] || echo "No agent skill directories found (~/.claude/skills, ~/.codex/skills, ~/.agents/skills)." >&2
     exit 0 ;;
+  mcp)
+    # stdio MCP server (or --http): stdout belongs to the protocol, so the
+    # Python module keeps its own logs on stderr. Run from the repo so that
+    # `src.*` imports and the relative UPLOAD_DIR / API_KEYS_FILE resolve.
+    shift
+    cd "$REPO_DIR"
+    exec "$VENV/bin/python" -m src.mcp_server "$@" ;;
 esac
 
 export GIGAAM_PROJECT_ROOT="$REPO_DIR"

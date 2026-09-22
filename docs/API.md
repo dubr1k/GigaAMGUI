@@ -8,7 +8,9 @@ Obsidian, n8n, Home Assistant, Open WebUI — работает с GigaAM, есл
 `base_url` на `http://127.0.0.1:8000/v1` и ключ. Ключ создаётся при первом
 запуске и печатается в консоль один раз (в `.api_keys` хранится только SHA-256
 хэш). Запуск: `python api.py` или `uvicorn api:app --host 127.0.0.1 --port 8000`;
-интерактивная OpenAPI-документация — `http://127.0.0.1:8000/docs`.
+интерактивная OpenAPI-документация — `http://127.0.0.1:8000/docs`. Тот же
+сервер отдаёт `/mcp` — MCP-сервер для ИИ-агентов с тем же ключом и лимитами,
+см. [MCP.md](MCP.md).
 
 Содержание:
 
@@ -451,7 +453,8 @@ curl http://127.0.0.1:8000/v1/audio/transcriptions \
 | `RATE_LIMIT_UPLOAD` | `10/minute` | Лимит `POST /v1/audio/transcriptions` с одного IP в формате slowapi (`число/период`: `10/minute`, `100/hour`); превышение → `429 rate_limit_exceeded`. Неразборное значение (например, `abc`) останавливает сервер при старте, а не отключает лимит молча. |
 | `CORS_ORIGINS` | пусто | Разрешённые origin через запятую; пусто — кросс-доменные запросы из браузера запрещены. |
 | `UPLOAD_DIR` | `uploads` | Куда кладутся временные директории запросов `req_*` (удаляются после ответа). |
-| `API_KEYS_FILE` | `.api_keys` | Файл с SHA-256 хэшами ключей. |
+| `API_KEYS_FILE` | `.api_keys` | Файл с SHA-256 хэшами ключей (общий с `/mcp`). |
 | `API_DEBUG` | `false` | `true` — текст необработанного исключения попадает в `message` ответа `500` (только для отладки). |
 | `HF_TOKEN` | пусто | Токен Hugging Face для `diarization_backend=pyannote`. |
 | `AUDIO_PREPROCESSING_MODE` | `auto` | Режим подготовки аудио по умолчанию (`off`/`auto`/`light`/`denoise`). |
+| `GIGAAM_MCP_ALLOW_PATHS`, `GIGAAM_MCP_PATH_ROOT`, `GIGAAM_MCP_MAX_INLINE_MB` | см. [MCP.md](MCP.md) | Политика источника `path` и лимит base64 для `/mcp`. |

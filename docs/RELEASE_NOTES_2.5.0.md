@@ -1,9 +1,9 @@
 # GigaAM Transcriber 2.5.0
 
-Большой релиз: переработанный терминальный клиент (TUI 2.0) и новый REST API,
-совместимый с OpenAI Audio API. Старое REST API `/api/v1/*` удалено — это
-несовместимое изменение для тех, кто ходил к серверу напрямую; настольные
-приложения, веб-панель и TUI не затронуты.
+Большой релиз: переработанный терминальный клиент (TUI 2.0), новый REST API,
+совместимый с OpenAI Audio API, и MCP-сервер для ИИ-агентов. Старое REST API
+`/api/v1/*` удалено — это несовместимое изменение для тех, кто ходил к серверу
+напрямую; настольные приложения, веб-панель и TUI не затронуты.
 
 ## Добавлено
 
@@ -57,6 +57,30 @@
 - Работает с официальными SDK: достаточно `base_url="http://127.0.0.1:8000/v1"`
   и ключа. Справочник — `docs/API.md`, Postman-коллекция обновлена.
 
+### MCP-сервер для ИИ-агентов
+
+- Claude Code, Codex, Cursor и любой MCP-клиент получают GigaAM как набор
+  инструментов: `transcribe` (аудио/видео по `url`, пути на сервере или
+  `audio_base64` → текст, сегменты, говорящие, SRT/VTT; во время работы —
+  progress notifications со стадией и процентом), `summarize` (выжимка,
+  задачи, термины или свой промпт через настроенный LLM-провайдер),
+  `list_models`, `list_llm_providers`, `server_status`; ресурсы
+  `gigaam://models`, `gigaam://status`; промпты `meeting_notes` (протокол
+  встречи) и `subtitles_review` (проверка SRT).
+- Локально: `gigaam mcp` (stdio, входит в установку TUI) —
+  `claude mcp add gigaam -- gigaam mcp`; файлы с этой же машины передаются по
+  пути. Удалённо: `/mcp` в `api.py` и в веб-панели (в Docker-образе тоже) —
+  `claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp
+  --header "Authorization: Bearer <key>"`; ключ тот же, что у REST API, без
+  него — 401. В HTTP-режиме пути на сервере запрещены, пока не задан
+  `GIGAAM_MCP_ALLOW_PATHS=1` (`GIGAAM_MCP_PATH_ROOT` ограничивает каталог);
+  лимит base64 — `GIGAAM_MCP_MAX_INLINE_MB` (25 МБ).
+- Скиллы для агентов: `skills/gigaam` теперь рассказывает про MCP, новый
+  `skills/gigaam-mcp` — самостоятельный скилл для агентов без локальной
+  установки (контракт инструментов, выбор источника, ошибки, рецепты);
+  `gigaam --install-skill` ставит оба. Справочник — `docs/MCP.md`, фрагмент
+  nginx для SSE-потока — `deploy/nginx-mcp-location.conf`.
+
 ## Изменено (breaking)
 
 - Удалены `/api/v1/transcribe`, `/api/v1/transcribe/batch`, `/api/v1/tasks*`,
@@ -93,16 +117,20 @@
   `-F response_format=srt`, `-F stream=true`; `openai` SDK с
   `base_url=".../v1"`.
 - Веб-панель (`web/`) и Docker-образ работают как раньше — они не используют
-  `api.py`.
+  `api.py`; в них появился `/mcp`, при первом старте веб-панель печатает ключ.
+- `claude mcp add gigaam -- gigaam mcp`, затем в Claude Code `/mcp` показывает
+  `gigaam`; попросите агента вызвать `server_status` и `transcribe` по пути к
+  короткому файлу. Удалённо — `claude mcp add --transport http …` с ключом и
+  `transcribe(url=…)` с короткого ролика.
 
 ---
 
 ## English
 
-A major release: the reworked terminal client (TUI 2.0) and a new REST API
-compatible with the OpenAI Audio API. The old `/api/v1/*` REST API is removed —
-a breaking change for direct API consumers; the desktop apps, web panel and TUI
-are unaffected.
+A major release: the reworked terminal client (TUI 2.0), a new REST API
+compatible with the OpenAI Audio API, and an MCP server for AI agents. The old
+`/api/v1/*` REST API is removed — a breaking change for direct API consumers;
+the desktop apps, web panel and TUI are unaffected.
 
 ### Added
 
@@ -153,6 +181,30 @@ are unaffected.
 - Works with the official SDKs: set `base_url="http://127.0.0.1:8000/v1"` and
   the key. Reference: `docs/API.md`; the Postman collection is updated.
 
+**MCP server for AI agents**
+
+- Claude Code, Codex, Cursor and any MCP client get GigaAM as a tool set:
+  `transcribe` (audio/video by `url`, a path on the server or `audio_base64`
+  → text, segments, speakers, SRT/VTT; progress notifications with stage and
+  percent while it runs), `summarize` (summary, tasks, terms or a custom
+  prompt through the configured LLM provider), `list_models`,
+  `list_llm_providers`, `server_status`; resources `gigaam://models`,
+  `gigaam://status`; prompts `meeting_notes` (meeting minutes) and
+  `subtitles_review` (SRT review).
+- Locally: `gigaam mcp` (stdio, ships with the TUI install) —
+  `claude mcp add gigaam -- gigaam mcp`; files on the same machine are passed
+  by path. Remotely: `/mcp` in `api.py` and in the web panel (Docker image
+  included) — `claude mcp add --transport http gigaam
+  https://gigaam-site.dubr1k.space/mcp --header "Authorization: Bearer <key>"`;
+  the key is the REST API key, without it — 401. In HTTP mode server paths are
+  rejected unless `GIGAAM_MCP_ALLOW_PATHS=1` (`GIGAAM_MCP_PATH_ROOT` confines
+  them); the base64 limit is `GIGAAM_MCP_MAX_INLINE_MB` (25 MB).
+- Agent skills: `skills/gigaam` now covers MCP, and the new
+  `skills/gigaam-mcp` is a standalone skill for agents without a local
+  install (tool contract, source choice, errors, recipes);
+  `gigaam --install-skill` installs both. Reference: `docs/MCP.md`; nginx
+  snippet for the SSE stream: `deploy/nginx-mcp-location.conf`.
+
 ### Changed (breaking)
 
 - Removed `/api/v1/transcribe`, `/api/v1/transcribe/batch`, `/api/v1/tasks*`,
@@ -188,4 +240,9 @@ are unaffected.
   `-F response_format=srt`, `-F stream=true`; the `openai` SDK with
   `base_url=".../v1"`.
 - The web panel (`web/`) and the Docker image behave as before — they do not
-  use `api.py`.
+  use `api.py`; both now serve `/mcp`, and the web panel prints the key on
+  first start.
+- `claude mcp add gigaam -- gigaam mcp`, then `/mcp` in Claude Code lists
+  `gigaam`; ask the agent to call `server_status` and `transcribe` with a path
+  to a short file. Remotely — `claude mcp add --transport http …` with the key
+  and `transcribe(url=…)` on a short clip.

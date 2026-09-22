@@ -119,6 +119,7 @@ HF_TOKEN=hf_...
 ## Документация
 
 - [API.md](API.md) — REST API: быстрый старт, параметры, форматы, стрим, ошибки
+- [MCP.md](MCP.md) — MCP-сервер для ИИ-агентов: `gigaam mcp`, удалённый `/mcp`, инструменты, скиллы
 - [CLI_GUIDE.md](CLI_GUIDE.md) — командная строка
 - [QUICK_START.md](QUICK_START.md) — быстрый старт с приложением
 - [INSTALL_LINUX.md](INSTALL_LINUX.md), [INSTALL_MACOS.md](INSTALL_MACOS.md), [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) — установка
@@ -132,3 +133,5 @@ HF_TOKEN=hf_...
    `/docs` и загрузите файл из браузера.
 3. **Разработчикам** — изучите [API.md](API.md) и подключите GigaAM к своему
    коду через SDK OpenAI, поменяв `base_url` и ключ.
+4. **Агентам** — `claude mcp add gigaam -- gigaam mcp` (или удалённый `/mcp`
+   с тем же ключом, что у API): [MCP.md](MCP.md).

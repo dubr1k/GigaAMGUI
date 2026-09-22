@@ -39,6 +39,7 @@ class MediaDownloader:
         progress_callback: ProgressCallback | None = None,
         allow_playlist: bool = False,
         windows_filenames: bool = True,
+        max_filesize: int | None = None,
     ) -> DownloadResult:
         url = url.strip()
         if not url:
@@ -96,6 +97,9 @@ class MediaDownloader:
             "no_warnings": True,
             "windowsfilenames": windows_filenames,
         }
+        if max_filesize is not None:
+            # yt-dlp пропускает файл больше лимита (без исключения) — вызывающий увидит пустой DownloadResult
+            ydl_opts["max_filesize"] = int(max_filesize)
 
         exit_code = 1
         for attempt in range(2):
