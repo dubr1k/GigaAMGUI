@@ -32,6 +32,17 @@ DEFAULT_MAX_BODY = 64 * _MiB  # base64 при GIGAAM_MCP_MAX_INLINE_MB=25 — ~3
 DEFAULT_MAX_INLINE_MB = 25
 
 
+def max_body_for(max_inline_bytes: int) -> int:
+    """Лимит тела HTTP-запроса под `audio_base64` размером `max_inline_bytes`.
+
+    Base64 раздувает данные в 4/3 плюс JSON-RPC обёртка; ниже 64 МиБ не опускаемся.
+    Иначе при большом `GIGAAM_MCP_MAX_INLINE_MB` SDK отвечал бы голым 413 до вызова
+    инструмента, минуя контракт `[file_too_large]`. Тот же лимит нужен nginx
+    (`client_max_body_size`, см. docs/MCP.md).
+    """
+    return max(DEFAULT_MAX_BODY, max_inline_bytes * 4 // 3 + _MiB)
+
+
 def backend_options_from_env(env=os.environ) -> dict:
     """Лимиты и политика `path` для HTTP-режима — из переменных окружения (см. docs/MCP.md)."""
     root = env.get("GIGAAM_MCP_PATH_ROOT")
@@ -99,9 +110,12 @@ class _LifespanRoute:
 
 
 def mount_mcp(app: Starlette, path: str, backend_factory: Callable[[], LocalBackend],
-              key_store_factory: Callable[[], KeyStore], *, max_body: int = DEFAULT_MAX_BODY) -> None:
+              key_store_factory: Callable[[], KeyStore], *, max_body: int | None = None) -> None:
     """Регистрирует `path` и оборачивает lifespan хоста: после его старта строит бэкенд
-    и сервер, запускает менеджер сессий SDK на время работы приложения."""
+    и сервер, запускает менеджер сессий SDK на время работы приложения.
+
+    `max_body` по умолчанию выводится из `backend.max_inline_bytes` (`max_body_for`),
+    чтобы лимит тела не расходился с `GIGAAM_MCP_MAX_INLINE_MB`."""
     route = _LifespanRoute()
     app.add_route(path, route, include_in_schema=False)
     host_lifespan = app.router.lifespan_context
@@ -109,8 +123,10 @@ def mount_mcp(app: Starlette, path: str, backend_factory: Callable[[], LocalBack
     @asynccontextmanager
     async def lifespan(app):
         async with host_lifespan(app) as state:  # здесь хост уже загрузил модель и ключи
-            server = build_server(backend_factory())
-            asgi = build_mcp_asgi(server, key_store_factory(), max_body=max_body)
+            backend = backend_factory()
+            server = build_server(backend)
+            cap = max_body if max_body is not None else max_body_for(backend.max_inline_bytes)
+            asgi = build_mcp_asgi(server, key_store_factory(), max_body=cap)
             async with server.session_manager.run():
                 route.app = asgi
                 try:

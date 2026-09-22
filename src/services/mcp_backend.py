@@ -51,9 +51,12 @@ class BackendError(Exception):
         self.param = param
 
 
+DEFAULT_MODEL = "v3_e2e_rnnt"
+
+
 @dataclass
 class TranscribeOptions:
-    model: str = "v3_e2e_rnnt"            # id модели или алиас; resolve_model приводит к id
+    model: str = DEFAULT_MODEL            # id модели или алиас; resolve_model приводит к id
     language: str | None = None
     format: str = "json"                  # text | json | verbose | diarized | srt | vtt
     word_timestamps: bool = False
@@ -67,7 +70,6 @@ class TranscribeOptions:
 
 # ==================== МОДЕЛИ ====================
 
-DEFAULT_MODEL = "v3_e2e_rnnt"
 MODEL_ALIASES = {
     "whisper-1": DEFAULT_MODEL,
     "gpt-4o-transcribe": DEFAULT_MODEL,
@@ -440,7 +442,8 @@ class LocalBackend:
         except Exception as exc:
             if self.logger:
                 self.logger.error(f"[transcribe] download failed: {exc}", exc_info=True)
-            raise BackendError("download_failed", f"Could not download '{url}': {exc}", 502, param="url") from exc
+            raise BackendError("download_failed", f"Could not download '{url}': {_first_line(exc)}", 502,
+                               param="url") from exc
         files = list(getattr(downloaded, "files", None) or [])
         if not files:
             raise BackendError("download_failed", f"Nothing was downloaded from '{url}'.", 502, param="url")
@@ -467,15 +470,26 @@ class LocalBackend:
         else:
             prompt_text = PROMPTS[mode]
         overrides = {k: v for k, v in (("provider", provider), ("model", model)) if v}
-        settings = llm_settings.resolve(overrides, config_dir=self.llm_config_dir)
-        try:
-            canonical = cli_tools.provider_by_name(settings.get("provider") or "API").name
-        except KeyError as exc:
-            raise BackendError("unsupported_parameter",
-                               f"Unknown provider '{settings.get('provider')}'. Use one of: {', '.join(cli_tools.canonical_provider_names())}.",
-                               param="provider") from exc
-        settings["provider"] = canonical
+
+        def prepare() -> tuple[dict[str, Any], str]:
+            # В executor: первый resolve() зовёт cli_tools.scan() (`<tool> --version`, до 10 с)
+            # и читает файлы настроек — на loop это стопорило бы SSE REST и прогресс веб-панели
+            settings = llm_settings.resolve(overrides, config_dir=self.llm_config_dir)
+            try:
+                canonical = cli_tools.provider_by_name(settings.get("provider") or "API").name
+            except KeyError as exc:
+                raise BackendError("unsupported_parameter",
+                                   f"Unknown provider '{settings.get('provider')}'. Use one of: {', '.join(cli_tools.canonical_provider_names())}.",
+                                   param="provider") from exc
+            settings["provider"] = canonical
+            if self.http_mode:
+                # Удалённый держатель ключа не должен получать CLI-агента с инструментами
+                # через summarize(prompt=...), даже если чекбокс включён в настройках хоста
+                settings["llm_allow_tools"] = False
+            return settings, canonical
+
         loop = asyncio.get_running_loop()
+        settings, canonical = await loop.run_in_executor(None, prepare)
         try:
             answer = await loop.run_in_executor(
                 None, lambda: llm_service.run_provider(settings, text, prompt_text, provider=canonical, strict_empty_cli=True))
@@ -484,7 +498,7 @@ class LocalBackend:
         except Exception as exc:
             if self.logger:
                 self.logger.error(f"[summarize] {canonical} failed: {exc}", exc_info=True)
-            raise BackendError("llm_failed", f"LLM provider '{canonical}' failed: {exc}", 502) from exc
+            raise BackendError("llm_failed", f"LLM provider '{canonical}' failed: {_first_line(exc)}", 502) from exc
         return {"mode": mode, "provider": canonical, "model": settings.get("model") or "", "answer": answer}
 
     # ---------- introspection ----------
@@ -501,18 +515,35 @@ class LocalBackend:
             "api": {"configured": bool(settings.get("api_key")), "model": settings.get("model") or ""},
         }
 
+    def active_jobs(self) -> int:
+        """Занятые слоты семафора — включая REST и веб-панель, с которыми он общий.
+
+        `asyncio.Semaphore` ёмкость не отдаёт, поэтому считаем от `max_concurrent`
+        через `_value` (стабилен с 3.4); без семафора или ёмкости — только MCP-задачи.
+        """
+        value = getattr(self.semaphore, "_value", None)
+        if self.max_concurrent is not None and isinstance(value, int):
+            return max(0, self.max_concurrent - value)
+        return self._active
+
     def status(self) -> dict[str, Any]:
         return {
             "version": __version__,
             "runtime": health_service.runtime_info(_platform, _machine),
             "asr": health_service.asr_health(self.model_loader),
-            "busy": {"active": self._active, "max": self.max_concurrent},
+            "busy": {"active": self.active_jobs(), "max": self.max_concurrent},
             "limits": {
                 "max_file_mb": self.max_file_size / _MiB,
                 "max_inline_mb": self.max_inline_bytes / _MiB,
                 "max_concurrent": self.max_concurrent,
             },
         }
+
+
+def _first_line(exc: BaseException) -> str:
+    """Первая строка текста исключения: yt-dlp и CLI отдают многострочный stderr с путями сервера."""
+    text = str(exc).strip()
+    return text.splitlines()[0] if text else exc.__class__.__name__
 
 
 def _platform() -> str:

@@ -4,12 +4,13 @@ Processor, model loader, downloader and LLM provider are fakes — no hardware, 
 """
 import asyncio
 import base64
+import sys
 import threading
 from pathlib import Path
 
 import pytest
 
-from src.services import cli_tools, llm_service, mcp_backend, transcription_service
+from src.services import cli_tools, llm_service, llm_settings, mcp_backend, transcription_service
 from src.services.llm_worker_service import PROMPTS
 from src.services.mcp_backend import (
     BackendError,
@@ -170,10 +171,11 @@ def test_url_source_downloads_into_work_dir_and_reports_progress(backend, upload
 
 def test_url_download_failure_maps_to_download_failed(backend, upload_dir):
     def boom(url, target_dir, progress_callback=None, **_):
-        raise RuntimeError("yt-dlp said no")
+        raise RuntimeError("yt-dlp said no\nTraceback: /srv/gigaam/.venv/lib/yt_dlp/x.py")
     backend.media_downloader.download = boom
     err = _err(backend.transcribe(url="https://example.org/x", opts=TranscribeOptions(), progress=None))
     assert err.code == "download_failed" and err.status == 502
+    assert err.message.endswith("yt-dlp said no") and "/srv/gigaam" not in err.message  # только первая строка
     assert _leftovers(upload_dir) == []
     # max_filesize превышен: yt-dlp молча ничего не скачивает
     backend.media_downloader.download = lambda *a, **kw: DownloadResult(files=[])
@@ -214,6 +216,7 @@ def test_exactly_one_source_is_required(backend, tmp_path):
     assert err.code == "invalid_request"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
 def test_path_policy(upload_dir, tmp_path, fake_processor):
     src = _wav(tmp_path)
     http = _backend(upload_dir, tmp_path, http_mode=True)
@@ -401,7 +404,8 @@ def test_transcribe_runs_under_the_semaphore(backend, tmp_path, fake_processor):
             task = asyncio.ensure_future(backend.transcribe(path=str(src), opts=TranscribeOptions(), progress=None))
             await asyncio.sleep(0.05)
             assert not task.done() and fake_processor.calls == []
-            assert backend.status()["busy"] == {"active": 0, "max": 1}
+            # слот держит «внешний» запрос — status считает его, MCP-задача ещё ждёт
+            assert backend.status()["busy"] == {"active": 1, "max": 1} and backend._active == 0
         return await task
 
     assert _run(scenario())["text"]
@@ -555,14 +559,49 @@ def test_summarize_provider_from_settings(backend, fake_provider, tmp_path):
     out = _run(backend.summarize("t", "summary", None, None, None))
     assert out["provider"] == "Claude Code" and out["model"] == "sonnet"
     assert fake_provider[0]["provider"] == "Claude Code"
+    # Чекбокс «инструменты» с хоста действует только для stdio: удалённый держатель ключа
+    # не получает CLI-агента с инструментами через summarize(prompt=...)
+    (cfg / "user_settings.json").write_text('{"llm_provider": "Claude Code", "llm_allow_tools": true}')
+    _run(backend.summarize("t", "summary", None, None, None))
+    assert fake_provider[1]["settings"]["llm_allow_tools"] is True
+    http = _backend(backend.upload_dir, tmp_path, http_mode=True)
+    _run(http.summarize("t", "summary", None, None, None))
+    assert fake_provider[2]["settings"]["llm_allow_tools"] is False
 
 
 def test_summarize_provider_failure(backend, fake_provider, monkeypatch):
     def boom(*a, **kw):
-        raise RuntimeError("claude exited with 1")
+        raise RuntimeError("claude exited with 1\n  at /home/op/.local/bin/claude")
     monkeypatch.setattr(llm_service, "run_provider", boom)
     err = _err(backend.summarize("t", "summary", None, None, None))
-    assert err.code == "llm_failed" and err.status == 502 and "claude exited" in err.message
+    assert err.code == "llm_failed" and err.status == 502 and err.message.endswith("claude exited with 1")
+    assert "/home/op" not in err.message  # stderr CLI с путями сервера наружу не уходит
+
+
+def test_summarize_resolves_settings_off_the_event_loop(backend, fake_provider, monkeypatch):
+    """Первый `llm_settings.resolve()` зовёт `cli_tools.scan()` (до 10 с) — loop не должен стоять."""
+    release = threading.Event()
+    seen = {"probe_before_resolve_returned": False}
+    probe_done = threading.Event()
+
+    def slow_resolve(*a, **kw):
+        release.wait(timeout=3)  # на loop это заморозило бы probe до истечения таймаута
+        seen["probe_before_resolve_returned"] = probe_done.is_set()
+        return {"provider": "API", "model": ""}
+
+    monkeypatch.setattr(llm_settings, "resolve", slow_resolve)
+
+    async def scenario():
+        task = asyncio.ensure_future(backend.summarize("t", "summary", None, None, None))
+        await asyncio.sleep(0.05)  # другой вызов на loop: status() и т.п. должны отвечать
+        assert backend.status()["busy"]["active"] == 0
+        probe_done.set()
+        release.set()
+        return await task
+
+    out = _run(scenario())
+    assert out["answer"] == "answer from API"
+    assert seen["probe_before_resolve_returned"] is True
 
 
 # ---------- models / providers / status ----------
@@ -613,6 +652,28 @@ def test_status(backend, upload_dir, tmp_path):
     unlimited = _backend(upload_dir, tmp_path, semaphore=None, max_concurrent=None)
     assert unlimited.status()["busy"] == {"active": 0, "max": None}
     assert unlimited.status()["limits"]["max_concurrent"] is None
+
+
+def test_status_counts_slots_taken_outside_mcp(upload_dir, tmp_path):
+    """Семафор общий с REST/веб-панелью: занятость — по слотам, а не по MCP-задачам."""
+    async def scenario():
+        sem = asyncio.Semaphore(3)
+        shared = _backend(upload_dir, tmp_path, semaphore=sem, max_concurrent=3)
+        assert shared.status()["busy"] == {"active": 0, "max": 3}
+        await sem.acquire()  # REST-запрос на том же процессе
+        await sem.acquire()
+        assert shared.status()["busy"] == {"active": 2, "max": 3} and shared._active == 0
+        sem.release()
+        sem.release()
+        assert shared.status()["busy"]["active"] == 0
+        # Ёмкость неизвестна — остаётся счётчик MCP-задач
+        blind = _backend(upload_dir, tmp_path, semaphore=sem, max_concurrent=None)
+        await sem.acquire()
+        blind._active = 1
+        assert blind.status()["busy"] == {"active": 1, "max": None}
+        sem.release()
+
+    _run(scenario())
 
 
 def test_backend_error_str_is_prefixed_with_code():

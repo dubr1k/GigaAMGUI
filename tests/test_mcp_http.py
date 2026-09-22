@@ -16,6 +16,7 @@ pytest.importorskip("mcp")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from src.services import mcp_http  # noqa: E402
 from src.services.api_keys import KeyStore  # noqa: E402
 from tests.test_api_openai import VALID_KEY, _FakeModelLoader  # noqa: E402
 
@@ -110,6 +111,66 @@ def test_api_upload_guard_does_not_cover_mcp(api_client):
     # /v1/audio/ answers 401 from _UploadGuard; /mcp must answer from _KeyGuard with the same envelope
     r = api_client.post("/mcp", headers=MCP_HEADERS, json=INITIALIZE)
     assert r.status_code == 401 and r.json()["error"]["code"] == "invalid_api_key"
+
+
+# ==================== src/services/mcp_http.py ====================
+
+MiB = 1024 * 1024
+
+
+@pytest.mark.parametrize("env, expected", [
+    ({}, {"allow_paths": False, "path_root": None, "max_inline_bytes": 25 * MiB}),
+    ({"GIGAAM_MCP_ALLOW_PATHS": "1"}, {"allow_paths": True}),
+    ({"GIGAAM_MCP_ALLOW_PATHS": "true"}, {"allow_paths": False}),   # только строго "1"
+    ({"GIGAAM_MCP_ALLOW_PATHS": "0"}, {"allow_paths": False}),
+    ({"GIGAAM_MCP_PATH_ROOT": "~/media"}, {"path_root": Path("~/media")}),  # resolve() делает LocalBackend
+    ({"GIGAAM_MCP_MAX_INLINE_MB": "1.5"}, {"max_inline_bytes": int(1.5 * MiB)}),
+    ({"GIGAAM_MCP_MAX_INLINE_MB": "100"}, {"max_inline_bytes": 100 * MiB}),
+], ids=["defaults", "paths=1", "paths=true", "paths=0", "path_root", "inline=1.5", "inline=100"])
+def test_backend_options_from_env(monkeypatch, env, expected):
+    for name in ("GIGAAM_MCP_ALLOW_PATHS", "GIGAAM_MCP_PATH_ROOT", "GIGAAM_MCP_MAX_INLINE_MB"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    options = mcp_http.backend_options_from_env()
+    assert set(options) == {"allow_paths", "path_root", "max_inline_bytes"}
+    for key, value in expected.items():
+        assert options[key] == value, key
+
+
+def test_max_body_follows_the_inline_limit():
+    # base64 = 4/3 данных + JSON-RPC обёртка; ниже 64 MiB не опускаемся
+    assert mcp_http.max_body_for(25 * MiB) == 64 * MiB
+    assert mcp_http.max_body_for(0) == 64 * MiB
+    assert mcp_http.max_body_for(100 * MiB) == 100 * MiB * 4 // 3 + MiB
+    assert mcp_http.max_body_for(100 * MiB) > 100 * MiB * 4 // 3  # иначе SDK отвечал бы голым 413
+
+
+def test_mount_mcp_derives_the_body_cap_from_the_backend(monkeypatch):
+    from starlette.applications import Starlette
+
+    from tests.test_docs_mcp import _StubBackend
+
+    seen = {}
+    real = mcp_http.build_mcp_asgi
+
+    def spy(server, key_store, *, max_body):
+        seen["max_body"] = max_body
+        return real(server, key_store, max_body=max_body)
+
+    monkeypatch.setattr(mcp_http, "build_mcp_asgi", spy)
+    backend = _StubBackend()
+    backend.max_inline_bytes = 100 * MiB
+    app = Starlette()
+    mcp_http.mount_mcp(app, "/mcp", lambda: backend, lambda: KeyStore(Path("/nonexistent/.api_keys")))
+    with TestClient(app):
+        pass
+    assert seen["max_body"] == mcp_http.max_body_for(100 * MiB)
+    app = Starlette()
+    mcp_http.mount_mcp(app, "/mcp", lambda: backend, lambda: KeyStore(Path("/nonexistent/.api_keys")), max_body=7)
+    with TestClient(app):
+        pass
+    assert seen["max_body"] == 7  # явный лимит вызывающего сохраняется
 
 
 # ==================== web/web_app.py ====================
