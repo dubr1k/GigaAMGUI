@@ -222,8 +222,10 @@ APP_TITLE = os.getenv("APP_TITLE", "GigaAM v3 Transcriber")
 APP_GEOMETRY = os.getenv("APP_GEOMETRY", "900x700")
 APP_THEME = os.getenv("APP_THEME", "blue")
 
-# Файл статистики
-STATS_FILE = os.getenv("STATS_FILE", "processing_stats.json")
+# Относительный путь из .env привязан к пользовательскому config, не к .app.
+STATS_FILE = os.path.expanduser(os.getenv("STATS_FILE", "processing_stats.json"))
+if not os.path.isabs(STATS_FILE):
+    STATS_FILE = str(user_config_dir() / STATS_FILE)
 
 # Настройки LLM API (OpenAI-compatible или Anthropic Messages API)
 LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1")

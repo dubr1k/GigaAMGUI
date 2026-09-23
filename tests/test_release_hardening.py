@@ -37,15 +37,33 @@ def test_api_examples_use_openai_contract() -> None:
 
 
 def test_all_desktop_version_sources_match_release():
+    import ast
     import json
 
-    expected = "2.5.0"
-    assert f'__version__ = "{expected}"' in Path("src/__init__.py").read_text(encoding="utf-8")
-    assert f'APP_VERSION = "{expected}"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
-    assert json.loads(Path("desktop/package.json").read_text(encoding="utf-8"))["version"] == expected
-    assert json.loads(Path("desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"] == expected
-    assert f'version = "{expected}"' in Path("desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8")
-    assert f'name = "gigaam-desktop"\nversion = "{expected}"' in Path("desktop/src-tauri/Cargo.lock").read_text(encoding="utf-8")
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+
+    from src import __version__
+
+    spec = ast.parse((ROOT / "packaging/_spec_common.py").read_text(encoding="utf-8"))
+    bundle_version = next(
+        ast.literal_eval(node.value)
+        for node in spec.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in node.targets)
+    )
+    package = json.loads((ROOT / "desktop/package.json").read_text(encoding="utf-8"))
+    npm_lock = json.loads((ROOT / "desktop/package-lock.json").read_text(encoding="utf-8"))
+    tauri = json.loads((ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    cargo = tomllib.loads((ROOT / "desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8"))
+    cargo_lock = tomllib.loads((ROOT / "desktop/src-tauri/Cargo.lock").read_text(encoding="utf-8"))
+    locked_app = next(package for package in cargo_lock["package"] if package["name"] == "gigaam-desktop")
+    assert {
+        bundle_version, package["version"], npm_lock["version"], npm_lock["packages"][""]["version"],
+        tauri["version"], cargo["package"]["version"], locked_app["version"],
+    } == {__version__}
 
 
 def test_liquid_release_bundle_contains_configured_icon():

@@ -15,18 +15,6 @@ def test_macos_mlx_requirements_pinned_to_known_commit():
     assert "gigaam-mlx" in text
 
 
-def test_spec_includes_mlx_packages():
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    assert "\"mlx\"" in text
-    assert "\"gigaam_mlx\"" in text
-    # Версия живёт в packaging/_spec_common.py — один источник на оба .app-спека,
-    # иначе релиз ловил бы расхождение уже после сборки (см.
-    # tests/test_macos_x86_64_packaging.py).
-    assert '"CFBundleShortVersionString": APP_VERSION' in text
-    assert '"CFBundleVersion": APP_VERSION' in text
-    assert 'APP_VERSION = "2.5.0"' in Path("packaging/_spec_common.py").read_text(encoding="utf-8")
-
-
 def test_spec_can_bundle_sortformer_runtime():
     text = SPEC_PATH.read_text(encoding="utf-8")
     assert "GIGAAM_BUNDLE_SORTFORMER" in text

@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-09-23
+
 ### Исправлено
 
 - **Локальный MCP в установке TUI:** добавлена зависимость `yt-dlp`, без
@@ -18,6 +20,9 @@
   HTTP/REST/веб сохраняют постоянную модель.
 - При выгрузке ссылка загрузчика на веса освобождается до очистки кэша
   backend, чтобы буферный пул MLX не удерживал уже ненужную модель.
+- **Подпись macOS-приложения:** статистика обработки по умолчанию сохраняется
+  в пользовательском каталоге конфигурации, а не рядом с исполняемым файлом
+  внутри `.app`. Распознавание больше не изменяет подписанный bundle.
 
 ### Документация
 
@@ -1112,7 +1117,9 @@ macOS-клиент остаётся в силе.
 
 ---
 
-[Unreleased]: https://github.com/dubr1k/GigaAMGUI/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.1...HEAD
+[2.5.1]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.0...v2.5.1
+[2.5.0]: https://github.com/dubr1k/GigaAMGUI/releases/tag/v2.5.0
 [1.3.1]: https://github.com/dubr1k/GigaAMGUI/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/dubr1k/GigaAMGUI/releases/tag/v1.3.0
 [1.1.2]: https://github.com/dubr1k/GigaAMGUI/releases/tag/v1.1.2
