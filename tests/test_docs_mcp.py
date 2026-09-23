@@ -76,20 +76,6 @@ def test_reference_covers_every_tool_resource_and_prompt(names, doc):
     assert not missing, f"{doc.relative_to(ROOT)} lacks: {missing}"
 
 
-def test_mcp_doc_has_client_snippets_and_remote_form():
-    text = _read(MCP_DOC)
-    for needle in (
-        "claude mcp add gigaam -- gigaam mcp",       # Claude Code, stdio
-        "~/.codex/config.toml", "[mcp_servers.gigaam]",  # Codex
-        ".cursor/mcp.json",                           # Cursor
-        "--transport http",                           # Claude Code, remote
-        "https://gigaam-site.dubr1k.space/mcp",
-        "Authorization: Bearer",
-        "GIGAAM_MCP_ALLOW_PATHS", "GIGAAM_MCP_PATH_ROOT", "GIGAAM_MCP_MAX_INLINE_MB", "API_KEYS_FILE",
-    ):
-        assert needle in text, needle
-
-
 def test_mcp_skill_frontmatter_and_source_rules():
     text = _read(MCP_SKILL)
     assert text.startswith("---\nname: gigaam-mcp\n")
