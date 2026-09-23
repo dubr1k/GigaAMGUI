@@ -470,14 +470,10 @@ class TranscriptionProcessor:
             else:
                 self.logger(f"Реплик в тексте: {len(utterances)}")
 
-                # Формирование результатов: обычный текст и диаризованный (если включена диаризация)
-                # Обычный текст — всегда без меток спикеров
-                full_text_lines_plain = []
+                # Таймкодированные форматы — строка на сегмент; обычный и
+                # диаризованный TXT собираются в абзацы форматтерами ниже.
                 timecoded_lines_plain = []
-                # Диаризованный текст — с метками спикеров (только при enable_diarization)
-                full_text_lines_diarized = []
                 timecoded_lines_diarized = []
-                current_speaker = None
 
                 for utt in utterances:
                     text = utt.get('transcription', '')
@@ -491,8 +487,6 @@ class TranscriptionProcessor:
 
                     start, end = boundaries
 
-                    # Обычный текст — всегда без спикеров
-                    full_text_lines_plain.append(text)
                     ts_str_plain = (f"[{self.time_formatter.format_timestamp(start)} - "
                                     f"{self.time_formatter.format_timestamp(end)}] {text}")
                     timecoded_lines_plain.append(ts_str_plain)
@@ -500,29 +494,24 @@ class TranscriptionProcessor:
                     # Диаризованный текст — с метками спикеров только после
                     # реально успешного запуска модели и маппинга.
                     if diarization_applied and speaker:
-                        if speaker != current_speaker:
-                            if current_speaker is not None:
-                                full_text_lines_diarized.append("")
-                            full_text_lines_diarized.append(f"[{speaker}]")
-                            current_speaker = speaker
-                        full_text_lines_diarized.append(text)
                         ts_str_diarized = (f"[{self.time_formatter.format_timestamp(start)} - "
                                            f"{self.time_formatter.format_timestamp(end)}] {speaker}: {text}")
                         timecoded_lines_diarized.append(ts_str_diarized)
                     else:
-                        full_text_lines_diarized.append(text)
                         ts_str_diarized = (f"[{self.time_formatter.format_timestamp(start)} - "
                                            f"{self.time_formatter.format_timestamp(end)}] {text}")
                         timecoded_lines_diarized.append(ts_str_diarized)
 
-                # Декодерные/VAD-границы не являются абзацами. В обычном TXT
-                # склеиваем их пробелом, чтобы не создавать ложные «обрывы» каждые
-                # 10–20 секунд. Таймкодированные форматы сохраняют сегментацию.
-                full_text = " ".join(full_text_lines_plain)
+                # Декодерные/VAD-границы не являются абзацами: они режут фразы
+                # посередине каждые 10–20 секунд. Абзацы TXT закрываются только на
+                # конце предложения (пауза или длина), см. formatters._paragraphs.
+                full_text = formatters.generate_plain_text(utterances)
                 timecoded_lines = timecoded_lines_plain
 
-                # Диаризованный текст — для _diarize.txt и _diarize_timecodes.txt (при enable_diarization)
-                full_text_diarized = "\n".join(full_text_lines_diarized)
+                # Диаризованный текст — для _diarize.txt (только после успешной диаризации)
+                full_text_diarized = (
+                    formatters.generate_diarized_text(utterances) if diarization_applied else ""
+                )
 
                 if not full_text.strip():
                     self.logger("Внимание: речь не распознана — все фрагменты пустые")
