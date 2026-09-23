@@ -1,9 +1,9 @@
 """`python -m src.mcp_server` — MCP-сервер GigaAM: stdio (по умолчанию) или `--http`.
 
-stdio: модель грузится в этом же процессе, как в lifespan api.py; `path` разрешён
-(локальный агент и сервер — одна машина), ключ не нужен. stdout принадлежит
-протоколу: пока грузится модель, fd 1 перенаправлен в stderr (print, torch,
-C-библиотеки), логи — только в stderr и файл.
+stdio: при старте создаётся только конфигурация загрузчика. Веса загружаются
+для каждого transcribe и освобождаются после него; `path` разрешён, ключ не
+нужен. stdout принадлежит протоколу: при запуске шум уходит в stderr, затем
+дескриптор защищает stdio-транспорт MCP SDK.
 
 `--http`: тот же сервер за `_KeyGuard` на `/mcp` через uvicorn; ключи — из
 `API_KEYS_FILE` (тот же файл, что у api.py), `path` — только при
@@ -90,7 +90,7 @@ def build_backend(*, http_mode: bool, config_dir: Path | None = None,
     if not http_mode:
         options["allow_paths"] = True  # локальный агент: файлы с этой же машины
     return LocalBackend(
-        model_loader=_load_model(logger), stats_manager=ProcessingStats(),
+        model_loader=_load_model(logger) if http_mode else ModelLoader(), stats_manager=ProcessingStats(),
         semaphore=asyncio.Semaphore(MAX_CONCURRENT_TASKS), upload_dir=UPLOAD_DIR,
         media_downloader=MediaDownloader(), loader_factory=ModelLoader, logger=logger, http_mode=http_mode,
         max_file_size=MAX_FILE_SIZE, hf_token=HF_TOKEN, llm_config_dir=config_dir,

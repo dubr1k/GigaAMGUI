@@ -355,6 +355,42 @@ def test_per_request_loader_is_unloaded(backend, tmp_path, fake_processor, monke
     assert len(_OwnedLoader.instances) == 2 and _OwnedLoader.instances[1].unloaded == 1
 
 
+@pytest.mark.parametrize("failure", [None, "load", "process"])
+def test_cold_default_loads_per_request_and_releases_afterwards(
+        backend, tmp_path, monkeypatch, failure):
+    from src.core.model_loader import ModelLoader
+
+    default = ModelLoader()
+    backend.model_loader = default
+    backend.loader_factory = ModelLoader
+    acquired = []
+
+    def load(loader, logger=None):
+        loader.model = object()
+        acquired.append(loader)
+        return failure != "load"
+
+    def processor(loader, *args, **kwargs):
+        assert loader.is_loaded()
+        if failure == "process":
+            raise RuntimeError("processing failed")
+        return _FakeProcessor(**kwargs)
+
+    monkeypatch.setattr(ModelLoader, "load_model", load)
+    monkeypatch.setattr(transcription_service, "build_processor", processor)
+    source = _wav(tmp_path)
+    for _ in range(2):
+        call = backend.transcribe(path=str(source), opts=TranscribeOptions(), progress=None)
+        if failure:
+            assert _err(call).code == "processing_failed"
+        else:
+            assert _run(call)["text"] == "Привет, как дела?"
+        assert not default.is_loaded()
+        assert acquired and all(not loader.is_loaded() for loader in acquired)
+        assert backend.active_jobs() == 0
+    assert len(acquired) == 2 and acquired[0] is not acquired[1]
+
+
 def test_default_loader_is_never_unloaded(backend, tmp_path, fake_processor):
     calls = []
     backend.model_loader.unload = lambda: calls.append(1)

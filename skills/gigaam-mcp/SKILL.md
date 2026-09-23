@@ -7,6 +7,8 @@ description: Use the GigaAM MCP server (tools `transcribe`, `summarize`, `list_m
 
 The `gigaam` MCP server runs GigaAM v3 (Russian ASR) either on this machine (stdio, started by the client as `gigaam mcp`) or remotely (Streamable HTTP, `https://gigaam-site.dubr1k.space/mcp`, `Authorization: Bearer <key>` on every request). Prefer its tools over shelling out; nothing needs to be installed locally. Recognition runs at roughly real-time speed — keep the call open and never retry a slow `transcribe`.
 
+**Local stdio lifecycle:** connecting does not load ASR weights. Each `transcribe` loads a request-owned model and releases it after processing, including failure. The MCP process stays connected, but does not retain ASR weights between calls. `server_status`, `list_models` and `summarize` do not load ASR. `asr.loader_loaded=false` with `asr.error=null` is normal for this local mode: call `transcribe` directly, without preloading. That flag describes the resident loader, not in-flight request models; use `busy.active` and progress for running jobs. HTTP/REST/web servers keep their existing resident-model lifecycle.
+
 ## Connecting (if the server is not listed yet)
 
 - Claude Code, local: `claude mcp add gigaam -- gigaam mcp`; remote: `claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp --header "Authorization: Bearer gam_..."`.
@@ -71,5 +73,5 @@ Tool errors contain a bracketed code — match `[code]` anywhere in the text, no
 
 - **Transcript → SRT**: `transcribe(url=..., format="srt")` → `subtitles`; optionally run prompt `subtitles_review(srt=subtitles)` and apply the fixes.
 - **Meeting → notes**: `transcribe(url=..., format="diarized", num_speakers=N)` → join `segments` as `Speaker: text` lines → `summarize(text, mode="tasks")` for action items, or prompt `meeting_notes(transcript, language="ru")` to write the minutes yourself.
-- **Before a big job**: `server_status()` → check `busy.active < busy.max`, `limits`, `asr.loader_loaded`; `list_models()` if a specific model or backend is needed.
+- **Before a big job**: `server_status()` → check `busy.active < busy.max`, `limits`, `asr.error`; a local stdio server need not have `asr.loader_loaded=true`. Use `list_models()` if a specific model or backend is needed.
 - **Custom extraction**: `summarize(text, mode="custom", prompt="Выпиши все названные суммы и даты")`.

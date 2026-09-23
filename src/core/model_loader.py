@@ -281,12 +281,12 @@ class ModelLoader:
 
     def unload(self):
         """Выгружает модель и освобождает память."""
+        self.model = None
         if self._backend is not None:
             try:
                 self._backend.unload()
             except Exception:
                 pass
-        self.model = None
         self.device = None
         self._backend = None
         self._fallback_reason = None

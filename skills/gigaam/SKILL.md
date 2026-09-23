@@ -27,6 +27,8 @@ Prints each mode's text under a `## <mode>` heading; also saves `session_llm_<mo
 
 If a `gigaam` MCP server is connected (Claude Code `/mcp` lists it), call its tools instead of shelling out: `transcribe` (source `url` | `path` | `audio_base64`+`filename`; `format` `text|json|verbose|diarized|srt|vtt`; `diarize`, `num_speakers`, `diarization_backend`), `summarize` (`mode` `summary|tasks|terms|custom`), `list_models`, `list_llm_providers`, `server_status`; resources `gigaam://models`, `gigaam://status`; prompts `meeting_notes`, `subtitles_review`. Results come back as JSON in the tool result — no files to read. Long recordings take minutes: keep the call open (progress notifications arrive), do not retry. Full contract: the `gigaam-mcp` skill / `docs/MCP.md`.
 
+Local stdio MCP does not load ASR weights at harness startup: each transcription loads and releases its own model. `connected` and `asr.loader_loaded=false` are compatible; see `gigaam-mcp` for the lifecycle. Headless CLI remains the option when the entire worker process should exit after the batch.
+
 Connect it once:
 
 - Claude Code: `claude mcp add gigaam -- gigaam mcp` (local stdio; `path` to files on this machine works) or `claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp --header "Authorization: Bearer <key>"` (remote; use `url` sources).
