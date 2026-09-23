@@ -3733,11 +3733,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    func controlTextDidEndEditing(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField, field.identifier != nil else { return }
-        textChanged(field)
-    }
-
+    /// No controlTextDidEndEditing: every edit is already persisted here. Saving
+    /// again on end-editing let a stale field win — show(page:) removes the old,
+    /// still-focused field only after the new page has read the stored value, and
+    /// AppKit ends its editing on removal, so a folder picked with «Изменить» was
+    /// overwritten by the old empty text while the new field still displayed it.
     func controlTextDidChange(_ notification: Notification) {
         guard let control = notification.object as? NSTextField else { return }
         if control.identifier != nil { textChanged(control) }
