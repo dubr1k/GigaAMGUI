@@ -1,5 +1,6 @@
 """Тесты ModelLoader без реальной загрузки весов."""
 
+import weakref
 from types import SimpleNamespace
 
 import numpy as np
@@ -35,6 +36,29 @@ def test_unload_clears_model():
     loader.unload()
     assert loader.model is None
     assert loader.is_loaded() is False
+
+
+def test_unload_releases_last_model_reference_before_backend_cache_cleanup():
+    class Weights:
+        pass
+
+    released_at_cleanup = []
+
+    class Backend:
+        def __init__(self):
+            self.model = Weights()
+
+        def unload(self):
+            self.model = None
+            released_at_cleanup.append(weights() is None)
+
+    loader = ModelLoader()
+    loader._backend = Backend()
+    loader.model = loader._backend.model
+    weights = weakref.ref(loader.model)
+    loader.unload()
+    assert released_at_cleanup == [True]
+    assert weights() is None
 
 
 def test_transcribe_longform_reads_wav_without_torchaudio_load(tmp_path, monkeypatch):

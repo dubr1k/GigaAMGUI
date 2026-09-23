@@ -432,6 +432,9 @@ claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp \
 Agent skills (`skills/gigaam`, `skills/gigaam-mcp`) are installed by
 `gigaam --install-skill`. Clients, limits, errors and the nginx snippet:
 [docs/MCP.md](docs/MCP.md) (Russian; the skills are English).
+For local Claude Code, Codex, OMP, Pi, OpenCode and Hermes setup, including
+the Python environment, skills and protocol checks, see the
+[local harness guide](docs/LOCAL_HARNESSES.md) (Russian).
 
 ONNX diarization is also available without PyTorch or an HF token:
 

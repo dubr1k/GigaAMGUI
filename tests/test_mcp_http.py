@@ -262,23 +262,24 @@ def test_parse_args_defaults_to_stdio():
     assert args.http and args.host == "0.0.0.0" and args.port == 9000 and args.config_dir == Path("/tmp/cfg")
 
 
-def test_build_stdio_backend_loads_model_and_allows_paths(monkeypatch, tmp_path):
-    monkeypatch.setattr(mcp_entry, "ModelLoader", _FakeModelLoader)
+def test_stdio_startup_and_introspection_do_not_load_model(monkeypatch, tmp_path):
+    def unexpected_load(self, logger=None):
+        pytest.fail("stdio startup/introspection must not load ASR weights")
+
+    monkeypatch.setattr(mcp_entry.ModelLoader, "load_model", unexpected_load)
     backend = mcp_entry.build_stdio_backend(config_dir=tmp_path, logger=TEST_LOGGER)
-    assert isinstance(backend.model_loader, _FakeModelLoader)
-    assert backend.http_mode is False and backend.allow_paths is True
-    assert backend.llm_config_dir == tmp_path
-    assert backend.semaphore is not None and backend.max_concurrent == mcp_entry.MAX_CONCURRENT_TASKS
+    assert backend.status()["asr"]["loader_loaded"] is False
+    assert backend.models()["gigaam"]["active"]["loader_loaded"] is False
 
 
-def test_build_stdio_backend_fails_loudly_when_model_does_not_load(monkeypatch):
+def test_http_backend_still_fails_when_model_does_not_load(monkeypatch):
     class _Broken(_FakeModelLoader):
         def load_model(self, logger=None):
             return False
 
     monkeypatch.setattr(mcp_entry, "ModelLoader", _Broken)
     with pytest.raises(RuntimeError):
-        mcp_entry.build_stdio_backend(logger=TEST_LOGGER)
+        mcp_entry.build_backend(http_mode=True, logger=TEST_LOGGER)
 
 
 def test_stdout_is_diverted_to_stderr_while_loading():

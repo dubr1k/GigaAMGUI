@@ -239,6 +239,8 @@ if [[ "$INSTALL_MLX" == true && "$(uname -s)" == "Darwin" && "$(uname -m)" == "a
 else
   "$VENV/bin/python" -c 'import dotenv, gigaam'
 fi
+# Check the advertised MCP entry point without loading models or starting a server.
+(cd "$REPO_DIR" && "$VENV/bin/python" -m src.mcp_server --help >/dev/null)
 
 mkdir -p "$SETTINGS_DIR"
 "$VENV/bin/python" - "$SETTINGS_FILE" "$MODEL" <<'PY'

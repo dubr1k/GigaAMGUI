@@ -12,11 +12,17 @@ class _DefaultLoader:
     requested_model = "v3_e2e_rnnt"
     requested_provider = "auto"
 
+    def is_loaded(self):
+        return True
+
 
 class _PytorchDefaultLoader:
     requested_backend = "pytorch"
     requested_model = "v3_e2e_rnnt"
     requested_provider = "auto"
+
+    def is_loaded(self):
+        return True
 
 
 def test_blank_asr_selection_reuses_default_loader():

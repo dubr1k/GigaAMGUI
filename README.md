@@ -498,6 +498,8 @@ claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp \
 Скиллы для агентов (`skills/gigaam`, `skills/gigaam-mcp`) ставятся командой
 `gigaam --install-skill`. Клиенты, лимиты, ошибки и деплой за nginx — в
 [docs/MCP.md](docs/MCP.md).
+Пошаговая локальная настройка Claude Code, Codex, OMP, Pi, OpenCode и Hermes,
+включая venv, скиллы и проверку протокола — [локальные harness](docs/LOCAL_HARNESSES.md).
 
 Сравнить движки на своём корпусе:
 

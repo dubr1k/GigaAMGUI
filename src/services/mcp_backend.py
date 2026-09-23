@@ -181,9 +181,9 @@ def run_transcription(file_path: Path, work_dir: Path, opts: TranscribeOptions, 
     """Блокирующая транскрибация `file_path`; `opts` — только из `prepare_options`
     (там уже проверен и нормализован ASR-выбор: backend/model/onnx_provider заполнены).
 
-    Берёт загрузчик под запрос, если backend/модель/провайдер отличаются от
-    серверного, и выгружает его в `finally`; результат процессора возвращается
-    как есть (`utterances`, `media_duration`, `diarization`).
+    Берёт загрузчик под запрос, если серверная модель не загружена или
+    backend/модель/провайдер отличаются, и выгружает его в `finally`;
+    результат процессора возвращается как есть (`utterances`, `media_duration`, `diarization`).
     """
     if not (opts.asr_backend and opts.onnx_provider):
         raise ValueError("run_transcription() expects options prepared by prepare_options()")
