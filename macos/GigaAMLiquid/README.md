@@ -50,6 +50,9 @@ permissions. Sessions are written under the folder chosen on the Live page
 (`~/Documents/GigaAM/live` by default) as 16 kHz recordings plus the selected
 exports.
 
+The Processing log opens at the beginning of the output, with the first line
+fully visible; scroll within the log to inspect later messages.
+
 The LLM page and Settings → LLM use the project's providers (an OpenAI-compatible
 or Anthropic API, Claude Code, Codex, OpenCode, Pi, oh-my-pi or any other CLI). The API key
 is stored in the Keychain.

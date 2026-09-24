@@ -2726,9 +2726,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         alert.addButton(withTitle: L10n.text("Понятно"))
         let editor = textEditor(transcriptionLog.isEmpty ? L10n.text(transcriptionStatus) : transcriptionLog, key: nil, height: 300)
         editor.frame = NSRect(x: 0, y: 0, width: 650, height: 300)
-        (editor.documentView as? NSTextView)?.isEditable = false
+        if let text = editor.documentView as? NSTextView {
+            text.isEditable = false
+            text.setSelectedRange(NSRange(location: 0, length: 0))
+        }
         alert.accessoryView = editor
         alert.beginSheetModal(for: window)
+        DispatchQueue.main.async { [weak alert] in
+            guard let alert, alert.window.isVisible else { return }
+            alert.window.layoutIfNeeded()
+            editor.contentView.scroll(to: .zero)
+            editor.reflectScrolledClipView(editor.contentView)
+        }
     }
 
     @objc private func popupChanged(_ sender: NSPopUpButton) {
