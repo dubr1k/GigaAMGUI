@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [2.5.3-3] - 2026-09-24
+
+### Исправлено
+
+- **Liquid: список файлов.** Счётчик выбранных файлов выровнен с кнопкой
+  «Очистить»; в строках появился крестик для удаления отдельного файла
+  без очистки остальных.
+
 ## [2.5.3-2] - 2026-09-24
 
 ### Изменено
@@ -1151,7 +1159,8 @@ macOS-клиент остаётся в силе.
 
 ---
 
-[Unreleased]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.3-2...HEAD
+[Unreleased]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.3-3...HEAD
+[2.5.3-3]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.3-2...v2.5.3-3
 [2.5.3-2]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.2...v2.5.3-2
 [2.5.2]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.1...v2.5.2
 [2.5.1]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.0...v2.5.1

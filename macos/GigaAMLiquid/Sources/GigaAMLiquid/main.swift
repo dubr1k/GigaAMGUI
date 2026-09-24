@@ -1274,7 +1274,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let count = label("", size: 13, color: Palette.muted)
         count.identifier = NSUserInterfaceItemIdentifier("processing.selected.count")
         selectedFilesCountLabel = count
-        let selected = card("Выбранные файлы", trailing: horizontal([count, clear], spacing: 12))
+        let trailing = horizontal([count, clear], spacing: 12)
+        trailing.alignment = .centerY
+        let selected = card("Выбранные файлы", trailing: trailing)
         let selectedStack = contentStack(selected)
         selectedStack.addArrangedSubview(columnHeadings(selectedFileColumns))
         selectedStack.addArrangedSubview(divider())
@@ -2956,6 +2958,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshSelectedFiles()
     }
 
+    @objc private func removeSelectedFile(_ sender: NSButton) {
+        guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil, liveJob == nil,
+              selectedFileURLs.indices.contains(sender.tag) else { return }
+        selectedFileURLs.remove(at: sender.tag)
+        if selectedFileURLs.isEmpty { cleanupDownloadedMedia() }
+        refreshSelectedFiles()
+    }
+
     private func mediaCacheRoot() -> URL? {
         try? FileManager.default.url(
             for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
@@ -3606,9 +3616,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         defaults.set(editor.string, forKey: key)
     }
 
-    /// Колонки списка выбранных файлов: номер, имя, состояние. Одни и те же ширины
-    /// для шапки и строк, иначе состояние не встаёт под свой заголовок.
-    private var selectedFileColumns: [(String, CGFloat)] { [("№", 28), ("Файл", 318), ("Состояние", 200)] }
+    /// Колонки списка выбранных файлов: номер, имя, состояние. Оставляем место
+    /// справа для кнопки удаления, не смещая состояние относительно заголовка.
+    private var selectedFileColumns: [(String, CGFloat)] { [("№", 28), ("Файл", 286), ("Состояние", 200)] }
 
     private func selectedFileRow(index: Int, url: URL) -> NSView {
         let widths = selectedFileColumns.map(\.1)
@@ -3622,7 +3632,21 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let stateText = fileStates[url.standardizedFileURL] ?? "выбран, не обработан"
         let state = label(stateText, size: 14, color: stateText == "Ошибка" ? Palette.ink : Palette.body)
         state.widthAnchor.constraint(equalToConstant: widths[2]).isActive = true
-        let row = horizontal([number, name, state, flexibleSpace()], spacing: 8)
+        let remove = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: nil) ?? NSImage(),
+                              target: self, action: #selector(removeSelectedFile(_:)))
+        remove.isBordered = false
+        remove.imagePosition = .imageOnly
+        remove.imageScaling = .scaleProportionallyDown
+        remove.contentTintColor = Palette.body
+        remove.tag = index
+        remove.identifier = NSUserInterfaceItemIdentifier("processing.selected.remove")
+        remove.isEnabled = !isClosing && transcriptionJob == nil && mediaDownloadJob == nil && liveJob == nil
+        remove.setAccessibilityLabel(L10n.text("Убрать файл") + ": " + url.lastPathComponent)
+        remove.toolTip = L10n.text("Убрать файл")
+        remove.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        remove.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        let row = horizontal([number, name, state, remove, flexibleSpace()], spacing: 8)
+        row.alignment = .centerY
         row.setAccessibilityLabel("\(index + 1). \(url.lastPathComponent) — \(L10n.text(stateText))")
         return row
     }

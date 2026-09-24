@@ -61,6 +61,7 @@ enum L10n {
         "Авто": "Auto",
         "Выбранные файлы": "Selected files",
         "Очистить": "Clear",
+        "Убрать файл": "Remove file",
         "Файл": "File",
         "Состояние": "State",
         "Файлы не выбраны. Добавьте аудио или видео.": "No files selected. Add audio or video.",

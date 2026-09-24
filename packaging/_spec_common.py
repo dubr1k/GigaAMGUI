@@ -27,9 +27,9 @@ from PyInstaller.utils.hooks import (
 
 #: Тег релиза показывается в About; macOS требует числовой маркетинговый
 #: номер и не более трёх компонентов в CFBundleVersion.
-APP_VERSION = "2.5.3-2"
+APP_VERSION = "2.5.3-3"
 APP_MARKETING_VERSION = APP_VERSION.split("-", 1)[0]
-APP_BUILD_VERSION = "2.5.32"
+APP_BUILD_VERSION = "2.5.33"
 
 
 # Пакеты, которые импортирует рантайм-torchvision/pyannote, но не видит

@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "gigaam-desktop"
-version = "2.5.3-2"
+version = "2.5.3-3"
 dependencies = [
  "tauri",
  "tauri-build",
