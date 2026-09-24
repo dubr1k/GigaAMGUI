@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [2.5.3-2] - 2026-09-24
+
+### Изменено
+
+- **Liquid: отдельный headless-компаньон.** Нативное приложение теперь
+  встраивает `GigaAMWorker.app` без PyQt; классическая `GigaAMTranscriber.app`
+  по-прежнему выпускается отдельно. Обработка, Live, LLM и загрузка медиа
+  используют прежний Python-протокол; офлайн-вариант включает модели.
+
+### Исправлено
+
+- **Согласованные версии Liquid и worker.** Оба macOS-бандла получают версию
+  `2.5.3-2`; CI сверяет номера версий в online- и offline-архивах и
+  останавливает публикацию при несовпадении.
+
 ## [2.5.2] - 2026-09-23
 
 ### Исправлено
@@ -1136,7 +1151,9 @@ macOS-клиент остаётся в силе.
 
 ---
 
-[Unreleased]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.1...HEAD
+[Unreleased]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.3-2...HEAD
+[2.5.3-2]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.2...v2.5.3-2
+[2.5.2]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.1...v2.5.2
 [2.5.1]: https://github.com/dubr1k/GigaAMGUI/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/dubr1k/GigaAMGUI/releases/tag/v2.5.0
 [1.3.1]: https://github.com/dubr1k/GigaAMGUI/compare/v1.3.0...v1.3.1

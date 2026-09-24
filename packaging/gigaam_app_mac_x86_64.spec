@@ -22,7 +22,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps
+from _spec_common import APP_BUILD_VERSION, APP_MARKETING_VERSION, APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps
 
 # collect_pure_runtime_deps() сюда не подмешивается сознательно: PIL и
 # asteroid_filterbanks нужны рантайм-torchvision и pyannote, которых в этой
@@ -197,8 +197,9 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "GigaAM Transcriber",
         "CFBundleDisplayName": "GigaAM Transcriber",
-        "CFBundleShortVersionString": APP_VERSION,
-        "CFBundleVersion": APP_VERSION,
+        "CFBundleShortVersionString": APP_MARKETING_VERSION,
+        "GigaAMReleaseVersion": APP_VERSION,
+        "CFBundleVersion": APP_BUILD_VERSION,
         # Колёса onnxruntime 1.23.2 под macOS x86_64 требуют macOS 13+.
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,

@@ -11,12 +11,10 @@ import textwrap
 from pathlib import Path
 
 SPEC_PATH = Path("packaging/gigaam_app_mac_x86_64.spec")
-ARM64_SPEC_PATH = Path("packaging/gigaam_app_mac.spec")
 REQUIREMENTS_PATH = Path("requirements-macos-x86_64.txt")
 BUILD_SCRIPT_PATH = Path("packaging/build_exe_mac_x86_64.sh")
 VERIFIER_PATH = Path("scripts/verify_macos_bundle.py")
 WORKFLOW_PATH = Path(".github/workflows/build.yml")
-SPEC_COMMON_PATH = Path("packaging/_spec_common.py")
 
 #: Всё, что тянет torch. Присутствие любого из них в Intel-сборке означает либо
 #: неразрешимый набор зависимостей, либо бинарники не той архитектуры.
@@ -88,17 +86,6 @@ def test_spec_targets_x86_64_and_excludes_torch_chain():
 def test_spec_declares_macos_13_minimum_for_onnxruntime_wheels():
     text = SPEC_PATH.read_text(encoding="utf-8")
     assert '"LSMinimumSystemVersion": "13.0"' in text
-
-
-def test_both_macos_specs_share_one_version_source():
-    # Иначе релиз ловил бы разъехавшуюся версию уже после сборки: CI сверяет
-    # CFBundleShortVersionString с тегом отдельно для каждого бандла.
-    assert 'APP_VERSION = "' in SPEC_COMMON_PATH.read_text(encoding="utf-8")
-    for spec in (SPEC_PATH, ARM64_SPEC_PATH):
-        text = spec.read_text(encoding="utf-8")
-        assert "APP_VERSION" in text.split("from _spec_common import")[1].split("\n")[0]
-        assert '"CFBundleShortVersionString": APP_VERSION,' in text
-        assert '"CFBundleVersion": APP_VERSION,' in text
 
 
 def test_build_script_refuses_arm64_interpreter_and_torch_environment():

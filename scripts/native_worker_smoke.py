@@ -10,7 +10,7 @@
 Использование::
 
     python scripts/native_worker_smoke.py \\
-        stage/.../GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber \\
+        stage/.../GigaAMWorker.app/Contents/MacOS/GigaAMWorker \\
         clip.wav out_dir [--backend auto] [--timeout 600]
 
 Код возврата 0 только при ``completed.success == true`` и непустом файле
@@ -282,7 +282,7 @@ def run_live_smoke(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n", 1)[0])
-    parser.add_argument("companion", type=Path, help="исполняемый файл companion (Contents/MacOS/GigaAMTranscriber)")
+    parser.add_argument("companion", type=Path, help="исполняемый файл companion (Contents/MacOS/GigaAMWorker)")
     parser.add_argument("clip", type=Path, help="аудиофайл для транскрибации")
     parser.add_argument("output_dir", type=Path, help="куда писать результат (для --live: корень сессий)")
     parser.add_argument("--backend", default="auto", help="ASR backend, как его передаёт GigaAMLiquid (по умолчанию auto)")

@@ -1881,7 +1881,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(toggleRow("Анимации", key: "settings.animations", defaultValue: true))
         case "О приложении":
             body.spacing = 18
-            let releaseVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+            let releaseVersion = (Bundle.main.object(forInfoDictionaryKey: "GigaAMReleaseVersion") as? String)
+                ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+                ?? "—"
             body.addArrangedSubview(label("GigaAM v3 Transcriber", size: 22, weight: .medium, color: Palette.ink))
             body.addArrangedSubview(wrappedLabel("Транскрибация русской речи из аудио и видео на базе GigaAM-v3.", size: 14, color: Palette.body))
             body.addArrangedSubview(divider())

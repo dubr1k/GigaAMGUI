@@ -1,7 +1,7 @@
 # GigaAMLiquid for macOS
 
 GigaAMLiquid is the native Swift/AppKit client for GigaAM Transcriber. Release
-builds are self-contained: the frozen Python worker (`GigaAMTranscriber.app`)
+builds are self-contained: the headless Python worker (`GigaAMWorker.app`)
 that performs model inference, media downloads and export is embedded inside
 `GigaAMLiquid.app/Contents/Resources`, so the archive ships a single application.
 
@@ -24,10 +24,11 @@ The regular archive downloads model files when they are first needed into the
 user cache; the worker's working files (processing statistics) live in
 `~/Library/Application Support/GigaAMLiquid`, never inside the bundle.
 
-Running from a source checkout still works: when no embedded companion is found,
-the client falls back to a `GigaAMTranscriber.app` beside itself (2.0–2.1.0
-archives) and then to the project's Python (`GIGAAM_PYTHON`, `.venv`, `python3`)
-with `python -m src.tui_worker`; `GIGAAM_PROJECT_ROOT` overrides the search.
+Running from a source checkout still works: when no embedded worker is found,
+the client looks for `GigaAMWorker.app` beside itself and then for the project's
+Python (`GIGAAM_PYTHON`, `.venv`, `python3`) with `python -m src.tui_worker`;
+`GIGAAM_PROJECT_ROOT` overrides the search. The separate classic desktop app
+continues to use PyQt; the Liquid worker does not bundle Qt.
 
 ## Offline release archive
 

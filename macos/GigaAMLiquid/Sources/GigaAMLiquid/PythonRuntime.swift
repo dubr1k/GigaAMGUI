@@ -57,7 +57,7 @@ struct PythonRuntime {
     private static func companionURL(root: URL, environment: [String: String]) -> URL? {
         guard environment["GIGAAM_PYTHON", default: ""].isEmpty else { return nil }
         let candidate = root.appendingPathComponent(
-            "GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+            "GigaAMWorker.app/Contents/MacOS/GigaAMWorker"
         )
         return FileManager.default.isExecutableFile(atPath: candidate.path) ? candidate : nil
     }
@@ -80,17 +80,17 @@ struct PythonRuntime {
                 return (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
             }
             let companion = url.appendingPathComponent(
-                "GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+                "GigaAMWorker.app/Contents/MacOS/GigaAMWorker"
             )
             return hasSourceRuntime || manager.isExecutableFile(atPath: companion.path)
         }
         if let override = environment["GIGAAM_PROJECT_ROOT"], !override.isEmpty {
             let root = URL(fileURLWithPath: (override as NSString).expandingTildeInPath).standardizedFileURL
             if isPreparedRoot(root) { return root }
-            throw Failure(message: L10n.text("GIGAAM_PROJECT_ROOT должен указывать на папку с GigaAMTranscriber.app или подготовленным Python-проектом."))
+            throw Failure(message: L10n.text("GIGAAM_PROJECT_ROOT должен указывать на папку с GigaAMWorker.app или подготовленным Python-проектом."))
         }
-        // A self-contained release keeps the companion (and, offline, models/hf) in
-        // the app's own Contents/Resources; older archives put it beside the app.
+        // A self-contained release keeps the worker (and, offline, models/hf) in
+        // the app's own Contents/Resources; source builds can place it beside the app.
         if let resources = Bundle.main.resourceURL?.standardizedFileURL, isPreparedRoot(resources) { return resources }
         let starts = [Bundle.main.executableURL?.deletingLastPathComponent(), URL(fileURLWithPath: manager.currentDirectoryPath)].compactMap { $0 }
         for start in starts {
@@ -102,7 +102,7 @@ struct PythonRuntime {
                 candidate = parent
             }
         }
-        throw Failure(message: L10n.text("Не найден GigaAMTranscriber.app или Python runtime. Не перемещайте приложения из папки релиза либо задайте GIGAAM_PROJECT_ROOT."))
+        throw Failure(message: L10n.text("Не найден GigaAMWorker.app или Python runtime. Задайте GIGAAM_PROJECT_ROOT для запуска из исходников."))
     }
 
     private static func pythonURL(root: URL, environment: [String: String]) throws -> URL {

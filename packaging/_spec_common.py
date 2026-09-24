@@ -25,10 +25,11 @@ from PyInstaller.utils.hooks import (
     get_all_package_paths,
 )
 
-#: Версия для Info.plist macOS-бандлов. Один источник правды на все .app-спеки:
-#: CI сверяет CFBundleShortVersionString с тегом, и разъехавшийся второй спек
-#: валил бы релиз уже после сборки.
-APP_VERSION = "2.5.2"
+#: Тег релиза показывается в About; macOS требует числовой маркетинговый
+#: номер и не более трёх компонентов в CFBundleVersion.
+APP_VERSION = "2.5.3-2"
+APP_MARKETING_VERSION = APP_VERSION.split("-", 1)[0]
+APP_BUILD_VERSION = "2.5.32"
 
 
 # Пакеты, которые импортирует рантайм-torchvision/pyannote, но не видит

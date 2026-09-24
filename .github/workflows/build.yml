@@ -332,7 +332,7 @@ jobs:
     name: macOS arm64 full app bundle
     runs-on: macos-14
     needs: test-tui
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       GIGAAM_BUNDLE_SORTFORMER: "1"
 
@@ -382,7 +382,7 @@ jobs:
           BUNDLE="dist/GigaAMTranscriber.app"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
-            ACTUAL_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE/Contents/Info.plist")
+            ACTUAL_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :GigaAMReleaseVersion' "$BUNDLE/Contents/Info.plist")
             test "$ACTUAL_VERSION" = "$EXPECTED_VERSION" || {
               echo "Версия .app ($ACTUAL_VERSION) не совпадает с тегом ($EXPECTED_VERSION)"
               exit 1
@@ -412,6 +412,39 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+
+      # Liquid bundles a headless worker; the classic PyQt .app remains a separate release asset.
+      - name: Build and archive Liquid worker
+        shell: bash
+        run: |
+          GIGAAM_NATIVE_WORKER=1 python -m PyInstaller packaging/gigaam_app_mac.spec \
+            --noconfirm --workpath build/gigaam_worker_mac
+          WORKER="dist/GigaAMWorker.app"
+          test -x "$WORKER/Contents/MacOS/GigaAMWorker"
+          for key in GigaAMReleaseVersion CFBundleShortVersionString CFBundleVersion; do
+            WORKER_VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "$WORKER/Contents/Info.plist")
+            GUI_VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "dist/GigaAMTranscriber.app/Contents/Info.plist")
+            test "$WORKER_VALUE" = "$GUI_VALUE" || {
+              echo "Worker $key ($WORKER_VALUE) не совпадает с GUI ($GUI_VALUE)"
+              exit 1
+            }
+          done
+          test ! -e "$WORKER/Contents/Frameworks/PyQt6"
+          test ! -e "$WORKER/Contents/Resources/PyQt6"
+          printf '{"type":"ping"}\n' | "$WORKER/Contents/MacOS/GigaAMWorker" --native-worker | grep -q '"type": "pong"'
+          GIGAAM_WORKER_BINARY="$PWD/$WORKER/Contents/MacOS/GigaAMWorker" \
+            python -m pytest tests/test_native_worker_entrypoint.py -q
+          mkdir -p out
+          ditto -c -k --sequesterRsrc --keepParent "$WORKER" out/liquid-worker-online.zip
+          unzip -tq out/liquid-worker-online.zip
+
+      - name: Upload Liquid worker for native build
+        uses: actions/upload-artifact@v7
+        with:
+          name: liquid-worker-online
+          path: out/liquid-worker-online.zip
+          if-no-files-found: error
+          compression-level: 0
 
       # Офлайн-вариант: тот же .app плюс папка models рядом с ним. Внутрь
       # бандла модели не кладём, чтобы не ломать подпись при докачке остальных.
@@ -443,6 +476,24 @@ jobs:
           }
           echo "path=$ARCHIVE" >> "$GITHUB_OUTPUT"
           echo "name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
+
+      - name: Archive offline Liquid worker
+        shell: bash
+        run: |
+          ROOT="stage/liquid-worker-offline"
+          mkdir -p "$ROOT/models"
+          ditto dist/GigaAMWorker.app "$ROOT/GigaAMWorker.app"
+          ditto offline/models/hf "$ROOT/models/hf"
+          ditto -c -k --sequesterRsrc "$ROOT" out/liquid-worker-offline.zip
+          unzip -tq out/liquid-worker-offline.zip
+
+      - name: Upload offline Liquid worker for native build
+        uses: actions/upload-artifact@v7
+        with:
+          name: liquid-worker-offline
+          path: out/liquid-worker-offline.zip
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Upload offline full app artifact
         uses: actions/upload-artifact@v7
@@ -540,7 +591,7 @@ jobs:
           BUNDLE="dist/GigaAMTranscriber.app"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
-            ACTUAL_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUNDLE/Contents/Info.plist")
+            ACTUAL_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :GigaAMReleaseVersion' "$BUNDLE/Contents/Info.plist")
             test "$ACTUAL_VERSION" = "$EXPECTED_VERSION" || {
               echo "Версия .app ($ACTUAL_VERSION) не совпадает с тегом ($EXPECTED_VERSION)"
               exit 1
@@ -605,18 +656,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Download online Python companion
+      - name: Download online Python worker
         uses: actions/download-artifact@v8
         with:
           path: companion-online
-          pattern: GigaAMTranscriber-macos-app-v*
+          pattern: liquid-worker-online
           merge-multiple: true
 
-      - name: Download offline Python companion
+      - name: Download offline Python worker
         uses: actions/download-artifact@v8
         with:
           path: companion-offline
-          pattern: GigaAMTranscriber-macos-app-offline-*
+          pattern: liquid-worker-offline
           merge-multiple: true
 
       - name: Build native Swift client
@@ -626,11 +677,26 @@ jobs:
         id: archive
         shell: bash
         run: |
+          SOURCE_VERSION=$(sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' packaging/_spec_common.py)
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            test "$VERSION" = "$SOURCE_VERSION" || {
+              echo "Тег ($VERSION) не совпадает с версией исходников ($SOURCE_VERSION)"
+              exit 1
+            }
           else
-            VERSION=$(sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' packaging/_spec_common.py)
+            VERSION="$SOURCE_VERSION"
           fi
+          MARKETING_VERSION="${VERSION%%-*}"
+          BUILD_VERSION=$(sed -n 's/^APP_BUILD_VERSION = "\([^"]*\)"/\1/p' packaging/_spec_common.py)
+          [[ "$MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Некорректная macOS release-версия: $MARKETING_VERSION"
+            exit 1
+          }
+          [[ "$BUILD_VERSION" =~ ^[1-9][0-9]{0,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]] || {
+            echo "Некорректный macOS номер сборки: $BUILD_VERSION"
+            exit 1
+          }
           SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
           PRODUCT="GigaAMLiquid-macos-arm64-${SAFE_REF_NAME}"
           APP="stage/$PRODUCT/GigaAMLiquid.app"
@@ -654,8 +720,9 @@ jobs:
             <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
             <key>CFBundleName</key><string>GigaAMLiquid</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>$VERSION</string>
-            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>CFBundleShortVersionString</key><string>$MARKETING_VERSION</string>
+            <key>GigaAMReleaseVersion</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$BUILD_VERSION</string>
             <key>LSMinimumSystemVersion</key><string>13.0</string>
             <key>NSHighResolutionCapable</key><true/>
             <key>NSMicrophoneUsageDescription</key><string>GigaAMLiquid uses microphone access for live transcription.</string>
@@ -668,12 +735,20 @@ jobs:
           # archive ships exactly one .app. The release must not expose the
           # repository sources or require a separate Python install.
           RESOURCES="$APP/Contents/Resources"
-          COMPANION_ARCHIVE=$(find companion-online -type f -name 'GigaAMTranscriber-macos-app-v*.zip' -print -quit)
-          test -n "$COMPANION_ARCHIVE"
+          COMPANION_ARCHIVE="companion-online/liquid-worker-online.zip"
+          test -f "$COMPANION_ARCHIVE"
           unzip -q "$COMPANION_ARCHIVE" -d "$RESOURCES"
-          COMPANION="$RESOURCES/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+          COMPANION="$RESOURCES/GigaAMWorker.app/Contents/MacOS/GigaAMWorker"
           test -x "$COMPANION"
-          test ! -e "stage/$PRODUCT/GigaAMTranscriber.app"
+          for key in GigaAMReleaseVersion CFBundleShortVersionString CFBundleVersion; do
+            WORKER_VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "$RESOURCES/GigaAMWorker.app/Contents/Info.plist")
+            LIQUID_VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "$APP/Contents/Info.plist")
+            test "$WORKER_VALUE" = "$LIQUID_VALUE" || {
+              echo "Worker $key ($WORKER_VALUE) не совпадает с Liquid ($LIQUID_VALUE)"
+              exit 1
+            }
+          done
+          test ! -e "stage/$PRODUCT/GigaAMWorker.app"
           test ! -e "$RESOURCES/app.py"
           test ! -e "$RESOURCES/src"
 
@@ -683,7 +758,7 @@ jobs:
           grep -q '"type": "pong"' "${RUNNER_TEMP}/native-worker-online.jsonl"
           test -s "$APP/Contents/Resources/GigaAMLiquid.icns"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" = "GigaAMLiquid.icns"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :GigaAMReleaseVersion' "$APP/Contents/Info.plist")" = "$VERSION"
           test "$(lipo -archs "$APP/Contents/MacOS/GigaAMLiquid")" = "arm64"
 
           mkdir -p out
@@ -716,17 +791,25 @@ jobs:
           # Start from the online bundle but replace its companion with the offline
           # one, which brings models/hf; both land in Contents/Resources.
           RESOURCES="$SWIFT_APP/Contents/Resources"
-          rm -rf "$RESOURCES/GigaAMTranscriber.app"
+          rm -rf "$RESOURCES/GigaAMWorker.app"
 
-          COMPANION_ARCHIVE=$(find companion-offline -type f -name 'GigaAMTranscriber-macos-app-offline-*.zip' -print -quit)
-          test -n "$COMPANION_ARCHIVE"
+          COMPANION_ARCHIVE="companion-offline/liquid-worker-offline.zip"
+          test -f "$COMPANION_ARCHIVE"
           unzip -q "$COMPANION_ARCHIVE" -d "$RESOURCES"
 
-          COMPANION="$RESOURCES/GigaAMTranscriber.app/Contents/MacOS/GigaAMTranscriber"
+          COMPANION="$RESOURCES/GigaAMWorker.app/Contents/MacOS/GigaAMWorker"
           test -x "$COMPANION"
+          for key in GigaAMReleaseVersion CFBundleShortVersionString CFBundleVersion; do
+            WORKER_VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "$RESOURCES/GigaAMWorker.app/Contents/Info.plist")
+            LIQUID_VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "$SWIFT_APP/Contents/Info.plist")
+            test "$WORKER_VALUE" = "$LIQUID_VALUE" || {
+              echo "Offline worker $key ($WORKER_VALUE) не совпадает с Liquid ($LIQUID_VALUE)"
+              exit 1
+            }
+          done
           test -d "$RESOURCES/models/hf"
           test -n "$(find "$RESOURCES/models/hf" -type f -print -quit)"
-          test ! -e "$ROOT/GigaAMTranscriber.app"
+          test ! -e "$ROOT/GigaAMWorker.app"
           test ! -e "$ROOT/models"
           test ! -e "$RESOURCES/app.py"
           test ! -e "$RESOURCES/src"

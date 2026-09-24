@@ -4,9 +4,9 @@ PyInstaller's ``pyi_rth_multiprocessing`` runtime hook only takes effect through
 ``multiprocessing.freeze_support()``: it replaces that function with one that
 recognises the ``resource_tracker``/``forkserver`` helper argv
 (``-B -S -I -c "from multiprocessing.resource_tracker import main;main(fd)"``) and
-runs the helper inline. Without the call, the frozen companion re-executes the
-whole application for every helper: no ``--native-worker`` in argv means the Qt
-branch, a second application in the Dock and a crash on a missing module.
+runs the helper inline. Without the call, a frozen GUI executable re-enters
+the Qt branch and may start a second application; the separate Liquid worker
+also needs its own freeze_support() before importing the processing pipeline.
 """
 
 import runpy
