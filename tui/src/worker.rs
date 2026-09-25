@@ -157,10 +157,10 @@ pub(crate) fn llm_settings_from(settings: &TuiSettings, tools: &[LlmTool]) -> Va
     payload
 }
 
-pub(crate) fn start_payload(app: &App) -> Value {
+pub(crate) fn start_payload(app: &App, files: &[String]) -> Value {
     json!({
         "type": "start",
-        "files": app.files,
+        "files": files,
         "output_dir": app.output_dir,
         "formats": app.formats,
         "diarization": app.diarization,
@@ -218,13 +218,8 @@ fn bundled_worker() -> Option<PathBuf> {
     worker.is_file().then_some(worker)
 }
 
-pub(crate) fn spawn_worker() -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
-    spawn_worker_with(Stdio::inherit())
-}
-
-/// `stderr` is what the worker's diagnostics (Python warnings, model downloads)
-/// go to: the terminal for the TUI and human headless output, nowhere for `--json`.
-pub(crate) fn spawn_worker_with(stderr: Stdio) -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
+/// Shared executable/environment selection; transports own their pipe policy.
+pub(crate) fn worker_command() -> Command {
     let module = std::env::var("GIGAAM_TUI_WORKER").unwrap_or_else(|_| "src.tui_worker".into());
     let project_root = std::env::var("GIGAAM_PROJECT_ROOT")
         .map(std::path::PathBuf::from)
@@ -242,8 +237,13 @@ pub(crate) fn spawn_worker_with(stderr: Stdio) -> io::Result<(Child, ChildStdin,
         command.args(["-m", &module]);
         command
     };
-    let mut child = command
-        .current_dir(project_root)
+    command.current_dir(project_root);
+    command
+}
+
+/// Headless diagnostics remain inherited (human output) or suppressed (`--json`).
+pub(crate) fn spawn_worker_with(stderr: Stdio) -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
+    let mut child = worker_command()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(stderr)
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn llm_settings_payload_uses_discovered_tool_paths() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.llm_provider = "Claude Code".into();
         app.llm_tools.push(LlmTool {
             id: "claude".into(),

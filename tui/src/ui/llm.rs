@@ -151,10 +151,21 @@ fn provider_line(app: &App) -> String {
 
 fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let p = *app.palette();
-    let can_run = !app.running && llm_can_run(app);
-    let can_cancel = esc_should_soft_cancel(app);
+    let can_run = !app.running() && llm_can_run(app);
+    let stopping = app.llm_running() && app.activity.is_stopping();
+    let can_cancel = esc_should_soft_cancel(app) || stopping;
     let run = format!("[{}]", t(app.lang, "btn.run_llm"));
-    let cancel = format!("[{}]", t(app.lang, "btn.cancel_llm"));
+    let cancel = format!(
+        "[{}]",
+        t(
+            app.lang,
+            if stopping {
+                "btn.force_stop"
+            } else {
+                "btn.cancel_llm"
+            }
+        )
+    );
     let button_style = |active: bool| {
         Style::default()
             .fg(if active { p.accent } else { p.disabled })
@@ -191,7 +202,11 @@ fn draw_tasks(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     );
     app.hits.add(
         Rect::new(cancel_x, area.y, cancel_width, 1),
-        Action::Button(ButtonId::CancelLlm),
+        if stopping {
+            Action::ForceStop
+        } else {
+            Action::Button(ButtonId::CancelLlm)
+        },
     );
 
     let label = Style::default().fg(p.muted);
@@ -289,7 +304,7 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let p = *app.palette();
     // Streaming shows the mode in flight; a single answer shows its mode and file;
     // several answers keep those per result inside the pane (see `results_text`).
-    let (mode, body): (Option<&str>, String) = if app.llm_running {
+    let (mode, body): (Option<&str>, String) = if app.llm_running() {
         (Some(app.llm_stream_mode.as_str()), app.llm_stream.clone())
     } else if let [(mode, _)] = app.llm_results.as_slice() {
         (Some(mode.as_str()), results_text(app))
@@ -300,7 +315,7 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     if let Some(mode) = mode {
         title.push_str(&format!(" · {mode}"));
     }
-    if app.llm_running {
+    if app.llm_running() {
         title.push_str(&format!(" · {}", t(app.lang, "llm.streaming")));
     } else if let Some(path) = mode.and_then(|mode| saved_file_for(app, mode)) {
         title.push_str(&format!(
@@ -311,14 +326,18 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     title.push(' ');
     let block = Block::bordered()
         .title(Span::styled(title, p.title()))
-        .border_style(Style::default().fg(if app.llm_running { p.success } else { p.border }));
+        .border_style(Style::default().fg(if app.llm_running() {
+            p.success
+        } else {
+            p.border
+        }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.add(area, Action::Scroll(AreaId::LlmOutput, 0));
     if inner.height == 0 || inner.width == 0 {
         return;
     }
-    if body.is_empty() && !app.llm_running {
+    if body.is_empty() && !app.llm_running() {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 t(app.lang, "llm.answer_empty"),
@@ -333,9 +352,10 @@ fn draw_answer(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let paragraph = Paragraph::new(body.as_str()).wrap(Wrap { trim: false });
     let lines = paragraph.line_count(inner.width).min(usize::from(u16::MAX)) as u16;
     let max_offset = lines.saturating_sub(inner.height);
+    let is_running = app.llm_running();
     let offset = app.scroll.entry(AreaId::LlmOutput).or_default();
     // The stream follows its tail; a finished answer keeps where the wheel left it.
-    *offset = if app.llm_running {
+    *offset = if is_running {
         max_offset
     } else {
         (*offset).min(max_offset)
@@ -362,7 +382,7 @@ mod tests {
     #[test]
     fn llm_page_renders_headings_result_and_registers_modes_and_run() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.page = Page::Llm;
         app.result_files = vec!["/tmp/a.txt".into()];
         app.llm_results = vec![("summary".into(), "Итог".into())];
@@ -401,7 +421,7 @@ mod tests {
     #[test]
     fn every_mode_gets_its_own_heading_when_several_answers_arrive() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.page = Page::Llm;
         app.llm_results = vec![
             ("summary".into(), "Коротко".into()),
@@ -443,7 +463,7 @@ mod tests {
     #[test]
     fn answer_scroll_is_clamped_to_the_text_height() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.page = Page::Llm;
         app.llm_results = vec![("summary".into(), "строка 1\nстрока 2".into())];
         dispatch(&mut app, Action::Scroll(AreaId::LlmOutput, 3));
@@ -463,22 +483,22 @@ mod tests {
     #[test]
     fn stream_follows_its_tail_while_running() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.page = Page::Llm;
-        app.llm_running = true;
+        app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Llm);
         app.llm_stream_mode = "tasks".into();
         app.llm_stream = (1..=100).map(|n| format!("line {n}\n")).collect();
         let text = render(&mut app);
         assert!(text.contains("Ответ · tasks · стрим…"), "{text}");
         assert!(text.contains("line 100"), "{text}");
         assert!(!text.contains("line 1\n"), "{text}");
-        assert!(text.contains("[Отменить]"));
+        assert!(text.contains("[Отменить запрос]"));
     }
 
     #[test]
     fn delete_removes_only_extra_files_and_edit_command_prefills_the_input() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.page = Page::Llm;
         app.result_files = vec!["/tmp/a.txt".into()];
         app.llm_extra_files = vec!["/tmp/b.md".into()];
@@ -490,6 +510,6 @@ mod tests {
         assert!(app.llm_extra_files.is_empty());
         assert_eq!(app.llm_input_cursor, 0);
         dispatch(&mut app, Action::EditCommand("/llm-prompt"));
-        assert_eq!(app.input, "/llm-prompt ");
+        assert_eq!(app.input.text(), "/llm-prompt ");
     }
 }

@@ -29,6 +29,7 @@ warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.
 from src.core.subtitles import SubtitleOptions  # noqa: E402
 from src.services.live_worker_service import LiveWorkerService  # noqa: E402
 from src.services.llm_worker_service import LLMWorkerService  # noqa: E402
+from src.services.tui_input_service import InputResolver  # noqa: E402
 from src.utils.output_naming import find_output_collisions  # noqa: E402
 
 
@@ -40,22 +41,45 @@ class TuiWorker:
         self._write_lock = threading.Lock()
         self._task: threading.Thread | None = None
         self._cancel_requested = threading.Event()
+        self._compact_events = False
         self._llm = LLMWorkerService(self.emit)
         self._live = LiveWorkerService(self.emit)
+        self._inputs = InputResolver(self.emit)
+
+    def close(self) -> None:
+        self._inputs.close()
 
     def emit(self, message_type: str, **payload: Any) -> None:
+        # В TUI нужны пути/статусы, а не полный массив слов многочасовой записи.
+        # Остальные клиенты (включая headless) сохраняют прежний полный контракт.
+        if self._compact_events:
+            if message_type == "file_completed" and isinstance(payload.get("result"), dict):
+                payload["result"] = self._result_metadata(payload["result"])
+            elif message_type == "completed" and isinstance(payload.get("results"), list):
+                payload["results"] = [self._result_metadata(result) for result in payload["results"]]
         message = {"type": message_type, **payload}
         with self._write_lock:
             self._output.write(json.dumps(message, ensure_ascii=False) + "\n")
             self._output.flush()
+
+    @staticmethod
+    def _result_metadata(result: dict[str, Any]) -> dict[str, Any]:
+        return {key: result[key] for key in ("file_path", "success", "error", "saved_files") if key in result}
 
     def _log(self, message: str) -> None:
         self.emit("log", message=str(message))
 
     def handle(self, command: dict[str, Any]) -> None:
         command_type = command.get("type")
-        if command_type == "ping":
+        if command_type == "hello":
+            self._compact_events = command.get("client") == "tui"
+            self.emit("ready", protocol_version=1, capabilities=["resolve_inputs", "asr", "llm"])
+        elif command_type == "ping":
             self.emit("pong")
+        elif command_type == "resolve_inputs":
+            self._inputs.start(command)
+        elif command_type == "cancel_inputs":
+            self._inputs.cancel(command.get("request_id"))
         elif command_type == "start":
             self._start(command)
         elif command_type == "cancel":
@@ -353,11 +377,14 @@ def main() -> int:
     # Небуферизованный поток: BufferedReader.read(n) ждёт n байт или EOF, а
     # команды приходят по одной строке — с ним воркер «завис» бы на первой же.
     stdin = os.fdopen(sys.stdin.fileno(), "rb", buffering=0, closefd=False)
-    for command in read_commands(stdin):
-        if "_invalid" in command:
-            worker.emit("error", message=command["_invalid"])
-            continue
-        worker.handle(command)
+    try:
+        for command in read_commands(stdin):
+            if "_invalid" in command:
+                worker.emit("error", message=command["_invalid"])
+                continue
+            worker.handle(command)
+    finally:
+        worker.close()
     return 0
 
 

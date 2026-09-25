@@ -7,7 +7,8 @@ use std::{
 
 use crate::{
     app::{llm_input_files, on_off, request_llm, App, Page},
-    i18n::{t, tf, tn, Lang},
+    i18n::{t, tf, Lang},
+    input::InputMode,
     settings::save_app_settings,
     theme::Theme,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
@@ -61,133 +62,67 @@ pub(crate) fn normalize_path(raw: &str) -> Result<String, PathError> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-pub(crate) fn split_shell_paths(raw: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut escaped = false;
-    for character in raw.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if matches!(character, '\'' | '"') {
-            if quote == Some(character) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(character);
-            } else {
-                current.push(character);
-            }
-        } else if character.is_whitespace() && quote.is_none() {
-            if !current.is_empty() {
-                paths.push(std::mem::take(&mut current));
-            }
-        } else {
-            current.push(character);
-        }
-    }
-    if escaped {
-        current.push('\\');
-    }
-    if !current.is_empty() {
-        paths.push(current);
-    }
-    paths
-}
-
-/// Complete pasted file paths become visible immediately; command arguments and
-/// unfinished paths remain editable in the input line.
+/// Вставка — законченный блок, поэтому не ждёт Enter и не склеивается со следующей.
 pub(crate) fn paste_input(app: &mut App, text: &str) {
-    let text = text.trim();
-    if text.is_empty() || app.running {
+    if text.trim().is_empty()
+        || app.running()
+        || app.rerun_confirmation.is_some()
+        || app.stop_confirmation
+        || app.help_open
+        || app.show_path
+        || app.results_open
+    {
         return;
     }
-    if app.page == Page::Processing && app.input.is_empty() && app.command_menu.is_none() {
-        let paths = split_shell_paths(text);
-        if normalize_path(text).is_ok()
-            || (!paths.is_empty() && paths.iter().all(|path| normalize_path(path).is_ok()))
-            || text.lines().all(|line| normalize_path(line).is_ok())
-        {
-            queue_paths(app, text);
-            app.focus = crate::app::Focus::Queue;
-            return;
+    if app.input.mode == InputMode::Hidden {
+        app.input.open(InputMode::Paths, String::new());
+    }
+    app.input.insert(text);
+    app.selected_command = 0;
+    if app.page == Page::Processing
+        && app.command_menu.is_none()
+        && !matches!(app.input.mode, InputMode::Argument(_))
+        && !is_command(app.input.trim())
+    {
+        let raw = app.input.text().to_owned();
+        queue_paths(app, &raw);
+    }
+}
+
+/// Keystroke-drop: после паузы передаём только существующий завершённый префикс.
+pub(crate) fn queue_complete_input(app: &mut App) {
+    if app.running()
+        || app.rerun_confirmation.is_some()
+        || app.stop_confirmation
+        || app.help_open
+        || app.show_path
+        || app.results_open
+        || app.page != Page::Processing
+        || app.command_menu.is_some()
+        || matches!(app.input.mode, InputMode::Argument(_))
+        || is_command(app.input.trim())
+    {
+        return;
+    }
+    let raw = app.input.text().to_owned();
+    let Some(boundary) = crate::input::complete_prefix(&raw) else {
+        return;
+    };
+    if app.submit_paths(raw[..boundary].trim().to_owned()) {
+        let tail = raw[boundary..]
+            .trim_start_matches([' ', '\t', '\r', '\n'])
+            .to_owned();
+        if tail.is_empty() {
+            app.input.close();
+        } else {
+            app.input.open(InputMode::Paths, tail);
         }
     }
-    app.input.push_str(text);
-    app.selected_command = 0;
 }
 
 pub(crate) fn queue_paths(app: &mut App, raw: &str) {
-    let lines: Vec<String> = raw
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect();
-    let candidates = if lines.len() > 1 {
-        lines
-            .into_iter()
-            .flat_map(|line| {
-                if normalize_path(&line).is_ok() {
-                    vec![line]
-                } else {
-                    split_shell_paths(&line)
-                }
-            })
-            .collect()
-    } else {
-        let value = lines.first().map(String::as_str).unwrap_or(raw).trim();
-        match normalize_path(value) {
-            Ok(path) => vec![path],
-            Err(error) => {
-                let split = split_shell_paths(value);
-                if split.len() == 1 && split.first().is_some_and(|path| path != value) {
-                    split
-                } else if split.len() > 1 {
-                    split
-                } else {
-                    app.status = error.message(app.lang);
-                    return;
-                }
-            }
-        }
-    };
-
-    let mut queued = 0;
-    let mut errors = Vec::new();
-    for candidate in candidates {
-        match normalize_path(&candidate) {
-            Ok(path) => {
-                app.files.push(path);
-                queued += 1;
-            }
-            Err(error) => errors.push(error.message(app.lang)),
-        }
-    }
-    if queued == 0 {
-        app.status = errors
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| t(app.lang, "status.no_input_files").into());
-        return;
-    }
-    app.selected_file = app.files.len().checked_sub(1);
-    app.input.clear();
-    let files = tn(app.lang, queued, "plural.files");
-    app.status = if errors.is_empty() {
-        tf(app.lang, "status.queued", &[("files", &files)])
-    } else {
-        tf(
-            app.lang,
-            "status.queued_skipped",
-            &[("files", &files), ("skipped", &errors.len().to_string())],
-        )
-    };
-    app.log(app.status.clone());
-    for error in errors {
-        app.log(error);
+    if app.submit_paths(raw.to_owned()) {
+        app.input.close();
     }
 }
 
@@ -241,7 +176,11 @@ pub(crate) const MODEL_OPTIONS: [(&str, &str); 3] = [
     ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
 ];
 
-pub(crate) const COMMANDS: [(&str, &str); 33] = [
+pub(crate) const COMMANDS: [(&str, &str); 39] = [
+    (
+        "/reconnect",
+        "reconnect the worker without repeating processing",
+    ),
     ("/output", "set the results directory"),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
@@ -261,7 +200,7 @@ pub(crate) const COMMANDS: [(&str, &str); 33] = [
     ),
     ("/speakers", "auto or a fixed speaker count"),
     ("/remove", "remove a file from the queue by number"),
-    ("/clear", "clear the queue and result list"),
+    ("/clear", "clear the queue; keep saved results"),
     (
         "/llm-file",
         "add a transcript file (.txt/.md/.srt/.vtt) for the LLM",
@@ -292,6 +231,11 @@ pub(crate) const COMMANDS: [(&str, &str); 33] = [
     ("/lang", "interface language: ru or en"),
     ("/mouse", "mouse support: on or off"),
     ("/theme", "colour scheme: a name, or a menu without one"),
+    ("/add", "enter file or folder paths"),
+    ("/undo", "restore the removed queue item"),
+    ("/retry", "retry failed files"),
+    ("/run-selected", "process the selected file"),
+    ("/retry-input", "retry the last failed input"),
     ("/exit", "exit the terminal UI"),
 ];
 
@@ -371,17 +315,44 @@ pub(crate) fn accept_command_suggestion(app: &mut App, command: &str) {
         app.selected_command = 0;
         return;
     }
-    app.input = command.into();
-    if matches!(command, "/clear" | "/pets" | "/settings" | "/help") {
+    let mode = COMMANDS
+        .iter()
+        .find(|(name, _)| *name == command)
+        .map_or(InputMode::Command, |(name, _)| InputMode::Argument(name));
+    app.input.open(mode, command.into());
+    if matches!(
+        command,
+        "/clear"
+            | "/pets"
+            | "/settings"
+            | "/help"
+            | "/add"
+            | "/undo"
+            | "/retry"
+            | "/run-selected"
+            | "/retry-input"
+            | "/reconnect"
+    ) {
         run_command(app);
     } else {
-        app.input.push(' ');
+        app.input.insert(&' '.to_string());
     }
     app.selected_command = 0;
 }
 
 pub(crate) fn command_menu_options(app: &App) -> Vec<String> {
     match app.command_menu.as_deref() {
+        Some("/queue-actions") => [
+            "queue.run_pending",
+            "queue.run_failed",
+            "queue.run_selected",
+            "queue.full_path",
+            "queue.undo",
+        ]
+        .iter()
+        .map(|key| t(app.lang, key).to_owned())
+        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+        .collect(),
         Some("/backend") => selectable_backends()
             .iter()
             .map(|backend| (*backend).to_owned())
@@ -509,6 +480,7 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
     if matches!(
         command,
         "/backend"
+            | "/queue-actions"
             | "/onnx-provider"
             | "/model"
             | "/diarize"
@@ -569,18 +541,32 @@ pub(crate) fn apply_command_menu(app: &mut App) {
     };
     if option == BACK_MENU_OPTION {
         app.command_menu = None;
-        app.input.clear();
+        app.input.close();
         app.status = t(app.lang, "status.menu_closed").into();
         app.log(app.status.clone());
         return;
     }
     let command = app.command_menu.clone().unwrap_or_default();
     match command.as_str() {
+        "/queue-actions" => {
+            use crate::{queue::RunSelection, ui::Action};
+            let action = match app.command_menu_index {
+                0 => Action::Run(RunSelection::Pending),
+                1 => Action::Run(RunSelection::Failed),
+                2 => Action::Run(RunSelection::Selected),
+                3 => Action::ShowPath(true),
+                _ => Action::UndoRemove,
+            };
+            app.command_menu = None;
+            app.input.close();
+            let messages = crate::app::dispatch(app, action);
+            app.outbox.extend(messages);
+        }
         "/backend" => {
             app.backend = option.clone();
             app.status = tf(app.lang, "status.backend", &[("value", &app.backend)]);
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/onnx-provider" => {
@@ -591,7 +577,7 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 &[("value", &app.onnx_provider)],
             );
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/model" => {
@@ -602,13 +588,13 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 .into();
             app.status = tf(app.lang, "status.model", &[("value", &app.model)]);
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/settings-provider" => {
             app.llm_provider = provider_from_menu_option(option).to_owned();
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             app.status = tf(
                 app.lang,
                 "status.llm_provider",
@@ -623,7 +609,7 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 Lang::Ru
             };
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             app.status = t(app.lang, "settings.language_changed").into();
             save_app_settings(app);
         }
@@ -631,13 +617,14 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             if let Some(theme) = Theme::by_name(option) {
                 set_theme(app, theme);
                 app.command_menu = None;
-                app.input.clear();
+                app.input.close();
                 save_app_settings(app);
             }
         }
         "/settings-model" if option == ENTER_MANUALLY_OPTION => {
             app.command_menu = None;
-            app.input = "/llm-model ".into();
+            app.input
+                .open(InputMode::Argument("/llm-model"), "/llm-model ".into());
             app.status = t(app.lang, "status.enter_model_name").into();
         }
         "/settings-model" => {
@@ -647,7 +634,7 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 option.clone()
             };
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             app.status = if app.llm_model.is_empty() {
                 t(app.lang, "status.llm_default_model").into()
             } else {
@@ -678,14 +665,14 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 &[("value", on_off(app.lang, app.diarization))],
             );
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/audio-mode" => {
             app.audio_preprocessing_mode = option.clone();
             app.status = tf(app.lang, "status.audio_mode", &[("value", option)]);
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/diarization-backend" => {
@@ -699,21 +686,21 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 &[("value", &app.diarization_backend)],
             );
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/speakers" if app.diarization_backend == "sortformer" => {
             app.num_speakers = None;
             app.status = t(app.lang, "status.sortformer_auto").into();
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/speakers" => {
             app.num_speakers = option.parse().ok();
             app.status = tf(app.lang, "status.speakers", &[("value", option)]);
             app.command_menu = None;
-            app.input.clear();
+            app.input.close();
             save_app_settings(app);
         }
         "/formats" => {
@@ -739,6 +726,9 @@ pub(crate) fn apply_command_menu(app: &mut App) {
 }
 
 pub(crate) fn run_command(app: &mut App) {
+    if app.running() || app.rerun_confirmation.is_some() {
+        return;
+    }
     let command = app.input.trim().to_owned();
     let mut parts = command.splitn(2, char::is_whitespace);
     // Pasted commands often contain a typographic dash (–/—/−) instead of
@@ -748,6 +738,22 @@ pub(crate) fn run_command(app: &mut App) {
         .unwrap_or_default()
         .replace(['–', '—', '−'], "-");
     let argument = parts.next().unwrap_or_default().trim();
+    let action = match name.as_str() {
+        "/add" => Some(crate::ui::Action::AddFiles),
+        "/undo" => Some(crate::ui::Action::UndoRemove),
+        "/retry" => Some(crate::ui::Action::Run(crate::queue::RunSelection::Failed)),
+        "/run-selected" => Some(crate::ui::Action::Run(crate::queue::RunSelection::Selected)),
+        "/retry-input" => Some(crate::ui::Action::RetryInputs),
+        "/reconnect" => Some(crate::ui::Action::Reconnect),
+        _ => None,
+    };
+    if let Some(action) = action {
+        app.input.close();
+        let messages = crate::app::dispatch(app, action);
+        app.outbox.extend(messages);
+        return;
+    }
+    let mut accepted = true;
     match name.as_str() {
         "/exit" => {
             app.exit_requested = true;
@@ -764,7 +770,10 @@ pub(crate) fn run_command(app: &mut App) {
                 app.status = t(lang, "settings.language_changed").into();
                 save_app_settings(app);
             }
-            None => app.status = t(app.lang, "usage.lang").into(),
+            None => {
+                accepted = false;
+                app.status = t(app.lang, "usage.lang").into();
+            }
         },
         "/theme" if argument.is_empty() => {
             open_command_menu(app, "/theme");
@@ -775,6 +784,7 @@ pub(crate) fn run_command(app: &mut App) {
                 save_app_settings(app);
             }
             None => {
+                accepted = false;
                 app.status = format!(
                     "{} {}",
                     tf(app.lang, "err.theme_unknown", &[("value", argument)]),
@@ -796,7 +806,10 @@ pub(crate) fn run_command(app: &mut App) {
                 .into();
                 save_app_settings(app);
             }
-            _ => app.status = t(app.lang, "usage.mouse").into(),
+            _ => {
+                accepted = false;
+                app.status = t(app.lang, "usage.mouse").into();
+            }
         },
         "/llm-mode" if matches!(argument, "summary" | "tasks" | "terms" | "custom") => {
             app.llm_modes = vec![argument.into()];
@@ -806,13 +819,22 @@ pub(crate) fn run_command(app: &mut App) {
                 &[("modes", &app.llm_modes.join(", "))],
             );
         }
-        "/llm-mode" => app.status = t(app.lang, "usage.llm-mode").into(),
+        "/llm-mode" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.llm-mode").into();
+        }
         "/llm-prompt" if !argument.is_empty() => {
             app.llm_prompt = argument.into();
             app.status = t(app.lang, "status.llm_prompt_saved").into();
         }
-        "/llm-prompt" => app.status = t(app.lang, "usage.llm-prompt").into(),
-        "/llm-run" => request_llm(app),
+        "/llm-prompt" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.llm-prompt").into();
+        }
+        "/llm-run" => {
+            let commands = request_llm(app);
+            app.outbox.extend(commands);
+        }
         "/llm-file" => match normalize_path(argument) {
             Ok(path)
                 if matches!(
@@ -829,8 +851,14 @@ pub(crate) fn run_command(app: &mut App) {
                     &[("n", &llm_input_files(app).len().to_string())],
                 );
             }
-            Ok(_) => app.status = t(app.lang, "status.llm_file_type").into(),
-            Err(error) => app.status = error.message(app.lang),
+            Ok(_) => {
+                accepted = false;
+                app.status = t(app.lang, "status.llm_file_type").into();
+            }
+            Err(error) => {
+                accepted = false;
+                app.status = error.message(app.lang);
+            }
         },
         "/llm-api-url" if !argument.is_empty() => {
             app.llm_api_url = argument.into();
@@ -856,9 +884,13 @@ pub(crate) fn run_command(app: &mut App) {
                 app.status = t(app.lang, "status.llm_temperature_saved").into();
                 save_app_settings(app);
             }
-            _ => app.status = t(app.lang, "status.temperature_range").into(),
+            _ => {
+                accepted = false;
+                app.status = t(app.lang, "status.temperature_range").into();
+            }
         },
         "/llm-provider-name" if !matches!(provider_prefix(&app.llm_provider), "pi" | "omp") => {
+            accepted = false;
             app.status = t(app.lang, "status.provider_name_pi_only").into();
         }
         "/llm-provider-name" => {
@@ -873,6 +905,7 @@ pub(crate) fn run_command(app: &mut App) {
             save_app_settings(app);
         }
         "/llm-args" if app.llm_provider == "API" => {
+            accepted = false;
             app.status = t(app.lang, "status.args_cli_only").into();
         }
         "/llm-args" => {
@@ -887,6 +920,7 @@ pub(crate) fn run_command(app: &mut App) {
             save_app_settings(app);
         }
         "/llm-path" if app.llm_provider == "API" => {
+            accepted = false;
             app.status = t(app.lang, "status.path_cli_only").into();
         }
         "/llm-path" => {
@@ -912,12 +946,17 @@ pub(crate) fn run_command(app: &mut App) {
             );
             save_app_settings(app);
         }
-        "/llm-tools" => app.status = t(app.lang, "usage.llm-tools").into(),
+        "/llm-tools" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.llm-tools").into();
+        }
         "/pets" => toggle_pets(app),
         "/output" => {
             if argument.is_empty() {
+                accepted = false;
                 app.status = t(app.lang, "usage.output").into();
             } else if let Err(error) = fs::create_dir_all(argument) {
+                accepted = false;
                 app.status = tf(
                     app.lang,
                     "status.output_dir_error",
@@ -933,7 +972,10 @@ pub(crate) fn run_command(app: &mut App) {
             app.status = tf(app.lang, "status.backend", &[("value", &app.backend)]);
             save_app_settings(app);
         }
-        "/backend" => app.status = backend_usage(app.lang),
+        "/backend" => {
+            accepted = false;
+            app.status = backend_usage(app.lang);
+        }
         "/onnx-provider"
             if matches!(
                 argument.to_ascii_lowercase().as_str(),
@@ -948,13 +990,19 @@ pub(crate) fn run_command(app: &mut App) {
             );
             save_app_settings(app);
         }
-        "/onnx-provider" => app.status = t(app.lang, "usage.onnx-provider").into(),
+        "/onnx-provider" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.onnx-provider").into();
+        }
         "/model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == argument) => {
             app.model = argument.into();
             app.status = tf(app.lang, "status.model", &[("value", &app.model)]);
             save_app_settings(app);
         }
-        "/model" => app.status = t(app.lang, "usage.model").into(),
+        "/model" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.model").into();
+        }
         "/formats" => {
             let formats: Vec<String> = argument
                 .split(',')
@@ -994,7 +1042,10 @@ pub(crate) fn run_command(app: &mut App) {
             );
             save_app_settings(app);
         }
-        "/subtitle-split" => app.status = t(app.lang, "usage.subtitle-split").into(),
+        "/subtitle-split" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.subtitle-split").into();
+        }
         "/subtitle-lines" => match argument.parse::<u8>() {
             Ok(value) if (1..=4).contains(&value) => {
                 app.subtitle_max_lines = value;
@@ -1028,13 +1079,19 @@ pub(crate) fn run_command(app: &mut App) {
             );
             save_app_settings(app);
         }
-        "/diarize" => app.status = t(app.lang, "usage.diarize").into(),
+        "/diarize" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.diarize").into();
+        }
         "/audio-mode" if matches!(argument, "auto" | "off" | "light" | "denoise") => {
             app.audio_preprocessing_mode = argument.into();
             app.status = tf(app.lang, "status.audio_mode", &[("value", argument)]);
             save_app_settings(app);
         }
-        "/audio-mode" => app.status = t(app.lang, "usage.audio-mode").into(),
+        "/audio-mode" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.audio-mode").into();
+        }
         "/diarization-backend" if matches!(argument, "pyannote" | "onnx" | "sortformer") => {
             app.diarization_backend = argument.into();
             if app.diarization_backend == "sortformer" {
@@ -1047,7 +1104,10 @@ pub(crate) fn run_command(app: &mut App) {
             );
             save_app_settings(app);
         }
-        "/diarization-backend" => app.status = t(app.lang, "usage.diarization-backend").into(),
+        "/diarization-backend" => {
+            accepted = false;
+            app.status = t(app.lang, "usage.diarization-backend").into();
+        }
         "/speakers" if app.diarization_backend == "sortformer" => {
             app.num_speakers = None;
             app.status = t(app.lang, "status.sortformer_auto").into();
@@ -1072,26 +1132,31 @@ pub(crate) fn run_command(app: &mut App) {
                 );
                 save_app_settings(app);
             }
-            _ => app.status = t(app.lang, "usage.speakers").into(),
+            _ => {
+                accepted = false;
+                app.status = t(app.lang, "usage.speakers").into();
+            }
         },
         "/clear" => clear_queue(app),
         "/remove" => match argument.parse::<usize>() {
-            Ok(index) if index > 0 && index <= app.files.len() => {
-                let file = app.files.remove(index - 1);
-                app.file_states.remove(&file);
-                app.selected_file = app
-                    .files
-                    .get(index - 1)
-                    .map(|_| index - 1)
-                    .or_else(|| index.checked_sub(2));
-                app.status = tf(app.lang, "queue.removed", &[("name", &short_name(&file))]);
+            Ok(index) if index > 0 && index <= app.queue.items.len() => {
+                app.queue.select(index - 1);
+                remove_selected_file(app);
             }
-            _ => app.status = t(app.lang, "usage.remove").into(),
+            _ => {
+                accepted = false;
+                app.status = t(app.lang, "usage.remove").into();
+            }
         },
-        _ => app.status = tf(app.lang, "status.unknown_command", &[("name", &name)]),
+        _ => {
+            accepted = false;
+            app.status = tf(app.lang, "status.unknown_command", &[("name", &name)]);
+        }
     }
     app.log(app.status.clone());
-    app.input.clear();
+    if accepted {
+        app.input.close();
+    }
 }
 
 /// `/pets` and the Settings row: shows or hides the companion and persists it.
@@ -1106,34 +1171,23 @@ pub(crate) fn toggle_pets(app: &mut App) {
         app.status = error;
     } else {
         app.pet_enabled = true;
-        app.pet_running = app.running;
+        app.pet_running = app.running();
         app.status = t(app.lang, "status.pets_on").into();
         save_app_settings(app);
     }
 }
 
 pub(crate) fn clear_queue(app: &mut App) {
-    app.files.clear();
-    app.file_states.clear();
-    app.selected_file = None;
-    app.result_files.clear();
-    app.llm_extra_files.clear();
-    app.llm_results.clear();
+    app.cancel_inputs();
+    app.queue.clear();
     app.status = t(app.lang, "status.queue_cleared").into();
 }
 
 pub(crate) fn remove_selected_file(app: &mut App) {
-    let Some(index) = app.selected_file.filter(|index| *index < app.files.len()) else {
+    let Some(file) = app.queue.remove_selected() else {
         app.status = t(app.lang, "status.no_file_selected").into();
         return;
     };
-    let file = app.files.remove(index);
-    app.file_states.remove(&file);
-    app.selected_file = app
-        .files
-        .get(index)
-        .map(|_| index)
-        .or_else(|| index.checked_sub(1));
     app.status = tf(app.lang, "queue.removed", &[("name", &short_name(&file))]);
     app.log(app.status.clone());
 }
@@ -1141,6 +1195,131 @@ pub(crate) fn remove_selected_file(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::split_shell_paths;
+
+    #[test]
+    fn modal_confirmation_rejects_paste_and_automatic_input_completion() {
+        let path = std::env::temp_dir().join(format!("gigaam-modal-{}.wav", std::process::id()));
+        fs::write(&path, []).unwrap();
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/done.wav".into());
+        app.queue.items[0].state = crate::queue::FileState::Done;
+        app.begin_batch(crate::queue::RunSelection::Selected, false);
+        let selected = app.queue.selected;
+        paste_input(&mut app, &path.to_string_lossy());
+        assert!(app.input.is_empty());
+        app.input
+            .open(InputMode::Paths, path.to_string_lossy().into());
+        queue_complete_input(&mut app);
+        assert!(app.pending_inputs.is_empty());
+        assert!(app.outbox.is_empty());
+        assert_eq!(app.queue.selected, selected);
+        fs::remove_file(path).unwrap();
+    }
+
+    /// Протокольный ответ для существующих файлов этих тестов; обход папок покрыт в Python.
+    fn resolve_pending_files(app: &mut App) {
+        let requests = app.take_outbox();
+        assert!(!requests.is_empty());
+        for request in requests {
+            assert_eq!(request["type"], "resolve_inputs");
+            let files: Vec<_> = request["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|path| {
+                    let path = crate::input::local_path(path.as_str().unwrap()).unwrap();
+                    fs::canonicalize(path)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            app.handle_message(serde_json::json!({
+                "type":"inputs_resolved", "request_id":request["request_id"],
+                "files":files, "duplicates":[], "errors":[], "cancelled":false
+            }));
+        }
+    }
+
+    #[test]
+    fn explicit_paste_is_submitted_even_with_invalid_files() {
+        let mut app = crate::test_support::ready_app();
+        paste_input(&mut app, "/missing/a.wav /missing/b.wav");
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(app.input.is_empty());
+        paste_input(&mut app, "/missing/c.wav");
+        assert_eq!(app.pending_inputs.len(), 2);
+        let outbox = app.take_outbox();
+        assert_eq!(
+            outbox[0]["paths"],
+            serde_json::json!(["/missing/a.wav", "/missing/b.wav"])
+        );
+        assert_eq!(outbox[1]["paths"], serde_json::json!(["/missing/c.wav"]));
+    }
+
+    #[test]
+    fn raw_drop_consumes_only_complete_prefix_and_preserves_tail_bytes() {
+        let file = std::env::temp_dir().join(format!("gigaam-prefix-{}.wav", std::process::id()));
+        fs::write(&file, []).unwrap();
+        let mut app = crate::test_support::ready_app();
+        let tail = r#"/missing/незаконченный\ путь"#;
+        app.input
+            .open(InputMode::Paths, format!("{} {tail}", file.display()));
+        queue_complete_input(&mut app);
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert_eq!(app.input.text(), tail);
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn argument_paste_never_queues_media_and_invalid_arguments_remain_editable() {
+        let _config = isolated_config_dir();
+        let mut app = crate::test_support::ready_app();
+        crate::app::dispatch(&mut app, crate::ui::Action::EditCommand("/output"));
+        paste_input(&mut app, "/tmp");
+        assert!(app.queue.items.is_empty());
+        assert_eq!(app.input.text(), "/output /tmp");
+        app.input
+            .open(InputMode::Argument("/lang"), "/lang xx".into());
+        run_command(&mut app);
+        assert_eq!(app.input.text(), "/lang xx");
+        app.input.replace("/lang en".into());
+        run_command(&mut app);
+        assert_eq!(app.input.mode, InputMode::Hidden);
+    }
+
+    #[test]
+    fn duplicate_paste_is_consumed_without_resetting_the_completed_item() {
+        let path =
+            std::env::temp_dir().join(format!("gigaam-duplicate-{}.wav", std::process::id()));
+        std::fs::write(&path, b"test").unwrap();
+        let raw = path.to_string_lossy().to_string();
+        let mut app = crate::test_support::ready_app();
+        queue_paths(&mut app, &raw);
+        resolve_pending_files(&mut app);
+        app.queue.items[0].state = crate::queue::FileState::Done;
+        app.input.replace(raw.clone());
+        queue_paths(&mut app, &raw);
+        resolve_pending_files(&mut app);
+        assert_eq!(app.queue.items.len(), 1);
+        assert_eq!(app.queue.items[0].state, crate::queue::FileState::Done);
+        assert_eq!(app.queue.selected_index(), Some(0));
+        assert!(app.input.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn clear_queue_keeps_transcripts_and_llm_results() {
+        let mut app = crate::test_support::ready_app();
+        app.result_files = vec!["/done.txt".into()];
+        app.llm_extra_files = vec!["/notes.md".into()];
+        app.llm_results = vec![("summary".into(), "answer".into())];
+        clear_queue(&mut app);
+        assert_eq!(app.result_files, vec!["/done.txt"]);
+        assert_eq!(app.llm_extra_files, vec!["/notes.md"]);
+        assert_eq!(app.llm_results, vec![("summary".into(), "answer".into())]);
+    }
     use crate::{
         app::llm_can_run,
         i18n::Lang,
@@ -1152,9 +1331,9 @@ mod tests {
     #[test]
     fn theme_command_applies_the_theme_and_persists_it() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         assert_eq!(app.theme.name, "default");
-        app.input = "/theme dark-monokai".into();
+        app.input.replace("/theme dark-monokai".into());
         run_command(&mut app);
         assert_eq!(app.theme.name, "dark-monokai");
         assert_eq!(
@@ -1171,8 +1350,8 @@ mod tests {
     #[test]
     fn theme_command_rejects_an_unknown_name_and_points_at_the_menu() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.input = "/theme nope".into();
+        let mut app = crate::test_support::ready_app();
+        app.input.replace("/theme nope".into());
         run_command(&mut app);
         assert_eq!(app.theme.name, "default");
         assert!(app.status.contains("nope"), "{}", app.status);
@@ -1183,9 +1362,9 @@ mod tests {
     #[test]
     fn theme_command_without_a_name_opens_the_menu_on_the_current_theme() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.theme = Theme::by_name("dark-nord").unwrap();
-        app.input = "/theme".into();
+        app.input.replace("/theme".into());
         run_command(&mut app);
         assert_eq!(app.command_menu.as_deref(), Some("/theme"));
         let options = command_menu_options(&app);
@@ -1225,9 +1404,9 @@ mod tests {
     #[test]
     fn mouse_setting_persists_and_defaults_on() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         assert!(app.mouse_enabled);
-        app.input = "/mouse off".into();
+        app.input.replace("/mouse off".into());
         run_command(&mut app);
         assert!(!app.mouse_enabled);
         assert!(!load_settings().mouse);
@@ -1236,13 +1415,13 @@ mod tests {
     #[test]
     fn lang_command_switches_and_persists() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.input = "/lang en".into();
+        let mut app = crate::test_support::ready_app();
+        app.input.replace("/lang en".into());
         run_command(&mut app);
         assert_eq!(app.lang, Lang::En);
         assert_eq!(app.status, "Language: English");
         assert_eq!(load_settings().language, "en");
-        app.input = "/lang xx".into();
+        app.input.replace("/lang xx".into());
         run_command(&mut app);
         assert_eq!(app.status, "Usage: /lang ru|en");
         assert_eq!(app.lang, Lang::En);
@@ -1259,20 +1438,20 @@ mod tests {
     #[test]
     fn subtitle_commands_validate_and_update_limits() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
-        app.input = "/subtitle-split off".into();
+        app.input.replace("/subtitle-split off".into());
         run_command(&mut app);
-        app.input = "/subtitle-lines 3".into();
+        app.input.replace("/subtitle-lines 3".into());
         run_command(&mut app);
-        app.input = "/subtitle-width 72".into();
+        app.input.replace("/subtitle-width 72".into());
         run_command(&mut app);
 
         assert!(!app.subtitle_sentence_split);
         assert_eq!(app.subtitle_max_lines, 3);
         assert_eq!(app.subtitle_max_width, 72);
 
-        app.input = "/subtitle-width 5".into();
+        app.input.replace("/subtitle-width 5".into());
         run_command(&mut app);
         assert_eq!(app.subtitle_max_width, 72);
         assert_eq!(app.status, "Subtitle width must be between 20 and 100");
@@ -1280,7 +1459,7 @@ mod tests {
 
     #[test]
     fn diarization_backend_command_offers_both_backends() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
 
         assert!(open_command_menu(&mut app, "/diarization-backend"));
         assert_eq!(
@@ -1291,7 +1470,7 @@ mod tests {
 
     #[test]
     fn backend_command_offers_onnx_and_provider_is_persisted() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.onnx_provider = "coreml".into();
 
         assert!(open_command_menu(&mut app, "/backend"));
@@ -1307,10 +1486,10 @@ mod tests {
     #[test]
     fn sortformer_rejects_fixed_speaker_count() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
         app.diarization_backend = "sortformer".into();
-        app.input = "/speakers 2".into();
+        app.input.replace("/speakers 2".into());
 
         run_command(&mut app);
 
@@ -1323,7 +1502,7 @@ mod tests {
 
     #[test]
     fn backend_command_opens_its_choices_with_the_current_value_selected() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.backend = selectable_backends()[0].into();
 
         assert!(open_command_menu(&mut app, "/backend"));
@@ -1338,9 +1517,9 @@ mod tests {
     #[test]
     fn llm_model_command_is_accepted() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
-        app.input = "/llm-model gpt-4.1-mini".into();
+        app.input.replace("/llm-model gpt-4.1-mini".into());
 
         run_command(&mut app);
 
@@ -1350,7 +1529,7 @@ mod tests {
 
     #[test]
     fn settings_menu_offers_all_llm_providers() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         assert!(
             !open_command_menu(&mut app, "/settings"),
             "/settings is a tab now"
@@ -1375,15 +1554,15 @@ mod tests {
     #[test]
     fn provider_extras_reach_the_worker_settings_payload() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.llm_provider = "oh-my-pi".into();
-        app.input = "/llm-provider-name anthropic".into();
+        app.input.replace("/llm-provider-name anthropic".into());
         run_command(&mut app);
-        app.input = "/llm-args --thinking low".into();
+        app.input.replace("/llm-args --thinking low".into());
         run_command(&mut app);
-        app.input = "/llm-tools on".into();
+        app.input.replace("/llm-tools on".into());
         run_command(&mut app);
-        app.input = "/llm-path /opt/homebrew/bin/omp".into();
+        app.input.replace("/llm-path /opt/homebrew/bin/omp".into());
         run_command(&mut app);
 
         let payload = llm_settings_payload(&app);
@@ -1397,11 +1576,11 @@ mod tests {
     #[test]
     fn other_provider_uses_its_path_and_args() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.llm_provider = "Other".into();
-        app.input = "/llm-path /usr/local/bin/my-llm".into();
+        app.input.replace("/llm-path /usr/local/bin/my-llm".into());
         run_command(&mut app);
-        app.input = "/llm-args --stdin {stdin}".into();
+        app.input.replace("/llm-args --stdin {stdin}".into());
         run_command(&mut app);
 
         let payload = llm_settings_payload(&app);
@@ -1412,10 +1591,10 @@ mod tests {
     #[test]
     fn provider_name_command_is_only_for_pi_like_providers() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
         app.llm_provider = "Claude Code".into();
-        app.input = "/llm-provider-name openai".into();
+        app.input.replace("/llm-provider-name openai".into());
         run_command(&mut app);
         assert_eq!(
             app.status,
@@ -1426,21 +1605,21 @@ mod tests {
     #[test]
     fn clear_suggestion_executes_without_an_extra_enter() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.files.push("/tmp/input.wav".into());
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/tmp/input.wav".into());
         app.result_files.push("/tmp/output.txt".into());
 
         accept_command_suggestion(&mut app, "/clear");
 
-        assert!(app.files.is_empty());
-        assert!(app.result_files.is_empty());
+        assert!(app.queue.items.is_empty());
+        assert_eq!(app.result_files, vec!["/tmp/output.txt"]);
         assert!(app.input.is_empty());
     }
 
     #[test]
     fn pets_suggestion_executes_without_an_extra_enter() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
 
         accept_command_suggestion(&mut app, "/pets");
@@ -1455,7 +1634,7 @@ mod tests {
     #[test]
     fn back_option_closes_a_settings_menu_without_applying_a_change() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.command_menu = Some("/diarize".into());
         app.command_menu_index = command_menu_options(&app)
             .iter()
@@ -1469,6 +1648,66 @@ mod tests {
     }
 
     #[test]
+    fn shell_paths_preserve_nonbreaking_spaces_in_finder_copy_names() {
+        let raw = "/Users/dubr1k/Downloads/Ректорат\\ 07.09\\ \\(1\\)\u{a0}—\\ копия.mp3";
+        assert_eq!(
+            split_shell_paths(raw),
+            vec!["/Users/dubr1k/Downloads/Ректорат 07.09 (1)\u{a0}— копия.mp3"]
+        );
+    }
+
+    #[test]
+    fn concatenated_drops_are_split_only_after_existing_files() {
+        let directory =
+            std::env::temp_dir().join(format!("gigaam-concatenated-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("Ректорат (1).mp3");
+        let second = directory.join("Ректорат (1) — копия.mp3");
+        fs::write(&first, []).unwrap();
+        fs::write(&second, []).unwrap();
+        let escape = |path: &Path| {
+            path.to_string_lossy()
+                .replace(' ', "\\ ")
+                .replace('(', "\\(")
+                .replace(')', "\\)")
+        };
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("already-queued.wav".into());
+        app.input
+            .replace(format!("{}{}", escape(&first), escape(&second)));
+        queue_complete_input(&mut app);
+        resolve_pending_files(&mut app);
+        assert_eq!(app.queue.items.len(), 3);
+        assert!(app.queue.items[1].path.ends_with("Ректорат (1).mp3"));
+        assert!(app.queue.items[2]
+            .path
+            .ends_with("Ректорат (1) — копия.mp3"));
+        assert!(app.input.is_empty());
+        app.input
+            .replace(format!("{}/missing-partial-path", escape(&first)));
+        queue_complete_input(&mut app);
+        assert_eq!(app.input.text(), "/missing-partial-path");
+        resolve_pending_files(&mut app);
+        assert_eq!(app.queue.items.len(), 3);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn automatic_queue_keeps_incomplete_paths_and_command_arguments() {
+        let mut app = crate::test_support::ready_app();
+        for input in [
+            "/path/that/does/not/exist.wav",
+            "/output /tmp",
+            "/prompt объясни запись",
+        ] {
+            app.input.replace(input.into());
+            queue_complete_input(&mut app);
+            assert_eq!(app.input.text(), input);
+            assert!(app.queue.items.is_empty());
+        }
+    }
+
+    #[test]
     fn successive_pastes_queue_files_without_concatenating_paths() {
         let directory = std::env::temp_dir().join(format!("gigaam-paste-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
@@ -1476,7 +1715,7 @@ mod tests {
         let second = directory.join("Ректорат (1) — копия.mp3");
         fs::write(&first, []).unwrap();
         fs::write(&second, []).unwrap();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         let escape = |path: &Path| {
             path.to_string_lossy()
                 .replace(' ', "\\ ")
@@ -1485,13 +1724,15 @@ mod tests {
         };
         paste_input(&mut app, &escape(&first));
         paste_input(&mut app, &escape(&second));
-        assert_eq!(app.files.len(), 2);
+        assert_eq!(app.pending_inputs.len(), 2);
+        resolve_pending_files(&mut app);
+        assert_eq!(app.queue.items.len(), 2);
         assert!(app.input.is_empty());
-        assert_eq!(app.selected_file, Some(1));
-        app.input = "/output ".into();
+        assert_eq!(app.queue.selected_index(), Some(1));
+        app.input.replace("/output ".into());
         paste_input(&mut app, &directory.to_string_lossy());
         assert!(app.input.starts_with("/output /"));
-        assert_eq!(app.files.len(), 2);
+        assert_eq!(app.queue.items.len(), 2);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1508,18 +1749,24 @@ mod tests {
         fs::write(&first, []).unwrap();
         fs::write(&second, []).unwrap();
 
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         queue_paths(
             &mut app,
             &format!("{}\n{}", first.display(), second.display()),
         );
+        resolve_pending_files(&mut app);
 
-        assert_eq!(app.files.len(), 2);
-        assert!(app.files.iter().any(|path| path.ends_with("first.wav")));
+        assert_eq!(app.queue.items.len(), 2);
         assert!(app
-            .files
+            .queue
+            .items
             .iter()
-            .any(|path| path.ends_with("second file.mp3")));
+            .any(|item| item.path.ends_with("first.wav")));
+        assert!(app
+            .queue
+            .items
+            .iter()
+            .any(|item| item.path.ends_with("second file.mp3")));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1534,42 +1781,47 @@ mod tests {
         fs::write(&transcript, "hello").unwrap();
         fs::write(&audio, []).unwrap();
 
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
-        app.input = format!("/llm-file {}", transcript.display());
+        app.input
+            .replace(format!("/llm-file {}", transcript.display()));
         run_command(&mut app);
         assert_eq!(llm_input_files(&app).len(), 1);
         assert!(llm_can_run(&app));
 
-        app.input = format!("/llm-file {}", audio.display());
+        app.input.replace(format!("/llm-file {}", audio.display()));
         run_command(&mut app);
         assert_eq!(app.status, "LLM input must be .txt, .md, .srt or .vtt");
         assert_eq!(llm_input_files(&app).len(), 1);
 
-        app.input = "/clear".into();
+        app.input.replace("/clear".into());
         run_command(&mut app);
-        assert!(llm_input_files(&app).is_empty());
+        assert_eq!(
+            llm_input_files(&app).len(),
+            1,
+            "queue clear preserves LLM inputs"
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn audio_mode_is_selectable_persisted_and_sent_to_the_worker() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
         assert!(open_command_menu(&mut app, "/audio-mode"));
         assert_eq!(
             command_menu_options(&app),
             vec!["auto", "off", "light", "denoise", BACK_MENU_OPTION]
         );
-        app.input = "/audio-mode denoise".into();
+        app.input.replace("/audio-mode denoise".into());
         run_command(&mut app);
         assert_eq!(app.audio_preprocessing_mode, "denoise");
-        app.input = "/audio-mode loud".into();
+        app.input.replace("/audio-mode loud".into());
         run_command(&mut app);
         assert_eq!(app.status, "Usage: /audio-mode auto|off|light|denoise");
 
-        let payload = start_payload(&app);
+        let payload = start_payload(&app, &app.queue.paths(crate::queue::RunSelection::Pending));
         assert_eq!(payload["audio_preprocessing_mode"], "denoise");
         let restored: TuiSettings = serde_json::from_str(
             &serde_json::to_string(&TuiSettings {

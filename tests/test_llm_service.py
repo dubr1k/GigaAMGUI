@@ -297,32 +297,10 @@ def test_missing_binary_raises_friendly_error_with_install_hint(monkeypatch):
     assert "brew install" in message
 
 
-def test_cancelled_cli_provider_terminates_its_subprocess(monkeypatch):
-    class HangingProcess:
-        returncode = None
-
-        def __init__(self):
-            self.terminated = False
-
-        def communicate(self, timeout=None):
-            if self.terminated:
-                return "", ""
-            raise subprocess.TimeoutExpired("opencode", timeout)
-
-        def terminate(self):
-            self.terminated = True
-            self.returncode = -15
-
-        def kill(self):
-            self.terminate()
-
-    process = HangingProcess()
-    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
-
+def test_cancelled_cli_provider_terminates_its_subprocess():
+    import sys
     with pytest.raises(llm_service.LLMCancelled):
-        llm_service.run_provider(
-            {"opencode_path": "opencode"}, "t", "p", provider="OpenCode",
-            strict_empty_cli=True, cancel_check=lambda: True,
+        llm_service._run_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            input_text="prompt", cancel_check=lambda: True,
         )
-
-    assert process.terminated is True

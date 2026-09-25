@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// The key legend, top to bottom: the key as shown and the description key.
-const KEYS: [(&str, &str); 19] = [
+const KEYS: [(&str, &str); 24] = [
     ("Tab/Shift+Tab", "help.key_tab"),
     ("F1–F4", "help.key_fn"),
     ("s/ы · F5", "help.key_s"),
@@ -31,6 +31,7 @@ const KEYS: [(&str, &str); 19] = [
     ("f/а · F8", "help.key_f"),
     ("? · F12", "help.key_help"),
     ("Esc", "help.key_esc"),
+    ("Ctrl+R", "help.key_reconnect"),
     ("q/й · F10", "help.key_q"),
     ("Ctrl+C", "help.key_ctrl_c"),
     ("↑ ↓", "help.key_arrows"),
@@ -41,6 +42,10 @@ const KEYS: [(&str, &str); 19] = [
     ("Ctrl+↑/↓", "help.key_ctrl_arrows"),
     ("PgUp/PgDn/End", "help.key_page"),
     ("Ctrl+L · F11", "help.key_ctrl_l"),
+    ("Insert", "help.key_insert"),
+    ("Ctrl+Z", "help.key_undo"),
+    ("Home/End/Del", "help.key_edit"),
+    ("Ctrl+U", "help.key_clear_input"),
 ];
 
 /// Breaks `text` into lines of at most `width` characters at spaces, so that a
@@ -234,10 +239,10 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert!(!app.help_open);
         assert!(!app.exit_requested);
-        app.input = "/help".into();
+        app.input.replace("/help".into());
         run_command(&mut app);
         assert!(app.help_open);
-        app.input = "/settings".into();
+        app.input.replace("/settings".into());
         run_command(&mut app);
         assert_eq!(app.page, Page::Settings);
         assert_eq!(app.command_menu, None);

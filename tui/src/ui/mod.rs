@@ -5,6 +5,8 @@ pub(crate) mod llm;
 pub(crate) mod log;
 pub(crate) mod menu;
 pub(crate) mod processing;
+pub(crate) mod progress;
+pub(crate) mod results;
 pub(crate) mod settings;
 
 use ratatui::{
@@ -24,9 +26,22 @@ use crate::{
 /// through `app::dispatch`, so a click can never drift from its keyboard twin.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
+    ShowResults(bool),
+    SelectResult(usize),
+    OpenResult(bool),
+    Reconnect,
+    ForceStop,
+    ConfirmStop(bool),
     Tab(Page),
     SelectFile(usize),
     RemoveFile(usize),
+    Run(crate::queue::RunSelection),
+    ConfirmRerun(bool),
+    UndoRemove,
+    AddFiles,
+    RetryInputs,
+    QueueActions,
+    ShowPath(bool),
     OpenMenu(&'static str),
     MenuItem(usize),
     Suggestion(usize),
@@ -60,11 +75,14 @@ pub(crate) enum ButtonId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AreaId {
+    Results,
+    ResultPath,
     Queue,
     LlmOutput,
     Log,
     Settings,
     Help,
+    Path,
 }
 
 /// The interactive areas of the last drawn frame. `draw` clears it and registers
@@ -123,19 +141,24 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     // Rows above the input line, capped so that the main area keeps its 11 lines
     // (queue and panel 6, progress 5) and the input line is always visible.
     let menu_height = (rows.len() as u16).min(area.height.saturating_sub(17));
+    let input_height = if app.input.mode == crate::input::InputMode::Hidden && rows.len() == 0 {
+        0
+    } else {
+        menu_height + 2
+    };
     let [header, tabs, main, hint, input, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(11),
         Constraint::Length(1),
-        Constraint::Length(menu_height + 2),
+        Constraint::Length(input_height),
         Constraint::Length(1),
     ])
     .areas(area);
     draw_header(frame, header, app);
     draw_tabs(frame, tabs, app);
     let mut page_area = main;
-    if app.pet_enabled && main.width > PET_COLUMNS + 20 {
+    if app.pet_enabled && main.width >= 120 {
         page_area.width -= PET_COLUMNS;
     }
     match app.page {
@@ -144,7 +167,9 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         Page::Settings => settings::draw(frame, page_area, app),
         Page::Log => log::draw(frame, page_area, app),
     }
-    draw_pet(frame, main, app);
+    if main.width >= 120 {
+        draw_pet(frame, main, app);
+    }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -157,26 +182,51 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     );
     menu::draw(frame, input, app, &rows);
     draw_footer(frame, footer, app);
+    if app.show_path {
+        processing::draw_path_overlay(frame, area, app);
+    }
+    if app.rerun_confirmation.is_some() {
+        processing::draw_confirmation(frame, area, app);
+    }
     // Last, so that it covers the page and its hit areas sit on top of theirs.
     if app.help_open {
         help::draw(frame, area, app);
+    }
+    if app.stop_confirmation {
+        processing::draw_confirmation(frame, area, app);
+    }
+    if app.results_open {
+        results::draw(frame, area, app);
     }
 }
 
 fn draw_header(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let p = *app.palette();
-    let (status_key, colour) = if app.worker_down {
+    let (status_key, colour) = if app.connection.state
+        == crate::lifecycle::ConnectionState::Connecting
+    {
+        ("status.worker_connecting", p.accent)
+    } else if app.worker_down() {
         ("status.worker_down", p.error)
-    } else if app.llm_running {
+    } else if app.activity == crate::lifecycle::Activity::Starting(crate::lifecycle::JobKind::Llm) {
+        ("status.llm_starting_short", p.accent)
+    } else if app.llm_running() {
         ("status.llm_running", p.success)
-    } else if app.running {
+    } else if app.activity == crate::lifecycle::Activity::Starting(crate::lifecycle::JobKind::Asr) {
+        ("status.batch_starting", p.accent)
+    } else if !app.pending_inputs.is_empty() {
+        ("status.adding_inputs", p.accent)
+    } else if app.running() {
         ("status.running", p.success)
     } else {
         ("status.ready", p.muted)
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" GigaAM", p.title()),
+            Span::styled(
+                format!(" GigaAM TUI {}", env!("CARGO_PKG_VERSION")),
+                p.title(),
+            ),
             Span::styled(
                 format!("  ● {}", t(app.lang, status_key)),
                 Style::default().fg(colour),
@@ -300,13 +350,41 @@ mod tests {
     use ratatui::{buffer::Buffer, style::Color};
 
     fn render(theme: &str) -> Buffer {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.theme = Theme::by_name(theme).expect(theme);
-        app.files = vec!["/a/one.wav".into()];
+        app.queue.add("/a/one.wav".into());
         let backend = ratatui::backend::TestBackend::new(100, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn hidden_input_has_no_prompt_but_active_input_has_a_visible_cursor() {
+        let mut app = crate::test_support::ready_app();
+        app.pet_enabled = false;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(!app
+            .hits
+            .items()
+            .iter()
+            .any(|(_, a)| *a == Action::FocusInput));
+        app.input
+            .open(crate::input::InputMode::Paths, "/запись🦄".repeat(20));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = terminal.backend().to_string();
+        assert!(text.contains("Файлы:"), "{text}");
+        let position = terminal.get_cursor_position().unwrap();
+        assert!(position.x < 80 && position.y < 24, "{position:?}");
+        app.input.home();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let position = terminal.get_cursor_position().unwrap();
+        assert_eq!(
+            position.x,
+            ratatui::text::Line::from("Файлы: ").width() as u16
+        );
     }
 
     #[test]

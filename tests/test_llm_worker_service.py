@@ -106,3 +106,20 @@ def test_llm_provider_error_becomes_failed_completion(tmp_path):
     service.start({"type": "llm_start", "text": "t", "modes": ["summary"], "settings": SETTINGS, "output_dir": str(tmp_path)})
     done = _messages(output)[-1]
     assert done == {"type": "llm_completed", "success": False, "message": "boom"}
+
+
+def test_failed_process_termination_is_not_reported_as_successful_cancel(tmp_path):
+    from src.services import llm_service
+    holder = {}
+
+    def run_provider(*args, **kwargs):
+        holder["service"].cancel()
+        raise llm_service.LLMTerminationError("owned CLI is still alive")
+
+    service, output = _service(run_provider)
+    holder["service"] = service
+    service.start({"type": "llm_start", "text": "t", "modes": ["summary"], "settings": SETTINGS, "output_dir": str(tmp_path)})
+    done = _messages(output)[-1]
+    assert done.get("cancelled") is not True
+    assert done["termination_failed"] is True
+    assert done["message"] == "owned CLI is still alive"

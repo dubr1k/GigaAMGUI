@@ -754,11 +754,13 @@ version = "2.0.1"
 dependencies = [
  "crossterm",
  "image",
+ "libc",
  "ratatui",
  "ratatui-image",
  "regex-lite",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

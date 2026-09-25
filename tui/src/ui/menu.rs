@@ -14,6 +14,7 @@ use crate::{
         command_menu_options, command_suggestions, BACK_MENU_OPTION, ENTER_MANUALLY_OPTION,
     },
     i18n::t,
+    input::InputMode,
     ui::Action,
 };
 
@@ -26,12 +27,12 @@ pub(crate) struct MenuRows {
 
 impl MenuRows {
     pub(crate) fn of(app: &App) -> Self {
-        let menu = if app.running {
+        let menu = if app.running() {
             Vec::new()
         } else {
             command_menu_options(app)
         };
-        let suggestions = if app.running || !menu.is_empty() {
+        let suggestions = if app.running() || !menu.is_empty() {
             Vec::new()
         } else {
             command_suggestions(&app.input)
@@ -48,6 +49,9 @@ impl MenuRows {
 /// row that is drawn is registered as clickable; when there are more rows than
 /// fit, the window slides so that the selected row stays visible.
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: &MenuRows) {
+    if area.height < 2 || area.width == 0 {
+        return;
+    }
     let p = *app.palette();
     let visible = usize::from(area.height.saturating_sub(2));
     let (count, selected) = if rows.menu.is_empty() {
@@ -126,12 +130,36 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
             }
         })
         .collect();
+    let label = format!(
+        "{}: ",
+        t(
+            app.lang,
+            match app.input.mode {
+                InputMode::Paths => "input.files",
+                InputMode::Argument(_) => "input.argument",
+                _ => "input.command",
+            }
+        )
+    );
+    let label_width = Line::from(label.as_str()).width();
+    let available = (area.width as usize).saturating_sub(label_width);
+    let mut start = app.input.cursor();
+    let mut cursor_width = 0;
+    for (index, ch) in app.input.text()[..app.input.cursor()].char_indices().rev() {
+        let width = Line::from(ch.to_string()).width();
+        if cursor_width + width >= available {
+            break;
+        }
+        start = index;
+        cursor_width += width;
+    }
+    let input_y = area.y + 1 + lines.len() as u16;
     lines.push(Line::from(vec![
         Span::styled(
-            "› ",
+            label,
             Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(app.input.as_str()),
+        Span::raw(&app.input.text()[start..]),
     ]));
     frame.render_widget(
         Paragraph::new(lines).block(
@@ -153,6 +181,13 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App, rows: 
             },
         );
     }
-    let input_row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    let input_row = Rect::new(area.x, input_y, area.width, 1);
     app.hits.add(input_row, Action::FocusInput);
+    if available > 0
+        && app.input.mode != InputMode::Hidden
+        && app.command_menu.is_none()
+        && !app.help_open
+    {
+        frame.set_cursor_position((area.x + (label_width + cursor_width) as u16, input_y));
+    }
 }

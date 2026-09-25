@@ -107,6 +107,9 @@ class LLMWorkerService:
             self._emit("llm_completed", success=True, saved_files=saved_files, results=results)
         except _Cancelled:
             self._emit("llm_completed", success=False, cancelled=True, saved_files=saved_files, results=results)
+        except llm_service.LLMTerminationError as exc:
+            self._emit("llm_completed", success=False, termination_failed=True, message=str(exc),
+                       saved_files=saved_files, results=results)
         except Exception as exc:
             if self._cancel_requested.is_set():
                 self._emit("llm_completed", success=False, cancelled=True, saved_files=saved_files, results=results)

@@ -1,7 +1,7 @@
 //! Application state and the handling of worker events.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::Path,
     time::{Duration, Instant},
 };
@@ -13,16 +13,20 @@ use ratatui_image::{
 use serde_json::{json, Value};
 
 use crate::{
+    batch::{BatchRun, BatchSummary},
     commands::{
         accept_command_suggestion, apply_command_menu, clear_queue, command_menu_options,
         command_suggestions, is_command, open_command_menu, remove_selected_file, short_name,
         toggle_pets,
     },
     i18n::{t, tf, tn, Lang},
+    lifecycle::{Activity, Connection, ConnectionState, JobKind},
+    queue::{QueueState, RunSelection},
+    session::PendingInput,
     settings::save_app_settings,
     theme::{Palette, Theme},
     ui::{llm::MODES, settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
-    worker::{llm_start_payload, start_payload, LlmTool},
+    worker::{llm_start_payload, LlmTool},
 };
 
 /// The tabs of the interface, in tab-bar order.
@@ -59,15 +63,7 @@ pub(crate) enum Focus {
     Params,
 }
 
-/// What the worker has reported about a queued file so far.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FileState {
-    Pending,
-    Processing,
-    Done,
-    Failed,
-    Cancelled,
-}
+pub(crate) use crate::queue::FileState;
 
 pub(crate) struct App {
     pub(crate) lang: Lang,
@@ -79,6 +75,7 @@ pub(crate) struct App {
     pub(crate) scroll: HashMap<AreaId, u16>,
     /// The `?` overlay is drawn over the current page and swallows other keys.
     pub(crate) help_open: bool,
+    pub(crate) show_path: bool,
     /// The highlighted row of the Settings page.
     pub(crate) settings_cursor: usize,
     /// The Log page shows the newest lines while this is set; scrolling up clears
@@ -89,13 +86,23 @@ pub(crate) struct App {
     pub(crate) params_cursor: usize,
     /// The worker could not be started or its event channel closed: the UI stays
     /// usable for settings, and the next-step hint says how to repair it.
-    pub(crate) worker_down: bool,
-    /// Per-file outcome of the current batch, keyed by the queued path.
-    pub(crate) file_states: HashMap<String, FileState>,
+    pub(crate) connection: Connection,
+    pub(crate) activity: Activity,
+    pub(crate) reconnect_requested: bool,
+    pub(crate) worker_stop_requested: bool,
+    pub(crate) worker_stopped: bool,
+    pub(crate) stop_confirmation: bool,
+    pub(crate) queue: QueueState,
+    pub(crate) pending_inputs: VecDeque<PendingInput>,
+    pub(crate) failed_inputs: Vec<String>,
+    pub(crate) next_input_id: u64,
+    pub(crate) batch: Option<BatchRun>,
+    pub(crate) batch_summary: Option<BatchSummary>,
+    pub(crate) outbox: Vec<Value>,
+    pub(crate) rerun_confirmation: Option<u64>,
     /// The last `Esc` / `Ctrl+C` press and when: a second one within 700 ms confirms.
     pub(crate) last_exit_request: Option<(&'static str, Instant)>,
-    pub(crate) input: String,
-    pub(crate) files: Vec<String>,
+    pub(crate) input: crate::input::InputState,
     pub(crate) logs: Vec<String>,
     pub(crate) status: String,
     pub(crate) current_file: Option<String>,
@@ -105,7 +112,6 @@ pub(crate) struct App {
     pub(crate) progress: f64,
     pub(crate) processed_seconds: Option<f64>,
     pub(crate) total_seconds: Option<f64>,
-    pub(crate) running: bool,
     pub(crate) cancelled: bool,
     pub(crate) diarization: bool,
     pub(crate) diarization_backend: String,
@@ -119,7 +125,10 @@ pub(crate) struct App {
     pub(crate) subtitle_max_lines: u8,
     pub(crate) subtitle_max_width: u16,
     pub(crate) result_files: Vec<String>,
-    pub(crate) selected_file: Option<usize>,
+    pub(crate) results_open: bool,
+    pub(crate) result_cursor: usize,
+    pub(crate) result_notice: String,
+    pub(crate) result_opening: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     pub(crate) selected_command: usize,
     pub(crate) command_menu: Option<String>,
     pub(crate) command_menu_index: usize,
@@ -132,7 +141,6 @@ pub(crate) struct App {
     pub(crate) pet_image: Option<StatefulProtocol>,
     pub(crate) llm_modes: Vec<String>,
     pub(crate) llm_prompt: String,
-    pub(crate) llm_requested: bool,
     pub(crate) llm_provider: String,
     pub(crate) llm_api_url: String,
     pub(crate) llm_api_key: String,
@@ -145,10 +153,8 @@ pub(crate) struct App {
     pub(crate) llm_tool_paths: HashMap<String, String>,
     pub(crate) llm_allow_tools: bool,
     pub(crate) llm_tool_check_requested: Option<(String, String)>,
-    pub(crate) llm_running: bool,
     pub(crate) llm_stream: String,
     pub(crate) llm_results: Vec<(String, String)>,
-    pub(crate) llm_cancel_requested: bool,
     pub(crate) llm_extra_files: Vec<String>,
     /// The highlighted row of the «Транскрипты» table on the LLM page.
     pub(crate) llm_input_cursor: usize,
@@ -174,15 +180,27 @@ impl Default for App {
             mouse_enabled: true,
             scroll: HashMap::new(),
             help_open: false,
+            show_path: false,
             settings_cursor: 0,
             log_follow: true,
             focus: Focus::Input,
             params_cursor: 0,
-            worker_down: false,
-            file_states: HashMap::new(),
+            connection: Connection::new(0, Instant::now()),
+            activity: Activity::Idle,
+            reconnect_requested: false,
+            worker_stop_requested: false,
+            worker_stopped: true,
+            stop_confirmation: false,
+            queue: QueueState::default(),
+            pending_inputs: VecDeque::new(),
+            failed_inputs: Vec::new(),
+            next_input_id: 0,
+            batch: None,
+            batch_summary: None,
+            outbox: Vec::new(),
+            rerun_confirmation: None,
             last_exit_request: None,
-            input: String::new(),
-            files: Vec::new(),
+            input: crate::input::InputState::default(),
             logs: vec![t(Lang::Ru, "log.ready").into()],
             status: t(Lang::Ru, "status.ready").into(),
             current_file: None,
@@ -192,7 +210,6 @@ impl Default for App {
             progress: 0.0,
             processed_seconds: None,
             total_seconds: None,
-            running: false,
             cancelled: false,
             diarization: false,
             diarization_backend: "pyannote".into(),
@@ -206,7 +223,10 @@ impl Default for App {
             subtitle_max_lines: 2,
             subtitle_max_width: 64,
             result_files: Vec::new(),
-            selected_file: None,
+            results_open: false,
+            result_cursor: 0,
+            result_notice: String::new(),
+            result_opening: None,
             selected_command: 0,
             command_menu: None,
             command_menu_index: 0,
@@ -219,7 +239,6 @@ impl Default for App {
             pet_image: None,
             llm_modes: vec!["summary".into()],
             llm_prompt: String::new(),
-            llm_requested: false,
             llm_provider: "API".into(),
             llm_api_url: String::new(),
             llm_api_key: String::new(),
@@ -232,10 +251,8 @@ impl Default for App {
             llm_tool_paths: HashMap::new(),
             llm_allow_tools: false,
             llm_tool_check_requested: None,
-            llm_running: false,
             llm_stream: String::new(),
             llm_results: Vec::new(),
-            llm_cancel_requested: false,
             llm_extra_files: Vec::new(),
             llm_input_cursor: 0,
             llm_mode_cursor: None,
@@ -248,6 +265,16 @@ impl Default for App {
 }
 
 impl App {
+    pub(crate) fn running(&self) -> bool {
+        self.activity.is_active()
+    }
+    pub(crate) fn llm_running(&self) -> bool {
+        self.activity.is_llm()
+    }
+    pub(crate) fn worker_down(&self) -> bool {
+        self.connection.state != ConnectionState::Ready
+    }
+
     pub(crate) fn palette(&self) -> &Palette {
         &self.theme.palette
     }
@@ -260,10 +287,11 @@ impl App {
     }
 
     pub(crate) fn file_state(&self, path: &str) -> FileState {
-        self.file_states
-            .get(path)
-            .copied()
-            .unwrap_or(FileState::Pending)
+        self.queue
+            .items
+            .iter()
+            .find(|item| item.path == path)
+            .map_or(FileState::Pending, |item| item.state)
     }
 
     /// Quits on the second press of the same key within 700 ms; the first only
@@ -281,106 +309,18 @@ impl App {
 
     pub(crate) fn handle_message(&mut self, value: Value) {
         let kind = value["type"].as_str().unwrap_or("error");
+        if self.handle_batch_message(kind, &value) {
+            return;
+        }
         match kind {
-            "started" => {
-                self.running = true;
-                self.cancelled = false;
-                self.file_states.clear();
-                self.total_files = value["total_files"].as_u64().unwrap_or(0) as usize;
-                self.status = tf(
-                    self.lang,
-                    "status.running_backend",
-                    &[("backend", value["backend"].as_str().unwrap_or("auto"))],
-                );
-            }
+            "inputs_resolved" => self.inputs_resolved(value),
             "log" => self.log(value["message"].as_str().unwrap_or("").to_string()),
-            "file_started" => {
-                self.current_file = value["file"].as_str().map(str::to_owned);
-                if let Some(file) = value["file"].as_str() {
-                    self.file_states
-                        .insert(file.to_owned(), FileState::Processing);
-                }
-                self.file_index = value["file_index"].as_u64().unwrap_or(0) as usize;
-                self.progress = 0.0;
-                self.status = t(self.lang, "status.running").into();
-            }
-            "progress" => {
-                self.stage = value["stage"].as_str().unwrap_or("preparing").to_string();
-                self.progress = value["file_progress"]
-                    .as_f64()
-                    .unwrap_or(0.0)
-                    .clamp(0.0, 1.0);
-                self.processed_seconds = value["processed_seconds"].as_f64();
-                self.total_seconds = value["total_seconds"].as_f64();
-                if let Some(message) = value["message"].as_str() {
-                    self.status = message.to_string();
-                }
-            }
-            "file_completed" => {
-                let success = value["result"]["success"].as_bool().unwrap_or(false);
-                if let Some(file) = value["file"].as_str() {
-                    self.file_states.insert(
-                        file.to_owned(),
-                        if success {
-                            FileState::Done
-                        } else {
-                            FileState::Failed
-                        },
-                    );
-                }
-                if success {
-                    self.log(format!(
-                        "✓ {}",
-                        short_name(value["file"].as_str().unwrap_or(""))
-                    ));
-                    if let Some(saved) = value["result"]["saved_files"].as_array() {
-                        self.result_files
-                            .extend(saved.iter().filter_map(|p| p.as_str().map(str::to_owned)));
-                    }
-                } else {
-                    self.log(format!(
-                        "× {}",
-                        short_name(value["file"].as_str().unwrap_or(""))
-                    ));
-                }
-            }
-            "cancelling" => {
-                self.cancelled = true;
-                self.status = value["message"]
-                    .as_str()
-                    .unwrap_or(t(self.lang, "status.cancelling"))
-                    .into();
-            }
-            "completed" => {
-                self.running = false;
-                self.cancelled = value["cancelled"].as_bool().unwrap_or(false);
-                if self.cancelled {
-                    for file in &self.files {
-                        let state = self
-                            .file_states
-                            .entry(file.clone())
-                            .or_insert(FileState::Pending);
-                        if matches!(state, FileState::Pending | FileState::Processing) {
-                            *state = FileState::Cancelled;
-                        }
-                    }
-                }
-                self.status = t(
-                    self.lang,
-                    if self.cancelled {
-                        "status.cancelled"
-                    } else if value["success"].as_bool().unwrap_or(false) {
-                        "status.completed"
-                    } else {
-                        "status.completed_with_errors"
-                    },
-                )
-                .into();
-                self.log(self.status.clone());
-            }
             "llm_started" => {
-                self.running = true;
-                self.llm_running = true;
+                if !self.activity.acknowledge(JobKind::Llm)
+                    && self.activity != Activity::Running(JobKind::Llm)
+                {
+                    return;
+                }
                 self.llm_stream.clear();
                 // A new run must never show the previous run's results: `llm_completed`
                 // without `results` (worker failure, cancel) leaves `llm_results` alone.
@@ -413,9 +353,16 @@ impl App {
                 }
             }
             "llm_completed" => {
-                self.running = false;
-                self.llm_running = false;
-                self.llm_cancel_requested = false;
+                if !self.llm_running() {
+                    return;
+                }
+                let termination_failed = value["termination_failed"].as_bool().unwrap_or(false);
+                if termination_failed {
+                    // Отмена не подтверждена: новый запуск может пересечься со старым CLI.
+                    self.activity = Activity::Stopping(JobKind::Llm);
+                } else {
+                    self.activity.finish(JobKind::Llm);
+                }
                 self.llm_stream.clear();
                 self.llm_saved_files = value["saved_files"]
                     .as_array()
@@ -437,7 +384,18 @@ impl App {
                         })
                         .collect();
                 }
-                if value["cancelled"].as_bool().unwrap_or(false) {
+                if termination_failed {
+                    self.status = tf(
+                        self.lang,
+                        "status.stop_failed",
+                        &[(
+                            "error",
+                            value["message"]
+                                .as_str()
+                                .unwrap_or(t(self.lang, "status.unknown_error")),
+                        )],
+                    );
+                } else if value["cancelled"].as_bool().unwrap_or(false) {
                     self.status = t(self.lang, "status.llm_cancelled").into();
                 } else if value["success"].as_bool().unwrap_or(false) {
                     let saved = value["saved_files"].as_array().map_or(0, Vec::len);
@@ -527,11 +485,21 @@ impl App {
                 }
             }
             "error" => {
+                if let Some(batch) = &mut self.batch {
+                    batch.error = value["message"].as_str().map(str::to_owned);
+                }
+                if self.activity.is_starting() {
+                    self.finish_batch(false, value["message"].as_str().map(str::to_owned), None);
+                    self.activity = Activity::Idle;
+                }
                 self.status = value["message"]
                     .as_str()
                     .unwrap_or(t(self.lang, "status.worker_error"))
                     .into();
                 self.log(tf(self.lang, "log.error", &[("error", &self.status)]));
+                if !self.pending_inputs.is_empty() && self.status.contains("resolve_inputs") {
+                    self.resolver_unavailable();
+                }
             }
             _ => {}
         }
@@ -560,12 +528,17 @@ pub(crate) fn llm_input_files(app: &App) -> Vec<String> {
 }
 
 pub(crate) fn llm_can_run(app: &App) -> bool {
-    !llm_input_files(app).is_empty()
+    !app.worker_down()
+        && !app.running()
+        && !llm_input_files(app).is_empty()
         && !app.llm_modes.is_empty()
         && (!app.llm_modes.iter().any(|mode| mode == "custom") || !app.llm_prompt.is_empty())
 }
 
-pub(crate) fn request_llm(app: &mut App) {
+pub(crate) fn request_llm(app: &mut App) -> Vec<Value> {
+    if app.worker_down() || app.running() {
+        return Vec::new();
+    }
     if llm_input_files(app).is_empty() {
         app.status = t(app.lang, "llm.inputs_empty").into();
     } else if app.llm_modes.is_empty() {
@@ -573,7 +546,8 @@ pub(crate) fn request_llm(app: &mut App) {
     } else if app.llm_modes.iter().any(|mode| mode == "custom") && app.llm_prompt.is_empty() {
         app.status = t(app.lang, "status.llm_no_prompt").into();
     } else {
-        app.llm_requested = true;
+        app.activity.start(JobKind::Llm);
+        app.cancelled = false;
         app.status = tf(
             app.lang,
             "status.llm_starting",
@@ -582,40 +556,49 @@ pub(crate) fn request_llm(app: &mut App) {
                 &tn(app.lang, llm_input_files(app).len(), "plural.transcripts"),
             )],
         );
+        return vec![llm_start_payload(app)];
     }
+    Vec::new()
 }
 
-/// The first Esc during an LLM run asks the worker to stop politely; once that request is
-/// pending, Esc must fall through to the double-Esc kill/restart path, otherwise a CLI
-/// provider that ignores the cancel (up to the worker's 600 s timeout) or a dead worker
-/// locks the UI: `running` only clears on `llm_completed`, and `q`/Ctrl+C wait for it.
+/// First Esc requests cooperative cancellation; later presses open confirmation.
 pub(crate) fn esc_should_soft_cancel(app: &App) -> bool {
-    app.llm_running && !app.llm_cancel_requested
+    app.llm_running() && !app.activity.is_stopping()
 }
 
-/// Whether `main` must handle this Esc itself (graceful cancel, then kill/restart on
-/// the second press). The help overlay wins: it can be opened during a run with a
-/// click on the header button, and its Esc closes the overlay, not the run.
+/// Help/path overlays consume Esc before cancellation or force-stop confirmation.
 pub(crate) fn esc_is_cancel(app: &App) -> bool {
-    app.running && !app.help_open && !esc_should_soft_cancel(app)
+    app.running()
+        && !app.help_open
+        && !app.show_path
+        && !app.stop_confirmation
+        && !esc_should_soft_cancel(app)
 }
 
 /// The one-line hint under the main area, as an i18n key. The first matching
 /// situation wins: a dead worker outranks everything, then the two kinds of run,
 /// then the furthest stage the session has reached.
 pub(crate) fn next_step(app: &App) -> &'static str {
-    if app.worker_down {
+    if app.connection.state == ConnectionState::Connecting {
+        "hint.worker_connecting"
+    } else if app.worker_down() {
         "hint.worker_down"
-    } else if app.llm_running {
+    } else if app.llm_running() {
         "hint.cancel_llm"
-    } else if app.running {
+    } else if !app.pending_inputs.is_empty() {
+        "hint.adding_inputs"
+    } else if app.activity == Activity::Starting(JobKind::Asr) {
+        "hint.batch_starting"
+    } else if app.running() {
         "hint.cancel_batch"
+    } else if app.can_start(RunSelection::Pending) {
+        "hint.start"
     } else if !app.llm_results.is_empty() {
         "hint.view_result"
     } else if !app.result_files.is_empty() {
         "hint.run_llm"
-    } else if !app.files.is_empty() {
-        "hint.start"
+    } else if !app.queue.items.is_empty() {
+        "hint.queue_actions"
     } else {
         "hint.add_files"
     }
@@ -625,11 +608,18 @@ pub(crate) fn next_step(app: &App) -> &'static str {
 /// "in flight" flag and buffer of both the transcription and the LLM run must go back to
 /// idle; the fresh worker will never send the `completed`/`llm_completed` that would.
 pub(crate) fn reset_after_worker_restart(app: &mut App) {
-    app.running = false;
+    app.batch = None;
+    app.rerun_confirmation = None;
+    app.failed_inputs
+        .extend(app.pending_inputs.drain(..).map(|r| r.original));
+    app.outbox.clear();
+    for item in &mut app.queue.items {
+        if item.state == FileState::Processing {
+            item.state = FileState::Cancelled;
+        }
+    }
+    app.activity = Activity::Idle;
     app.cancelled = true;
-    app.llm_running = false;
-    app.llm_cancel_requested = false;
-    app.llm_requested = false;
     app.llm_stream.clear();
 }
 
@@ -638,12 +628,30 @@ pub(crate) fn reset_after_worker_restart(app: &mut App) {
 /// writes to the process, so the tests need no worker and `main` keeps the only
 /// handle that can respawn it.
 pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
-    // The queue and the command line are read-only while the worker runs, exactly as
-    // the key arms in `main` refuse typing, selection and menus during a run.
+    if app.stop_confirmation && !matches!(action, Action::ConfirmStop(_)) {
+        return Vec::new();
+    }
+    if app.rerun_confirmation.is_some() && !matches!(action, Action::ConfirmRerun(_)) {
+        return Vec::new();
+    }
+    if app.results_open
+        && !matches!(
+            action,
+            Action::ShowResults(_)
+                | Action::SelectResult(_)
+                | Action::OpenResult(_)
+                | Action::Scroll(AreaId::Results | AreaId::ResultPath, _)
+        )
+    {
+        return Vec::new();
+    }
+    // During a run the queue is read-only; selection and inspection stay available.
     let edits_idle_state = matches!(
         action,
-        Action::SelectFile(_)
-            | Action::RemoveFile(_)
+        Action::RemoveFile(_)
+            | Action::UndoRemove
+            | Action::AddFiles
+            | Action::RetryInputs
             | Action::OpenMenu(_)
             | Action::MenuItem(_)
             | Action::Suggestion(_)
@@ -653,20 +661,86 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             | Action::SettingsRow(_)
             | Action::ToggleSetting(_)
     );
-    if edits_idle_state && app.running {
+    if edits_idle_state && app.running() {
         return Vec::new();
     }
     match action {
+        Action::ShowResults(show) => {
+            app.results_open = show;
+            app.result_cursor = app
+                .result_cursor
+                .min(app.saved_results().len().saturating_sub(1));
+            if show {
+                app.result_notice.clear();
+            }
+        }
+        Action::SelectResult(index) => {
+            app.result_cursor = index.min(app.saved_results().len().saturating_sub(1));
+            app.scroll.insert(AreaId::ResultPath, 0);
+        }
+        Action::OpenResult(folder) => app.open_selected_result(folder),
+        Action::Scroll(AreaId::Results, delta) => {
+            let index = app.result_cursor.saturating_add_signed(delta as isize);
+            return dispatch(app, Action::SelectResult(index));
+        }
+        Action::Reconnect => app.request_reconnect(),
+        Action::ForceStop => {
+            app.stop_confirmation = true;
+        }
+        Action::ConfirmStop(confirmed) => {
+            app.stop_confirmation = false;
+            if confirmed {
+                app.worker_failed(t(app.lang, "status.force_stopping").into());
+                app.worker_stop_requested = true;
+                app.reconnect_requested = true;
+            }
+        }
+        Action::QueueActions => {
+            if app.running() {
+                return dispatch(app, Action::ShowPath(true));
+            }
+            open_command_menu(app, "/queue-actions");
+        }
+        Action::ShowPath(show) => {
+            app.show_path = show && app.queue.selected_index().is_some();
+            app.scroll.insert(AreaId::Path, 0);
+        }
+        Action::Run(selection) => return app.begin_batch(selection, false),
+        Action::ConfirmRerun(confirmed) => {
+            let id = app.rerun_confirmation.take();
+            if confirmed && id.is_some() && id == app.queue.selected {
+                return app.begin_batch(RunSelection::Selected, true);
+            }
+        }
+        Action::UndoRemove => {
+            if app.queue.undo_remove() {
+                app.status = t(app.lang, "queue.restored").into();
+            }
+        }
+        Action::AddFiles => {
+            app.page = Page::Processing;
+            app.command_menu = None;
+            app.input
+                .open(crate::input::InputMode::Paths, String::new());
+            app.focus = Focus::Input;
+        }
+        Action::RetryInputs => {
+            if let Some(original) = app.failed_inputs.last().cloned() {
+                if app.submit_paths(original) {
+                    app.failed_inputs.pop();
+                }
+            }
+        }
         Action::Tab(page) => app.page = page,
         Action::SelectFile(index) => {
-            if index < app.files.len() {
-                app.selected_file = Some(index);
+            if index < app.queue.items.len() {
+                app.queue.select(index);
                 app.focus = Focus::Queue;
             }
         }
         Action::RemoveFile(index) => {
-            if index < app.files.len() {
-                app.selected_file = Some(index);
+            if index < app.queue.items.len() {
+                app.queue.select(index);
                 remove_selected_file(app);
             }
         }
@@ -674,7 +748,10 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             // A parameter without a choice menu (`/output <dir>`) is typed instead:
             // the command line is pre-filled the way the `/settings` menu does it.
             if !open_command_menu(app, command) && is_command(command) {
-                app.input = format!("{command} ");
+                app.input.open(
+                    crate::input::InputMode::Argument(command),
+                    format!("{command} "),
+                );
                 app.selected_command = 0;
                 app.focus = Focus::Input;
             }
@@ -704,42 +781,40 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             );
         }
         Action::Button(ButtonId::Start) => {
-            if !app.running && !app.files.is_empty() {
-                return vec![start_payload(app)];
-            }
+            return dispatch(app, Action::Run(RunSelection::Pending));
         }
         Action::Button(ButtonId::Stop) => {
             // One graceful cancel per batch: the worker answers `cancelling`, which
             // also sets `cancelled`, so a repeated Esc within the double-press
             // window does not queue more cancels behind the first.
-            if app.running && !app.llm_running && !app.cancelled {
+            if app.running() && !app.llm_running() && app.activity.stop() {
                 app.cancelled = true;
                 return vec![json!({"type": "cancel"})];
             }
         }
         Action::Button(ButtonId::RunLlm) => {
-            if !app.running {
-                request_llm(app);
-                if app.llm_requested {
-                    app.llm_requested = false;
-                    return vec![llm_start_payload(app)];
-                }
-            }
+            return request_llm(app);
         }
         Action::Button(ButtonId::CancelLlm) => {
             if esc_should_soft_cancel(app) {
-                app.llm_cancel_requested = true;
+                app.activity.stop();
                 app.status = t(app.lang, "status.llm_cancelling").into();
                 return vec![json!({"type": "llm_cancel"})];
             }
         }
         Action::Button(ButtonId::ClearQueue) => {
-            if !app.running {
+            if !app.running() {
                 clear_queue(app);
                 app.log(app.status.clone());
             }
         }
-        Action::FocusInput => app.focus = Focus::Input,
+        Action::FocusInput => {
+            app.focus = Focus::Input;
+            if app.input.mode == crate::input::InputMode::Hidden {
+                app.input
+                    .open(crate::input::InputMode::Paths, String::new());
+            }
+        }
         Action::Button(ButtonId::ClearLog) => app.logs.clear(),
         Action::ToggleLang => {
             app.lang = app.lang.toggle();
@@ -785,7 +860,10 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
         }
         Action::EditCommand(command) => {
             app.command_menu = None;
-            app.input = format!("{command} ");
+            app.input.open(
+                crate::input::InputMode::Argument(command),
+                format!("{command} "),
+            );
             app.selected_command = 0;
             app.focus = Focus::Input;
         }
@@ -853,12 +931,24 @@ mod tests {
     };
 
     #[test]
+    fn llm_start_is_locked_before_worker_acknowledges() {
+        let mut app = crate::test_support::ready_app();
+        app.llm_extra_files.push("/tmp/transcript.txt".into());
+        let first = dispatch(&mut app, Action::Button(ButtonId::RunLlm));
+        let second = dispatch(&mut app, Action::Button(ButtonId::RunLlm));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["type"], "llm_start");
+        assert!(second.is_empty(), "duplicate request before llm_started");
+    }
+
+    #[test]
     fn dispatch_matches_the_keyboard_equivalents() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.files = vec!["/tmp/a.wav".into(), "/tmp/b.wav".into()];
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/tmp/a.wav".into());
+        app.queue.add("/tmp/b.wav".into());
         dispatch(&mut app, Action::SelectFile(1));
-        assert_eq!(app.selected_file, Some(1));
+        assert_eq!(app.queue.selected_index(), Some(1));
         dispatch(&mut app, Action::Tab(Page::Settings));
         assert_eq!(app.page, Page::Settings);
         dispatch(&mut app, Action::OpenMenu("/backend"));
@@ -873,31 +963,32 @@ mod tests {
 
     #[test]
     fn next_step_follows_the_state_machine() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         assert_eq!(next_step(&app), "hint.add_files");
-        app.files.push("/tmp/a.wav".into());
+        app.queue.add("/tmp/a.wav".into());
         assert_eq!(next_step(&app), "hint.start");
-        app.running = true;
+        app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
         assert_eq!(next_step(&app), "hint.cancel_batch");
-        app.running = false;
+        app.activity = crate::lifecycle::Activity::Idle;
         app.result_files.push("/tmp/a.txt".into());
+        app.queue.items[0].state = FileState::Done;
         assert_eq!(next_step(&app), "hint.run_llm");
-        app.llm_running = true;
-        app.running = true;
+        app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Llm);
         assert_eq!(next_step(&app), "hint.cancel_llm");
-        app.llm_running = false;
-        app.running = false;
+        app.activity = crate::lifecycle::Activity::Idle;
         app.llm_results.push(("summary".into(), "…".into()));
         assert_eq!(next_step(&app), "hint.view_result");
-        app.worker_down = true;
+        app.connection.state = crate::lifecycle::ConnectionState::Unavailable;
         assert_eq!(next_step(&app), "hint.worker_down");
     }
 
     #[test]
     fn file_states_follow_worker_events() {
-        let mut app = App::default();
-        app.files = vec!["/tmp/a.wav".into(), "/tmp/b.wav".into()];
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/tmp/a.wav".into());
+        app.queue.add("/tmp/b.wav".into());
         assert_eq!(app.file_state("/tmp/a.wav"), FileState::Pending);
+        app.activity.start(JobKind::Asr);
         app.handle_message(json!({"type": "started", "total_files": 2, "backend": "auto"}));
         app.handle_message(json!({
             "type": "file_started", "file": "/tmp/a.wav", "file_index": 0, "total_files": 2
@@ -914,16 +1005,22 @@ mod tests {
             FileState::Failed,
             "a finished file keeps its outcome"
         );
-        assert_eq!(app.file_state("/tmp/b.wav"), FileState::Cancelled);
+        assert_eq!(
+            app.file_state("/tmp/b.wav"),
+            FileState::Pending,
+            "unstarted files remain available for the next batch"
+        );
         // The next batch starts from a clean slate.
+        app.activity.start(JobKind::Asr);
         app.handle_message(json!({"type": "started", "total_files": 2, "backend": "auto"}));
         assert_eq!(app.file_state("/tmp/b.wav"), FileState::Pending);
     }
 
     #[test]
     fn stop_sends_one_graceful_cancel_per_batch() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         assert!(dispatch(&mut app, Action::Button(ButtonId::Stop)).is_empty());
+        app.activity.start(JobKind::Asr);
         app.handle_message(json!({"type": "started", "total_files": 1, "backend": "auto"}));
         let commands = dispatch(&mut app, Action::Button(ButtonId::Stop));
         assert_eq!(commands.len(), 1);
@@ -932,6 +1029,7 @@ mod tests {
         app.handle_message(json!({"type": "cancelling", "message": "Cancelling…"}));
         assert!(dispatch(&mut app, Action::Button(ButtonId::Stop)).is_empty());
         app.handle_message(json!({"type": "completed", "success": false, "cancelled": true}));
+        app.activity.start(JobKind::Asr);
         app.handle_message(json!({"type": "started", "total_files": 1, "backend": "auto"}));
         assert_eq!(
             dispatch(&mut app, Action::Button(ButtonId::Stop)).len(),
@@ -942,30 +1040,29 @@ mod tests {
 
     #[test]
     fn removing_a_file_forgets_its_state() {
-        let mut app = App::default();
-        app.files = vec!["/tmp/a.wav".into()];
-        app.file_states
-            .insert("/tmp/a.wav".into(), FileState::Failed);
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/tmp/a.wav".into());
+        app.queue.find_mut("/tmp/a.wav").unwrap().state = FileState::Failed;
         dispatch(&mut app, Action::RemoveFile(0));
-        assert!(app.files.is_empty());
-        app.files = vec!["/tmp/a.wav".into()];
+        assert!(app.queue.items.is_empty());
+        app.queue.add("/tmp/a.wav".into());
         assert_eq!(app.file_state("/tmp/a.wav"), FileState::Pending);
     }
 
     #[test]
     fn open_menu_prefills_the_command_line_for_typed_parameters() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.focus = Focus::Params;
         dispatch(&mut app, Action::OpenMenu("/output"));
         assert_eq!(app.command_menu, None);
-        assert_eq!(app.input, "/output ");
+        assert_eq!(app.input.text(), "/output ");
         assert_eq!(app.focus, Focus::Input);
     }
 
     #[test]
     fn llm_tools_message_fills_providers_and_menu_shows_status() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.handle_message(json!({
             "type": "llm_tools",
             "providers": ["API", "Claude Code", "Other"],
@@ -995,11 +1092,12 @@ mod tests {
 
     #[test]
     fn llm_chunks_stream_into_the_view_and_results_are_kept() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
+        app.activity.start(JobKind::Llm);
         app.handle_message(
             json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
         );
-        assert!(app.llm_running && app.running);
+        assert!(app.llm_running() && app.running());
         app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "Итог: "}));
         app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "всё хорошо"}));
         assert_eq!(app.llm_stream, "Итог: всё хорошо");
@@ -1007,7 +1105,7 @@ mod tests {
             "type": "llm_completed", "success": true, "saved_files": ["/tmp/session_llm_summary.txt"],
             "results": [{"mode": "summary", "text": "Итог: всё хорошо"}]
         }));
-        assert!(!app.llm_running && !app.running);
+        assert!(!app.llm_running() && !app.running());
         assert_eq!(
             app.llm_results,
             vec![("summary".to_string(), "Итог: всё хорошо".to_string())]
@@ -1017,7 +1115,8 @@ mod tests {
 
     #[test]
     fn a_new_llm_run_clears_the_previous_results() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
+        app.activity.start(JobKind::Llm);
         app.handle_message(
             json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
         );
@@ -1027,6 +1126,7 @@ mod tests {
         }));
         assert!(!app.llm_results.is_empty());
 
+        app.activity.start(JobKind::Llm);
         app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 1}));
         assert!(app.llm_results.is_empty());
         // A completion without `results` (worker failure) must not resurrect the old run.
@@ -1036,19 +1136,20 @@ mod tests {
 
     #[test]
     fn esc_soft_cancels_an_llm_run_only_once_then_falls_through_to_the_kill_path() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         assert!(
             !esc_should_soft_cancel(&app),
             "idle: Esc is not an LLM cancel"
         );
 
+        app.activity.start(JobKind::Llm);
         app.handle_message(
             json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
         );
         assert!(esc_should_soft_cancel(&app), "first Esc sends llm_cancel");
 
-        app.llm_cancel_requested = true; // what the first Esc arm sets
-        assert!(app.llm_running && app.running);
+        app.activity.stop(); // what the first Esc arm sets
+        assert!(app.llm_running() && app.running());
         assert!(
             !esc_should_soft_cancel(&app),
             "second Esc must reach the `running` double-Esc kill/restart arm"
@@ -1057,8 +1158,9 @@ mod tests {
 
     #[test]
     fn esc_closes_the_help_before_it_cancels_a_run() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         assert!(!esc_is_cancel(&app), "idle: Esc is not a cancel");
+        app.activity.start(JobKind::Asr);
         app.handle_message(json!({"type": "started", "total_files": 1, "backend": "auto"}));
         assert!(esc_is_cancel(&app));
         dispatch(&mut app, Action::Help);
@@ -1085,35 +1187,36 @@ mod tests {
 
     #[test]
     fn worker_restart_resets_every_in_flight_flag() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
+        app.activity.start(JobKind::Llm);
         app.handle_message(
             json!({"type": "llm_started", "mode": "summary", "index": 1, "total": 1}),
         );
         app.handle_message(json!({"type": "llm_chunk", "mode": "summary", "text": "partial"}));
-        app.llm_cancel_requested = true;
-        app.llm_requested = true;
+        app.activity.stop();
         app.cancelled = false;
 
         reset_after_worker_restart(&mut app);
 
-        assert!(!app.running);
+        assert!(!app.running());
         assert!(app.cancelled);
-        assert!(!app.llm_running);
-        assert!(!app.llm_cancel_requested);
-        assert!(!app.llm_requested);
+        assert!(!app.llm_running());
+        assert_eq!(app.activity, Activity::Idle);
+        assert!(app.outbox.is_empty());
         assert!(app.llm_stream.is_empty());
     }
 
     #[test]
     fn cancelled_llm_run_is_reported_without_an_error() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.lang = Lang::En;
+        app.activity.start(JobKind::Llm);
         app.handle_message(json!({"type": "llm_started", "mode": "tasks", "index": 1, "total": 2}));
         app.handle_message(
             json!({"type": "llm_completed", "success": false, "cancelled": true,
                                   "saved_files": [], "results": []}),
         );
         assert_eq!(app.status, "LLM cancelled");
-        assert!(!app.llm_running);
+        assert!(!app.llm_running());
     }
 }

@@ -36,7 +36,7 @@ impl App {
         let Some(picker) = self.pet_picker.as_ref() else {
             return Err(t(self.lang, "pets.unsupported").into());
         };
-        let frame = if self.running {
+        let frame = if self.running() {
             PET_RUN_FRAMES[self.pet_frame % PET_RUN_FRAMES.len()]
         } else {
             PET_IDLE_FRAMES[self.pet_frame % PET_IDLE_FRAMES.len()]

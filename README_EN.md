@@ -169,13 +169,57 @@ Tab/Shift+Tab or a click on the header. The Processing tab has the file queue
 on the left and the parameter panel (engine, model, formats, diarization,
 speakers, audio, folder) on the right: → moves the cursor into the panel, Enter
 or a click opens the value menu. The «▶ Next:» line under the main area says
-what to do next (paste a path → `s` starts → `L` runs the LLM → `r` shows the
-answer); `?` opens the help with every key and command. The mouse is on: click
+what to do next (paste a path → `s` starts → `L` runs the LLM → F9 saved files /
+F2 answer); `?` opens the help with every key and command. The mouse is on: click
 tabs, buttons, queue and settings rows, scroll lists with the wheel;
 `/mouse off` (or the «Mouse» row in Settings) hands the mouse back to the
 terminal for text selection — or hold Shift (Linux/Windows) / Option (macOS).
 `/settings` opens the Settings tab (a row list: Enter or a click changes the
 value), not a separate menu.
+
+**Queue and input.** Dropping or pasting files adds them to the queue without
+Enter. Folders are scanned recursively in the background; unsupported entries
+are skipped. A duplicate path selects the existing item without resetting its
+result. Add / Insert / `/add` opens a labelled editor with arrows, Home/End,
+Backspace/Delete and Ctrl+U; Esc closes it. Outside editing, Delete / × removes
+one item, while Undo / Ctrl+Z / `/undo` restores the last removal. Full path
+opens the selected item's path and details. The pet hides in narrow terminals
+to leave room for the queue.
+
+`s` / F5 starts pending files only. Enter on an item / Actions offers retrying
+failed files (`/retry`) or processing the selected file (`/run-selected`);
+reprocessing a completed item requires confirmation. Start locks immediately,
+before worker acknowledgement. Clear / `/clear` cancels pending additions and
+clears only the queue, preserving saved files and session results. Input errors
+appear in the log; `/retry-input` retries the last failed block preserved when
+new text was being edited or the worker disconnected. Letter shortcuts have
+Russian aliases; F1–F12 are independent of the keyboard layout.
+
+**Connection and stopping.** TUI checks worker compatibility and readiness at
+startup without blocking the interface. After a disconnect, use Ctrl+R,
+`/reconnect` or Reconnect: the queue and results stay, and the previous job is
+never automatically repeated. Reconnect waits for confirmed old-worker shutdown.
+During ASR, Esc / After file finishes the current file and stops the queue;
+during LLM, Esc / Cancel request asks for cancellation. Another Esc / Terminate
+now opens confirmation: Yes terminates the owned worker and descendants, while
+No/Esc returns to waiting for cooperative cancellation. Unfinished output may
+be lost; a remote API may continue processing on its server.
+Large answers are not truncated as diagnostic logs: TUI accepts JSON messages up
+to 8 MiB; exceeding that limit reports a connection error instead of waiting
+forever. For ASR, the worker sends TUI only statuses and result paths; full
+transcripts remain in the saved files.
+
+**Progress and results.** Overall measures the whole batch, with the current
+file's percentage below it; preparation without an estimate displays “—”. The
+summary counts successful, failed, unstarted and interrupted files and elapsed
+time. F9 / Results (also `r` when results exist) opens saved session files, even after
+clearing the queue. Arrows select, PgUp/PgDn scroll the full path, Enter opens a
+text result in the system viewer, O opens its folder, and Esc closes the picker.
+Nothing opens automatically; missing files produce an error. The list currently
+retains ASR outputs and the latest LLM run; earlier LLM-run history is not yet
+implemented. Terminal restoration
+is tested on macOS for normal exit, worker failure and panic unwinding; Windows
+has compile-only verification so far.
 
 **Colour themes.** `/theme` without an argument opens a scrollable list of
 102 schemes, `/theme dark-monokai` switches by name (Tab completes it), the
@@ -211,9 +255,9 @@ The TUI provides `/subtitle-split on|off`, `/subtitle-lines 1..4`, and
 `/subtitle-width 20..100`; these values persist between runs. It also has
 `/audio-mode auto|off|light|denoise`, `/llm-file <path>` (run the LLM on any
 saved transcript), `/llm-path`, `/llm-provider-name`, `/llm-args`,
-`/llm-tools on|off`, and the `r` hotkey to open the LLM tab with the answers
-(Esc while the LLM is running cancels that request without killing the
-worker). Cue boundaries use word timestamps when available, with
+`/llm-tools on|off`; F2 opens the LLM answer tab and F9 opens saved files.
+The first Esc during LLM work requests cancellation without terminating the
+worker; another Esc offers confirmed force-stop. Cue boundaries use word timestamps when available, with
 deterministic timing inside the original ASR segment as the fallback. With diarization, SRT names a speaker only when the
 speaker changes, and the width limit charges the label only to those cues — the
 rest use the full configured width. VTT keeps a standard `<v Спикер №1>` voice

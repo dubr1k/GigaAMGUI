@@ -27,6 +27,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import psutil
+
 from src.services import cli_tools
 from src.utils.llm_client import LLMClient, LLMSettings
 
@@ -65,6 +67,54 @@ class LLMCancelled(RuntimeError):
     """Пользователь отменил текущий запрос LLM."""
 
 
+class LLMTerminationError(RuntimeError):
+    """Остановка CLI не подтверждена; нельзя объявлять успешную отмену."""
+
+
+def _remember_children(process, children):
+    # Process хранит время создания: переиспользованный PID не станет целью сигнала.
+    for parent in [process, *children]:
+        try:
+            children.update(parent.children(recursive=True))
+        except psutil.NoSuchProcess:
+            pass
+
+
+def _stop_command_tree(process, children):
+    """Останавливаем только сохранённые процессы этого вызова, не группу worker."""
+    _remember_children(process, children)
+    targets = [*children, process]
+    errors = []
+    for target in targets:
+        try:
+            target.terminate()
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error as error:
+            errors.append(str(error))
+    _, alive = psutil.wait_procs(targets, timeout=0.5)
+    for target in alive:
+        try:
+            target.kill()
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error as error:
+            errors.append(str(error))
+    _, alive = psutil.wait_procs(alive, timeout=0.5)
+    for target in alive:
+        try:
+            if target.is_running() and target.status() != psutil.STATUS_ZOMBIE:
+                errors.append(f"CLI process {target.pid} is still running")
+        except psutil.NoSuchProcess:
+            pass
+    try:
+        process.communicate(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        errors.append("CLI output pipes did not close after cancellation")
+    if errors:
+        raise LLMTerminationError("; ".join(errors))
+
+
 def _run_command(command: list[str], *, input_text: str | None = None, cancel_check=None):
     env = cli_tools.child_environment()
     if cancel_check is None:
@@ -77,7 +127,7 @@ def _run_command(command: list[str], *, input_text: str | None = None, cancel_ch
         return subprocess.run(
             command, input=input_text, capture_output=True, text=True, timeout=_TIMEOUT, env=env,
         )
-    process = subprocess.Popen(
+    process = psutil.Popen(
         command,
         stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -86,14 +136,11 @@ def _run_command(command: list[str], *, input_text: str | None = None, cancel_ch
         env=env,
     )
     first_input = input_text
+    children = set()
     while True:
+        _remember_children(process, children)
         if cancel_check():
-            process.terminate()
-            try:
-                process.communicate(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
+            _stop_command_tree(process, children)
             raise LLMCancelled()
         try:
             stdout, stderr = process.communicate(input=first_input, timeout=0.1)

@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn rows_show_the_language_and_hide_the_api_key() {
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         let list = rows(&app);
         let language = list
             .iter()
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn theme_row_follows_the_mouse_row_and_opens_the_theme_menu() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.theme = crate::theme::Theme::by_name("dark-monokai").unwrap();
         let list = rows(&app);
         let mouse = list
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn settings_row_selects_and_performs_the_row_action() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         let mouse = rows(&app)
             .iter()
             .position(|row| row.key == "settings.mouse")
@@ -329,13 +329,13 @@ mod tests {
             .position(|row| row.key == "settings.llm_api_url")
             .unwrap();
         dispatch(&mut app, Action::SettingsRow(url));
-        assert_eq!(app.input, "/llm-api-url ");
+        assert_eq!(app.input.text(), "/llm-api-url ");
         let output = rows(&app)
             .iter()
             .position(|row| row.key == "settings.output")
             .unwrap();
         dispatch(&mut app, Action::SettingsRow(output));
-        assert_eq!(app.input, "/output ");
+        assert_eq!(app.input.text(), "/output ");
         app.output_dir = Some("/tmp/out".into());
         assert_eq!(rows(&app)[output].value, "/tmp/out");
 
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn language_menu_switches_the_language() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         dispatch(&mut app, Action::OpenMenu("/lang"));
         assert_eq!(app.command_menu.as_deref(), Some("/lang"));
         assert_eq!(
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn settings_page_renders_russian_rows_and_registers_them() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.page = Page::Settings;
         app.llm_api_key = "secret".into();
         let text = render(&mut app);
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn settings_list_scrolls_with_the_wheel_and_clamps() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.page = Page::Settings;
         let last = rows(&app).len() - 1;
         // A wheel tick is `Scroll(_, ±3)` (main.rs): it moves one row, never three.

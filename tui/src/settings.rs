@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(old.theme, "default");
         assert!(!old.mouse);
 
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         apply_settings(&mut app, old, None);
         assert_eq!(app.theme.name, "default");
 

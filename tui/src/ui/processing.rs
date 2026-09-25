@@ -4,13 +4,13 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Cell, Gauge, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::{
     app::{App, FileState, Focus},
     commands::short_name,
-    i18n::{t, tf, try_t},
+    i18n::{t, tf},
     ui::{Action, AreaId, ButtonId},
 };
 
@@ -32,10 +32,10 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(top);
     draw_queue(frame, queue_area, app);
     draw_params(frame, params_area, app);
-    draw_progress(frame, bottom, app);
+    super::progress::draw(frame, bottom, app);
 }
 
-fn timecode(seconds: f64) -> String {
+pub(super) fn timecode(seconds: f64) -> String {
     format!(
         "{:02}:{:02}:{:02}",
         (seconds / 3600.0) as u64,
@@ -46,24 +46,36 @@ fn timecode(seconds: f64) -> String {
 
 /// Keeps the extension visible: `a-very-long-recording.wav` → `a-very…ing.wav`.
 pub(crate) fn fit_middle(text: &str, width: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width || width < 5 {
+    if Line::from(text).width() <= width || width < 5 {
         return text.to_owned();
     }
-    let tail = (width - 1) / 2;
-    let head = width - 1 - tail;
-    let mut out: String = chars[..head].iter().collect();
+    let mut tail = Vec::new();
+    let mut tail_width = 0;
+    for ch in text.chars().rev() {
+        let size = Line::from(ch.to_string()).width();
+        if tail_width + size > (width - 1) / 2 {
+            break;
+        }
+        tail.push(ch);
+        tail_width += size;
+    }
+    let mut out = String::new();
+    let mut head_width = 0;
+    for ch in text.chars() {
+        let size = Line::from(ch.to_string()).width();
+        if head_width + size > width - 1 - tail_width {
+            break;
+        }
+        out.push(ch);
+        head_width += size;
+    }
     out.push('…');
-    out.extend(chars[chars.len() - tail..].iter());
+    out.extend(tail.into_iter().rev());
     out
 }
 
-fn state_of(app: &App, index: usize, file: &str) -> FileState {
-    if app.running
-        && !app.llm_running
-        && app.file_index == index
-        && app.current_file.as_deref() == Some(file)
-    {
+fn state_of(app: &App, _index: usize, file: &str) -> FileState {
+    if app.running() && !app.llm_running() && app.current_file.as_deref() == Some(file) {
         FileState::Processing
     } else {
         app.file_state(file)
@@ -72,38 +84,52 @@ fn state_of(app: &App, index: usize, file: &str) -> FileState {
 
 fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let p = *app.palette();
-    let title = if app.files.is_empty() {
+    let title = if app.queue.items.is_empty() {
         t(app.lang, "queue.title").to_owned()
     } else {
         tf(
             app.lang,
             "queue.count",
-            &[("n", &app.files.len().to_string())],
+            &[("n", &app.queue.items.len().to_string())],
         )
     };
     let block = Block::bordered()
         .title(Span::styled(format!(" {title} "), p.title()))
         .title_bottom(Line::styled(
-            if app.files.is_empty() || app.running {
+            if app.running() {
                 String::new()
             } else {
-                format!(" {} ", t(app.lang, "queue.controls"))
+                format!(
+                    " Delete · [{}] [{}] ",
+                    t(app.lang, "queue.actions"),
+                    t(app.lang, "queue.undo")
+                )
             },
             Style::default().fg(p.muted),
         ))
         .title_top(
-            Line::from(Span::styled(
-                format!("[{}]", t(app.lang, "btn.clear")),
-                Style::default().fg(if app.files.is_empty() || app.running {
-                    p.disabled
-                } else {
-                    p.muted
-                }),
-            ))
+            Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", t(app.lang, "queue.add")),
+                    Style::default().fg(if app.running() { p.disabled } else { p.accent }),
+                ),
+                Span::styled(
+                    format!("[{}]", t(app.lang, "btn.clear")),
+                    Style::default().fg(
+                        if app.running()
+                            || (app.queue.items.is_empty() && app.pending_inputs.is_empty())
+                        {
+                            p.disabled
+                        } else {
+                            p.muted
+                        },
+                    ),
+                ),
+            ])
             .right_aligned(),
         )
         .border_style(p.border_focus(app.focus == Focus::Queue));
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.add(area, Action::Scroll(AreaId::Queue, 0));
     let clear_width = t(app.lang, "btn.clear").chars().count() as u16 + 2;
@@ -112,7 +138,49 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         Rect::new(clear_x, area.y, clear_width, 1),
         Action::Button(ButtonId::ClearQueue),
     );
-    if app.files.is_empty() {
+    let add_width = Line::from(t(app.lang, "queue.add")).width() as u16 + 2;
+    if !app.running() {
+        app.hits.add(
+            Rect::new(clear_x.saturating_sub(1 + add_width), area.y, add_width, 1),
+            Action::AddFiles,
+        );
+    }
+    if !app.running() {
+        let actions_width = Line::from(t(app.lang, "queue.actions")).width() as u16 + 2;
+        let undo_width = Line::from(t(app.lang, "queue.undo")).width() as u16 + 2;
+        let x = area.x + 11;
+        app.hits.add(
+            Rect::new(x, area.bottom() - 1, actions_width, 1),
+            Action::QueueActions,
+        );
+        app.hits.add(
+            Rect::new(x + actions_width + 1, area.bottom() - 1, undo_width, 1),
+            Action::UndoRemove,
+        );
+    }
+    if let Some(item) = app
+        .queue
+        .selected_index()
+        .and_then(|index| app.queue.items.get(index))
+    {
+        if inner.height >= 7 {
+            let path_area = Rect::new(inner.x, inner.bottom() - 3, inner.width, 3);
+            inner.height -= 3;
+            frame.render_widget(
+                Paragraph::new(item.path.as_str())
+                    .wrap(Wrap { trim: false })
+                    .block(
+                        Block::default()
+                            .borders(ratatui::widgets::Borders::TOP)
+                            .title(format!(" [{}] ", t(app.lang, "queue.full_path")))
+                            .border_style(Style::default().fg(p.muted)),
+                    ),
+                path_area,
+            );
+            app.hits.add(path_area, Action::ShowPath(true));
+        }
+    }
+    if app.queue.items.is_empty() {
         let height = inner.height.min(3);
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -132,10 +200,12 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
     let name_width = usize::from(inner.width.saturating_sub(4 + 14 + 3 + 3));
     let rows: Vec<Row> = app
-        .files
+        .queue
+        .items
         .iter()
         .enumerate()
-        .map(|(index, file)| {
+        .map(|(index, item)| {
+            let file = &item.path;
             let state = state_of(app, index, file);
             let (key, colour) = match state {
                 FileState::Pending => ("state.pending", p.muted),
@@ -160,7 +230,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     ),
                 ]),
                 Cell::from(t(app.lang, key)).style(Style::default().fg(colour)),
-                Cell::from("[×]").style(Style::default().fg(if app.running {
+                Cell::from("[×]").style(Style::default().fg(if app.running() {
                     p.disabled
                 } else {
                     p.error
@@ -170,13 +240,9 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         })
         .collect();
     let visible = usize::from(inner.height.saturating_sub(1) / 2);
-    let max_offset = app.files.len().saturating_sub(visible);
+    let max_offset = app.queue.items.len().saturating_sub(visible);
     let offset = usize::from(*app.scroll.entry(AreaId::Queue).or_default()).min(max_offset);
-    let selected = if app.running && !app.llm_running {
-        Some(app.file_index).filter(|index| *index < app.files.len())
-    } else {
-        app.selected_file
-    };
+    let selected = app.queue.selected_index();
     let mut state = TableState::default()
         .with_offset(offset)
         .with_selected(selected);
@@ -213,12 +279,12 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // wheel continues from where the frame actually is.
     let offset = state.offset();
     app.scroll.insert(AreaId::Queue, offset as u16);
-    for row in 0..visible.min(app.files.len().saturating_sub(offset)) {
+    for row in 0..visible.min(app.queue.items.len().saturating_sub(offset)) {
         app.hits.add(
             Rect::new(inner.x, inner.y + 1 + row as u16 * 2, inner.width, 2),
             Action::SelectFile(offset + row),
         );
-        if !app.running && inner.width >= 3 {
+        if !app.running() && inner.width >= 3 {
             app.hits.add(
                 Rect::new(inner.right() - 3, inner.y + 1 + row as u16 * 2, 3, 1),
                 Action::RemoveFile(offset + row),
@@ -286,128 +352,280 @@ fn draw_params(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_progress(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let p = *app.palette();
-    let can_start = !app.running && !app.files.is_empty();
-    let can_stop = app.running && !app.llm_running;
-    let start = format!("[{}]", t(app.lang, "btn.start"));
-    let stop = format!("[{}]", t(app.lang, "btn.stop"));
-    let button_style = |active: bool| {
-        Style::default()
-            .fg(if active { p.accent } else { p.disabled })
-            .add_modifier(if active {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            })
-    };
-    let block = Block::bordered()
-        .title(Span::styled(
-            format!(" {} ", t(app.lang, "progress.title")),
-            p.title(),
-        ))
-        .title_top(
-            Line::from(vec![
-                Span::styled(start.clone(), button_style(can_start)),
-                Span::raw(" "),
-                Span::styled(stop.clone(), button_style(can_stop)),
-            ])
-            .right_aligned(),
-        )
-        .border_style(Style::default().fg(p.border));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    // Right-aligned titles end one cell before the corner.
-    let stop_width = stop.chars().count() as u16;
-    let start_width = start.chars().count() as u16;
-    let stop_x = area.right().saturating_sub(1 + stop_width);
-    let start_x = stop_x.saturating_sub(1 + start_width);
-    app.hits.add(
-        Rect::new(start_x, area.y, start_width, 1),
-        Action::Button(ButtonId::Start),
-    );
-    app.hits.add(
-        Rect::new(stop_x, area.y, stop_width, 1),
-        Action::Button(ButtonId::Stop),
-    );
-    if inner.height == 0 {
+pub(crate) fn draw_path_overlay(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let Some(item) = app
+        .queue
+        .selected_index()
+        .and_then(|i| app.queue.items.get(i))
+    else {
         return;
-    }
-    let [gauge_area, text_area] = Layout::horizontal([Constraint::Length(22), Constraint::Min(10)])
-        .areas(Rect { height: 1, ..inner });
-    let percent = (app.progress * 100.0).round() as u16;
-    frame.render_widget(
-        Gauge::default()
-            .gauge_style(Style::default().fg(p.accent).bg(p.gauge_bg))
-            .ratio(app.progress.clamp(0.0, 1.0))
-            .label(format!("{percent}%")),
-        gauge_area,
-    );
-    let first_line = if app.running && !app.llm_running {
-        let stage = try_t(app.lang, &format!("stage.{}", app.stage))
-            .map_or_else(|| app.stage.clone(), str::to_owned);
-        match (app.processed_seconds, app.total_seconds) {
-            (Some(done), Some(total)) => {
-                format!(" {stage}  {}/{}", timecode(done), timecode(total))
-            }
-            _ => format!(" {stage}"),
-        }
-    } else {
-        format!(" {}", app.status)
     };
-    frame.render_widget(
-        Paragraph::new(Line::styled(first_line, Style::default().fg(p.text))),
-        text_area,
+    let rect = Rect::new(
+        area.x + 2,
+        area.y + 3,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(6),
     );
-    let mut lines = Vec::<Line>::new();
-    if !app.result_files.is_empty() {
-        let saved = app
-            .result_files
-            .iter()
-            .rev()
-            .take(3)
-            .rev()
-            .map(|path| short_name(path))
-            .collect::<Vec<_>>()
-            .join(", ");
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", t(app.lang, "progress.saved")),
-                Style::default().fg(p.success),
-            ),
-            Span::styled(saved, Style::default().fg(p.dim)),
-        ]));
+    let block = Block::bordered()
+        .title(t(app.lang, "queue.full_path"))
+        .title_bottom(t(app.lang, "queue.path_close"));
+    let inner = block.inner(rect);
+    let mut text = item.path.clone();
+    if let Some(error) = &item.error {
+        text.push_str(&format!("\n\n{error}"));
     }
-    if app.running {
-        lines.push(Line::styled(
-            app.status.clone(),
-            Style::default().fg(p.muted),
-        ));
+    if !item.results.is_empty() {
+        text.push_str(&format!("\n\n{}", item.results.join("\n")));
     }
-    if inner.height > 1 && !lines.is_empty() {
-        frame.render_widget(
-            Paragraph::new(lines),
-            Rect {
-                y: inner.y + 1,
-                height: inner.height - 1,
-                ..inner
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false }).block(block);
+    let max_scroll = paragraph
+        .line_count(inner.width)
+        .saturating_sub(inner.height as usize) as u16;
+    let offset = app.scroll.entry(AreaId::Path).or_default();
+    *offset = (*offset).min(max_scroll);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(paragraph.scroll((*offset, 0)), rect);
+    app.hits.clear();
+    app.hits.add(area, Action::ShowPath(false));
+    app.hits.add(rect, Action::Scroll(AreaId::Path, 0));
+}
+
+pub(crate) fn draw_confirmation(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let force = app.stop_confirmation;
+    let width = area.width.saturating_sub(4).min(72);
+    let height = area.height.saturating_sub(2).min(if force { 9 } else { 7 });
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = Block::bordered().title(t(
+        app.lang,
+        if force {
+            "button.force_stop"
+        } else {
+            "queue.run_selected"
+        },
+    ));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(t(
+            app.lang,
+            if force {
+                "confirm.force_stop"
+            } else {
+                "status.confirm_rerun"
             },
-        );
-    }
+        ))
+        .wrap(Wrap { trim: false })
+        .block(block),
+        rect,
+    );
+    app.hits.clear();
+    let yes = format!("[Y · {}]", t(app.lang, "confirm.yes"));
+    let no = format!("[N / Esc · {}]", t(app.lang, "confirm.no"));
+    let y = inner.bottom().saturating_sub(1);
+    let yes_width = Line::from(yes.as_str()).width() as u16;
+    let no_width = Line::from(no.as_str()).width() as u16;
+    frame.render_widget(
+        Paragraph::new(format!("{yes}  {no}")),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    app.hits.add(
+        Rect::new(inner.x, y, yes_width.min(inner.width), 1),
+        if force {
+            Action::ConfirmStop(true)
+        } else {
+            Action::ConfirmRerun(true)
+        },
+    );
+    app.hits.add(
+        Rect::new(
+            inner.x + yes_width + 2,
+            y,
+            no_width.min(inner.width.saturating_sub(yes_width + 2)),
+            1,
+        ),
+        if force {
+            Action::ConfirmStop(false)
+        } else {
+            Action::ConfirmRerun(false)
+        },
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::queue::RunSelection;
     use crate::{settings::isolated_config_dir, ui::draw as draw_all};
+
+    #[test]
+    fn queue_actions_and_full_path_remain_visible_at_supported_sizes() {
+        use crate::i18n::Lang;
+        for (width, height) in [(80, 24), (100, 30), (160, 40)] {
+            for lang in [Lang::Ru, Lang::En] {
+                for pet_enabled in [false, true] {
+                    let mut app = crate::test_support::ready_app();
+                    app.lang = lang;
+                    app.pet_enabled = pet_enabled;
+                    app.queue.add("/Users/test/meeting.wav".into());
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                            .unwrap();
+                    terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+                    let text = terminal.backend().to_string();
+                    for key in ["queue.add", "queue.actions", "queue.full_path"] {
+                        assert!(
+                            text.contains(t(lang, key)),
+                            "{width}x{height}: {key}\n{text}"
+                        );
+                    }
+                    assert!(text.contains("meeting.wav"), "{text}");
+                    for (rect, _) in app.hits.items() {
+                        assert!(rect.right() <= width && rect.bottom() <= height, "{rect:?}");
+                    }
+                    assert!(!text.contains("› "), "{text}");
+                    crate::app::dispatch(&mut app, Action::AddFiles);
+                    terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+                    assert!(terminal
+                        .backend()
+                        .to_string()
+                        .contains(t(lang, "input.files")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_start_does_not_advertise_reprocessing_completed_files() {
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/a.wav".into());
+        app.queue.items[0].state = FileState::Done;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+        assert!(!app
+            .hits
+            .items()
+            .iter()
+            .any(|(_, a)| *a == Action::Button(ButtonId::Start)));
+        assert_ne!(crate::app::next_step(&app), "hint.start");
+    }
+
+    #[test]
+    fn progress_distinguishes_current_file_and_whole_queue() {
+        use crate::i18n::Lang;
+        for (width, height) in [(80, 24), (100, 30), (160, 40)] {
+            for lang in [Lang::Ru, Lang::En] {
+                for pet_enabled in [false, true] {
+                    let mut app = crate::test_support::ready_app();
+                    app.lang = lang;
+                    app.pet_enabled = pet_enabled;
+                    app.queue.add("/a.wav".into());
+                    app.queue.add("/b.wav".into());
+                    app.begin_batch(RunSelection::Pending, false);
+                    app.handle_message(serde_json::json!({"type":"started","total_files":2}));
+                    app.handle_message(serde_json::json!({"type":"file_started","file":"/a.wav"}));
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                            .unwrap();
+                    terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+                    assert!(terminal.backend().to_string().contains("1/2: —"));
+                    app.handle_message(serde_json::json!({"type":"progress","file":"/a.wav","file_progress":0.5,"stage":"transcription"}));
+                    terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+                    let text = terminal.backend().to_string();
+                    assert!(
+                        text.contains(&format!("{} 25%", t(lang, "progress.overall"))),
+                        "{text}"
+                    );
+                    assert!(
+                        text.contains(&format!("{} 1/2: 50%", t(lang, "progress.file"))),
+                        "{text}"
+                    );
+                    app.handle_message(
+                        serde_json::json!({"type":"completed","success":false,"cancelled":true}),
+                    );
+                    terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+                    let text = terminal.backend().to_string();
+                    assert!(text.contains("00:00:00"), "{text}");
+                    assert!(text.contains(t(lang, "status.cancelled")), "{text}");
+                    for (rect, _) in app.hits.items() {
+                        assert!(rect.right() <= width && rect.bottom() <= height, "{rect:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stop_buttons_explain_soft_stop_and_offer_confirmed_termination() {
+        use crate::{
+            app::{dispatch, Page},
+            i18n::Lang,
+            lifecycle::{Activity, JobKind},
+        };
+        for (width, height) in [(80, 24), (100, 30), (160, 40)] {
+            for lang in [Lang::Ru, Lang::En] {
+                for (page, kind, button, key) in [
+                    (Page::Processing, JobKind::Asr, ButtonId::Stop, "btn.stop"),
+                    (
+                        Page::Llm,
+                        JobKind::Llm,
+                        ButtonId::CancelLlm,
+                        "btn.cancel_llm",
+                    ),
+                ] {
+                    let mut app = crate::test_support::ready_app();
+                    app.page = page;
+                    app.lang = lang;
+                    app.activity = Activity::Running(kind);
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                            .unwrap();
+                    terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+                    let text = terminal.backend().to_string();
+                    let label = match (kind, lang) {
+                        (JobKind::Asr, Lang::Ru) => "После файла",
+                        (JobKind::Asr, Lang::En) => "After file",
+                        (JobKind::Llm, Lang::Ru) => "Отменить запрос",
+                        (JobKind::Llm, Lang::En) => "Cancel request",
+                    };
+                    assert_eq!(t(lang, key), label);
+                    assert!(text.contains(label), "{width}×{height}\n{text}");
+                    assert_eq!(dispatch(&mut app, Action::Button(button)).len(), 1);
+                    terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+                    let text = terminal.backend().to_string();
+                    assert!(text.contains(t(lang, "btn.force_stop")), "{text}");
+                    let rect = app
+                        .hits
+                        .items()
+                        .iter()
+                        .find(|(_, action)| *action == Action::ForceStop)
+                        .unwrap()
+                        .0;
+                    assert_eq!(app.hits.hit(rect.x, rect.y), Some(Action::ForceStop));
+                    dispatch(&mut app, Action::ForceStop);
+                    assert!(app.stop_confirmation);
+                    dispatch(&mut app, Action::ConfirmStop(false));
+                    assert_eq!(app.activity, Activity::Stopping(kind));
+                    assert!(!app.worker_stop_requested);
+                }
+            }
+        }
+    }
 
     #[test]
     fn progress_bar_is_visible_without_colours() {
         // ratatui's Gauge paints the filled part as `█` in the gauge fg, so a theme
         // with every colour Reset still shows the bar in the terminal foreground.
-        let mut app = App::default();
+        let mut app = crate::test_support::ready_app();
         app.progress = 0.5;
-        app.running = true;
+        app.batch = Some(crate::batch::BatchRun::new(vec!["/a.wav".into()]));
+        app.current_file = Some("/a.wav".into());
+        app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
         let render = |app: &mut App| {
             let backend = ratatui::backend::TestBackend::new(100, 40);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -444,13 +662,19 @@ mod tests {
     }
 
     #[test]
+    fn shortened_names_obey_display_cell_width_with_wide_characters() {
+        let name = "🦄🦄🦄🦄🦄запись.wav";
+        let shortened = fit_middle(name, 12);
+        assert!(Line::from(shortened.as_str()).width() <= 12, "{shortened}");
+        assert!(shortened.ends_with(".wav"));
+    }
+
+    #[test]
     fn queue_shows_parent_paths_and_removes_only_the_clicked_file() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.files = vec![
-            "/meetings/first/запись.wav".into(),
-            "/meetings/second/запись.wav".into(),
-        ];
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/meetings/first/запись.wav".into());
+        app.queue.add("/meetings/second/запись.wav".into());
         let backend = ratatui::backend::TestBackend::new(140, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();
@@ -471,18 +695,19 @@ mod tests {
         let action = app.hits.hit(rect.x, rect.y).unwrap();
         assert_eq!(action, Action::RemoveFile(0));
         crate::app::dispatch(&mut app, action);
-        assert_eq!(app.files, vec!["/meetings/second/запись.wav"]);
-        assert_eq!(app.selected_file, Some(0));
+        assert_eq!(app.queue.items.len(), 1);
+        assert_eq!(app.queue.items[0].path, "/meetings/second/запись.wav");
+        assert_eq!(app.queue.selected_index(), Some(0));
     }
 
     #[test]
     fn scrolled_queue_delete_hits_match_visible_rows() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.files = (0..30)
-            .map(|i| format!("/recordings/meeting-{i}.wav"))
-            .collect();
-        app.selected_file = Some(29);
+        let mut app = crate::test_support::ready_app();
+        for i in 0..30 {
+            app.queue.add(format!("/recordings/meeting-{i}.wav"));
+        }
+        app.queue.select(29);
         let backend = ratatui::backend::TestBackend::new(100, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();
@@ -498,10 +723,12 @@ mod tests {
         let action = app.hits.hit(rect.x, rect.y).unwrap();
         crate::app::dispatch(&mut app, action);
         assert!(!app
-            .files
-            .contains(&format!("/recordings/meeting-{offset}.wav")));
-        assert_eq!(app.files.len(), 29);
-        app.running = true;
+            .queue
+            .items
+            .iter()
+            .any(|item| item.path == format!("/recordings/meeting-{offset}.wav")));
+        assert_eq!(app.queue.items.len(), 29);
+        app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();
         assert!(!app
             .hits
@@ -513,13 +740,14 @@ mod tests {
     #[test]
     fn processing_page_renders_russian_headings_and_registers_param_rows() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.files = vec!["/tmp/запись.wav".into()];
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/tmp/запись.wav".into());
         let backend = ratatui::backend::TestBackend::new(100, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();
         let text = terminal.backend().to_string();
         for needle in [
+            concat!("GigaAM TUI ", env!("CARGO_PKG_VERSION")),
             "Обработка",
             "LLM",
             "Настройки",
@@ -571,13 +799,11 @@ mod tests {
     #[test]
     fn queue_and_menu_rows_have_distinct_consecutive_hit_rows() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.files = vec![
-            "/tmp/a.wav".into(),
-            "/tmp/b.wav".into(),
-            "/tmp/c.wav".into(),
-        ];
-        app.running = true;
+        let mut app = crate::test_support::ready_app();
+        for path in ["/tmp/a.wav", "/tmp/b.wav", "/tmp/c.wav"] {
+            app.queue.add(path.into());
+        }
+        app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
         app.file_index = 0;
         app.current_file = Some("/tmp/a.wav".into());
         app.stage = "transcription".into();
@@ -595,7 +821,7 @@ mod tests {
         assert_eq!(app.hits.hit(5, files[1]), Some(Action::SelectFile(1)));
 
         // A menu above the input line, drawn while idle.
-        app.running = false;
+        app.activity = crate::lifecycle::Activity::Idle;
         app.command_menu = Some("/backend".into());
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();
         let menu = rows(&app, &|a| matches!(a, Action::MenuItem(_)));

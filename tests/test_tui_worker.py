@@ -28,6 +28,50 @@ def _messages(output):
     return [json.loads(line) for line in output.getvalue().splitlines()]
 
 
+def test_tui_worker_hello_is_lightweight():
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import io, json, sys
+from src.tui_worker import TuiWorker
+out = io.StringIO()
+worker = TuiWorker(out)
+worker.handle({'type': 'hello'})
+worker.handle({'type': 'ping'})
+worker.close()
+values = [json.loads(line) for line in out.getvalue().splitlines()]
+assert values == [
+    {'type': 'ready', 'protocol_version': 1,
+     'capabilities': ['resolve_inputs', 'asr', 'llm']},
+    {'type': 'pong'},
+], values
+assert not {'torch', 'gigaam', 'pyannote.audio', 'mlx'}.intersection(sys.modules)
+"""],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_only_interactive_tui_negotiates_compact_asr_completion(interactive):
+    output = io.StringIO()
+    worker = TuiWorker(output)
+    try:
+        if interactive:
+            worker.handle({"type": "hello", "client": "tui"})
+        result = {"file_path": "/long.wav", "success": True, "saved_files": ["/long.txt"],
+                  "utterances": [{"text": "длинная запись " * 10000}]}
+        worker.emit("file_completed", file="/long.wav", result=result)
+        worker.emit("completed", success=True, results=[result])
+        messages = _messages(output)[-2:]
+        assert messages[0]["result"]["saved_files"] == ["/long.txt"]
+        assert messages[1]["results"][0]["success"]
+        for summary in (messages[0]["result"], messages[1]["results"][0]):
+            assert ("utterances" in summary) is not interactive
+        assert "utterances" in result, "emit must not mutate the processor result"
+    finally:
+        worker.close()
+
+
 @posix_pipes_only
 def test_worker_survives_a_child_that_makes_stdin_non_blocking(tmp_path):
     """`pi --version` (probed by llm_tools) sets O_NONBLOCK on its inherited stdin —
@@ -128,8 +172,11 @@ def test_run_command_uses_devnull_without_input(monkeypatch):
         def communicate(self, input=None, timeout=None):
             return "", ""
 
+        def children(self, recursive=False):
+            return []
+
     monkeypatch.setattr(llm_service.subprocess, "run", fake_run)
-    monkeypatch.setattr(llm_service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(llm_service.psutil, "Popen", FakePopen)
 
     llm_service._run_command(["tool"])
     llm_service._run_command(["tool"], input_text="prompt")
