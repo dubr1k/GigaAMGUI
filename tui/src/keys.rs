@@ -24,13 +24,37 @@ use crate::{
 /// Lines `PgUp` / `PgDn` move the LLM answer, the log and the help by.
 const ANSWER_PAGE: i32 = 10;
 
+/// Terminal events contain text, not physical key codes. Cyrillic aliases cover
+/// ЙЦУКЕН layouts; function keys provide unambiguous alternatives in any layout.
+/// Keep the original event for text insertion when a shortcut is not applicable.
+fn shortcut_code(code: KeyCode, ctrl: bool) -> KeyCode {
+    match code {
+        KeyCode::Char(c) => KeyCode::Char(match c {
+            'й' | 'Й' => 'q',
+            'ы' | 'Ы' | 'і' | 'І' => 's',
+            'в' | 'В' => 'd',
+            'а' | 'А' => 'f',
+            'к' | 'К' => 'r',
+            'д' => 'l',
+            'Д' if !ctrl => 'L',
+            'Д' => 'l',
+            'с' | 'С' if ctrl => 'c',
+            'Q' | 'S' | 'D' | 'F' | 'R' => c.to_ascii_lowercase(),
+            'C' | 'L' if ctrl => c.to_ascii_lowercase(),
+            _ => c,
+        }),
+        _ => code,
+    }
+}
+
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let code = shortcut_code(key.code, ctrl);
     // The help overlay is modal: it scrolls, closes, and swallows everything else
     // except Ctrl+C, which must always reach the quit path.
-    if app.help_open && !(ctrl && key.code == KeyCode::Char('c')) {
-        return match key.code {
-            KeyCode::Esc | KeyCode::Char('?') => dispatch(app, Action::Help),
+    if app.help_open && !(ctrl && code == KeyCode::Char('c')) {
+        return match code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(12) => dispatch(app, Action::Help),
             KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Help, -1)),
             KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Help, 1)),
             KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::Help, -ANSWER_PAGE)),
@@ -42,12 +66,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
     let no_input = app.input.is_empty();
     let menu_open = app.command_menu.is_some();
     let on_page = |page: Page| app.page == page && no_input && !menu_open;
-    match key.code {
+    match code {
+        KeyCode::F(11) => return dispatch(app, Action::Button(ButtonId::ClearLog)),
         KeyCode::Char('l') if ctrl => return dispatch(app, Action::Button(ButtonId::ClearLog)),
         KeyCode::Char('c') if idle && key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.request_exit("ctrl-c", "Ctrl+C");
         }
-        KeyCode::Char('q') if idle && no_input => app.exit_requested = true,
+        KeyCode::Char('q') | KeyCode::F(10) if idle && no_input => app.exit_requested = true,
         KeyCode::F(1) => return dispatch(app, Action::Tab(Page::Processing)),
         KeyCode::F(2) => return dispatch(app, Action::Tab(Page::Llm)),
         KeyCode::F(3) => return dispatch(app, Action::Tab(Page::Settings)),
@@ -58,13 +83,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         KeyCode::BackTab => return dispatch(app, Action::Tab(app.page.previous())),
         KeyCode::Right if on_page(Page::Processing) => app.focus = Focus::Params,
         KeyCode::Left if on_page(Page::Processing) => app.focus = Focus::Queue,
-        KeyCode::Char('L') if idle && no_input => {
+        KeyCode::Char('L') | KeyCode::F(6) if idle && no_input => {
             return dispatch(app, Action::Button(ButtonId::RunLlm));
         }
         KeyCode::Char('l') if idle && no_input && llm_can_run(app) => {
             return dispatch(app, Action::Button(ButtonId::RunLlm));
         }
-        KeyCode::Char('r') if idle && no_input && !app.llm_results.is_empty() => {
+        KeyCode::Char('r') | KeyCode::F(9) if idle && no_input && !app.llm_results.is_empty() => {
             return dispatch(app, Action::Tab(Page::Llm));
         }
         KeyCode::PageUp if app.page == Page::Llm && !menu_open => {
@@ -121,7 +146,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         {
             return dispatch(app, Action::RemoveLlmInput(app.llm_input_cursor));
         }
-        KeyCode::Char('d') if idle && no_input => {
+        KeyCode::Char('d') | KeyCode::F(7) if idle && no_input => {
             app.diarization = !app.diarization;
             app.log(tf(
                 app.lang,
@@ -130,7 +155,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             ));
             save_app_settings(app);
         }
-        KeyCode::Char('f') if idle && no_input => {
+        KeyCode::Char('f') | KeyCode::F(8) if idle && no_input => {
             app.formats = if app.formats.len() == 1 {
                 vec!["txt".into(), "srt".into()]
             } else {
@@ -143,11 +168,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             ));
             save_app_settings(app);
         }
-        KeyCode::Char('s') if idle && no_input && !app.files.is_empty() => {
+        KeyCode::Char('s') | KeyCode::F(5) if idle && no_input && !app.files.is_empty() => {
             return dispatch(app, Action::Button(ButtonId::Start));
         }
         // Reachable during a run too: the overlay only reads, it never touches the worker.
-        KeyCode::Char('?') if no_input => return dispatch(app, Action::Help),
+        KeyCode::Char('?') | KeyCode::F(12) if no_input => return dispatch(app, Action::Help),
         KeyCode::Esc if esc_should_soft_cancel(app) => {
             return dispatch(app, Action::Button(ButtonId::CancelLlm));
         }
@@ -267,10 +292,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         KeyCode::Backspace if idle => {
             app.input.pop();
         }
-        KeyCode::Char(c) if idle => {
+        KeyCode::Char(_) if idle => {
             app.command_menu = None;
             app.focus = Focus::Input;
-            app.input.push(c);
+            if let KeyCode::Char(c) = key.code {
+                app.input.push(c);
+            }
             app.selected_command = 0;
         }
         _ => {}
@@ -285,6 +312,88 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) -> Vec<Value> {
         handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn cyrillic_and_function_shortcuts_match_latin_actions() {
+        let _config = isolated_config_dir();
+        for (latin, cyrillic, function) in [
+            ('q', 'й', 10),
+            ('s', 'ы', 5),
+            ('d', 'в', 7),
+            ('f', 'а', 8),
+            ('r', 'к', 9),
+            ('L', 'Д', 6),
+        ] {
+            let run = |code| {
+                let mut app = App::default();
+                app.files.push("/tmp/запись.wav".into());
+                app.result_files.push("/tmp/запись.txt".into());
+                app.llm_results.push(("summary".into(), "Ответ".into()));
+                let commands = press(&mut app, code);
+                (
+                    commands,
+                    app.exit_requested,
+                    app.running,
+                    app.diarization,
+                    app.formats,
+                    app.page,
+                    app.input,
+                    app.llm_running,
+                )
+            };
+            let expected = run(KeyCode::Char(latin));
+            assert_eq!(run(KeyCode::Char(cyrillic)), expected, "{cyrillic}");
+            assert_eq!(run(KeyCode::F(function)), expected, "F{function}");
+        }
+    }
+
+    #[test]
+    fn shortcut_aliases_never_transliterate_typed_paths_or_commands() {
+        let _config = isolated_config_dir();
+        for prefix in ["/tmp/", "/prompt "] {
+            let mut app = App::default();
+            app.input = prefix.into();
+            for c in "йыівакдДQSDР — запись.mp3".chars() {
+                press(&mut app, KeyCode::Char(c));
+            }
+            assert_eq!(app.input, format!("{prefix}йыівакдДQSDР — запись.mp3"));
+            assert!(!app.exit_requested);
+        }
+        for c in ['ы', 'і', 'к', 'д'] {
+            let mut app = App::default();
+            press(&mut app, KeyCode::Char(c));
+            assert_eq!(
+                app.input,
+                c.to_string(),
+                "inactive shortcut must remain text"
+            );
+        }
+    }
+
+    #[test]
+    fn cyrillic_control_shortcuts_and_layout_free_help_work() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.log("test");
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('д'), KeyModifiers::CONTROL),
+        );
+        assert!(app.logs.is_empty());
+        app.log("test");
+        press(&mut app, KeyCode::F(11));
+        assert!(app.logs.is_empty());
+        press(&mut app, KeyCode::F(12));
+        assert!(app.help_open);
+        press(&mut app, KeyCode::F(12));
+        assert!(!app.help_open);
+        press(&mut app, KeyCode::F(12));
+        let cancel = KeyEvent::new(KeyCode::Char('с'), KeyModifiers::CONTROL);
+        handle_key(&mut app, cancel);
+        assert!(!app.exit_requested);
+        handle_key(&mut app, cancel);
+        assert!(app.exit_requested);
     }
 
     #[test]

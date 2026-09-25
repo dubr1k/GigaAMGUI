@@ -92,6 +92,10 @@ fn main() -> io::Result<()> {
     let (argv, theme_override) =
         strip_theme(argv).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     match argv.first().map(String::as_str) {
+        Some("--version" | "-V") => {
+            println!("gigaam-tui {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
         Some("transcribe" | "llm") => {
             let code = run_headless(&argv)?;
             std::process::exit(code);
@@ -191,8 +195,7 @@ fn main() -> io::Result<()> {
         }
         match event::read()? {
             Event::Paste(text) if !app.running => {
-                app.input.push_str(text.trim());
-                app.selected_command = 0;
+                commands::paste_input(&mut app, &text);
             }
             Event::Resize(_, _) => {
                 // A resize is also a recovery point for terminal image protocols:

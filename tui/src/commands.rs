@@ -97,6 +97,28 @@ pub(crate) fn split_shell_paths(raw: &str) -> Vec<String> {
     paths
 }
 
+/// Complete pasted file paths become visible immediately; command arguments and
+/// unfinished paths remain editable in the input line.
+pub(crate) fn paste_input(app: &mut App, text: &str) {
+    let text = text.trim();
+    if text.is_empty() || app.running {
+        return;
+    }
+    if app.page == Page::Processing && app.input.is_empty() && app.command_menu.is_none() {
+        let paths = split_shell_paths(text);
+        if normalize_path(text).is_ok()
+            || (!paths.is_empty() && paths.iter().all(|path| normalize_path(path).is_ok()))
+            || text.lines().all(|line| normalize_path(line).is_ok())
+        {
+            queue_paths(app, text);
+            app.focus = crate::app::Focus::Queue;
+            return;
+        }
+    }
+    app.input.push_str(text);
+    app.selected_command = 0;
+}
+
 pub(crate) fn queue_paths(app: &mut App, raw: &str) {
     let lines: Vec<String> = raw
         .lines()
@@ -106,6 +128,15 @@ pub(crate) fn queue_paths(app: &mut App, raw: &str) {
         .collect();
     let candidates = if lines.len() > 1 {
         lines
+            .into_iter()
+            .flat_map(|line| {
+                if normalize_path(&line).is_ok() {
+                    vec![line]
+                } else {
+                    split_shell_paths(&line)
+                }
+            })
+            .collect()
     } else {
         let value = lines.first().map(String::as_str).unwrap_or(raw).trim();
         match normalize_path(value) {
@@ -1435,6 +1466,33 @@ mod tests {
 
         assert!(app.command_menu.is_none());
         assert!(!app.diarization);
+    }
+
+    #[test]
+    fn successive_pastes_queue_files_without_concatenating_paths() {
+        let directory = std::env::temp_dir().join(format!("gigaam-paste-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("Ректорат (1).mp3");
+        let second = directory.join("Ректорат (1) — копия.mp3");
+        fs::write(&first, []).unwrap();
+        fs::write(&second, []).unwrap();
+        let mut app = App::default();
+        let escape = |path: &Path| {
+            path.to_string_lossy()
+                .replace(' ', "\\ ")
+                .replace('(', "\\(")
+                .replace(')', "\\)")
+        };
+        paste_input(&mut app, &escape(&first));
+        paste_input(&mut app, &escape(&second));
+        assert_eq!(app.files.len(), 2);
+        assert!(app.input.is_empty());
+        assert_eq!(app.selected_file, Some(1));
+        app.input = "/output ".into();
+        paste_input(&mut app, &directory.to_string_lossy());
+        assert!(app.input.starts_with("/output /"));
+        assert_eq!(app.files.len(), 2);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

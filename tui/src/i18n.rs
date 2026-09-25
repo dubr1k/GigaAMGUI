@@ -131,6 +131,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ("queue.col_no", "№", "#"),
     ("queue.col_file", "Файл", "File"),
     ("queue.col_state", "Состояние", "State"),
+    ("queue.controls", "↑↓ выбор · Delete / × убрать", "↑↓ select · Delete / × remove"),
     ("state.pending", "ожидает", "pending"),
     ("state.processing", "в обработке", "processing"),
     ("state.done", "готово", "done"),

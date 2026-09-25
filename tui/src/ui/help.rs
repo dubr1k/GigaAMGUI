@@ -24,14 +24,14 @@ use crate::{
 const KEYS: [(&str, &str); 19] = [
     ("Tab/Shift+Tab", "help.key_tab"),
     ("F1–F4", "help.key_fn"),
-    ("s", "help.key_s"),
-    ("L", "help.key_l"),
-    ("r", "help.key_r"),
-    ("d", "help.key_d"),
-    ("f", "help.key_f"),
-    ("?", "help.key_help"),
+    ("s/ы · F5", "help.key_s"),
+    ("L/Д · F6", "help.key_l"),
+    ("r/к · F9", "help.key_r"),
+    ("d/в · F7", "help.key_d"),
+    ("f/а · F8", "help.key_f"),
+    ("? · F12", "help.key_help"),
     ("Esc", "help.key_esc"),
-    ("q", "help.key_q"),
+    ("q/й · F10", "help.key_q"),
     ("Ctrl+C", "help.key_ctrl_c"),
     ("↑ ↓", "help.key_arrows"),
     ("← →", "help.key_left_right"),
@@ -40,7 +40,7 @@ const KEYS: [(&str, &str); 19] = [
     ("Delete", "help.key_delete"),
     ("Ctrl+↑/↓", "help.key_ctrl_arrows"),
     ("PgUp/PgDn/End", "help.key_page"),
-    ("Ctrl+L", "help.key_ctrl_l"),
+    ("Ctrl+L · F11", "help.key_ctrl_l"),
 ];
 
 /// Breaks `text` into lines of at most `width` characters at spaces, so that a

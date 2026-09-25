@@ -83,6 +83,14 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     };
     let block = Block::bordered()
         .title(Span::styled(format!(" {title} "), p.title()))
+        .title_bottom(Line::styled(
+            if app.files.is_empty() || app.running {
+                String::new()
+            } else {
+                format!(" {} ", t(app.lang, "queue.controls"))
+            },
+            Style::default().fg(p.muted),
+        ))
         .title_top(
             Line::from(Span::styled(
                 format!("[{}]", t(app.lang, "btn.clear")),
@@ -122,7 +130,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         );
         return;
     }
-    let name_width = usize::from(inner.width.saturating_sub(4 + 14 + 2));
+    let name_width = usize::from(inner.width.saturating_sub(4 + 14 + 3 + 3));
     let rows: Vec<Row> = app
         .files
         .iter()
@@ -138,12 +146,30 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             };
             Row::new(vec![
                 Cell::from(format!("{:>2}.", index + 1)).style(Style::default().fg(p.disabled)),
-                Cell::from(fit_middle(&short_name(file), name_width)),
+                Cell::from(vec![
+                    Line::styled(
+                        fit_middle(&short_name(file), name_width),
+                        Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Line::styled(
+                        fit_middle(
+                            file.rsplit_once('/').map_or("", |(parent, _)| parent),
+                            name_width,
+                        ),
+                        Style::default().fg(p.muted),
+                    ),
+                ]),
                 Cell::from(t(app.lang, key)).style(Style::default().fg(colour)),
+                Cell::from("[×]").style(Style::default().fg(if app.running {
+                    p.disabled
+                } else {
+                    p.error
+                })),
             ])
+            .height(2)
         })
         .collect();
-    let visible = usize::from(inner.height.saturating_sub(1));
+    let visible = usize::from(inner.height.saturating_sub(1) / 2);
     let max_offset = app.files.len().saturating_sub(visible);
     let offset = usize::from(*app.scroll.entry(AreaId::Queue).or_default()).min(max_offset);
     let selected = if app.running && !app.llm_running {
@@ -165,6 +191,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             Constraint::Length(4),
             Constraint::Min(8),
             Constraint::Length(14),
+            Constraint::Length(3),
         ],
     )
     .header(
@@ -172,6 +199,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
             t(app.lang, "queue.col_no"),
             t(app.lang, "queue.col_file"),
             t(app.lang, "queue.col_state"),
+            "",
         ])
         .style(
             Style::default()
@@ -187,9 +215,15 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     app.scroll.insert(AreaId::Queue, offset as u16);
     for row in 0..visible.min(app.files.len().saturating_sub(offset)) {
         app.hits.add(
-            Rect::new(inner.x, inner.y + 1 + row as u16, inner.width, 1),
+            Rect::new(inner.x, inner.y + 1 + row as u16 * 2, inner.width, 2),
             Action::SelectFile(offset + row),
         );
+        if !app.running && inner.width >= 3 {
+            app.hits.add(
+                Rect::new(inner.right() - 3, inner.y + 1 + row as u16 * 2, 3, 1),
+                Action::RemoveFile(offset + row),
+            );
+        }
     }
 }
 
@@ -410,6 +444,73 @@ mod tests {
     }
 
     #[test]
+    fn queue_shows_parent_paths_and_removes_only_the_clicked_file() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.files = vec![
+            "/meetings/first/запись.wav".into(),
+            "/meetings/second/запись.wav".into(),
+        ];
+        let backend = ratatui::backend::TestBackend::new(140, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+        let text = terminal.backend().to_string();
+        assert!(text.contains("/meetings/first"), "{text}");
+        assert!(text.contains("/meetings/second"), "{text}");
+        assert!(text.contains("Delete"), "{text}");
+        if std::env::var_os("GIGAAM_TEST_PREVIEW").is_some() {
+            println!("{text}");
+        }
+        let rect = app
+            .hits
+            .items()
+            .iter()
+            .find(|(_, action)| *action == Action::RemoveFile(0))
+            .unwrap()
+            .0;
+        let action = app.hits.hit(rect.x, rect.y).unwrap();
+        assert_eq!(action, Action::RemoveFile(0));
+        crate::app::dispatch(&mut app, action);
+        assert_eq!(app.files, vec!["/meetings/second/запись.wav"]);
+        assert_eq!(app.selected_file, Some(0));
+    }
+
+    #[test]
+    fn scrolled_queue_delete_hits_match_visible_rows() {
+        let _config = isolated_config_dir();
+        let mut app = App::default();
+        app.files = (0..30)
+            .map(|i| format!("/recordings/meeting-{i}.wav"))
+            .collect();
+        app.selected_file = Some(29);
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+        let offset = app.scroll[&AreaId::Queue] as usize;
+        assert!(offset > 0);
+        let rect = app
+            .hits
+            .items()
+            .iter()
+            .find(|(_, action)| *action == Action::RemoveFile(offset))
+            .unwrap()
+            .0;
+        let action = app.hits.hit(rect.x, rect.y).unwrap();
+        crate::app::dispatch(&mut app, action);
+        assert!(!app
+            .files
+            .contains(&format!("/recordings/meeting-{offset}.wav")));
+        assert_eq!(app.files.len(), 29);
+        app.running = true;
+        terminal.draw(|f| draw_all(f, &mut app)).unwrap();
+        assert!(!app
+            .hits
+            .items()
+            .iter()
+            .any(|(_, action)| matches!(action, Action::RemoveFile(_))));
+    }
+
+    #[test]
     fn processing_page_renders_russian_headings_and_registers_param_rows() {
         let _config = isolated_config_dir();
         let mut app = App::default();
@@ -490,7 +591,7 @@ mod tests {
         assert!(text.contains("00:03:10/00:07:30"), "{text}");
         let files = rows(&app, &|a| matches!(a, Action::SelectFile(_)));
         assert_eq!(files.len(), 3);
-        assert!(files.windows(2).all(|w| w[1] == w[0] + 1), "{files:?}");
+        assert!(files.windows(2).all(|w| w[1] == w[0] + 2), "{files:?}");
         assert_eq!(app.hits.hit(5, files[1]), Some(Action::SelectFile(1)));
 
         // A menu above the input line, drawn while idle.

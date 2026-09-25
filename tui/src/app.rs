@@ -661,6 +661,7 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
         Action::SelectFile(index) => {
             if index < app.files.len() {
                 app.selected_file = Some(index);
+                app.focus = Focus::Queue;
             }
         }
         Action::RemoveFile(index) => {

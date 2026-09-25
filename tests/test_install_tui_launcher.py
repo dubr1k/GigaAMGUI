@@ -58,6 +58,17 @@ def test_launcher_version_prefers_the_release_tag(tmp_path):
     assert "gigaam-tui v9.9.9 " in result.stdout
 
 
+def test_launcher_reports_tui_version_separately_from_repository_revision(tmp_path):
+    prefix = _fake_install(tmp_path)
+    (prefix / "repo" / "tui" / "Cargo.toml").write_text(
+        '[package]\nname = "gigaam-tui"\nversion = "2.0.1"\n'
+    )
+    result = _run(prefix, "--version")
+    assert result.returncode == 0
+    assert result.stdout.startswith("gigaam-tui 2.0.1 (")
+    assert str(prefix / "repo") in result.stdout
+
+
 def test_installer_fetches_tags_after_a_shallow_checkout():
     """`fetch --depth 1 origin REF` brings no tags; without them --version only shows a hash."""
     text = INSTALLER.read_text()

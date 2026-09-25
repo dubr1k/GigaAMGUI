@@ -18,7 +18,7 @@ Usage: gigaam [--data-dir PATH]        launch the terminal UI
        gigaam --update [--ref REF]     update the TUI, worker environment and PATH
        gigaam --install-skill          (re)install the agent skills (gigaam, gigaam-mcp) into
                                        ~/.claude, ~/.codex, ~/.agents
-       gigaam --version                show the installed revision
+       gigaam --version                show the TUI version and installed revision
 EOF
 }
 
@@ -53,7 +53,15 @@ case "${1:-}" in
     revision="$(git -C "$REPO_DIR" describe --tags --exact-match 2>/dev/null \
       || git -C "$REPO_DIR" describe --tags --always 2>/dev/null \
       || echo unknown)"
-    echo "gigaam-tui $revision ($REPO_DIR)"
+    version=""
+    if [[ -f "$REPO_DIR/tui/Cargo.toml" ]]; then
+      version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$REPO_DIR/tui/Cargo.toml" | head -n1)"
+    fi
+    if [[ -n "$version" ]]; then
+      echo "gigaam-tui $version ($revision; $REPO_DIR)"
+    else
+      echo "gigaam-tui $revision ($REPO_DIR)"
+    fi
     exit 0 ;;
   --update)
     shift

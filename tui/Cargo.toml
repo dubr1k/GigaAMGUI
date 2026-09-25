@@ -1,6 +1,6 @@
 [package]
 name = "gigaam-tui"
-version = "0.1.0"
+version = "2.0.1"
 edition = "2021"
 description = "Terminal UI for GigaAM Transcriber"
 

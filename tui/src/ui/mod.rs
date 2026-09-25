@@ -284,7 +284,7 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     ));
     spans.extend(item("d", t(app.lang, "footer.diar")));
     spans.extend(item("f", t(app.lang, "footer.formats")));
-    spans.extend(item("?", t(app.lang, "footer.help")));
+    spans.extend(item("?/F12", t(app.lang, "footer.help")));
     spans.push(Span::styled("q", key));
     spans.push(Span::styled(
         format!(" {}", t(app.lang, "footer.quit")),
