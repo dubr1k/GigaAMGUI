@@ -54,6 +54,8 @@ def test_unresponsive_worker_diagnostics_and_owned_descendant_force_stop(tmp_pat
     import psutil
 
     terminal = terminal_factory(GIGAAM_TEST_BLOCK_ON_LLM="1")
+    # Заголовок появляется до handshake; запуск до ready закономерно отклоняется.
+    terminal.wait(lambda t: "● Готово" in t.text)
     transcript = tmp_path / "transcript.txt"
     transcript.write_text("fixture", encoding="utf-8")
     terminal.command(f"/llm-file {transcript}")
