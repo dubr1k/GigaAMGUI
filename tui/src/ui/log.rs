@@ -104,8 +104,10 @@ mod tests {
     #[test]
     fn log_page_follows_the_tail_until_the_user_scrolls_up() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.page = Page::Log;
+        let mut app = App {
+            page: Page::Log,
+            ..App::default()
+        };
         app.logs.clear();
         for n in 1..=100 {
             app.log(format!("line {n}"));
@@ -137,8 +139,10 @@ mod tests {
     #[test]
     fn clear_button_empties_the_log() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.page = Page::Log;
+        let mut app = App {
+            page: Page::Log,
+            ..App::default()
+        };
         render(&mut app);
         let has = |action: Action| app.hits.items().iter().any(|(_, a)| *a == action);
         assert!(has(Action::Button(ButtonId::ClearLog)));

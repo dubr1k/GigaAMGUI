@@ -251,8 +251,10 @@ mod tests {
     #[test]
     fn help_overlay_lists_keys_and_commands_and_closes_on_click() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.help_open = true;
+        let mut app = App {
+            help_open: true,
+            ..App::default()
+        };
         let text = render(&mut app);
         for needle in [
             "Справка",
@@ -295,8 +297,10 @@ mod tests {
     #[test]
     fn help_scrolls_when_the_box_is_short_and_clamps() {
         let _config = isolated_config_dir();
-        let mut app = App::default();
-        app.help_open = true;
+        let mut app = App {
+            help_open: true,
+            ..App::default()
+        };
         dispatch(&mut app, Action::Scroll(AreaId::Help, 500));
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

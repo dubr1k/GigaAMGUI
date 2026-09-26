@@ -270,11 +270,7 @@ pub(crate) fn backend_usage(lang: Lang) -> String {
 }
 
 pub(crate) fn command_suggestions(input: &str) -> Vec<(&'static str, &'static str)> {
-    let command = input
-        .trim_start()
-        .split_whitespace()
-        .next()
-        .unwrap_or_default();
+    let command = input.split_whitespace().next().unwrap_or_default();
     if !command.starts_with('/') {
         return Vec::new();
     }
@@ -643,9 +639,7 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             save_app_settings(app);
         }
         "/llm-mode" => {
-            let mode = option
-                .trim_start_matches(|c: char| c == '[' || c == 'x' || c == ' ' || c == ']')
-                .trim();
+            let mode = option.trim_start_matches(['[', 'x', ' ', ']']).trim();
             if let Some(index) = app.llm_modes.iter().position(|item| item == mode) {
                 app.llm_modes.remove(index);
             } else {

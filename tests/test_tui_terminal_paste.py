@@ -1,14 +1,23 @@
 """Сквозные тесты TUI: проверяется текущая сетка экрана, не история stdout."""
 import json
 import os
+import re
 import signal
 import sys
+from pathlib import Path
 
 import pytest
 
 from tests.tui_terminal_driver import TerminalSession
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="requires a Unix PTY")
+
+# Заголовок экрана берёт версию из Cargo.toml — литерал здесь ломался бы на каждом релизе.
+TUI_VERSION = re.search(
+    r'^version = "([^"]+)"',
+    (Path(__file__).resolve().parents[1] / "tui" / "Cargo.toml").read_text(encoding="utf-8"),
+    re.MULTILINE,
+).group(1)
 
 
 @pytest.fixture
@@ -21,7 +30,7 @@ def terminal_factory(tmp_path):
     def create(**environment):
         terminal = TerminalSession(binary, tmp_path, **environment)
         sessions.append(terminal)
-        terminal.wait(lambda t: "GigaAM TUI 2.0.1" in t.text)
+        terminal.wait(lambda t: f"GigaAM TUI {TUI_VERSION}" in t.text)
         return terminal
 
     yield create

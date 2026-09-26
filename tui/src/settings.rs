@@ -495,18 +495,15 @@ pub(crate) fn save_settings(settings: &TuiSettings) -> Result<(), String> {
             main_app_settings_path().ok_or("Cannot determine the settings directory")?;
         let contents = fs::read_to_string(&main_path)
             .map_err(|error| format!("Cannot read {}: {error}", main_path.display()))?;
-        match serde_json::from_str::<Value>(&contents)
+        // Corrupt or empty: leave the user's file for inspection rather than replace
+        // it with a bare object of TUI keys; the shared values still reach
+        // tui_settings.json below.
+        if let Some(mut map) = serde_json::from_str::<Value>(&contents)
             .ok()
             .and_then(|v| v.as_object().cloned())
         {
-            Some(mut map) => {
-                shared_settings_into_main_app(settings, &mut map);
-                write_json_atomic(&main_path, &Value::Object(map))?;
-            }
-            // Corrupt or empty: leave the user's file for inspection rather than replace
-            // it with a bare object of TUI keys; the shared values still reach
-            // tui_settings.json below.
-            None => {}
+            shared_settings_into_main_app(settings, &mut map);
+            write_json_atomic(&main_path, &Value::Object(map))?;
         }
         // Like config.save_env_value, only a non-empty key is ever written: an empty one
         // means "not loaded", never "delete the desktop app's key". And only a key that
@@ -776,8 +773,10 @@ mod tests {
         apply_settings(&mut app, old, None);
         assert_eq!(app.theme.name, "default");
 
-        let mut settings = TuiSettings::default();
-        settings.theme = "dark-gruvbox".into();
+        let settings = TuiSettings {
+            theme: "dark-gruvbox".into(),
+            ..TuiSettings::default()
+        };
         save_settings(&settings).unwrap();
         let text = fs::read_to_string(directory.join("tui_settings.json")).unwrap();
         assert!(text.contains("\"theme\": \"dark-gruvbox\""), "{text}");
@@ -787,8 +786,10 @@ mod tests {
         assert_eq!(TuiSettings::from(&app).theme, "dark-gruvbox");
 
         // A name this build does not know falls back to the default look.
-        let mut settings = TuiSettings::default();
-        settings.theme = "removed-theme".into();
+        let settings = TuiSettings {
+            theme: "removed-theme".into(),
+            ..TuiSettings::default()
+        };
         apply_settings(&mut app, settings, None);
         assert_eq!(app.theme.name, "default");
     }

@@ -28,6 +28,36 @@ jobs:
       - name: Run release regression tests
         run: python -m pytest tests/test_macos_swift_packaging.py tests/test_release_hardening.py
 
+  tui:
+    name: TUI tests
+    # build.yml runs cargo test only for v* tags, so TUI changes reached main
+    # untested, and the PTY tests always skipped without a built binary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      # The minimal import set of src.tui_worker and the stub worker; no torch.
+      - name: Install test tools
+        run: python -m pip install "pytest==9.0.1" psutil numpy python-dotenv typing_extensions soundfile requests
+      - name: Unit tests
+        working-directory: tui
+        run: cargo test --locked
+      - name: Build TUI
+        working-directory: tui
+        run: cargo build --locked
+      - name: Worker and terminal (PTY) tests
+        env:
+          GIGAAM_TUI_TEST_BINARY: ${{ github.workspace }}/tui/target/debug/gigaam-tui
+        run: >-
+          python -m pytest -rs
+          tests/test_tui_worker.py tests/test_tui_input_service.py
+          tests/test_tui_terminal_screen.py tests/test_tui_terminal_paste.py
+          tests/test_install_tui_launcher.py
+
   tauri-locks:
     name: Tauri dependency and JavaScript checks
     runs-on: ubuntu-latest
