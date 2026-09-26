@@ -366,7 +366,7 @@ fn sanitize(text: &str) -> String {
         Start,
         Csi,
         String,
-        StringEscape,
+        StringEsc,
     }
     let mut state = Escape::Text;
     let mut output = String::new();
@@ -397,10 +397,10 @@ fn sanitize(text: &str) -> String {
             }
             Escape::String => match ch {
                 '\x07' | '\u{9c}' => Escape::Text,
-                '\x1b' => Escape::StringEscape,
+                '\x1b' => Escape::StringEsc,
                 _ => Escape::String,
             },
-            Escape::StringEscape => {
+            Escape::StringEsc => {
                 if ch == '\\' {
                     Escape::Text
                 } else {

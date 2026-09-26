@@ -52,7 +52,7 @@ def test_launcher_version_prints_the_installed_commit(tmp_path):
 
 def test_launcher_version_prefers_the_release_tag(tmp_path):
     prefix = _fake_install(tmp_path)
-    subprocess.run(["git", "-C", str(prefix / "repo"), "tag", "-a", "v9.9.9", "-m", "release"], check=True)
+    subprocess.run(["git", "-C", str(prefix / "repo"), "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "v9.9.9", "-m", "release"], check=True)
     result = _run(prefix, "--version")
     assert result.returncode == 0
     assert "gigaam-tui v9.9.9 " in result.stdout
