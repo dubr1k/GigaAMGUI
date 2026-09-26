@@ -69,6 +69,20 @@ Windows/macOS/Linux, командная строка, REST API, веб-пане�
 |---|---|
 | ![PyQt — настройки LLM](assets/screenshots/pyqt-llm-settings-light.png) | ![PyQt — тёмная тема](assets/screenshots/pyqt-processing-dark.png) |
 
+### Терминальный интерфейс (TUI, macOS / Linux)
+
+| Распознавание: пакет из трёх файлов | Пакет готов: итоги и результаты |
+|---|---|
+| ![TUI — распознавание](assets/screenshots/tui-processing.png) | ![TUI — пакет готов](assets/screenshots/tui-batch-done.png) |
+
+| F9: сохранённые результаты | F2: выжимка через Claude Code |
+|---|---|
+| ![TUI — результаты](assets/screenshots/tui-results.png) | ![TUI — LLM](assets/screenshots/tui-llm.png) |
+
+| F3: найденные LLM CLI с версиями | Справка: клавиши и команды |
+|---|---|
+| ![TUI — выбор LLM-провайдера](assets/screenshots/tui-settings-llm.png) | ![TUI — справка](assets/screenshots/tui-help.png) |
+
 ## Что умеет
 
 **Расшифровка**

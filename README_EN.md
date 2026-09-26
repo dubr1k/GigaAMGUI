@@ -549,6 +549,16 @@ in the header).
 |---|---|
 | ![PyQt — processing](assets/screenshots/pyqt-processing-light.png) | ![PyQt — LLM settings](assets/screenshots/pyqt-llm-settings-light.png) |
 
+**Terminal UI (TUI, macOS / Linux)** — the interface is Russian by default (`/lang en`).
+
+| Transcribing a batch of three files | LLM summary via Claude Code |
+|---|---|
+| ![TUI — processing](assets/screenshots/tui-processing.png) | ![TUI — LLM](assets/screenshots/tui-llm.png) |
+
+| F9: saved results | Settings: detected LLM CLIs with versions |
+|---|---|
+| ![TUI — results](assets/screenshots/tui-results.png) | ![TUI — LLM provider picker](assets/screenshots/tui-settings-llm.png) |
+
 ### GigaAM Liquid
 
 `GigaAMLiquid-macos-arm64-<version>.zip` is a native Swift/AppKit client with a
