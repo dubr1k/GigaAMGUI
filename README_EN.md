@@ -161,7 +161,7 @@ provider, formats, diarization, and more — are shared between the TUI and
 that app: whichever program saved last wins, and the other one picks up the
 change on its next start.
 
-**TUI 2.1.0.** The interface is Russian by default; `/lang ru|en` (the
+**TUI 2.1.1.** The interface is Russian by default; `/lang ru|en` (the
 «Language» row in Settings, or `--lang en` at start-up) switches it and stores
 the choice in the `language` setting shared with the desktop app. Four tabs —
 **Processing**, **LLM**, **Settings**, **Log** — are reached with F1–F4,

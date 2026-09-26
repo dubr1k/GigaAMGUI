@@ -1,6 +1,8 @@
 """TUI не должен предлагать бэкенд, которого нет в зависимостях его воркера."""
 
+import ast
 import re
+import sys
 from pathlib import Path
 
 TUI_SOURCE_DIR = Path("tui/src")
@@ -67,3 +69,74 @@ def test_pytorch_line_stays_bounded():
 
     for package in ("torch", "torchaudio"):
         assert f"{package}>=2.6.0,<2.9.0" in text
+
+
+# Имя модуля при импорте → имя дистрибутива в requirements, где они различаются.
+_DISTRIBUTION_FOR_MODULE = {
+    "dotenv": "python-dotenv",
+    "yt_dlp": "yt-dlp",
+    "typing_extensions": "typing-extensions",
+}
+
+
+def _top_level_imports(path: Path) -> list[str]:
+    """Импорты уровня модуля, включая `try:`/`if` на верхнем уровне — они
+    выполняются при импорте и роняют процесс, если пакета нет."""
+    names = []
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        block = node.body if isinstance(node, (ast.Try, ast.If)) else [node]
+        for statement in block:
+            if isinstance(statement, ast.Import):
+                names.extend(alias.name for alias in statement.names)
+            elif isinstance(statement, ast.ImportFrom) and statement.level == 0 and statement.module:
+                names.append(statement.module)
+                names.extend(f"{statement.module}.{alias.name}" for alias in statement.names)
+    return names
+
+
+def _third_party_imports(*entry_points: str) -> dict[str, str]:
+    """Сторонние пакеты, которые импортирует граф `src.*` от точек входа."""
+    seen: set[Path] = set()
+    found: dict[str, str] = {}
+
+    def module_file(name: str) -> Path | None:
+        base = Path(*name.split("."))
+        for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+            if candidate.exists():
+                return candidate
+        return None
+
+    def visit(path: Path) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        for name in _top_level_imports(path):
+            top = name.split(".")[0]
+            if top == "src":
+                target = module_file(name)
+                if target is not None:
+                    visit(target)
+            elif top != "__future__" and top not in sys.stdlib_module_names:
+                found.setdefault(top, str(path))
+
+    for entry in entry_points:
+        visit(Path(entry))
+    return found
+
+
+def test_worker_and_mcp_imports_are_direct_requirements():
+    """Каждый пакет, который воркер TUI и `gigaam mcp` импортируют при старте,
+    объявлен в requirements-tui.txt напрямую. Транзитивная зависимость — не
+    гарантия: psutil приходил в dev-окружение через accelerate, а в venv TUI
+    его не было, и после 3b727e9 `gigaam --update` падал на импорте llm_service.
+    """
+    def normalized(name: str) -> str:  # PEP 503: typing_extensions == typing-extensions
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    declared = {normalized(name) for name in _requirement_names()}
+    missing = {
+        _DISTRIBUTION_FOR_MODULE.get(module, module): importer
+        for module, importer in _third_party_imports("src/tui_worker.py", "src/mcp_server.py").items()
+        if normalized(_DISTRIBUTION_FOR_MODULE.get(module, module)) not in declared
+    }
+    assert not missing, f"не объявлены в {TUI_REQUIREMENTS}: {missing}"
