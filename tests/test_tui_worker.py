@@ -163,20 +163,34 @@ def test_run_command_uses_devnull_without_input(monkeypatch):
         captured.append(("run", kwargs.get("stdin"), kwargs.get("input")))
         return subprocess.CompletedProcess(command, 0, "", "")
 
+    class FakeStdin:
+        def write(self, text):
+            captured.append(("stdin", None, text))
+
+        def close(self):
+            pass
+
     class FakePopen:
         returncode = 0
+        pid = 424242
 
         def __init__(self, command, **kwargs):
             captured.append(("popen", kwargs.get("stdin"), None))
+            self.stdin = FakeStdin() if kwargs.get("stdin") == subprocess.PIPE else None
 
         def communicate(self, input=None, timeout=None):
             return "", ""
+
+    class FakeProcess:
+        def __init__(self, pid):
+            pass
 
         def children(self, recursive=False):
             return []
 
     monkeypatch.setattr(llm_service.subprocess, "run", fake_run)
-    monkeypatch.setattr(llm_service.psutil, "Popen", FakePopen)
+    monkeypatch.setattr(llm_service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(llm_service.psutil, "Process", FakeProcess)
 
     llm_service._run_command(["tool"])
     llm_service._run_command(["tool"], input_text="prompt")
@@ -188,6 +202,7 @@ def test_run_command_uses_devnull_without_input(monkeypatch):
         ("run", None, "prompt"),
         ("popen", subprocess.DEVNULL, None),
         ("popen", subprocess.PIPE, None),
+        ("stdin", None, "prompt"),
     ]
 
 
