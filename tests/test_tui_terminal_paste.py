@@ -412,3 +412,17 @@ def test_terminal_reconnect_preserves_queue_without_repeating_start(tmp_path, te
     terminal.wait(lambda t: "Готово" in t.text and int((tmp_path / "worker.pid").read_text()) != old_pid)
     assert "recover.wav" in terminal.queue_text
     assert len(commands(tmp_path, "start")) == 1
+
+
+@pytest.mark.parametrize("separator", ["\r", "\n", "\r\n"], ids=["cr-terminal-app", "lf", "crlf"])
+def test_multiline_paste_queues_every_path(tmp_path, terminal_factory, separator):
+    """Список путей построчно (скопирован из Finder/редактора): Terminal.app
+    передаёт переводы строк внутри bracketed paste как CR, другие — как LF."""
+    terminal = terminal_factory()
+    paths = [tmp_path / name for name in ("Лекция — распознавание речи.wav", "Планёрка 24.09.m4a", "Интервью (финал).mp3")]
+    for path in paths:
+        path.touch()
+    terminal.paste(separator.join(str(path) for path in paths))
+    queued(terminal, 3)
+    assert all(path.name in terminal.queue_text for path in paths), terminal.text
+    assert not any(line.startswith("Файлы:") for line in terminal.screen.lines), terminal.text

@@ -24,6 +24,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -80,8 +81,12 @@ def _remember_children(process, children):
             pass
 
 
-def _stop_command_tree(process, children):
-    """Останавливаем только сохранённые процессы этого вызова, не группу worker."""
+def _stop_command_tree(popen, process, children):
+    """Останавливаем только сохранённые процессы этого вызова, не группу worker.
+
+    `process` — psutil-представление того же CLI (дерево, сигналы), `popen` —
+    владелец его каналов: только он дочитывает вывод и освобождает трубы.
+    """
     _remember_children(process, children)
     targets = [*children, process]
     errors = []
@@ -108,11 +113,29 @@ def _stop_command_tree(process, children):
         except psutil.NoSuchProcess:
             pass
     try:
-        process.communicate(timeout=0.5)
+        popen.communicate(timeout=0.5)
     except subprocess.TimeoutExpired:
         errors.append("CLI output pipes did not close after cancellation")
     if errors:
         raise LLMTerminationError("; ".join(errors))
+
+
+def _feed_stdin(stream, text: str) -> None:
+    """Пишет промпт в CLI и закрывает stdin — EOF для `claude -p` и других.
+
+    Не через communicate(input=...) с таймаутом: после TimeoutExpired повтор
+    вызова без input в CPython уже не дописывает остаток и не закрывает stdin,
+    и CLI ждал EOF вечно на любом промпте больше буфера канала (~64 КБ).
+    """
+    try:
+        stream.write(text)
+    except (BrokenPipeError, OSError, ValueError):
+        pass  # CLI завершился или остановлен, не дочитав; итог даст его код выхода
+    finally:
+        try:
+            stream.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
 
 
 def _run_command(command: list[str], *, input_text: str | None = None, cancel_check=None):
@@ -127,7 +150,9 @@ def _run_command(command: list[str], *, input_text: str | None = None, cancel_ch
         return subprocess.run(
             command, input=input_text, capture_output=True, text=True, timeout=_TIMEOUT, env=env,
         )
-    process = psutil.Popen(
+    # Не psutil.Popen: он лишь проксирует атрибуты во вложенный subprocess.Popen,
+    # и отданный потоку записи stdin остался бы у того, кто вызывает communicate().
+    popen = subprocess.Popen(
         command,
         stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -135,18 +160,28 @@ def _run_command(command: list[str], *, input_text: str | None = None, cancel_ch
         text=True,
         env=env,
     )
-    first_input = input_text
+    # Дочерний процесс не будет пожат до communicate(), так что PID ещё его.
+    process = psutil.Process(popen.pid)
+    writer = None
+    if input_text is not None:
+        # stdin отдан потоку записи: communicate() его не трогает и только читает
+        # вывод, поэтому опрос отмены не ждёт, пока CLI прочитает промпт.
+        stdin, popen.stdin = popen.stdin, None
+        writer = threading.Thread(target=_feed_stdin, args=(stdin, input_text), daemon=True)
+        writer.start()
     children = set()
     while True:
         _remember_children(process, children)
         if cancel_check():
-            _stop_command_tree(process, children)
+            # Остановка закрывает канал со стороны CLI, и запись в потоке завершится.
+            _stop_command_tree(popen, process, children)
             raise LLMCancelled()
         try:
-            stdout, stderr = process.communicate(input=first_input, timeout=0.1)
-            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            stdout, stderr = popen.communicate(timeout=0.1)
+            if writer is not None:
+                writer.join(timeout=1)
+            return subprocess.CompletedProcess(command, popen.returncode, stdout, stderr)
         except subprocess.TimeoutExpired:
-            first_input = None
             time.sleep(0.01)
 
 

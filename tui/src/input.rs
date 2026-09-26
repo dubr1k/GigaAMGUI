@@ -204,7 +204,13 @@ pub(crate) fn complete_prefix(raw: &str) -> Option<usize> {
 
 pub(crate) fn input_candidates(raw: &str) -> Vec<String> {
     let mut candidates = Vec::new();
-    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    // Not str::lines(): Terminal.app sends a multi-line paste with bare CR, which
+    // lines() does not split, so a pasted list became one path with spaces.
+    for line in raw
+        .split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         let paths = if local_path(line).is_some_and(|path| path.exists()) {
             vec![line.to_owned()]
         } else {
@@ -233,6 +239,29 @@ pub(crate) fn input_candidates(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_lines_split_on_bare_cr_like_on_lf() {
+        let directory =
+            std::env::temp_dir().join(format!("gigaam cr paste {}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let paths: Vec<String> = ["Лекция — речь.wav", "Планёрка 24.09.m4a"]
+            .iter()
+            .map(|name| {
+                let path = directory.join(name);
+                std::fs::write(&path, []).unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
+        for separator in ["\r", "\n", "\r\n"] {
+            assert_eq!(
+                input_candidates(&paths.join(separator)),
+                paths,
+                "{separator:?}"
+            );
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn quoted_single_path_is_decoded_before_worker_submission() {
