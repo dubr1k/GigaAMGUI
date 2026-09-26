@@ -1,6 +1,6 @@
 [package]
 name = "gigaam-desktop"
-version = "2.5.3-3"
+version = "2.5.4"
 description = "Native desktop shell for GigaAMGUI"
 authors = ["GigaAMGUI"]
 edition = "2021"
