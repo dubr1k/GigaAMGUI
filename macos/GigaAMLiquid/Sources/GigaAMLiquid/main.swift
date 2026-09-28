@@ -266,30 +266,22 @@ private final class RoundedSecureTextField: NSSecureTextField {
     }
 }
 
-private final class FlippedDocumentView: NSView {
-    override var isFlipped: Bool { true }
-
-    override func layout() {
-        super.layout()
-        guard let content = subviews.first else { return }
-        let fittingSize = content.fittingSize
-        let scroll = enclosingScrollView
-        let size = NSSize(width: max(fittingSize.width + 22, scroll?.contentSize.width ?? 0),
-                          height: ceil(fittingSize.height))
-        if frame.size != size { setFrameSize(size) }
-        if let scroll {
-            let clip = scroll.contentView
-            clip.scroll(to: clip.constrainBoundsRect(clip.bounds).origin)
-            scroll.reflectScrolledClipView(clip)
-        }
-    }
-}
-
 private final class AutoLayoutDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
 private final class EditorScrollView: NSScrollView {
+    /// A wrapping text view must be exactly as wide as the visible area. Autoresizing
+    /// only adds the clip view's size delta to the text view's initial frame width,
+    /// which left editors ~240 pt wider than their box and cut long lines off.
+    override func tile() {
+        super.tile()
+        if let text = documentView as? NSTextView, !text.isHorizontallyResizable,
+           text.frame.width != contentSize.width {
+            text.setFrameSize(NSSize(width: contentSize.width, height: text.frame.height))
+        }
+    }
+
     override func scrollWheel(with event: NSEvent) {
         if let outer = superview?.enclosingScrollView, let documentView {
             let visible = contentView.bounds
@@ -936,8 +928,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         NSWorkspace.shared.open(URL(string: "https://github.com/dubr1k/GigaAMGUI")!)
     }
 
+    /// The smallest window in which every page fits without scrolling; the tallest
+    /// page, «Обработка», needs ~870 pt of window height. Pages stretch beyond it.
+    private static let minimumWindowSize = NSSize(width: 1100, height: 880)
+    private static let defaultWindowSize = NSSize(width: 1240, height: 940)
+
     private func buildWindow() {
-        window = ApplicationWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        // Clamp to the screen: on a display shorter than the minimum the page falls
+        // back to scrolling rather than the window hanging off the screen.
+        let screen = NSScreen.main?.visibleFrame.size ?? Self.defaultWindowSize
+        let minimum = NSSize(width: min(Self.minimumWindowSize.width, screen.width), height: min(Self.minimumWindowSize.height, screen.height))
+        let initial = NSSize(width: min(Self.defaultWindowSize.width, screen.width), height: min(Self.defaultWindowSize.height, screen.height))
+        window = ApplicationWindow(contentRect: NSRect(origin: .zero, size: initial), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "GigaAM v3"
         window.delegate = self
         window.titleVisibility = .hidden
@@ -946,7 +948,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         window.hasShadow = false
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.minSize = NSSize(width: 1040, height: 700)
+        window.minSize = minimum
         window.center()
         buildWindowContent()
     }
@@ -1147,6 +1149,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         titleBlock.orientation = .vertical
         titleBlock.alignment = .leading
         titleBlock.spacing = 5
+        // Hug the title tightly: a loosely hugging stack would grow and squeeze the
+        // page area down to the page's minimum instead of letting the page fill it.
+        titleBlock.setHuggingPriority(.required, for: .vertical)
         titleBlock.translatesAutoresizingMaskIntoConstraints = false
         pageTitle = label("", size: 28, weight: .medium, color: Palette.ink)
         pageSubtitle = label("", size: 14, color: Palette.body)
@@ -1157,6 +1162,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         mainSurface.contentView.addSubview(titleBlock)
 
         pageScroll = NSScrollView()
+        pageScroll.identifier = NSUserInterfaceItemIdentifier("page.scroll")
         pageScroll.drawsBackground = false
         pageScroll.hasVerticalScroller = false
         pageScroll.autohidesScrollers = true
@@ -1196,8 +1202,23 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
         let document = scrollDocument(for: page)
         pageScroll.documentView = document
-        pageScroll.hasHorizontalScroller = true
+        pageScroll.hasHorizontalScroller = false
         pageScroll.hasVerticalScroller = true
+        // The page is exactly as wide as the visible area and at least as tall: the
+        // flexible part of each page (file list, editors, tables) absorbs the rest,
+        // so the layout follows the window — full screen included. The page only
+        // grows past the visible height, and scrolls, when the window is smaller than
+        // the page's minimum.
+        let clip = pageScroll.contentView
+        let fill = document.heightAnchor.constraint(equalTo: clip.heightAnchor)
+        fill.priority = NSLayoutConstraint.Priority(200)
+        NSLayoutConstraint.activate([
+            document.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            document.topAnchor.constraint(equalTo: clip.topAnchor),
+            document.widthAnchor.constraint(equalTo: clip.widthAnchor),
+            document.heightAnchor.constraint(greaterThanOrEqualTo: clip.heightAnchor),
+            fill
+        ])
         document.needsLayout = true
         document.layoutSubtreeIfNeeded()
         pageScroll.contentView.scroll(to: .zero)
@@ -1206,15 +1227,17 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     private func scrollDocument(for page: Page) -> NSView {
-        let document = FlippedDocumentView(frame: NSRect(x: 0, y: 0, width: 878, height: 0))
-        document.autoresizingMask = [.width]
+        let document = AutoLayoutDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
         let content = vertical([], spacing: 16)
         content.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(content)
+        // Trailing inset matches the header's, so cards end under the language pill.
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20),
             content.topAnchor.constraint(equalTo: document.topAnchor),
-            content.widthAnchor.constraint(equalToConstant: 878)
+            content.bottomAnchor.constraint(equalTo: document.bottomAnchor)
         ])
         switch page {
         case .processing: buildProcessing(into: content)
@@ -1235,13 +1258,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             symbol("square.and.arrow.up", size: 28),
             label("Перетащите сюда аудио, видео или папку", size: 17, weight: .regular, color: Palette.ink),
             label(".wav, .mp3, .m4a, .mp4, .mov, .mkv · папка сканируется целиком", size: 13, color: Palette.body)
-        ], spacing: 8, alignment: .centerX)
+        ], spacing: 6, alignment: .centerX)
         zoneText.translatesAutoresizingMaskIntoConstraints = false
         zone.addSubview(zoneText)
         NSLayoutConstraint.activate([
             zoneText.centerXAnchor.constraint(equalTo: zone.centerXAnchor),
             zoneText.centerYAnchor.constraint(equalTo: zone.centerYAnchor),
-            zone.heightAnchor.constraint(equalToConstant: 116)
+            zone.heightAnchor.constraint(equalToConstant: 88)
         ])
         let choose = button("Выбрать файлы", primary: true, action: #selector(chooseFiles(_:)))
         choose.identifier = NSUserInterfaceItemIdentifier("processing.choose")
@@ -1254,7 +1277,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let uploadStack = contentStack(upload)
         uploadStack.addArrangedSubview(zone)
         uploadStack.addArrangedSubview(centered(horizontal([choose, link], spacing: 12)))
-        size(upload, width: 610, height: 238)
+        uploadStack.bottomAnchor.constraint(equalTo: upload.bottomAnchor, constant: -16).isActive = true
 
         let processing = card("Настройки обработки", dense: true)
         let settings = contentStack(processing)
@@ -1263,9 +1286,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         settings.addArrangedSubview(compactField("Модель", control: popup(["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"], key: "settings.model")))
         settings.addArrangedSubview(toggleRow("Диаризация", key: "settings.diarization", defaultValue: false))
         settings.addArrangedSubview(compactField("Кол-во спикеров", control: speakerCountPopup()))
-        processing.widthAnchor.constraint(equalToConstant: 252).isActive = true
         settings.bottomAnchor.constraint(equalTo: processing.bottomAnchor, constant: -16).isActive = true
-        content.addArrangedSubview(horizontal([upload, processing], spacing: 16))
 
         let clear = button("Очистить", action: #selector(clearFiles(_:)), height: 30)
         clear.identifier = NSUserInterfaceItemIdentifier("processing.clear")
@@ -1278,19 +1299,21 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         trailing.alignment = .centerY
         let selected = card("Выбранные файлы", trailing: trailing)
         let selectedStack = contentStack(selected)
-        selectedStack.addArrangedSubview(columnHeadings(selectedFileColumns))
+        selectedStack.addArrangedSubview(columnHeadings(selectedFileColumns, trailing: Self.selectedFileRemoveWidth))
         selectedStack.addArrangedSubview(divider())
         let filenames = wrappedLabel("Файлы не выбраны. Добавьте аудио или видео.", size: 14, color: Palette.body)
-        filenames.preferredMaxLayoutWidth = 574
         selectedFilesLabel = filenames
         // Пустая подпись и строки живут в одном стеке и подменяют друг друга: vertical()
         // не отсоединяет скрытые view, и спрятанная подпись оставляла бы зазор над списком.
         let rows = vertical([], spacing: 6)
         rows.identifier = NSUserInterfaceItemIdentifier("processing.selected.rows")
         selectedFilesRows = rows
-        selectedStack.addArrangedSubview(rows)
+        // The list is the stretchy part of the page: it takes the height the window
+        // leaves and scrolls on its own once the files no longer fit.
+        let rowsScroll = stretchy(scrollable(rows, inset: 0))
+        rowsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        selectedStack.addArrangedSubview(rowsScroll)
         refreshSelectedFiles()
-        selected.widthAnchor.constraint(equalToConstant: 610).isActive = true
         selectedStack.bottomAnchor.constraint(equalTo: selected.bottomAnchor, constant: -16).isActive = true
 
         let folder = compactCard("Папка сохранения результатов")
@@ -1302,9 +1325,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         change.widthAnchor.constraint(equalToConstant: 92).isActive = true
         contentStack(folder).addArrangedSubview(horizontal([path, change], spacing: 12))
         let folderHint = wrappedLabel("Пустое поле — результаты сохраняются в папку исходного файла.", size: 12, color: Palette.muted)
-        folderHint.preferredMaxLayoutWidth = 574
         contentStack(folder).addArrangedSubview(folderHint)
-        folder.widthAnchor.constraint(equalToConstant: 610).isActive = true
         contentStack(folder).bottomAnchor.constraint(equalTo: folder.bottomAnchor, constant: -16).isActive = true
 
         let output = card("Форматы вывода", dense: true)
@@ -1328,20 +1349,26 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             compactField("Символов", control: popup(["64", "42", "80"], key: "subtitle.characters"))
         ], spacing: 8))
         formats.addArrangedSubview(toggleRow("Разбивать по предложениям", key: "subtitle.sentences", defaultValue: true))
-        output.widthAnchor.constraint(equalToConstant: 252).isActive = true
-        formats.bottomAnchor.constraint(equalTo: output.bottomAnchor, constant: -16).isActive = true
-        content.addArrangedSubview(horizontal([vertical([selected, folder], spacing: 16), output], spacing: 16))
-        let start = button("Запустить обработку", primary: true, action: #selector(startProcessing(_:)), height: 52)
+        // No bottom pin: the card stretches to end level with the left column.
+        let start = button("Запустить обработку", primary: true, action: #selector(startProcessing(_:)), height: 44)
         start.identifier = NSUserInterfaceItemIdentifier("transcription.start")
+        start.setContentHuggingPriority(.defaultLow, for: .horizontal)
         startProcessingButton = start
-        let cancel = button("Остановить после текущего файла", action: #selector(cancelProcessing(_:)), height: 52)
+        let cancel = button("Остановить после текущего файла", action: #selector(cancelProcessing(_:)), height: 44)
         cancel.identifier = NSUserInterfaceItemIdentifier("transcription.cancel")
+        cancel.setContentHuggingPriority(.required, for: .horizontal)
+        cancel.setContentCompressionResistancePriority(.required, for: .horizontal)
         cancelProcessingButton = cancel
-        content.addArrangedSubview(vertical([start, cancel], spacing: 12))
         let validation = wrappedLabel("", size: 12, color: Palette.muted)
         validation.identifier = NSUserInterfaceItemIdentifier("transcription.validation")
         processingValidationLabel = validation
-        content.addArrangedSubview(validation)
+        // Files and actions on the left, the settings column on the right: the page
+        // fits a default window, and in a larger one the file list gets the room.
+        let files = vertical([upload, stretchy(selected), folder, horizontal([start, cancel], spacing: 12), validation], spacing: 16)
+        files.setCustomSpacing(8, after: files.arrangedSubviews[3])
+        let options = vertical([processing, stretchy(output)], spacing: 16)
+        options.widthAnchor.constraint(equalToConstant: 252).isActive = true
+        content.addArrangedSubview(stretchy(fillRow([files, options], spacing: 16)))
         content.addArrangedSubview(progressCard())
     }
 
@@ -1389,13 +1416,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         tabs.identifier = NSUserInterfaceItemIdentifier("result.tabs")
         tabs.heightAnchor.constraint(equalToConstant: 32).isActive = true
         body.addArrangedSubview(tabs)
-        let editor = textEditor(resultPages.isEmpty ? L10n.text("Транскрипция появится после обработки файла.") : resultPages[selectedTab].text, key: nil, height: 410)
+        let editor = textEditor(resultPages.isEmpty ? L10n.text("Транскрипция появится после обработки файла.") : resultPages[selectedTab].text, key: nil, height: nil, minHeight: 200)
+        stretchy(editor)
         resultTranscript = editor.documentView as? NSTextView
         resultTranscript?.isEditable = false
         resultTranscript?.identifier = NSUserInterfaceItemIdentifier("result.content")
         resultTranscript?.setAccessibilityLabel(L10n.text("Результат обработки"))
         body.addArrangedSubview(editor)
-        result.widthAnchor.constraint(equalToConstant: 646).isActive = true
         body.bottomAnchor.constraint(equalTo: result.bottomAnchor, constant: -16).isActive = true
 
         let useful = card("Полезное")
@@ -1428,8 +1455,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
         actions.addArrangedSubview(wrappedLabel("Доступны только фактические результаты. LLM-анализ и воспроизведение не подключены.", size: 12, color: Palette.muted))
         useful.widthAnchor.constraint(equalToConstant: 216).isActive = true
-        actions.bottomAnchor.constraint(equalTo: useful.bottomAnchor, constant: -16).isActive = true
-        content.addArrangedSubview(horizontal([result, useful], spacing: 16))
+        content.addArrangedSubview(stretchy(fillRow([result, useful], spacing: 16)))
     }
 
     private static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
@@ -1449,7 +1475,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         sourceBody.addArrangedSubview(toggleRow("Записывать системный звук", key: "live.recordSystem", defaultValue: false))
         sourceBody.addArrangedSubview(compactField("Диаризация", control: popup(Self.liveDiarizationModes, key: "live.diarizationMode")))
         sourceBody.addArrangedSubview(compactField("Движок", control: popup(["pyannote", "onnx", "sortformer"], key: "live.diarizationEngine")))
-        size(source, width: 314, height: 306)
+        source.heightAnchor.constraint(equalToConstant: 306).isActive = true
 
         let recorder = card("Запись")
         let recorderBody = contentStack(recorder)
@@ -1479,7 +1505,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         stop.identifier = NSUserInterfaceItemIdentifier("live.stop")
         liveStopButton = stop
         recorderBody.addArrangedSubview(centered(horizontal([start, pause, stop], spacing: 8)))
-        size(recorder, width: 262, height: 306)
+        recorder.heightAnchor.constraint(equalToConstant: 306).isActive = true
 
         let parameters = card("Параметры", dense: true)
         let parametersBody = contentStack(parameters)
@@ -1508,11 +1534,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         parametersBody.addArrangedSubview(compactField("Папка сессий", control: folder))
         size(parameters, width: 270, height: 306)
         content.addArrangedSubview(horizontal([source, recorder, parameters], spacing: 16))
+        // Source and recorder share the width left after the fixed parameters card.
+        recorder.widthAnchor.constraint(equalTo: source.widthAnchor).isActive = true
 
         let transcript = card("Live transcript")
         let transcriptBody = contentStack(transcript)
         transcriptBody.spacing = 10
-        let editor = textEditor("", key: nil, height: 220)
+        let editor = stretchy(textEditor("", key: nil, height: nil, minHeight: 120))
         liveTranscriptView = editor.documentView as? NSTextView
         liveTranscriptView?.isEditable = false
         liveTranscriptView?.identifier = NSUserInterfaceItemIdentifier("live.transcript")
@@ -1531,15 +1559,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         cancelAsk.identifier = NSUserInterfaceItemIdentifier("live.askCancel")
         cancelAsk.widthAnchor.constraint(equalToConstant: 120).isActive = true
         transcriptBody.addArrangedSubview(horizontal([question, ask, cancelAsk], spacing: 12))
-        let answer = textEditor(liveAnswerText, key: nil, height: 110)
+        let answer = textEditor(liveAnswerText, key: nil, height: 96)
         liveAnswerView = answer.documentView as? NSTextView
         liveAnswerView?.isEditable = false
         liveAnswerView?.identifier = NSUserInterfaceItemIdentifier("live.answer")
         liveAnswerView?.setAccessibilityLabel(L10n.text("Ответ ассистента"))
         transcriptBody.addArrangedSubview(answer)
-        transcript.widthAnchor.constraint(equalToConstant: 878).isActive = true
         transcriptBody.bottomAnchor.constraint(equalTo: transcript.bottomAnchor, constant: -16).isActive = true
-        content.addArrangedSubview(transcript)
+        content.addArrangedSubview(stretchy(transcript))
         refreshLiveControls()
         refreshLiveClock()
     }
@@ -1582,14 +1609,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshLLMProviderStatus()
         refreshLLMTools(fresh: false)
         sourceBody.addArrangedSubview(label("Транскрипция · можно вставить текст", size: 12, color: Palette.body))
-        let editor = textEditor(defaults.string(forKey: "llm.source") ?? "", key: "llm.source", height: 180)
+        let editor = textEditor(defaults.string(forKey: "llm.source") ?? "", key: "llm.source", height: nil, minHeight: 120)
+        stretchy(editor)
         transcriptEditor = editor.documentView as? NSTextView
         transcriptEditor?.setAccessibilityLabel(L10n.text("Исходная транскрипция"))
         sourceBody.addArrangedSubview(editor)
-        let sourceNote = wrappedLabel("Текст и параметры сохраняются на этом Mac.", size: 12, color: Palette.muted)
-        sourceNote.heightAnchor.constraint(equalToConstant: 38).isActive = true
-        sourceBody.addArrangedSubview(sourceNote)
-        source.widthAnchor.constraint(equalToConstant: 878).isActive = true
+        sourceBody.addArrangedSubview(wrappedLabel("Текст и параметры сохраняются на этом Mac.", size: 12, color: Palette.muted))
         sourceBody.bottomAnchor.constraint(equalTo: source.bottomAnchor, constant: -16).isActive = true
 
         let templates = card("Шаблоны")
@@ -1599,7 +1624,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         templatesBody.addArrangedSubview(template("Извлечение задач", "Выделить action items"))
         templatesBody.addArrangedSubview(template("Свой промпт", "Использовать инструкцию"))
         templatesBody.addArrangedSubview(wrappedLabel("Пользовательский промпт", size: 12, color: Palette.muted))
-        let prompt = textEditor(defaults.string(forKey: "llm.prompt") ?? "", key: "llm.prompt", height: 140)
+        let prompt = textEditor(defaults.string(forKey: "llm.prompt") ?? "", key: "llm.prompt", height: nil, minHeight: 90)
+        stretchy(prompt)
         promptEditor = prompt.documentView as? NSTextView
         promptEditor?.setAccessibilityLabel(L10n.text("Пользовательский промпт"))
         templatesBody.addArrangedSubview(prompt)
@@ -1609,19 +1635,21 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let cancel = button("Отменить запрос", action: #selector(cancelLLM(_:)), height: 44)
         cancel.identifier = NSUserInterfaceItemIdentifier("llm.cancel")
         llmCancelButton = cancel
-        templatesBody.addArrangedSubview(equalColumns([run, cancel], spacing: 12))
+        // Stacked: the side column is too narrow for both titles in one row.
+        templatesBody.addArrangedSubview(vertical([run, cancel], spacing: 10))
         let status = wrappedLabel("", size: 12, color: Palette.muted)
         status.identifier = NSUserInterfaceItemIdentifier("llm.status")
         status.maximumNumberOfLines = 3
         llmStatusLabel = status
         templatesBody.addArrangedSubview(status)
-        templates.widthAnchor.constraint(equalToConstant: 878).isActive = true
+        templates.widthAnchor.constraint(equalToConstant: 320).isActive = true
         templatesBody.bottomAnchor.constraint(equalTo: templates.bottomAnchor, constant: -16).isActive = true
 
         let output = card("Результат")
         let outputBody = contentStack(output)
         outputBody.spacing = 12
-        let result = textEditor(llmResultText.isEmpty ? L10n.text("Ответа пока нет. Здесь появится результат запроса к выбранному провайдеру.") : llmResultText, key: nil, height: 220)
+        let result = textEditor(llmResultText.isEmpty ? L10n.text("Ответа пока нет. Здесь появится результат запроса к выбранному провайдеру.") : llmResultText, key: nil, height: nil, minHeight: 120)
+        stretchy(result)
         llmResultView = result.documentView as? NSTextView
         llmResultView?.isEditable = false
         llmResultView?.identifier = NSUserInterfaceItemIdentifier("llm.result")
@@ -1634,11 +1662,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         save.identifier = NSUserInterfaceItemIdentifier("llm.save")
         llmSaveButton = save
         outputBody.addArrangedSubview(equalColumns([copy, save], spacing: 12))
-        output.widthAnchor.constraint(equalToConstant: 878).isActive = true
         outputBody.bottomAnchor.constraint(equalTo: output.bottomAnchor, constant: -16).isActive = true
-        content.addArrangedSubview(source)
-        content.addArrangedSubview(templates)
-        content.addArrangedSubview(output)
+        content.addArrangedSubview(stretchy(fillRow([vertical([stretchy(source), stretchy(output)], spacing: 16), templates], spacing: 16)))
+        // Both editors of the left column grow; equal heights split the extra room.
+        result.heightAnchor.constraint(equalTo: editor.heightAnchor).isActive = true
         refreshLLMControls()
     }
 
@@ -1660,11 +1687,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         body.addArrangedSubview(language)
         let code = codeView(apiExample(language.selectedSegment))
         apiCodeText = code.documentView as? NSTextView
-        code.heightAnchor.constraint(equalToConstant: 330).isActive = true
+        code.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        stretchy(code)
         body.addArrangedSubview(code)
         body.addArrangedSubview(horizontal([button("Копировать пример", action: #selector(copyCode(_:))), flexibleSpace()], spacing: 12))
         body.addArrangedSubview(wrappedLabel("Пример запроса, не ответ сервера. Этот клиент не запускает API.", size: 12, color: Palette.muted))
-        size(examples, width: 570, height: 640)
+        body.bottomAnchor.constraint(equalTo: examples.bottomAnchor, constant: -16).isActive = true
         let docs = card("Документация")
         for title in ["Быстрый старт", "Эндпоинты", "Параметры", "Примеры", "Форматы ответов", "Скачать OpenAPI (JSON)"] {
             let row = documentationRow(title)
@@ -1674,8 +1702,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             }
             contentStack(docs).addArrangedSubview(row)
         }
-        size(docs, width: 292, height: 640)
-        content.addArrangedSubview(horizontal([examples, docs], spacing: 16))
+        docs.widthAnchor.constraint(equalToConstant: 292).isActive = true
+        content.addArrangedSubview(stretchy(fillRow([examples, docs], spacing: 16)))
     }
 
     private func buildHistory(into content: NSStackView) {
@@ -1707,7 +1735,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         toolbar.alignment = .centerY
         body.addArrangedSubview(toolbar)
         body.addArrangedSubview(divider())
-        body.addArrangedSubview(columnHeadings([("Файл", 306), ("Длительность", 140), ("Статус", 134), ("Дата", 180)]))
+        let columns: [(String, CGFloat?)] = [("Файл", nil), ("Длительность", 140), ("Статус", 134), ("Дата", 180)]
+        body.addArrangedSubview(columnHeadings(columns))
         body.addArrangedSubview(divider())
         let table = NSTableView()
         table.headerView = nil
@@ -1716,17 +1745,19 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         table.intercellSpacing = NSSize(width: 12, height: 0)
         table.gridStyleMask = .solidHorizontalGridLineMask
         table.gridColor = Palette.line.withAlphaComponent(0.65)
-        for (title, width) in [("Файл", 306.0), ("Длительность", 140.0), ("Статус", 134.0), ("Дата", 180.0)] {
+        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        for (title, width) in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(title))
             column.title = L10n.text(title)
-            column.width = width
+            column.width = width ?? 240
+            if width != nil { column.resizingMask = [] }
             table.addTableColumn(column)
         }
         table.setAccessibilityLabel(L10n.text("История обработок: записей нет"))
         let tableScroll = NSScrollView()
         tableScroll.drawsBackground = false
         tableScroll.documentView = table
-        tableScroll.heightAnchor.constraint(equalToConstant: 388).isActive = true
+        tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
         let tableArea = NSView()
         embed(tableScroll, in: tableArea, inset: 0, fillHeight: true)
         let note = wrappedLabel("История пуста. Завершённые обработки появятся здесь.", size: 14, color: Palette.body)
@@ -1737,10 +1768,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             note.trailingAnchor.constraint(equalTo: tableArea.trailingAnchor),
             note.topAnchor.constraint(equalTo: tableArea.topAnchor, constant: 16)
         ])
-        body.addArrangedSubview(tableArea)
+        body.addArrangedSubview(stretchy(tableArea))
         body.addArrangedSubview(label("0 записей", size: 12, color: Palette.muted))
-        size(history, width: 878, height: 640)
-        content.addArrangedSubview(history)
+        body.bottomAnchor.constraint(equalTo: history.bottomAnchor, constant: -16).isActive = true
+        content.addArrangedSubview(stretchy(history))
     }
 
     private func buildSettings(into content: NSStackView) {
@@ -1754,11 +1785,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             rail.addArrangedSubview(settingsCategoryButton(name, selected: name == selected))
         }
         embed(rail, in: categories.contentView, inset: 18, top: 30)
-        size(categories, width: 260, height: 652)
+        categories.widthAnchor.constraint(equalToConstant: 260).isActive = true
         let detail = NSView()
-        size(detail, width: 602, height: 652)
         settingsDetail = detail
-        content.addArrangedSubview(horizontal([categories, detail], spacing: 16))
+        content.addArrangedSubview(stretchy(fillRow([categories, detail], spacing: 16)))
         applySettingsCategorySelection(selected)
     }
 
@@ -1836,7 +1866,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             let rescan = button("Пересканировать", action: #selector(rescanLLMTools(_:)), height: 30)
             rescan.setAccessibilityIdentifier("llm.rescan")
             llmRescanButton = rescan
-            body.addArrangedSubview(horizontal([label("Инструменты", size: 17, weight: .medium, color: Palette.ink), rescan], spacing: 12))
+            body.addArrangedSubview(horizontal([label("Инструменты", size: 17, weight: .medium, color: Palette.ink), flexibleSpace(), rescan], spacing: 12))
             body.addArrangedSubview(wrappedLabel("Пустой путь — автопоиск по PATH и типичным каталогам (homebrew, npm, bun, nvm). Приложение из Finder не видит PATH терминала — поиск ведёт Python-сервис.", size: 12, color: Palette.muted))
             llmToolRows = [:]
             for tool in Self.llmCliProviders {
@@ -1903,19 +1933,16 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(centered(button("Проект на GitHub", action: #selector(openProject(_:)))))
         default: break
         }
-        if category == "LLM" {
-            // The tools table plus per-provider fields outgrow the fixed 652 pt detail
-            // panel; scroll the body instead of squeezing the rows into each other.
-            embed(scrollable(body, width: 602 - 48), in: surface.contentView, inset: 24, fillHeight: true)  // 24 + 6 pt body inset = the 30 pt other pages use
-        } else {
-            embed(body, in: surface.contentView, inset: 30)
-        }
+        // The panel is as tall as the window allows; a body taller than that (the LLM
+        // tools table, or any page in a short window) scrolls inside the panel
+        // instead of stretching the page. 24 + 6 pt body inset = 30 pt.
+        embed(scrollable(body), in: surface.contentView, inset: 24, fillHeight: true)
         return surface
     }
 
     /// A transparent, vertically scrolling wrapper for a settings body that may be
     /// taller than its panel. Outer page scrolling takes over at either end.
-    private func scrollable(_ body: NSStackView, width: CGFloat) -> NSScrollView {
+    private func scrollable(_ body: NSStackView, inset: CGFloat = 6) -> NSScrollView {
         // Auto Layout document: its height follows the stack, so the scroll view
         // knows the real content height without a manual layout pass.
         let document = AutoLayoutDocumentView()
@@ -1934,10 +1961,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             // The focus ring is drawn ~4 pt outside a field; fields flush with the
             // document edge would have it clipped by the scroll view's clip view.
-            body.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 6),
-            body.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -6),
-            body.topAnchor.constraint(equalTo: document.topAnchor, constant: 6),
-            body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -6)
+            body.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: inset),
+            body.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -inset),
+            body.topAnchor.constraint(equalTo: document.topAnchor, constant: inset),
+            body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -inset)
         ])
         return scroll
     }
@@ -1963,6 +1990,35 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         stack.setContentCompressionResistancePriority(.required, for: .vertical)
         for view in views { stack.addArrangedSubview(view) }
         return stack
+    }
+
+    /// Marks the part of a stack that takes the height left over. A stack gives it
+    /// to the arranged view with the lowest vertical hugging; cards and labels all
+    /// sit at 250, so without this mark the extra room went to whichever won the tie
+    /// (a status label under the buttons, the gap under the Live controls). Mark
+    /// every level on the way down: the row in the page, the card in its column,
+    /// the editor or list in its card.
+    @discardableResult
+    private func stretchy<View: NSView>(_ view: View) -> View {
+        view.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        // A card's glass effect view hosts SwiftUI content that hugs its own height
+        // at 250; relax it too, or the card resists growing as much as a label does.
+        if let glass = view as? GlassView {
+            var pending = glass.subviews.filter { $0 !== glass.contentView }
+            while let next = pending.popLast() {
+                next.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+                pending += next.subviews.filter { $0 !== glass.contentView }
+            }
+        }
+        return view
+    }
+
+    /// Columns that all take the row's full height: with one column (or a card in
+    /// it) left without a fixed height, that part stretches with the window.
+    private func fillRow(_ views: [NSView], spacing: CGFloat) -> NSStackView {
+        let row = horizontal(views, spacing: spacing)
+        for view in views { view.heightAnchor.constraint(equalTo: row.heightAnchor).isActive = true }
+        return row
     }
 
     private func equalColumns(_ views: [NSView], spacing: CGFloat) -> NSStackView {
@@ -2021,13 +2077,25 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return field
     }
 
-    private func columnHeadings(_ columns: [(String, CGFloat)]) -> NSView {
-        let labels = columns.map { title, width -> NSView in
+    /// A `nil` width marks the column that takes the remaining width; rows built
+    /// with the same widths line up under the headings.
+    private func columnHeadings(_ columns: [(String, CGFloat?)], trailing: CGFloat = 0) -> NSView {
+        var views = columns.map { title, width -> NSView in
             let text = label(title, size: 12, color: Palette.muted)
-            text.widthAnchor.constraint(equalToConstant: width).isActive = true
+            if let width {
+                text.widthAnchor.constraint(equalToConstant: width).isActive = true
+            } else {
+                text.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
+            }
             return text
         }
-        return horizontal(labels + [flexibleSpace()], spacing: 8)
+        if trailing > 0 {
+            let slot = NSView()
+            slot.widthAnchor.constraint(equalToConstant: trailing).isActive = true
+            views.append(slot)
+        }
+        if !columns.contains(where: { $0.1 == nil }) { views.append(flexibleSpace()) }
+        return horizontal(views, spacing: 8)
     }
 
     private func symbol(_ name: String, size: CGFloat) -> NSImageView {
@@ -2055,7 +2123,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return control
     }
 
-    private func textEditor(_ value: String, key: String?, height: CGFloat?) -> NSScrollView {
+    /// `minHeight` instead of `height` makes the editor the stretchy part of its card.
+    private func textEditor(_ value: String, key: String?, height: CGFloat?, minHeight: CGFloat? = nil) -> NSScrollView {
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 280, height: height ?? 330))
         text.string = value
         text.isRichText = false
@@ -2088,6 +2157,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         scroll.contentView.drawsBackground = true
         scroll.contentView.backgroundColor = scroll.backgroundColor
         if let height { scroll.heightAnchor.constraint(equalToConstant: height).isActive = true }
+        if let minHeight { scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: minHeight).isActive = true }
         return scroll
     }
 
@@ -2299,7 +2369,6 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         progressStatus = status
         let body = vertical([row, status], spacing: 8)
         embed(body, in: view.contentView, inset: 20)
-        view.widthAnchor.constraint(equalToConstant: 878).isActive = true
         body.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20).isActive = true
         refreshProgress()
         return view
@@ -3434,8 +3503,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         check.identifier = NSUserInterfaceItemIdentifier("llm.check.\(tool.name)")
         check.setContentCompressionResistancePriority(.required, for: .horizontal)
         llmToolRows[tool.name] = (dot: dot, version: version, path: path, check: check)
-        let row = horizontal([dot, name, version, path, browse, check], spacing: 8)
-        row.alignment = .centerY
+        // The path gets a line of its own: beside five fixed-width controls it was
+        // squeezed to a sliver once the settings panel follows the window width.
+        let header = horizontal([dot, name, version, flexibleSpace(), browse, check], spacing: 8)
+        header.alignment = .centerY
+        let row = vertical([header, path], spacing: 6)
         row.setAccessibilityIdentifier("llm.tool.\(tool.name)")
         return row
     }
@@ -3618,20 +3690,21 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// Колонки списка выбранных файлов: номер, имя, состояние. Оставляем место
     /// справа для кнопки удаления, не смещая состояние относительно заголовка.
-    private var selectedFileColumns: [(String, CGFloat)] { [("№", 28), ("Файл", 286), ("Состояние", 200)] }
+    /// The name column takes whatever width the card has.
+    private var selectedFileColumns: [(String, CGFloat?)] { [("№", 28), ("Файл", nil), ("Состояние", 200)] }
+    private static let selectedFileRemoveWidth: CGFloat = 22
 
     private func selectedFileRow(index: Int, url: URL) -> NSView {
-        let widths = selectedFileColumns.map(\.1)
         let number = label("\(index + 1).", size: 14, color: Palette.muted)
         number.alignment = .right
-        number.widthAnchor.constraint(equalToConstant: widths[0]).isActive = true
+        number.widthAnchor.constraint(equalToConstant: selectedFileColumns[0].1 ?? 0).isActive = true
         let name = label(url.lastPathComponent, size: 14, color: Palette.body)
         name.lineBreakMode = .byTruncatingMiddle
         name.toolTip = url.path
-        name.widthAnchor.constraint(equalToConstant: widths[1]).isActive = true
+        name.setContentHuggingPriority(.defaultLow - 1, for: .horizontal)
         let stateText = fileStates[url.standardizedFileURL] ?? "выбран, не обработан"
         let state = label(stateText, size: 14, color: stateText == "Ошибка" ? Palette.ink : Palette.body)
-        state.widthAnchor.constraint(equalToConstant: widths[2]).isActive = true
+        state.widthAnchor.constraint(equalToConstant: selectedFileColumns[2].1 ?? 0).isActive = true
         let remove = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: nil) ?? NSImage(),
                               target: self, action: #selector(removeSelectedFile(_:)))
         remove.isBordered = false
@@ -3643,9 +3716,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         remove.isEnabled = !isClosing && transcriptionJob == nil && mediaDownloadJob == nil && liveJob == nil
         remove.setAccessibilityLabel(L10n.text("Убрать файл") + ": " + url.lastPathComponent)
         remove.toolTip = L10n.text("Убрать файл")
-        remove.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        remove.widthAnchor.constraint(equalToConstant: Self.selectedFileRemoveWidth).isActive = true
         remove.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        let row = horizontal([number, name, state, remove, flexibleSpace()], spacing: 8)
+        let row = horizontal([number, name, state, remove], spacing: 8)
         row.alignment = .centerY
         row.setAccessibilityLabel("\(index + 1). \(url.lastPathComponent) — \(L10n.text(stateText))")
         return row
