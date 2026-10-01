@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import threading
 
 import numpy as np
 import pytest
@@ -205,6 +206,96 @@ def test_live_ask_streams_answer_and_records_turn(service):
     answer = [m for m in messages if m["type"] == "live_answer"][-1]
     assert answer["status"] == "complete" and answer["text"] == "в пять"
     assert svc.session.conversation()[0].answer == "в пять"
+
+
+def test_repeated_pause_or_resume_is_an_error_not_a_dead_worker(service):
+    """A double click on Pause raised out of the worker loop and killed the process."""
+    svc, output, tmp_path = service
+    _start(svc, tmp_path)
+
+    svc.pause()
+    svc.pause()
+    svc.resume()
+    svc.resume()
+
+    errors = [m["message"] for m in _messages(output) if m["type"] == "error"]
+    assert len(errors) == 2
+    assert svc.session.status().state is CaptureState.RECORDING
+
+
+def test_live_status_names_the_session_folder_from_the_start(service):
+    """Clients show where the transcript goes while recording, not only after stop."""
+    svc, output, tmp_path = service
+    _start(svc, tmp_path)
+
+    status = [m for m in _messages(output) if m["type"] == "live_status"][-1]
+    assert status["session_dir"] == str(svc.session.session_dir)
+    assert svc.session.session_dir.parent == tmp_path
+
+
+def test_live_start_without_a_root_uses_the_default_folder(service, monkeypatch, tmp_path):
+    svc, output, _ = service
+    monkeypatch.setenv("HOME", str(tmp_path))
+    svc.start({"type": "live_start", "sources": ["mic"]})
+
+    assert svc.session.session_dir.parent == tmp_path / "Documents" / "GigaAM" / "live"
+
+
+def test_live_start_warms_the_model_before_the_first_phrase(tmp_path):
+    """The model used to load inside the first decode, so the first phrase paid for it."""
+    loaded = threading.Event()
+
+    class Loader:
+        def is_loaded(self):
+            return loaded.is_set()
+
+        def load_model(self, logger=None):
+            loaded.set()
+            return True
+
+        def transcribe_window(self, audio, sample_rate, offset_samples):
+            return []
+
+    messages = []
+    svc = LiveWorkerService(
+        lambda message_type, **payload: messages.append((message_type, payload, loaded.is_set())),
+        model_loader_factory=lambda command: Loader(),
+    )
+    svc.start({"type": "live_start", "session_root": str(tmp_path), "sources": ["mic"]})
+    try:
+        assert loaded.is_set(), "no audio was sent, yet the model must already be loaded"
+        kinds = [kind for kind, _payload, _loaded in messages]
+        assert kinds.index("live_loading") < kinds.index("live_status")
+        # Recording is announced only once the model is ready, so the client
+        # starts capturing when speech can actually be recognised.
+        recording = next(item for item in messages if item[0] == "live_status")
+        assert recording[1]["state"] == "recording" and recording[2] is True
+    finally:
+        svc.stop()
+
+
+def test_live_start_reports_a_model_that_cannot_load_instead_of_recording(tmp_path):
+    class Loader:
+        def is_loaded(self):
+            return False
+
+        def load_model(self, logger=None):
+            return False
+
+        def diagnostics(self):
+            return {"error": "no weights"}
+
+    messages = []
+    svc = LiveWorkerService(
+        lambda message_type, **payload: messages.append((message_type, payload)),
+        model_loader_factory=lambda command: Loader(),
+    )
+    svc.start({"type": "live_start", "session_root": str(tmp_path), "sources": ["mic"]})
+
+    assert not svc.is_running()
+    assert [kind for kind, _payload in messages] == ["live_loading", "error"]
+    assert "no weights" in messages[-1][1]["message"]
+    assert list(tmp_path.iterdir()) == [], "no empty session folder is left behind"
 
 
 def test_live_ask_without_session_or_transcript_errors(service):

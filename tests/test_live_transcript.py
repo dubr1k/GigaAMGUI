@@ -114,3 +114,34 @@ def test_presenter_recognizes_unicode_and_quoted_sentence_endings(text, sentence
     assert presenter.add_final(_event(text)) is True
     assert presenter.active_text == ""
     assert presenter.paragraphs[0].sentences == sentences
+
+
+def _show(presenter, event):
+    """Mimic the append-only widget: returns what is on screen afterwards."""
+    delta = presenter.add_event(event)
+    if delta:
+        presenter.rendered_delta(event, delta)
+    return "\n".join(presenter.rendered_pieces())
+
+
+def test_corrected_final_replaces_the_words_already_on_screen():
+    """The widget kept «привет как у тебя» and appended the final after it."""
+    presenter = LiveTranscriptPresenter()
+    other = replace(_event("Слушаю", event_id="sys", source=CaptureSource.SYSTEM), status="partial")
+
+    _show(presenter, replace(_event("привет как у тебя", event_id="one"), status="partial"))
+    _show(presenter, other)
+    screen = _show(presenter, _event("Привет, как у тебя дела?", event_id="one"))
+
+    assert presenter.rewrote is True
+    assert screen == "MIC: Привет, как у тебя дела?\nSYSTEM: Слушаю"
+
+
+def test_final_extending_the_screen_is_appended_without_a_rewrite():
+    presenter = LiveTranscriptPresenter()
+
+    _show(presenter, replace(_event("One two three four", event_id="one"), status="partial"))
+    screen = _show(presenter, _event("One two three four five.", event_id="one"))
+
+    assert presenter.rewrote is False
+    assert screen == "MIC: One two three four\nfive."

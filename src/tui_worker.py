@@ -382,7 +382,12 @@ def main() -> int:
             if "_invalid" in command:
                 worker.emit("error", message=command["_invalid"])
                 continue
-            worker.handle(command)
+            # One failing command must not take the worker down with it: a
+            # live session dies with it, unexported and with its FLAC unclosed.
+            try:
+                worker.handle(command)
+            except Exception as exc:
+                worker.emit("error", message=f"{command.get('type', 'command')} failed: {exc}")
     finally:
         worker.close()
     return 0

@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 
 from src.live.asr_backend import LazyModelBackend
@@ -38,6 +41,50 @@ def test_lazy_backend_raises_with_diagnostics_when_load_fails():
 
     with pytest.raises(RuntimeError, match="load failed: no weights"):
         backend.transcribe_window(b"", 16_000, 0)
+
+
+class SlowLoader(FakeLoader):
+    def __init__(self):
+        super().__init__(loads=True)
+        self.loads = 0
+
+    def load_model(self, logger=None):
+        self.loads += 1
+        time.sleep(0.05)
+        return super().load_model(logger)
+
+
+def test_warm_up_loads_the_model_and_runs_one_decode():
+    loader = SlowLoader()
+    backend = LazyModelBackend(loader, "load failed")
+
+    backend.warm_up()
+
+    assert loader.loads == 1
+    assert len(loader.calls) == 1
+
+
+def test_warm_up_failure_is_left_for_the_first_window_to_report():
+    backend = LazyModelBackend(FakeLoader(loads=False), "load failed")
+
+    backend.warm_up()
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        backend.transcribe_window(b"", 16_000, 0)
+
+
+def test_concurrent_first_windows_load_the_model_once():
+    """Mic and system schedulers share one backend; both used to start a load."""
+    loader = SlowLoader()
+    backend = LazyModelBackend(loader, "load failed")
+    threads = [threading.Thread(target=backend.transcribe_window, args=(b"", 16_000, 0)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    backend.warm_up()
+    for thread in threads:
+        thread.join()
+
+    assert loader.loads == 1
 
 
 def test_gui_no_longer_defines_private_backend():

@@ -54,21 +54,57 @@ class _Hypothesis:
     words: list[str]
 
 
+FRAME_SAMPLES = 320
+"""The gate decides per 20 ms frame at 16 kHz, whatever size the capture chunks are."""
+PRE_ROLL_SAMPLES = 4_800
+"""Audio kept ahead of the gate so a run starts before the first loud frame.
+
+Word onsets (unvoiced consonants, a quiet first syllable) sit below the attack
+threshold; without pre-roll the decoder never heard them."""
+PAUSE_PARTIAL_SECONDS = 0.4
+"""A pause this long shows the phrase as a draft instead of waiting for the final."""
+MIN_SPEECH_SAMPLES = 3_200
+"""Voiced audio a run needs before its text is published (0.2 s).
+
+It used to be a full second of voiced 100 ms chunks plus at least two words,
+which silently dropped every short phrase: «Привет! Как у тебя дела?» from a
+quiet microphone measured 0.4 s and was decoded correctly, then discarded."""
+
+
 class _EnergyGate:
-    """Adapt to the room floor without treating low-level noise as speech."""
+    """Adapt to the room floor without treating low-level noise as speech.
+
+    Deciding per chunk averaged a syllable with the quiet around it: GigaAM
+    Liquid sends 100 ms chunks, and a quiet speaker's 40 ms syllable at RMS
+    0.02 came out near 0.013 — below the attack threshold — so whole phrases
+    never opened a run. Frames make the gate independent of chunk size.
+    """
+
+    # Per-frame smoothing that keeps the ~2 s floor time constant the gate had
+    # with 100 ms chunks (0.95 per chunk ≈ 0.99 per 20 ms frame).
+    _FLOOR_ALPHA = 0.01
 
     def __init__(self) -> None:
         self._noise_floor = 0.001
         self._active = False
 
-    def is_voiced(self, audio: np.ndarray) -> bool:
-        rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
-        attack = max(0.015, self._noise_floor * 4)
-        release = max(0.010, self._noise_floor * 2.5)
-        self._active = rms >= (release if self._active else attack)
-        if not self._active:
-            self._noise_floor = self._noise_floor * 0.95 + rms * 0.05
-        return self._active
+    def voiced_samples(self, audio: np.ndarray) -> int:
+        voiced = 0
+        for start in range(0, len(audio), FRAME_SAMPLES):
+            frame = audio[start:start + FRAME_SAMPLES]
+            rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64))))
+            attack = max(0.015, self._noise_floor * 4)
+            release = max(0.010, self._noise_floor * 2.5)
+            self._active = rms >= (release if self._active else attack)
+            if self._active:
+                voiced += len(frame)
+            else:
+                self._noise_floor += (rms - self._noise_floor) * self._FLOOR_ALPHA
+        return voiced
+
+
+def _normalize_word(word: str) -> str:
+    return word.casefold().strip(".,!?;:…-–—«»\"'()")
 
 
 class LiveAsrScheduler:
@@ -102,6 +138,7 @@ class LiveAsrScheduler:
         self._on_error = on_error
         self._runs: dict[CaptureSource, _SpeechRun] = {}
         self._energy_gates: dict[CaptureSource, _EnergyGate] = {}
+        self._pre_roll: dict[CaptureSource, deque[np.ndarray]] = {}
         self._final_jobs: deque[_Job] = deque()
         self._partial_job: _Job | None = None
         self._partial_revisions: dict[str, int] = {}
@@ -126,24 +163,27 @@ class LiveAsrScheduler:
         if chunk.sample_rate != 16_000 or chunk.channels != 1:
             raise ValueError("live ASR requires derived 16 kHz mono chunks")
         audio = chunk.frames[:, 0]
-        voiced = self._energy_gates.setdefault(chunk.source, _EnergyGate()).is_voiced(audio)
+        voiced = self._energy_gates.setdefault(chunk.source, _EnergyGate()).voiced_samples(audio)
         with self._condition:
             if self._closed:
                 raise RuntimeError("scheduler is closed")
             run = self._runs.get(chunk.source)
             if voiced:
                 if run is None:
-                    run = _SpeechRun(chunk.sample_offset, chunk.sample_offset, [])
+                    pre_roll = self._take_pre_roll(chunk.source)
+                    run = _SpeechRun(
+                        chunk.sample_offset - len(pre_roll),
+                        chunk.sample_offset,
+                        [pre_roll] if len(pre_roll) else [],
+                    )
                     self._runs[chunk.source] = run
                 run.audio.append(audio.copy())
                 run.end = chunk.sample_offset + len(audio)
-                run.voiced_samples += len(audio)
+                run.voiced_samples += voiced
                 run.silence_start = None
                 run.silence_samples = 0
                 if self._should_refresh_partial(run, chunk.sample_rate):
-                    self._partial_job = self._job(chunk.source, run, is_final=False)
-                    run.last_partial_end = run.end
-                    self._condition.notify()
+                    self._schedule_partial(chunk.source, run)
             elif run is not None:
                 run.audio.append(audio.copy())
                 run.end = chunk.sample_offset + len(audio)
@@ -156,6 +196,15 @@ class LiveAsrScheduler:
                     )
                     del self._runs[chunk.source]
                     self._condition.notify()
+                elif (
+                    run.silence_samples >= PAUSE_PARTIAL_SECONDS * chunk.sample_rate
+                    and (run.last_partial_end is None or run.last_partial_end <= run.silence_start)
+                ):
+                    # A phrase shorter than the partial cadence would otherwise
+                    # stay invisible until the final, seconds after it ended.
+                    self._schedule_partial(chunk.source, run)
+            else:
+                self._keep_pre_roll(chunk.source, audio)
 
     def flush(self) -> None:
         with self._condition:
@@ -184,6 +233,24 @@ class LiveAsrScheduler:
     def pending_jobs(self) -> int:
         with self._condition:
             return len(self._final_jobs) + (0 if self._partial_job is None else 1)
+
+    def _schedule_partial(self, source: CaptureSource, run: _SpeechRun) -> None:
+        self._partial_job = self._job(source, run, is_final=False)
+        run.last_partial_end = run.end
+        self._condition.notify()
+
+    def _keep_pre_roll(self, source: CaptureSource, audio: np.ndarray) -> None:
+        buffered = self._pre_roll.setdefault(source, deque())
+        buffered.append(audio.copy())
+        total = sum(len(part) for part in buffered)
+        while buffered and total - len(buffered[0]) >= PRE_ROLL_SAMPLES:
+            total -= len(buffered.popleft())
+
+    def _take_pre_roll(self, source: CaptureSource) -> np.ndarray:
+        buffered = self._pre_roll.pop(source, None)
+        if not buffered:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(buffered)[-PRE_ROLL_SAMPLES:]
 
     def _should_refresh_partial(self, run: _SpeechRun, sample_rate: int) -> bool:
         if run.end - run.start < self._partial_minimum_seconds * sample_rate:
@@ -251,13 +318,13 @@ class LiveAsrScheduler:
             return
         if not self._has_acceptable_confidence(segments):
             return
-        # A phrase shorter than the partial cadence never schedules a partial,
-        # so requiring one here dropped every brief utterance outright.
-        if job.is_final and (job.voiced_samples < 16_000 or len(text.split()) < 2):
+        # Partials pass the same bar as finals: a draft whose final is then
+        # rejected would otherwise stay on screen with nothing to replace it.
+        if job.voiced_samples < MIN_SPEECH_SAMPLES:
             return
         event_id = f"{job.source.value}-{job.event_start}"
         if not job.is_final:
-            text = self._reconcile_partial(event_id, text)
+            text = self._reconcile_partial(event_id, text, trimmed=job.start > job.event_start)
         else:
             self._partial_hypotheses.pop(event_id, None)
         revision = self._partial_revisions.get(event_id, -1) + 1
@@ -278,51 +345,90 @@ class LiveAsrScheduler:
         if callback is not None:
             callback(event)
 
-    def _reconcile_partial(self, event_id: str, text: str) -> str:
+    def _reconcile_partial(self, event_id: str, text: str, *, trimmed: bool) -> str:
+        """Merge a new draft with the previous one for the same run.
+
+        Words are compared without case and punctuation. Comparing them raw
+        made «тебя?» → «тебя дела?» look like a contradiction, and the merge
+        appended the new tail after the old one: «Как у тебя? тебя дела?».
+        """
         incoming = text.split()
         hypothesis = self._partial_hypotheses.get(event_id)
         if hypothesis is None:
             self._partial_hypotheses[event_id] = _Hypothesis([], incoming)
             return text
 
+        if trimmed:
+            # The window slid past the start of the run: the decode no longer
+            # contains the first words, so splice it onto where it begins.
+            # Without an anchor there is no safe place to splice, and a frozen
+            # draft is better than a duplicated one; the final replaces it.
+            anchor = self._anchor(hypothesis.words, incoming)
+            if anchor is None:
+                return " ".join(hypothesis.words)
+            position, skipped = anchor
+            committed = hypothesis.words[:position]
+            words = committed + incoming[skipped:]
+            self._partial_hypotheses[event_id] = _Hypothesis(committed, words)
+            return " ".join(words)
+
         common = self._common_prefix_length(hypothesis.words, incoming)
         if common >= len(hypothesis.committed):
-            committed = hypothesis.words[:common]
-            words = committed + incoming[common:]
+            committed = incoming[:common]
+            words = incoming
+        elif self._is_repeated_regression(incoming[common:]):
+            return " ".join(hypothesis.words)
         else:
-            overlap = self._suffix_prefix_overlap(hypothesis.words, incoming)
-            if overlap:
-                committed = hypothesis.words[:-overlap]
-                words = committed + incoming
-            elif self._is_repeated_regression(incoming[common:]):
-                return " ".join(hypothesis.words)
-            else:
-                committed = hypothesis.committed
-                words = committed + incoming[common:]
+            # The window still covers the whole run, so the newer decode has
+            # strictly more evidence than the old prefix.
+            committed = incoming[:common]
+            words = incoming
         self._partial_hypotheses[event_id] = _Hypothesis(committed, words)
         return " ".join(words)
+
+    @staticmethod
+    def _anchor(previous: list[str], incoming: list[str]) -> tuple[int, int] | None:
+        """Find where ``incoming`` starts inside ``previous``.
+
+        Returns (index in previous, words skipped at the front of incoming).
+        The window edge can cut a word in half, so the first word or two of
+        the incoming decode may be a fragment («занимаешься» for «Чем
+        занимаешься»); anchors start from the first, second or third word.
+        Among several matches the one nearest the expected position wins —
+        the new window starts roughly where the previous tail did.
+        """
+        # Bare punctuation tokens («—») carry no words and must not break a match.
+        before = [(index, norm) for index, word in enumerate(previous) if (norm := _normalize_word(word))]
+        after = [(index, norm) for index, word in enumerate(incoming) if (norm := _normalize_word(word))]
+        before_words = [norm for _, norm in before]
+        after_words = [norm for _, norm in after]
+        expected = max(0, len(before_words) - len(after_words))
+        for skipped in range(min(3, len(after_words))):
+            for size in (3, 2):
+                key = after_words[skipped:skipped + size]
+                if len(key) < size:
+                    continue
+                matches = [
+                    index for index in range(len(before_words) - size + 1)
+                    if before_words[index:index + size] == key
+                ]
+                if matches:
+                    best = min(matches, key=lambda index: abs(index - expected))
+                    return before[best][0], after[skipped][0]
+        return None
 
     @staticmethod
     def _common_prefix_length(left: list[str], right: list[str]) -> int:
         length = 0
         for previous, current in zip(left, right, strict=False):
-            if previous.casefold() != current.casefold():
+            if _normalize_word(previous) != _normalize_word(current):
                 break
             length += 1
         return length
 
     @staticmethod
-    def _suffix_prefix_overlap(previous: list[str], current: list[str]) -> int:
-        for length in range(min(len(previous), len(current)), 0, -1):
-            if [word.casefold() for word in previous[-length:]] == [
-                word.casefold() for word in current[:length]
-            ]:
-                return length
-        return 0
-
-    @staticmethod
     def _is_repeated_regression(words: list[str]) -> bool:
-        normalized = [word.casefold().strip(".,!?;:-") for word in words]
+        normalized = [_normalize_word(word) for word in words]
         return len(normalized) >= 2 and len(set(normalized)) == 1
 
     @staticmethod

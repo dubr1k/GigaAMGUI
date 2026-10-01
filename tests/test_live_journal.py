@@ -1,6 +1,7 @@
 import json
+from datetime import datetime
 
-from src.live.journal import EventJournal, LiveSessionStore
+from src.live.journal import EventJournal, LiveSessionStore, default_session_root
 from src.live.types import CaptureSource, LiveSettings, TranscriptEvent
 
 
@@ -44,3 +45,21 @@ def test_session_store_creates_metadata_and_atomically_replaces_checkpoint(tmp_p
     assert json.loads((session_dir / "metadata.json").read_text())["record_mix_audio"] is False
     assert json.loads((session_dir / "checkpoint.json").read_text()) == {"next_offset": 20}
     assert not list(session_dir.glob("*.tmp"))
+
+
+def test_session_folder_is_named_after_its_start_time(tmp_path):
+    """`session-9e6564f7…` told the user nothing about which recording it held."""
+    started = datetime(2026, 10, 1, 17, 21, 14)
+    store = LiveSessionStore(tmp_path, clock=lambda: started)
+
+    first = store.create(LiveSettings())
+    second = store.create(LiveSettings())
+
+    assert first.name == "2026-10-01_17-21-14"
+    assert second.name == "2026-10-01_17-21-14-2"
+
+
+def test_default_session_root_is_documents_gigaam_live(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert default_session_root() == tmp_path / "Documents" / "GigaAM" / "live"

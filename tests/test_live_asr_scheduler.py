@@ -262,3 +262,158 @@ def test_slow_decode_lengthens_refresh_within_configured_limit():
         assert scheduler.refresh_seconds == 1.5
     finally:
         scheduler.close()
+
+
+def quiet_room(offset: int, seconds: float, amplitude: float = 0.0005) -> PcmChunk:
+    rng = np.random.default_rng(offset)
+    frames = (rng.standard_normal((int(seconds * 16_000), 1)) * amplitude).astype(np.float32)
+    return PcmChunk(CaptureSource.MIC, 16_000, 1, offset, frames, 1)
+
+
+def quiet_syllables(offset: int, seconds: float) -> PcmChunk:
+    """Speech from a quiet microphone: 40 ms syllables at RMS 0.02 every 100 ms.
+
+    Each syllable clears the attack threshold, but averaged over a 100 ms
+    chunk (what GigaAM Liquid sends) the RMS is ~0.013 and never does.
+    """
+    samples = int(seconds * 16_000)
+    frames = np.full((samples, 1), 0.0005, dtype=np.float32)
+    for start in range(0, samples, 1600):
+        frames[start:start + 640] = 0.02
+    return PcmChunk(CaptureSource.MIC, 16_000, 1, offset, frames, 1)
+
+
+def submit_in_chunks(scheduler, chunk: PcmChunk, size: int = 1600) -> None:
+    for start in range(0, len(chunk.frames), size):
+        scheduler.submit(PcmChunk(
+            chunk.source, chunk.sample_rate, 1, chunk.sample_offset + start,
+            chunk.frames[start:start + size].copy(), chunk.timestamp_ns,
+        ))
+
+
+def test_short_quiet_phrase_in_100ms_chunks_is_published():
+    """A real session lost «Привет! Как у тебя дела?» this way: decoded, then dropped."""
+    backend = FakeBackend()
+    finals = []
+    scheduler = LiveAsrScheduler(backend=backend, on_final=finals.append)
+    try:
+        submit_in_chunks(scheduler, quiet_room(0, 2))
+        submit_in_chunks(scheduler, quiet_syllables(32_000, 0.8))
+        submit_in_chunks(scheduler, quiet_room(44_800, 3.2))
+
+        wait_until(lambda: finals)
+        assert finals[0].text == "recognized speech"
+    finally:
+        scheduler.close()
+
+
+def test_short_phrase_is_shown_as_a_partial_at_the_pause_before_the_final():
+    backend = FakeBackend()
+    partials = []
+    finals = []
+    scheduler = LiveAsrScheduler(backend=backend, on_partial=partials.append, on_final=finals.append)
+    try:
+        submit_in_chunks(scheduler, quiet_room(0, 1))
+        submit_in_chunks(scheduler, voiced_chunk(16_000, 1.0))
+        submit_in_chunks(scheduler, quiet_room(32_000, 0.6))
+
+        wait_until(lambda: partials)
+        assert finals == []
+        assert partials[0].text == "recognized speech"
+    finally:
+        scheduler.close()
+
+
+def test_run_includes_the_onset_that_preceded_the_gate():
+    backend = FakeBackend()
+    scheduler = LiveAsrScheduler(backend=backend)
+    try:
+        submit_in_chunks(scheduler, quiet_room(0, 2))
+        submit_in_chunks(scheduler, voiced_chunk(32_000, 2))
+
+        wait_until(lambda: backend.requests)
+        assert 32_000 - 16_000 <= backend.requests[0][2] < 32_000
+    finally:
+        scheduler.close()
+
+
+class ScriptedBackend(FakeBackend):
+    def __init__(self, *transcripts):
+        super().__init__()
+        self.transcripts = iter(transcripts)
+
+    def transcribe_window(self, audio, sample_rate, offset_samples):
+        self.requests.append((audio.copy(), sample_rate, offset_samples))
+        return [{"transcription": next(self.transcripts), "boundaries": (0, 1)}]
+
+
+def test_partial_punctuation_revision_does_not_duplicate_words():
+    partials = []
+    scheduler = LiveAsrScheduler(
+        ScriptedBackend(
+            "Привет, привет. Как у тебя?",
+            "Привет, привет. Как у тебя?",
+            "Привет, привет. Как у тебя дела?",
+            "Привет, привет! Как у тебя дела? Чем занимаешься?",
+        ),
+        partial_delay_seconds=0.1,
+        on_partial=partials.append,
+    )
+    try:
+        for index in range(4):
+            scheduler.submit(voiced_chunk(index * 24_000, 1.5))
+            wait_until(lambda index=index: len(partials) == index + 1)
+
+        assert [event.text for event in partials[2:]] == [
+            "Привет, привет. Как у тебя дела?",
+            "Привет, привет! Как у тебя дела? Чем занимаешься?",
+        ]
+    finally:
+        scheduler.close()
+
+
+def test_sliding_partial_window_keeps_the_words_that_scrolled_out():
+    partials = []
+    scheduler = LiveAsrScheduler(
+        ScriptedBackend(
+            "Как у тебя дела? Чем занимаешься? Что делаешь? И так далее.",
+            "занимаешься? Что делаешь? И так далее. Ля-ля-ля.",
+        ),
+        partial_delay_seconds=0.1,
+        partial_context_seconds=12,
+        on_partial=partials.append,
+    )
+    try:
+        scheduler.submit(voiced_chunk(0, 12))
+        wait_until(lambda: len(partials) == 1)
+        scheduler.submit(voiced_chunk(12 * 16_000, 2))
+        wait_until(lambda: len(partials) == 2)
+
+        assert partials[-1].text == "Как у тебя дела? Чем занимаешься? Что делаешь? И так далее. Ля-ля-ля."
+    finally:
+        scheduler.close()
+
+
+def test_sliding_partial_window_ignores_bare_dashes_when_splicing():
+    """Replay of a real session: a «—» token used to splice the window onto the wrong word."""
+    partials = []
+    scheduler = LiveAsrScheduler(
+        ScriptedBackend(
+            "Что делаешь? Привет, привет. Как у тебя дела? Чем занимаешься? Что делаешь?",
+            "Что делаешь? — Привет, привет! Как у тебя дела? Чем занимаешься? Что делаешь? Итак",
+        ),
+        partial_delay_seconds=0.1,
+        partial_context_seconds=12,
+        on_partial=partials.append,
+    )
+    try:
+        scheduler.submit(voiced_chunk(0, 12))
+        wait_until(lambda: len(partials) == 1)
+        scheduler.submit(voiced_chunk(12 * 16_000, 2))
+        wait_until(lambda: len(partials) == 2)
+
+        assert partials[-1].text == (
+            "Что делаешь? — Привет, привет! Как у тебя дела? Чем занимаешься? Что делаешь? Итак"
+        )
+    finally:
+        scheduler.close()

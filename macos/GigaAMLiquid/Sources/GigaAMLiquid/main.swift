@@ -790,6 +790,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private weak var liveTranscriptView: NSTextView?
     private weak var liveClockLabel: NSTextField?
     private weak var liveStatusLabel: NSTextField?
+    private weak var liveFolderLabel: NSTextField?
+    private weak var liveRootField: NSTextField?
+    /// The folder of the running or last finished session; nil before the first one.
+    private var liveSessionDir: URL?
     private weak var liveLevelView: ProgressTrackView?
     private weak var liveStartButton: NSButton?
     private weak var livePauseButton: NSButton?
@@ -1490,6 +1494,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         status.alignment = .center
         liveStatusLabel = status
         recorderBody.addArrangedSubview(status)
+        // Where the transcript goes, always in view: before recording the root and
+        // the folder name pattern, then the actual session folder.
+        let folderPath = wrappedLabel("", size: 11, color: Palette.muted)
+        folderPath.identifier = NSUserInterfaceItemIdentifier("live.folderPath")
+        folderPath.maximumNumberOfLines = 2
+        folderPath.alignment = .center
+        // Caption and path on their own lines; a long path loses its middle,
+        // never its tail (the session folder name).
+        folderPath.lineBreakMode = .byTruncatingMiddle
+        folderPath.isSelectable = true
+        liveFolderLabel = folderPath
+        recorderBody.addArrangedSubview(folderPath)
         let meter = ProgressTrackView()
         meter.heightAnchor.constraint(equalToConstant: 8).isActive = true
         meter.setAccessibilityLabel(L10n.text("Уровень сигнала"))
@@ -1504,7 +1520,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let stop = iconButton("stop.fill", hint: "Остановить запись", action: #selector(stopLive(_:)))
         stop.identifier = NSUserInterfaceItemIdentifier("live.stop")
         liveStopButton = stop
-        recorderBody.addArrangedSubview(centered(horizontal([start, pause, stop], spacing: 8)))
+        let reveal = iconButton("folder", hint: "Открыть папку сессии", action: #selector(revealLiveSession(_:)))
+        reveal.identifier = NSUserInterfaceItemIdentifier("live.reveal")
+        recorderBody.addArrangedSubview(centered(horizontal([start, pause, stop, reveal], spacing: 8)))
         recorder.heightAnchor.constraint(equalToConstant: 306).isActive = true
 
         let parameters = card("Параметры", dense: true)
@@ -1531,11 +1549,17 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         parametersBody.addArrangedSubview(toggleRow("Разбивать по предложениям", key: "live.sentences", defaultValue: true))
         let folder = editableText(liveSessionRootText, key: "live.sessionRoot", placeholder: "Папка сессий")
         folder.font = NSFont.systemFont(ofSize: 12)
-        parametersBody.addArrangedSubview(compactField("Папка сессий", control: folder))
+        folder.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        liveRootField = folder
+        let chooseRoot = button("Выбрать", action: #selector(chooseLiveSessionRoot(_:)), height: 30)
+        chooseRoot.identifier = NSUserInterfaceItemIdentifier("live.chooseRoot")
+        chooseRoot.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        parametersBody.addArrangedSubview(compactField("Папка сессий", control: horizontal([folder, chooseRoot], spacing: 6)))
         size(parameters, width: 270, height: 306)
         content.addArrangedSubview(horizontal([source, recorder, parameters], spacing: 16))
         // Source and recorder share the width left after the fixed parameters card.
         recorder.widthAnchor.constraint(equalTo: source.widthAnchor).isActive = true
+        refreshLiveFolderLabel()
 
         let transcript = card("Live transcript")
         let transcriptBody = contentStack(transcript)
@@ -2853,6 +2877,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             defaults.set(sender.stringValue, forKey: key)
         }
         if key == "output.path" { refreshProcessingControls() }
+        if key == "live.sessionRoot", liveJob == nil {
+            liveSessionDir = nil
+            refreshLiveFolderLabel()
+        }
         // An edited CLI path invalidates its badge: re-probe just that tool.
         if key.hasPrefix("llm."), key.hasSuffix("Path"),
            let tool = Self.llmCliProviders.first(where: { "llm.\($0.prefix)Path" == key }) {
@@ -3195,11 +3223,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let created = LiveSessionJob(settings: settings, captures: captures) { [weak self] event in self?.receiveLiveEvent(event) }
         job = created
         liveJob = created
+        liveSessionDir = nil
+        refreshLiveFolderLabel()
         liveFinals = []
         livePartials = [:]
         liveAnswerText = ""
         liveAnswerView?.string = ""
-        liveStartedAt = Date()
+        // The clock starts with capture, once the model is loaded.
+        liveStartedAt = nil
+        refreshLiveClock()
         liveTimer?.invalidate()
         liveTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshLiveClock() }
         liveState = "starting"
@@ -3209,6 +3241,55 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshProcessingControls()
         renderLiveTranscript()
         created.start()
+    }
+
+    private func refreshLiveFolderLabel() {
+        func short(_ url: URL) -> String { (url.path as NSString).abbreviatingWithTildeInPath }
+        let text: String
+        if let directory = liveSessionDir {
+            text = L10n.text(liveJob == nil ? "Сохранено в " : "Запись в ") + "\n" + short(directory)
+        } else if let root = liveSessionRoot {
+            text = L10n.text("Сохраняется в ") + "\n" + short(root)
+        } else {
+            text = L10n.text("Укажите абсолютный путь к папке сессий.")
+        }
+        liveFolderLabel?.stringValue = text
+        let hint = L10n.text("Каждая запись сохраняется в свою папку ГГГГ-ММ-ДД_ЧЧ-ММ-СС: транскрипт, субтитры и аудио.")
+        liveFolderLabel?.toolTip = [(liveSessionDir ?? liveSessionRoot)?.path, hint].compactMap { $0 }.joined(separator: "\n")
+    }
+
+    @objc private func revealLiveSession(_ sender: Any?) {
+        if let directory = liveSessionDir, FileManager.default.fileExists(atPath: directory.path) {
+            NSWorkspace.shared.open(directory)
+            return
+        }
+        guard let root = liveSessionRoot else {
+            showNotice("Не удалось открыть папку", "Укажите абсолютный путь к папке сессий.")
+            return
+        }
+        do { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
+        catch { showNotice("Не удалось открыть папку", error.localizedDescription); return }
+        NSWorkspace.shared.open(root)
+    }
+
+    @objc private func chooseLiveSessionRoot(_ sender: Any?) {
+        guard liveJob == nil, !isClosing else { return }
+        // A focused root field would write its old text back over the pick when
+        // it ends editing.
+        window.makeFirstResponder(nil)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = liveSessionRoot
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            self.defaults.set(url.path, forKey: "live.sessionRoot")
+            self.liveRootField?.stringValue = (url.path as NSString).abbreviatingWithTildeInPath
+            self.liveSessionDir = nil
+            self.refreshLiveFolderLabel()
+        }
     }
 
     @objc private func pauseLive(_ sender: Any?) { liveJob?.pause() }
@@ -3232,8 +3313,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     private func receiveLiveEvent(_ event: LiveSessionEvent) {
         switch event {
-        case .status(let state, _, let failed):
+        case .loading:
+            liveStatusLabel?.stringValue = L10n.text("Загрузка модели распознавания… Запись начнётся, когда она будет готова.")
+        case .status(let state, _, let failed, let sessionDir):
             liveState = state
+            if state == "recording", liveStartedAt == nil {
+                liveStartedAt = Date()
+                refreshLiveClock()
+            }
+            if let sessionDir, sessionDir != liveSessionDir {
+                liveSessionDir = sessionDir
+                refreshLiveFolderLabel()
+            }
             if !failed.isEmpty {
                 liveStatusLabel?.stringValue = L10n.text("Источник недоступен: ") + failed.map(\.rawValue).joined(separator: ", ")
             } else {
@@ -3244,8 +3335,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         case .partial(_, let source, _, let text):
             livePartials[source] = text
             renderLiveTranscript()
-        case .final(let id, _, _, _, let text, let speaker):
-            livePartials.removeAll()
+        case .final(let id, let source, _, _, let text, let speaker):
+            // Only this source's draft is settled; the other source may still be talking.
+            livePartials.removeValue(forKey: source)
             let firstFinal = liveFinals.isEmpty
             if let index = liveFinals.firstIndex(where: { $0.id == id }) { liveFinals[index] = (id, text, speaker) }
             else { liveFinals.append((id, text, speaker)) }
@@ -3266,9 +3358,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             default: liveAnswerText = L10n.text("Ошибка LLM: ") + text
             }
             liveAnswerView?.string = liveAnswerText
-        case .stopped(let directory, let saved):
-            let names = saved.map(\.lastPathComponent).joined(separator: ", ")
-            finishLive(status: L10n.text("Сессия сохранена: ") + directory.lastPathComponent + (names.isEmpty ? "" : " · " + names))
+        case .stopped(let directory, let saved, let error):
+            liveSessionDir = directory
+            if let error {
+                finishLive(status: L10n.text("Сессия остановлена с ошибкой: ") + error)
+            } else {
+                let names = saved.map(\.lastPathComponent).joined(separator: ", ")
+                finishLive(status: L10n.text("Сессия сохранена") + (names.isEmpty ? "" : " · " + names))
+            }
         case .failed(let message):
             transcriptionLog += message + "\n"
             finishLive(status: message)
@@ -3285,6 +3382,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         liveStartedAt = nil
         liveLevelView?.fraction = 0
         liveStatusLabel?.stringValue = status
+        // A draft whose final never came (too short, low confidence) is not in
+        // the exports; leaving it on screen after stop misrepresented the session.
+        livePartials.removeAll()
+        renderLiveTranscript()
+        refreshLiveFolderLabel()
         if isTerminating { replyWhenJobsFinished(); return }
         guard !isClosing else { return }
         refreshLiveControls()
@@ -3324,7 +3426,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         liveAskButton?.isEnabled = running && !liveFinals.isEmpty
         func update(_ view: NSView) {
             if let control = view as? NSControl, let key = control.identifier?.rawValue,
-               key.hasPrefix("live."), !["live.question", "live.start", "live.pause", "live.stop", "live.ask", "live.askCancel"].contains(key) {
+               key.hasPrefix("live."), !["live.question", "live.start", "live.pause", "live.stop", "live.ask", "live.askCancel", "live.reveal", "live.folderPath"].contains(key) {
                 control.isEnabled = !running
             }
             view.subviews.forEach(update)

@@ -252,6 +252,7 @@ class I18nMixin:
             self.lbl_live_diarization.setText("Диаризация:" if is_ru else "Diarization:")
             self.lbl_live_gain.setText("Усиление:" if is_ru else "Gain:")
             self.btn_live_output_select.setText("Выбрать папку" if is_ru else "Choose folder")
+            self.btn_live_open_session.setText("Открыть" if is_ru else "Open")
             self.cb_live_mic_audio.setText("Микрофон" if is_ru else "Microphone")
             self.cb_live_system_audio.setText("Системный звук" if is_ru else "System audio")
             self.cb_live_export_txt.setText("Текст" if is_ru else "Text")

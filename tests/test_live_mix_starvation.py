@@ -112,6 +112,33 @@ def test_mixing_pairs_again_once_the_second_source_wakes_up(tmp_path):
     assert len(recorder.mixes) > mic_only
 
 
+def test_a_source_that_starts_later_is_placed_later_in_the_mix(tmp_path):
+    """Both first chunks used to land on the session origin, so a system stream
+    that started 0.5 s after the microphone played 0.5 s early in mix.flac."""
+    recorder = RecordingRecorder()
+    session, adapters, schedulers, events = build(tmp_path, recorder)
+
+    def tone(source, offset, start_ns, amplitude):
+        return PcmChunk(
+            source, 48_000, 1, offset,
+            np.full((480, 1), amplitude, dtype=np.float32),
+            start_ns + int(offset / 48_000 * 1_000_000_000),
+        )
+
+    for index in range(100):
+        adapters[CaptureSource.MIC].on_chunk(tone(CaptureSource.MIC, index * 480, 1, 0.1))
+        if index >= 50:
+            system_index = index - 50
+            adapters[CaptureSource.SYSTEM].on_chunk(
+                tone(CaptureSource.SYSTEM, system_index * 480, 500_000_001, 0.3)
+            )
+
+    mix = np.concatenate([chunk.frames[:, 0] for chunk in recorder.mixes])
+    assert _mix_disabled(events) == []
+    assert mix[int(0.25 * 48_000)] == np.float32(0.1)
+    assert abs(mix[int(0.75 * 48_000)] - 0.4) < 1e-6
+
+
 def test_mix_writer_failure_still_disables_mixing_once(tmp_path):
     class BrokenRecorder(RecordingRecorder):
         def write_mix(self, chunk):
