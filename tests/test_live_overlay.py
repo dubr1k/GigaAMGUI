@@ -26,9 +26,9 @@ def overlay(qapp):
     instance.close()
 
 
-def _event(text, status="final", source=CaptureSource.MIC, speaker=None):
+def _event(text, status="final", source=CaptureSource.MIC, speaker=None, event_id="event-1"):
     return TranscriptEvent(
-        event_id="event-1",
+        event_id=event_id,
         revision=0,
         source=source,
         sample_start=0,
@@ -55,17 +55,18 @@ def test_overlay_displays_recent_final_lines_partial_and_metadata(overlay):
 def test_overlay_keeps_long_history_and_preserves_manual_scroll_position(overlay, qapp):
     assert overlay.final_text.verticalScrollBarPolicy() is Qt.ScrollBarPolicy.ScrollBarAlwaysOn
     for number in range(30):
-        overlay.update_transcript(_event(f"Final line {number}"))
+        # Distinct events: a final with the same id replaces the earlier one.
+        overlay.update_transcript(_event(f"Final line {number}", event_id=f"event-{number}"))
     qapp.processEvents()
     scrollbar = overlay.final_text.verticalScrollBar()
 
     assert "Final line 0" in overlay.final_text.toPlainText()
     scrollbar.setValue(0)
-    overlay.update_transcript(_event("Newest line"))
+    overlay.update_transcript(_event("Newest line", event_id="event-newest"))
     assert scrollbar.value() == 0
 
     scrollbar.setValue(scrollbar.maximum())
-    overlay.update_transcript(_event("Following newest"))
+    overlay.update_transcript(_event("Following newest", event_id="event-following"))
     assert scrollbar.value() == scrollbar.maximum()
 
 

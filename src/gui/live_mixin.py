@@ -8,13 +8,15 @@ import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDesktopServices, QTextCursor
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from ..live.asr import LiveAsrScheduler
 from ..live.asr_backend import LazyModelBackend
 from ..live.capture.factory import CaptureUnavailable, create_capture_adapter
 from ..live.exports import ExportSelection
+from ..live.journal import default_session_root
 from ..live.session import LiveSession, LiveStatus
 from ..live.types import (
     CaptureEvent,
@@ -27,6 +29,15 @@ from ..live.types import (
 )
 from .live_overlay import LiveOverlay
 from .live_transcript import LiveTranscriptPresenter
+
+
+def _display_path(path: str | Path) -> str:
+    """Abbreviate the home folder the way Finder and the Liquid client do."""
+    path = Path(path)
+    try:
+        return str(Path("~") / path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
 
 
 class LiveMixin:
@@ -61,7 +72,9 @@ class LiveMixin:
         self.spin_live_subtitle_max_lines.setValue(int(settings.get("subtitle_max_line_count", 2)))
         self.spin_live_subtitle_max_width.setValue(int(settings.get("subtitle_max_line_width", 64)))
         self.spin_live_gain.setValue(float(settings.get("gain", 1.0)))
-        self.live_output_dir.setText(str(settings.get("output_dir", self.output_dir)))
+        # Not the batch output folder: live sessions used to land there, and
+        # nothing on the Live tab said so.
+        self.live_output_dir.setText(str(settings.get("output_dir") or default_session_root()))
         if bool(settings.get("overlay_visible", False)):
             self.btn_live_overlay.setChecked(True)
             self._show_live_overlay()
@@ -186,16 +199,62 @@ class LiveMixin:
             self.live_output_dir.setText(selected)
 
     def _update_live_output_folder_label(self, path: str) -> None:
-        self.lbl_live_output_folder.setText(
-            path or self._t("Папка не выбрана", "Folder not selected")
+        """Show the folder of the current/last session, or where the next one goes."""
+        session_dir = getattr(self, "_live_shown_session_dir", None)
+        if session_dir is not None and Path(session_dir).parent != Path(path):
+            self._live_shown_session_dir = session_dir = None
+        if session_dir is not None:
+            text = _display_path(session_dir)
+        elif path:
+            text = _display_path(path)
+        else:
+            text = self._t("Папка не выбрана", "Folder not selected")
+        label = self.lbl_live_output_folder
+        width = label.width()
+        # One line, elided in the middle: a wrapped path overflowed the card
+        # onto the buttons above it. The tooltip carries the full path.
+        shown = (
+            label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideMiddle, width)
+            if label.isVisible() and width > 40 else text
         )
+        label.setText(shown)
+        label.setToolTip("\n".join(filter(None, (
+            str(session_dir or path),
+            self._t(
+                "Каждая запись сохраняется в свою папку ГГГГ-ММ-ДД_ЧЧ-ММ-СС: "
+                "транскрипт, субтитры и аудио.",
+                "Each recording is saved to its own YYYY-MM-DD_HH-MM-SS folder: "
+                "transcript, subtitles and audio.",
+            ),
+        ))))
+
+    def _show_live_session_folder(self, session_dir: Path) -> None:
+        self._live_shown_session_dir = Path(session_dir)
+        self._update_live_output_folder_label(self.live_output_dir.text().strip())
+
+    def _open_live_session_folder(self) -> None:
+        session_dir = getattr(self, "_live_shown_session_dir", None)
+        target = session_dir if session_dir is not None and session_dir.is_dir() else Path(
+            self.live_output_dir.text().strip() or default_session_root()
+        )
+        if not target.is_dir():
+            self.lbl_live_status.setText(self._t("Папка ещё не создана", "The folder does not exist yet"))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def _start_live_session(self) -> None:
         if self.live_session is not None and self.live_session.status().state is CaptureState.PAUSED:
             self.live_session.resume()
             return
-        output_dir = self.live_output_dir.text().strip()
-        if not output_dir or not Path(output_dir).is_dir():
+        output_dir = self.live_output_dir.text().strip() or str(default_session_root())
+        if output_dir == str(default_session_root()):
+            # The default lives in ~/Documents and is ours to create. A picked
+            # folder that vanished (an unplugged drive) is not recreated.
+            try:
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        if not Path(output_dir).is_dir():
             self.lbl_live_status.setText(
                 self._t("Выберите существующую папку сессий", "Select an existing session folder")
             )
@@ -230,15 +289,21 @@ class LiveMixin:
             self.lbl_live_status.setText(str(exc))
             self._report_live_problem(str(exc))
             return
+        # One backend for every source: it serializes decodes on the shared model.
+        backend = LazyModelBackend(
+            self.model_loader,
+            self._t("Не удалось загрузить модель распознавания", "Could not load recognition model"),
+        )
+        # Capture starts only once the model can recognise speech: the first
+        # decode compiles kernels (seconds with MLX/CoreML), and words spoken
+        # meanwhile waited for it. The status still says the model is loading.
+        backend.warm_up()
         self.live_session = LiveSession(
             Path(output_dir),
             settings,
             adapters,
             scheduler_factory=lambda source, on_final, on_partial, on_error: LiveAsrScheduler(
-                LazyModelBackend(
-                    self.model_loader,
-                    self._t("Не удалось загрузить модель распознавания", "Could not load recognition model"),
-                ),
+                backend,
                 on_final=on_final,
                 on_partial=on_partial,
                 on_error=on_error,
@@ -261,6 +326,7 @@ class LiveMixin:
         )
         self.live_session.subscribe(self._on_live_session_update)
         self.live_session.start()
+        self._show_live_session_folder(self.live_session.session_dir)
 
     def _log_live(self, message: str) -> None:
         """Route live-path diagnostics into the shared processing log tab."""
@@ -271,7 +337,10 @@ class LiveMixin:
         if self.model_loader.is_loaded():
             return True
         self.lbl_live_status.setText(
-            self._t("Загрузка модели распознавания…", "Loading the recognition model…")
+            self._t(
+                "Загрузка модели распознавания… Запись начнётся, когда она будет готова.",
+                "Loading the recognition model… Recording starts once it is ready.",
+            )
         )
         QApplication.processEvents()
         if self.model_loader.load_model(logger=self.log):
@@ -364,9 +433,14 @@ class LiveMixin:
 
     def _update_live_event(self, event) -> None:
         if isinstance(event, TranscriptEvent):
-            delta = self._live_transcript_presenter.add_event(event)
+            presenter = self._live_transcript_presenter
+            delta = presenter.add_event(event)
             if delta:
-                self._append_live_transcript(self._live_transcript_presenter.rendered_delta(event, delta))
+                piece = presenter.rendered_delta(event, delta)
+                if presenter.rewrote:
+                    self._redraw_live_transcript(presenter.rendered_pieces())
+                else:
+                    self._append_live_transcript(piece)
         elif isinstance(event, CaptureEvent):
             self._show_live_capture_status(event)
         self._update_live_overlay(event)
@@ -391,6 +465,13 @@ class LiveMixin:
         cursor = self.live_transcript.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(f"{text}\n")
+        scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
+
+    def _redraw_live_transcript(self, pieces: list[str]) -> None:
+        scrollbar = self.live_transcript.verticalScrollBar()
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
+        position = scrollbar.value()
+        self.live_transcript.setPlainText("".join(f"{piece}\n" for piece in pieces))
         scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
 
     def _clear_live_partial(self) -> None:
@@ -549,14 +630,20 @@ class LiveMixin:
 
     def _update_live_answer(self, status: str, text: str) -> None:
         if self.live_session is not None and self._live_conversation_id is not None:
-            if status == "chunk":
-                self.live_session.append_conversation_answer(self._live_conversation_id, text)
-            else:
-                self.live_session.finish_conversation(
-                    self._live_conversation_id,
-                    text,
-                    status="error" if status == "error" else "complete",
-                )
+            try:
+                if status == "chunk":
+                    self.live_session.append_conversation_answer(self._live_conversation_id, text)
+                else:
+                    self.live_session.finish_conversation(
+                        self._live_conversation_id,
+                        text,
+                        status="error" if status == "error" else "complete",
+                    )
+                    self._live_conversation_id = None
+            except RuntimeError:
+                # The session stopped and froze its conversation while the
+                # answer was in flight. An exception escaping a Qt slot aborts
+                # the whole application, so the late answer is dropped instead.
                 self._live_conversation_id = None
             self._sync_live_conversation()
             return
@@ -588,13 +675,24 @@ class LiveMixin:
 
     def _on_live_finished(self, result) -> None:
         self._last_result_dir = str(result.session_dir)
-        self.lbl_live_status.setText(self._t("Сессия сохранена", "Session saved"))
+        # A question still in flight belongs to a conversation that stop() froze.
+        if self._live_llm_cancel_event is not None:
+            self._live_llm_cancel_event.set()
+        self._live_conversation_id = None
+        self._show_live_session_folder(result.session_dir)
+        self.lbl_live_status.setText(
+            self._t("Сохранено: ", "Saved: ") + Path(result.session_dir).name
+        )
+        self.lbl_live_status.setToolTip(str(result.session_dir))
         self._update_live_control_state(CaptureState.STOPPED)
         self._sync_live_conversation()
 
     def _update_live_control_state(self, state: CaptureState | None = None) -> None:
         state = state or (self.live_session.status().state if self.live_session else CaptureState.IDLE)
-        self.btn_live_start.setEnabled(state in {CaptureState.IDLE, CaptureState.PAUSED, CaptureState.STOPPED, CaptureState.FAILED})
+        # Not FAILED: starting over a failed session abandoned it unstopped —
+        # no exports, open FLAC writers, scheduler threads left running. Stop
+        # (enabled in FAILED) saves what there is first.
+        self.btn_live_start.setEnabled(state in {CaptureState.IDLE, CaptureState.PAUSED, CaptureState.STOPPED})
         self.btn_live_start.setText(
             self._t("ПРОДОЛЖИТЬ", "RESUME")
             if state is CaptureState.PAUSED

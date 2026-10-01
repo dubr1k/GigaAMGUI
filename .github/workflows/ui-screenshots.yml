@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install the GUI's light dependencies
-        run: python -m pip install "PyQt6>=6.10.0" numpy requests soundfile python-dotenv
+        run: python -m pip install "PyQt6>=6.10.0" numpy requests soundfile python-dotenv psutil
 
       - name: Install Linux Qt runtime libraries
         if: runner.os == 'Linux'

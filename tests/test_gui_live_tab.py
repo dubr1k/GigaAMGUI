@@ -105,6 +105,67 @@ def test_live_start_passes_exact_selected_audio_tracks_to_session(window, tmp_pa
 
 
 
+def test_live_session_folder_defaults_to_documents_gigaam_live(qapp, tmp_path, monkeypatch):
+    """It used to default to the batch output folder, so nobody knew where live went."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    window = GigaTranscriberQtApp()
+    try:
+        default = tmp_path / "Documents" / "GigaAM" / "live"
+        assert window.live_output_dir.text() == str(default)
+        assert "Documents/GigaAM/live" in window.lbl_live_output_folder.text()
+    finally:
+        window.close()
+
+
+def test_live_shows_the_session_folder_while_recording_and_after_stop(window, tmp_path, monkeypatch):
+    from src.live.capture.noop import NoOpCaptureAdapter
+
+    monkeypatch.setattr(
+        "src.gui.live_mixin.create_capture_adapter",
+        lambda platform, source, device_id: NoOpCaptureAdapter(source, device_id),
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "Documents" / "GigaAM" / "live"
+    window.live_output_dir.setText(str(root))
+
+    window._start_live_session()
+    session_dir = window.live_session.session_dir
+
+    assert root.is_dir(), "the default folder is created on first use"
+    assert session_dir.name in window.lbl_live_output_folder.text()
+    window._stop_live_session()
+    _wait_for_live_stop(window)
+
+    assert session_dir.name in window.lbl_live_status.text()
+    assert window.btn_live_open_session.isEnabled()
+    opened = []
+    monkeypatch.setattr("src.gui.live_mixin.QDesktopServices.openUrl", lambda url: opened.append(url.toLocalFile()))
+    window.btn_live_open_session.click()
+    assert opened == [str(session_dir)]
+
+
+def test_late_llm_answer_after_stop_does_not_abort_the_app(window, tmp_path, monkeypatch):
+    """stop() freezes the conversation; the late answer raised out of a Qt slot (SIGABRT)."""
+    from src.live.capture.noop import NoOpCaptureAdapter
+
+    monkeypatch.setattr(
+        "src.gui.live_mixin.create_capture_adapter",
+        lambda platform, source, device_id: NoOpCaptureAdapter(source, device_id),
+    )
+    window.live_output_dir.setText(str(tmp_path))
+    window._start_live_session()
+    turn = window.live_session.begin_conversation("когда встреча?")
+    window._live_conversation_id = turn.id
+    window._stop_live_session()
+    _wait_for_live_stop(window)
+
+    window._update_live_answer("chunk", "в пять")
+    window._update_live_answer("answer", "в пять")
+
+    assert window._live_conversation_id is None
+    assert not window.btn_live_start.isEnabled() or window.live_session.status().state.value == "stopped"
+
+
 def test_live_start_surfaces_missing_capture_runtime(window, tmp_path, monkeypatch):
     from src.live.capture.factory import CaptureUnavailable
 
@@ -408,7 +469,8 @@ def test_live_uses_actual_default_device_and_live_scheduler(window, tmp_path, mo
             pass
 
     class Session:
-        def __init__(self, _root, _settings, _adapters, *, scheduler_factory, **_kwargs):
+        def __init__(self, root, _settings, _adapters, *, scheduler_factory, **_kwargs):
+            self.session_dir = root / "2026-10-01_17-21-14"
             self._schedulers = {
                 CaptureSource.MIC: scheduler_factory(
                     CaptureSource.MIC, lambda _event: None, lambda _event: None, lambda _error: None,

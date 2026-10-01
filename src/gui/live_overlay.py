@@ -141,17 +141,23 @@ class LiveOverlay(QWidget):
         layout.addWidget(self.content)
 
     def update_transcript(self, event: TranscriptEvent) -> None:
-        delta = self._transcript_presenter.add_event(event)
+        presenter = self._transcript_presenter
+        delta = presenter.add_event(event)
         if not delta:
             return
         scrollbar = self.final_text.verticalScrollBar()
         at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
         position = scrollbar.value()
-        cursor = self.final_text.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if cursor.position() > 0:
-            cursor.insertText("\n")
-        cursor.insertText(self._transcript_presenter.rendered_delta(event, delta))
+        piece = presenter.rendered_delta(event, delta)
+        if presenter.rewrote:
+            # A corrected final replaces the words already shown for its event.
+            self.final_text.setPlainText("\n".join(presenter.rendered_pieces()))
+        else:
+            cursor = self.final_text.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            if cursor.position() > 0:
+                cursor.insertText("\n")
+            cursor.insertText(piece)
         scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
         self.partial_label.clear()
 

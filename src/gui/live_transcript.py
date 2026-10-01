@@ -38,6 +38,11 @@ class LiveTranscriptPresenter:
         self._force_new_paragraph = False
         self.messages: list[TranscriptEvent] = []
         self._streams: dict[str, _StreamState] = {}
+        # What an append-only view shows, in arrival order: (stream key, text).
+        self._pieces: list[tuple[str, str]] = []
+        self._insert_at: dict[str, int] = {}
+        self.rewrote = False
+        """Set by `add_event` when the view must be redrawn from `rendered_pieces`."""
 
     def clear(self) -> None:
         self.paragraphs.clear()
@@ -47,9 +52,13 @@ class LiveTranscriptPresenter:
         self._force_new_paragraph = False
         self.messages.clear()
         self._streams.clear()
+        self._pieces.clear()
+        self._insert_at.clear()
+        self.rewrote = False
 
     def add_event(self, event: TranscriptEvent) -> str:
         """Return only words stable enough to append to the active stream."""
+        self.rewrote = False
         incoming = event.text.split()
         if not incoming:
             return ""
@@ -63,9 +72,12 @@ class LiveTranscriptPresenter:
             if self._has_prefix(stream.visible_words, incoming):
                 delta = incoming[len(stream.visible_words):]
             else:
-                # A provisional tail was corrected; never lose the final transcript.
+                # A provisional tail was corrected; never lose the final
+                # transcript. Appending it after the stale words duplicated
+                # them on screen, so the stream's pieces are replaced instead.
                 stream.visible_words = []
                 delta = incoming
+                self._forget_pieces(key, stream)
             stream.latest_words = incoming
         else:
             common = self._common_prefix_length(stream.latest_words, incoming)
@@ -96,12 +108,33 @@ class LiveTranscriptPresenter:
         return " ".join(delta)
 
     def rendered_delta(self, event: TranscriptEvent, delta: str) -> str:
-        stream = self._streams[self._stream_key(event)]
+        key = self._stream_key(event)
+        stream = self._streams[key]
         if stream.rendered:
-            return delta
-        stream.rendered = True
-        metadata = " · ".join(filter(None, (event.source_label, event.speaker)))
-        return f"{metadata}: {delta}"
+            text = delta
+        else:
+            stream.rendered = True
+            metadata = " · ".join(filter(None, (event.source_label, event.speaker)))
+            text = f"{metadata}: {delta}"
+        index = self._insert_at.pop(key, None)
+        if index is None:
+            self._pieces.append((key, text))
+        else:
+            self._pieces.insert(index, (key, text))
+        return text
+
+    def rendered_pieces(self) -> list[str]:
+        """Everything an append-only view should show, one piece per line."""
+        return [text for _key, text in self._pieces]
+
+    def _forget_pieces(self, key: str, stream: _StreamState) -> None:
+        positions = [index for index, (piece_key, _text) in enumerate(self._pieces) if piece_key == key]
+        if not positions:
+            return
+        self._pieces = [piece for piece in self._pieces if piece[0] != key]
+        self._insert_at[key] = positions[0]
+        stream.rendered = False
+        self.rewrote = True
 
     def rendered_event(self, event: TranscriptEvent) -> str:
         seconds = event.timestamp_ns / 1_000_000_000

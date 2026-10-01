@@ -16,14 +16,18 @@ struct LiveSessionSettings {
 }
 
 enum LiveSessionEvent {
-    case status(state: String, active: [LiveSource], failed: [LiveSource])
+    /// The worker is loading the recognition model; capture has not started yet.
+    case loading
+    /// `sessionDir` is where this session's transcript and audio are being written.
+    case status(state: String, active: [LiveSource], failed: [LiveSource], sessionDir: URL?)
     case partial(id: String, source: LiveSource, sampleStart: Int, text: String)
     case final(id: String, source: LiveSource, sampleStart: Int, sampleEnd: Int, text: String, speaker: String?)
     case level(LiveSource, Float)
     case captureEvent(source: LiveSource, kind: String, detail: String)
     case answerChunk(turnID: String, text: String)
     case answer(turnID: String, status: String, text: String)
-    case stopped(sessionDir: URL, saved: [URL])
+    /// `error` is set when the worker stopped the session but could not finish saving it.
+    case stopped(sessionDir: URL, saved: [URL], error: String?)
     case failed(String)
     case log(String)
 }
@@ -41,6 +45,8 @@ final class LiveSessionJob {
     private var stopping = false
     /// Set by the first `live_status`; until then any worker error means live_start was rejected.
     private var sessionReported = false
+    /// Capture starts on the first `recording` status, i.e. once the model is ready.
+    private var capturing = false
     private var secrets: [String] = []
     private let backlogLock = NSLock()
     private var backlog = 0
@@ -185,6 +191,15 @@ final class LiveSessionJob {
             "record_mic": settings.recordMic, "record_system": settings.recordSystem, "exports": settings.exports,
             "backend": settings.backend, "model": settings.model, "onnx_provider": settings.onnxProvider
         ])
+        // Captures wait for `live_status: recording`. Started here, they fed the
+        // worker while it was still loading the model: the first phrase was not
+        // recognised until the load finished, and a long load overflowed the
+        // 5 s client backlog and dropped audio outright.
+    }
+
+    private func startCaptures() {
+        guard !capturing, !stopping, !finished else { return }
+        capturing = true
         for capture in captures {
             do { try capture.start() }
             catch { handleCapture(.permissionDenied(capture.source, error.localizedDescription)) }
@@ -205,7 +220,11 @@ final class LiveSessionJob {
             sessionReported = true
             let active = (object["active_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
             let failed = (object["failed_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
-            emit(.status(state: object["state"] as? String ?? "", active: active, failed: failed))
+            let directory = (object["session_dir"] as? String).map { URL(fileURLWithPath: $0, isDirectory: true) }
+            emit(.status(state: object["state"] as? String ?? "", active: active, failed: failed, sessionDir: directory))
+            if object["state"] as? String == "recording" { startCaptures() }
+        case "live_loading":
+            emit(.loading)
         case "live_partial":
             emit(.partial(id: object["event_id"] as? String ?? "", source: source,
                           sampleStart: object["sample_start"] as? Int ?? 0, text: object["text"] as? String ?? ""))
@@ -221,10 +240,15 @@ final class LiveSessionJob {
             emit(.answer(turnID: object["turn_id"] as? String ?? "", status: object["status"] as? String ?? "",
                          text: safe(object["text"] as? String ?? "")))
         case "live_stopped":
-            let saved = (object["saved_files"] as? [String] ?? []).map { URL(fileURLWithPath: $0) }
+            let exports = object["saved_files"] as? [String] ?? []
+            let recordings = (object["recordings"] as? [String: String] ?? [:]).sorted { $0.key < $1.key }.map(\.value)
+            let saved = (exports + recordings).map { URL(fileURLWithPath: $0) }
             let directory = URL(fileURLWithPath: object["session_dir"] as? String ?? settings.sessionRoot.path)
-            if let message = object["message"] as? String, !message.isEmpty { emit(.log(safe(message))) }
-            finish(.stopped(sessionDir: directory, saved: saved))
+            // The worker reports a failed stop as live_stopped plus a message; showing
+            // it only in the log left the status claiming the session was saved.
+            let message = (object["message"] as? String).map(safe).flatMap { $0.isEmpty ? nil : $0 }
+            if let message { emit(.log(message)) }
+            finish(.stopped(sessionDir: directory, saved: saved, error: message))
         case "error":
             let message = safe(object["message"] as? String ?? "Live worker error.")
             // Before the first live_status the only thing we sent was live_start, so an error

@@ -3,23 +3,43 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 from src.utils.atomic_json import save_json_atomic
 
 from .types import CaptureSource, LiveSettings, TranscriptEvent
 
 
+def default_session_root() -> Path:
+    """Where every front-end keeps live sessions unless the user picks a folder."""
+    return Path.home() / "Documents" / "GigaAM" / "live"
+
+
 class LiveSessionStore:
-    def __init__(self, root_dir: Path) -> None:
+    def __init__(self, root_dir: Path, *, clock: Callable[[], datetime] = datetime.now) -> None:
         self._root_dir = Path(root_dir)
+        self._clock = clock
 
     def create(self, settings: LiveSettings) -> Path:
+        """Make the session folder, named by its local start time.
+
+        A `session-<uuid>` name gave no hint which recording a folder held; a
+        second session within the same second gets a numeric suffix.
+        """
         self._root_dir.mkdir(parents=True, exist_ok=True)
-        session_dir = self._root_dir / f"session-{uuid4().hex}"
-        session_dir.mkdir()
+        stem = self._clock().strftime("%Y-%m-%d_%H-%M-%S")
+        session_dir = self._root_dir / stem
+        suffix = 1
+        while True:
+            try:
+                session_dir.mkdir()
+                break
+            except FileExistsError:
+                suffix += 1
+                session_dir = self._root_dir / f"{stem}-{suffix}"
         metadata = asdict(settings)
         metadata["diarization_mode"] = settings.diarization_mode.value
         save_json_atomic(str(session_dir / "metadata.json"), metadata)

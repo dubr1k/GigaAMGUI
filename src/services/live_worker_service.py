@@ -15,6 +15,7 @@ from src.live.asr import LiveAsrScheduler
 from src.live.asr_backend import LazyModelBackend
 from src.live.capture.push import PushCaptureAdapter
 from src.live.exports import ExportSelection
+from src.live.journal import default_session_root
 from src.live.session import LiveSession, LiveStatus
 from src.live.types import (
     CaptureEvent,
@@ -65,7 +66,14 @@ class LiveWorkerService:
         if self._session is not None:
             self._emit("error", message="Processing is already running")
             return
-        root = Path(str(command.get("session_root") or ""))
+        requested_root = str(command.get("session_root") or "").strip()
+        root = Path(requested_root) if requested_root else default_session_root()
+        if not requested_root:
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._emit("error", message=f"Could not create {root}: {exc}")
+                return
         if not root.is_dir():
             self._emit("error", message="session_root must be an existing directory")
             return
@@ -107,7 +115,11 @@ class LiveWorkerService:
             self._emit("error", message=f"Invalid exports: {exc}")
             return
         adapters = {source: PushCaptureAdapter(source, self._sample_rate) for source in sources}
-        scheduler_factory = self._scheduler_factory or self._make_scheduler_factory(command)
+        scheduler_factory = self._scheduler_factory
+        if scheduler_factory is None:
+            scheduler_factory = self._prepare_scheduler_factory(command)
+            if scheduler_factory is None:
+                return
         backend = str(command.get("diarization_backend") or "pyannote")
         try:
             session = self._session_factory(
@@ -117,7 +129,7 @@ class LiveWorkerService:
                 diarization_factory=lambda _requested, backend=backend: self._create_diarizer(backend),
                 log=lambda message: self._emit("log", message=message),
             )
-            session.subscribe(self._on_update)
+            session.subscribe(lambda value, session=session: self._on_update(value, session))
             session.start()
         except Exception as exc:
             self._emit("error", message=f"Could not start live session: {exc}")
@@ -161,13 +173,21 @@ class LiveWorkerService:
         if self._session is None:
             self._emit("error", message=_NOT_RUNNING)
             return
-        self._session.pause()
+        # A second click arrives before the client has seen the first state
+        # change; that is a rejected command, not a reason to end the session.
+        try:
+            self._session.pause()
+        except RuntimeError as exc:
+            self._emit("error", message=str(exc))
 
     def resume(self) -> None:
         if self._session is None:
             self._emit("error", message=_NOT_RUNNING)
             return
-        self._session.resume()
+        try:
+            self._session.resume()
+        except RuntimeError as exc:
+            self._emit("error", message=str(exc))
 
     def stop(self) -> None:
         session = self._session
@@ -266,10 +286,11 @@ class LiveWorkerService:
             self._emit("error", message=f"Unknown live source: {value!r}")
         return adapter
 
-    def _on_update(self, value: TranscriptEvent | CaptureEvent | LiveStatus) -> None:
+    def _on_update(self, value: TranscriptEvent | CaptureEvent | LiveStatus, session: LiveSession) -> None:
         if isinstance(value, LiveStatus):
             self._emit(
                 "live_status",
+                session_dir=str(session.session_dir),
                 state=value.state.value,
                 active_sources=sorted(s.value for s in value.active_sources),
                 failed_sources=sorted(s.value for s in value.failed_sources),
@@ -289,9 +310,23 @@ class LiveWorkerService:
                 paragraph_break_after=value.paragraph_break_after,
             )
 
-    def _make_scheduler_factory(self, command: dict[str, Any]):
+    def _prepare_scheduler_factory(self, command: dict[str, Any]):
+        """Load and warm the model before the session exists.
+
+        The worker is spawned when recording starts. Recording used to begin
+        at once while the model loaded inside the first decode, so whatever
+        the user said first waited for it — about 10 s with CoreML. Now the
+        client is told `live_loading`, and `live_status: recording` follows
+        only once speech can be recognised; clients start capture on it.
+        """
+        self._emit("live_loading", message="Loading the recognition model")
         loader = self._model_loader_factory(command)
         backend = LazyModelBackend(loader, "Could not load the recognition model")
+        try:
+            backend.prepare()
+        except Exception as exc:
+            self._emit("error", message=str(exc))
+            return None
 
         def factory(source, on_final, on_partial, on_error):
             return LiveAsrScheduler(backend, on_final=on_final, on_partial=on_partial, on_error=on_error)

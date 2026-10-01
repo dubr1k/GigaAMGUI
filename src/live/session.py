@@ -66,6 +66,8 @@ SchedulerFactory = Callable[
 ]
 
 MAX_MIX_SKEW_NS = 1_000_000_000
+MAX_SOURCE_START_DELAY_NS = 5_000_000_000
+"""Largest start delay between sources that is taken from their clocks."""
 MAX_PENDING_MIX_CHUNKS = 100
 MAX_RECORDING_FAILURES = 5
 """Consecutive write failures before a source's recording is given up on.
@@ -130,6 +132,7 @@ class LiveSession:
         self._timelines: dict[CaptureSource, SourceTimeline] = {}
         self._mix_inputs: dict[CaptureSource, list[PcmChunk]] = {}
         self._mix_offset_origins: dict[CaptureSource, int] = {}
+        self._mix_source_origins_ns: dict[CaptureSource, int] = {}
         self._mix_last_input_at: dict[CaptureSource, float] = {}
         self._mix_stalled_sources: set[CaptureSource] = set()
         self._reported_mix_stalls: set[CaptureSource] = set()
@@ -373,9 +376,23 @@ class LiveSession:
         """
         if self._mix_session_origin_ns is None:
             self._mix_session_origin_ns = chunk.timestamp_ns
-        origin_offset = self._mix_offset_origins.setdefault(chunk.source, chunk.sample_offset)
+        if chunk.source not in self._mix_offset_origins:
+            # Read the clock once per source, at its first chunk. Rebasing every
+            # source onto the session origin instead erased the start delay of
+            # a later source (SCStream starts ~0.5 s after the microphone), and
+            # the system track played that much early in mix.flac.
+            # Devices can also run on unrelated clocks (WASAPI endpoints have
+            # their own epochs); a delay outside a plausible start-up window
+            # says nothing about when the source started, so it starts at the
+            # session origin as before.
+            self._mix_offset_origins[chunk.source] = chunk.sample_offset
+            delay_ns = chunk.timestamp_ns - self._mix_session_origin_ns
+            self._mix_source_origins_ns[chunk.source] = self._mix_session_origin_ns + (
+                delay_ns if 0 < delay_ns <= MAX_SOURCE_START_DELAY_NS else 0
+            )
+        origin_offset = self._mix_offset_origins[chunk.source]
         elapsed_ns = round((chunk.sample_offset - origin_offset) * 1_000_000_000 / chunk.sample_rate)
-        return replace(chunk, timestamp_ns=self._mix_session_origin_ns + elapsed_ns)
+        return replace(chunk, timestamp_ns=self._mix_source_origins_ns[chunk.source] + elapsed_ns)
 
     def _mix_participants(self) -> set[CaptureSource]:
         """Sources the mixer should still wait for before writing a block.
@@ -441,7 +458,18 @@ class LiveSession:
                     "timestamp skew exceeds 1.000s",
                 )
                 return
-            inputs = {source: self._mix_inputs[source].pop(0) for source in participants}
+            # Mix in time order: a head that starts after the earliest one ends
+            # waits for its turn. Popping one chunk from every source paired
+            # chunks by index, so a source that started later stayed a constant
+            # distance ahead of its peer instead of lining up with it.
+            earliest_end_ns = earliest.timestamp_ns + round(
+                len(earliest.frames) * 1_000_000_000 / earliest.sample_rate
+            )
+            inputs = {
+                source: self._mix_inputs[source].pop(0)
+                for source, head in heads.items()
+                if head.timestamp_ns < earliest_end_ns
+            }
             self._write_mix(inputs)
 
     def _flush_mix_inputs(self) -> None:
@@ -551,11 +579,18 @@ class LiveSession:
             self._record_finalized(finalized)
             self._journal.append(finalized)
             self._notify(finalized)
-            if self._settings.diarization_mode is DiarizationMode.LIVE_ESTIMATE:
-                for revised in self._estimate_live_speakers(finalized):
-                    self._record_finalized(revised)
-                    self._journal.append(revised)
-                    self._notify(revised)
+            if self._settings.diarization_mode is not DiarizationMode.LIVE_ESTIMATE:
+                return
+            recent = self._recent_events(finalized)
+        # Creating the diarizer loads a model. Under the session lock that
+        # stalled _on_chunk for every source, and the native client's backlog
+        # overflowed and dropped audio meanwhile.
+        estimates = self._estimate_live_speakers(finalized.source, recent)
+        with self._lock:
+            for revised in self._revised_speakers(recent, estimates):
+                self._record_finalized(revised)
+                self._journal.append(revised)
+                self._notify(revised)
 
     def _on_partial(self, event: TranscriptEvent) -> None:
         with self._lock:
@@ -589,38 +624,45 @@ class LiveSession:
         key = (event.source, event.event_id)
         self._finalized_revisions[key] = max(event.revision, self._finalized_revisions.get(key, -1))
 
-    def _estimate_live_speakers(self, event: TranscriptEvent) -> list[TranscriptEvent]:
-        diarizer = self._live_diarizers.get(event.source)
-        if diarizer is None and event.source not in self._live_diarization_unavailable:
-            try:
-                diarizer = self._create_diarizer("sortformer")
-                self._live_diarizers[event.source] = diarizer
-            except Exception as exc:
-                self._report_live_diarization_unavailable(event.source, str(exc))
-                return []
-        estimate = getattr(diarizer, "estimate_events", None)
-        if not callable(estimate):
-            self._report_live_diarization_unavailable(
-                event.source,
-                "Live Sortformer estimate unavailable; use After stop for offline speaker labels. "
-                "Retaining source labels.",
-            )
-            return []
+    def _recent_events(self, event: TranscriptEvent) -> list[TranscriptEvent]:
         horizon_samples = LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS * self._settings.asr_sample_rate
-        recent = [
+        return [
             item
             for item in self._journal.latest_events()
             if item.source is event.source and event.sample_end - item.sample_end <= horizon_samples
         ]
+
+    def _estimate_live_speakers(self, source: CaptureSource, recent: list[TranscriptEvent]) -> dict:
+        """Runs without the session lock; only the ASR thread of `source` calls it."""
+        if source in self._live_diarization_unavailable:
+            return {}
+        diarizer = self._live_diarizers.get(source)
+        if diarizer is None:
+            try:
+                diarizer = self._create_diarizer("sortformer")
+                self._live_diarizers[source] = diarizer
+            except Exception as exc:
+                with self._lock:
+                    self._report_live_diarization_unavailable(source, str(exc))
+                return {}
+        estimate = getattr(diarizer, "estimate_events", None)
+        if not callable(estimate):
+            with self._lock:
+                self._report_live_diarization_unavailable(
+                    source,
+                    "Live Sortformer estimate unavailable; use After stop for offline speaker labels. "
+                    "Retaining source labels.",
+                )
+            return {}
         try:
-            estimates = estimate(
+            return estimate(
                 recent,
                 stabilization_horizon_seconds=LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS,
             )
         except Exception as exc:
-            self._report_live_diarization_unavailable(event.source, str(exc))
-            return []
-        return self._revised_speakers(recent, estimates)
+            with self._lock:
+                self._report_live_diarization_unavailable(source, str(exc))
+            return {}
 
     def _diarize_recordings(self, recordings: dict[CaptureSource, Path]) -> None:
         for source, path in recordings.items():
@@ -653,9 +695,13 @@ class LiveSession:
         for event in events:
             start = event.sample_start / self._settings.asr_sample_rate
             end = event.sample_end / self._settings.asr_sample_rate
+            # Only segments that actually overlap: with all overlaps at zero,
+            # max() fell back to comparing labels and named a speaker who was
+            # not talking.
             overlaps = [
-                (max(0.0, min(end, segment.end) - max(start, segment.start)), segment.speaker)
+                (overlap, segment.speaker)
                 for segment in segments
+                if (overlap := min(end, segment.end) - max(start, segment.start)) > 0
             ]
             if overlaps:
                 _, speaker = max(overlaps, key=lambda item: item[0])
