@@ -55,7 +55,10 @@ $PYTHON --version
 echo ""
 
 # ── Проверить gigaam ──────────────────────────────────────────────────────────
-if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6; import mlx; import gigaam_mlx" 2>/dev/null; then
+# `from gigaam import load_model`, а не `import gigaam`: каталог-пустышка
+# gigaam/ в site-packages (конфликтные копии Syncthing) импортируется как
+# namespace-пакет и затеняет editable-установку — бандл уезжал без модели.
+if ! $PYTHON -c "from gigaam import load_model; import torch; import torchaudio; import PyQt6; import mlx; import gigaam_mlx" 2>/dev/null; then
     echo "[ERROR] Пакет gigaam не найден. Установи зависимости:"
     echo "  python3 -m venv .venv"
     echo "  .venv/bin/python -m pip install -r requirements.txt"
