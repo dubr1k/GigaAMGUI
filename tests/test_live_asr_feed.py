@@ -3,7 +3,7 @@
 import numpy as np
 
 from src.live.session import LiveSession
-from src.live.timeline import derive_asr_chunk
+from src.live.timeline import AsrFeed
 from src.live.types import CaptureSource, LiveSettings, PcmChunk
 
 
@@ -74,7 +74,7 @@ def test_speech_on_the_second_channel_reaches_recognition(tmp_path):
 def test_derived_chunk_is_mono_at_the_model_rate_on_the_same_position():
     aligned = PcmChunk(CaptureSource.SYSTEM, 48_000, 2, 96_000, np.full((4_800, 2), 0.5, np.float32), 7)
 
-    derived = derive_asr_chunk(aligned, 16_000)
+    derived = AsrFeed(16_000).derive(aligned)
 
     assert (derived.source, derived.sample_rate, derived.channels) == (CaptureSource.SYSTEM, 16_000, 1)
     assert derived.sample_offset == 32_000

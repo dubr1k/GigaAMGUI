@@ -19,7 +19,7 @@ from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .mixing import MAX_MIX_SKEW_NS, MAX_PENDING_MIX_CHUNKS, MixCoordinator
 from .recorder import SessionRecorder
 from .recording_policy import MAX_RECORDING_FAILURES, RecordingGuard
-from .timeline import SourceTimeline, derive_asr_chunk
+from .timeline import AsrFeed, SourceTimeline
 from .transcript import TranscriptState
 from .types import (
     CaptureEvent,
@@ -132,6 +132,7 @@ class LiveSession:
         self._active_sources: set[CaptureSource] = set()
         self._failed_sources: set[CaptureSource] = set()
         self._timelines: dict[CaptureSource, SourceTimeline] = {}
+        self._asr_feeds: dict[CaptureSource, AsrFeed] = {}
         self._mix = MixCoordinator(
             enabled=settings.record_mix_audio,
             write_mix=self._recorder.write_mix,
@@ -391,7 +392,10 @@ class LiveSession:
             for aligned in timeline.ingest(chunk):
                 self._recording.write(aligned)
                 self._mix.add(aligned, self._active_sources)
-                self._schedulers[aligned.source].submit(derive_asr_chunk(aligned, self._settings.asr_sample_rate))
+                feed = self._asr_feeds.setdefault(aligned.source, AsrFeed(self._settings.asr_sample_rate))
+                derived = feed.derive(aligned)
+                if derived is not None:
+                    self._schedulers[aligned.source].submit(derived)
             self._write_checkpoint_if_due()
 
     def _write_checkpoint_if_due(self) -> None:

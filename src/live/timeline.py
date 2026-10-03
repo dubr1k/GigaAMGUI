@@ -6,18 +6,47 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-from src.core.asr.types import normalize_window_audio
+from src.core.asr.types import StreamResampler
 
 from .types import CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
 
 
-def derive_asr_chunk(aligned: PcmChunk, asr_rate: int) -> PcmChunk:
-    """Recognition's copy of an aligned chunk: mono, at the model rate, same position."""
-    # All channels, downmixed: channel 0 alone missed a talker on input 2 of
-    # a stereo interface entirely.
-    audio = normalize_window_audio(aligned.frames, aligned.sample_rate, asr_rate)
-    offset = round(aligned.sample_offset * asr_rate / aligned.sample_rate)
-    return PcmChunk(aligned.source, asr_rate, 1, offset, audio[:, None].copy(), aligned.timestamp_ns)
+class AsrFeed:
+    """Recognition's copy of one source: mono, at the model rate, contiguous.
+
+    Each chunk used to be resampled on its own by linear interpolation: no
+    anti-aliasing, and endpoint-inclusive positions that stretched every
+    chunk by one sample's worth. The feed keeps one resampler per source run
+    and numbers its output contiguously; only a jump in the source offsets
+    (a discarded gap) restarts it and re-derives the position.
+    """
+
+    def __init__(self, asr_rate: int) -> None:
+        self._asr_rate = asr_rate
+        self._resampler: StreamResampler | None = None
+        self._rate: int | None = None
+        self._expected_offset: int | None = None
+        self._next_offset = 0
+
+    def derive(self, aligned: PcmChunk) -> PcmChunk | None:
+        """The chunk for the ASR scheduler, or None while the filter fills."""
+        if aligned.sample_offset != self._expected_offset or aligned.sample_rate != self._rate:
+            self._rate = aligned.sample_rate
+            self._resampler = (
+                None if aligned.sample_rate == self._asr_rate
+                else StreamResampler(aligned.sample_rate, self._asr_rate)
+            )
+            self._next_offset = round(aligned.sample_offset * self._asr_rate / aligned.sample_rate)
+        self._expected_offset = aligned.sample_offset + len(aligned.frames)
+        # All channels, downmixed: channel 0 alone missed a talker on input 2
+        # of a stereo interface entirely.
+        mono = aligned.frames.mean(axis=1, dtype=np.float32)[:, None]
+        audio = mono if self._resampler is None else self._resampler.process(mono)
+        if not len(audio):
+            return None
+        chunk = PcmChunk(aligned.source, self._asr_rate, 1, self._next_offset, audio.copy(), aligned.timestamp_ns)
+        self._next_offset += len(audio)
+        return chunk
 
 
 class SourceTimeline:
@@ -135,6 +164,8 @@ class AlignedMixer:
         self._channels: int | None = None
         self._written_frames = 0
         self._pending = np.zeros((0, 1), dtype=np.float32)
+        self._resamplers: dict[CaptureSource, StreamResampler] = {}
+        self._resampler_rates: dict[CaptureSource, int] = {}
 
     def mix(self, chunks: Mapping[CaptureSource, PcmChunk]) -> PcmChunk:
         if not chunks:
@@ -221,8 +252,7 @@ class AlignedMixer:
             (self._origin_ns or 0) + round(offset * 1_000_000_000 / sample_rate),
         )
 
-    @staticmethod
-    def _normalize(chunk: PcmChunk, sample_rate: int, channels: int) -> np.ndarray:
+    def _normalize(self, chunk: PcmChunk, sample_rate: int, channels: int) -> np.ndarray:
         frames = chunk.frames
         if chunk.channels != channels:
             if channels == 1:
@@ -237,9 +267,10 @@ class AlignedMixer:
                 )
         if chunk.sample_rate == sample_rate or not len(frames):
             return frames.copy()
-        frame_count = round(len(frames) * sample_rate / chunk.sample_rate)
-        positions = np.linspace(0, len(frames) - 1, frame_count, dtype=np.float32)
-        return np.stack(
-            [np.interp(positions, np.arange(len(frames)), frames[:, channel]) for channel in range(channels)],
-            axis=1,
-        ).astype(np.float32)
+        # One stateful resampler per source: chunks of a source arrive here in
+        # order, and resampling each on its own aliased and warped its edges.
+        resampler = self._resamplers.get(chunk.source)
+        if resampler is None or self._resampler_rates.get(chunk.source) != chunk.sample_rate:
+            resampler = self._resamplers[chunk.source] = StreamResampler(chunk.sample_rate, sample_rate)
+            self._resampler_rates[chunk.source] = chunk.sample_rate
+        return resampler.process(frames)
