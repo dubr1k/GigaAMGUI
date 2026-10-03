@@ -383,6 +383,46 @@ def test_llm_process_honours_client_cli_when_operator_allows(client, llm_env, mo
     assert settings["llm_allow_tools"] is True
 
 
+def test_llm_calls_are_bounded_by_their_own_semaphore(monkeypatch):
+    # Каждый запрос гонял items×modes вызовов CLI/API без всякого ограничения параллельности
+    import threading
+
+    from src.services import llm_service
+
+    lock = threading.Lock()
+    state = {"now": 0, "max": 0}
+
+    def slow_provider(settings, text, prompt, *, provider, strict_empty_cli, **_):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        threading.Event().wait(0.05)
+        with lock:
+            state["now"] -= 1
+        return "ok"
+
+    monkeypatch.setattr(llm_service, "run_provider", slow_provider)
+    monkeypatch.setattr(web_app, "llm_semaphore", None)  # вернуть после теста
+
+    async def scenario():
+        web_app.llm_semaphore = asyncio.Semaphore(1)
+        return await asyncio.gather(*(web_app._llm_answer({"provider": "API"}, "t", "p") for _ in range(3)))
+
+    assert asyncio.run(scenario()) == ["ok", "ok", "ok"]
+    assert state["max"] == 1
+
+
+def test_llm_transcript_over_the_limit_is_rejected_without_reading_it_all(client, llm_env, monkeypatch):
+    monkeypatch.setattr(web_app, "MAX_LLM_BODY_SIZE", 100)
+    response = client.post(
+        "/api/llm/process",
+        data={"provider": "API", "summary_enabled": "true", "export_formats": "txt"},
+        files={"transcript_files": ("long.txt", "слово ".encode() * 200, "text/plain")},
+    )
+    assert response.status_code == 413
+    assert "settings" not in llm_env  # до LLM дело не дошло
+
+
 def test_llm_tool_check_does_not_run_client_path(client, llm_env, monkeypatch):
     from src.services import cli_tools
 

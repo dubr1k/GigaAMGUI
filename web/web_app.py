@@ -5,6 +5,7 @@ GigaAM v3 Transcriber - Web GUI
 """
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -128,6 +129,8 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(2 * 1024 * 1024 * 1024)))
 # Транскрипты для LLM-вкладки — текст; лимит на всё тело запроса /api/llm/process
 MAX_LLM_BODY_SIZE = int(os.getenv("WEB_MAX_LLM_BODY_SIZE", str(50 * 1024 * 1024)))
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
+# Одновременные вызовы LLM-провайдеров LLM-вкладки (свой семафор, не общий с ASR)
+MAX_CONCURRENT_LLM = int(os.getenv("WEB_MAX_CONCURRENT_LLM", "2"))
 # 1 — пути/аргументы CLI и «инструменты агента» из LLM-формы принимаются как есть
 # (прежнее поведение: сессия = запуск любой команды на сервере). По умолчанию выкл.
 WEB_ALLOW_CLIENT_LLM_CLI = os.getenv("WEB_ALLOW_CLIENT_LLM_CLI", "").strip().lower() in ("1", "true", "yes")
@@ -142,6 +145,7 @@ stats_manager: ProcessingStats | None = None
 media_downloader: MediaDownloader | None = None
 time_formatter = TimeFormatter()
 processing_semaphore: asyncio.Semaphore | None = None
+llm_semaphore: asyncio.Semaphore | None = None
 key_store: KeyStore | None = None
 
 # Хранилище задач
@@ -918,7 +922,7 @@ def _detect_format(filename: str, stem: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model_loader, stats_manager, media_downloader, processing_semaphore, key_store
+    global model_loader, stats_manager, media_downloader, processing_semaphore, llm_semaphore, key_store
 
     print("=" * 60)
     print("GigaAM v3 Transcriber - Web GUI")
@@ -946,6 +950,7 @@ async def lifespan(app: FastAPI):
     stats_manager = ProcessingStats(os.getenv("STATS_FILE", str(RESULTS_DIR / "processing_stats.json")))
     media_downloader = MediaDownloader()
     processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+    llm_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
 
     _restore_persisted_tasks()
 
@@ -1564,6 +1569,19 @@ async def llm_tool_check(
     return {"tool": status.to_dict()}
 
 
+async def _llm_answer(settings: dict, text: str, prompt: str) -> str:
+    """Один вызов LLM-провайдера в пуле потоков под llm_semaphore.
+
+    Запрос /api/llm/process — это items×modes вызовов CLI/API по 10 минут
+    таймаута каждый; без ограничения несколько вкладок запускали их сколько
+    угодно параллельно (процессы агентных CLI, потоки executor-а). Семафор свой,
+    не общий с транскрибацией: длинная выжимка не должна держать очередь ASR.
+    """
+    gate = llm_semaphore if llm_semaphore is not None else contextlib.nullcontext()
+    async with gate:
+        return await asyncio.get_running_loop().run_in_executor(None, _run_llm_provider, settings, text, prompt)
+
+
 @app.post("/api/llm/process")
 async def llm_process(
     request: Request,
@@ -1627,13 +1645,25 @@ async def llm_process(
     }
     llm_settings = await asyncio.to_thread(_server_llm_settings, client_settings)
 
+    if len(transcript_files) > 20:
+        raise HTTPException(status_code=400, detail="Максимум 20 транскриптов за раз")
     items = []
     manual_text = (manual_text or "").strip()
     uploaded_names = []
     if manual_text:
         items.append({"name": "manual_transcript", "text": manual_text})
+    total_bytes = 0
     for upload in transcript_files:
-        text = (await upload.read()).decode("utf-8", errors="ignore").strip()
+        # Не больше лимита за чтение: тело без Content-Length гард не меряет,
+        # а upload.read() без аргумента держал бы в памяти любой объём
+        raw = await upload.read(MAX_LLM_BODY_SIZE + 1)
+        total_bytes += len(raw)
+        if total_bytes > MAX_LLM_BODY_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Транскрипты больше лимита ({MAX_LLM_BODY_SIZE / 1024 / 1024:.0f} MB)",
+            )
+        text = raw.decode("utf-8", errors="ignore").strip()
         if text:
             items.append({"name": Path(upload.filename or "transcript.txt").stem, "text": text})
             uploaded_names.append(upload.filename or "transcript.txt")
@@ -1664,7 +1694,7 @@ async def llm_process(
     for item in items:
         blocks = []
         for mode_suffix, mode_label, prompt in modes:
-            answer = await asyncio.get_running_loop().run_in_executor(None, lambda s=llm_settings, t=item["text"], p=prompt: _run_llm_provider(s, t, p))
+            answer = await _llm_answer(llm_settings, item["text"], prompt)
             blocks.append(f"=== {item['name']} / {mode_label} ===\n{answer}")
             for fmt in formats:
                 save_path = job_dir / f"{item['name']}_llm_{mode_suffix}.{fmt}"

@@ -503,7 +503,8 @@ Code, Codex, OpenCode, Pi, oh-my-pi, «Другое») из настроек с�
 | `WEB_LOGIN_RATE_LIMIT` | `10/minute` | Попыток `POST /api/auth/login` с одного адреса (формат slowapi, можно `10/minute;100/hour`); сверх — `429` с `Retry-After`. За прокси без доверенного `X-Forwarded-For` адрес у всех один, и лимит общий на панель. Неразборное значение останавливает сервер при старте. |
 | `COOKIE_SECURE` | `1` | `0` — cookie без `Secure`, только для доступа по чистому HTTP. |
 | `MAX_FILE_SIZE` | `2147483648` (2 ГБ) | Лимит файла и всего тела `POST /api/upload` (+1 МиБ на multipart), а также загрузки по URL. |
-| `WEB_MAX_LLM_BODY_SIZE` | `52428800` (50 МБ) | Лимит тела `POST /api/llm/process` (транскрипты для LLM). |
+| `WEB_MAX_LLM_BODY_SIZE` | `52428800` (50 МБ) | Лимит тела `POST /api/llm/process` и суммарного размера транскриптов в нём (не больше 20 файлов). |
+| `WEB_MAX_CONCURRENT_LLM` | `2` | Сколько вызовов LLM-провайдеров LLM-вкладки идёт одновременно; остальные ждут. Семафор отдельный от транскрибации. |
 | `MAX_CONCURRENT_TASKS` | `3` | Одновременные транскрибации (общий семафор с `/mcp`). |
 | `WEB_TRUSTED_ORIGINS` | пусто | Origin-ы (`https://host:port`, через запятую), которым можно слать изменяющие запросы с cookie и читать API через CORS. |
 | `WEB_ALLOW_CLIENT_LLM_CLI` | `0` | `1` — принимать пути/аргументы CLI и `llm_allow_tools` из LLM-формы (см. выше). |
