@@ -199,7 +199,7 @@ Russian aliases; F1–F12 are independent of the keyboard layout.
 startup without blocking the interface. After a disconnect, use Ctrl+R,
 `/reconnect` or Reconnect: the queue and results stay, and the previous job is
 never automatically repeated. Reconnect waits for confirmed old-worker shutdown.
-During ASR, Esc / After file interrupts the current file (nothing is saved for it
+During ASR, Esc / Stop interrupts the current file (nothing is saved for it
 and it is marked as interrupted) and stops the queue;
 during LLM, Esc / Cancel request asks for cancellation. Another Esc / Terminate
 now opens confirmation: Yes terminates the owned worker and descendants, while

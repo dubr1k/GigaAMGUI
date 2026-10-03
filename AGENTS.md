@@ -164,6 +164,9 @@ never rename or remove one.
 - Every `error` raised for a command carries `"command": "<type>"` (Live:
   `live_start`, `live_ask`, …). Clients classify errors by it and fall back to
   message text only for old workers.
+- `cancel` interrupts the current file (the processor's `cancel_check`): an
+  interrupted file gets `file_started` but no `file_completed` and no entry in
+  `completed.results`; clients show it as interrupted, not failed.
 - Output is always UTF-8 and strict JSON (no NaN; undecodable file names become
   U+FFFD); `PYTHONUTF8`/`PYTHONIOENCODING` are set by the TUI as well.
 - Tests: `tests/test_tui_worker.py`, `tests/fixtures/tui_worker_stub.py` (PTY

@@ -108,7 +108,7 @@ extension AppController {
         start.identifier = NSUserInterfaceItemIdentifier("transcription.start")
         start.setContentHuggingPriority(.defaultLow, for: .horizontal)
         startProcessingButton = start
-        let cancel = button("Остановить после текущего файла", action: #selector(cancelProcessing(_:)), height: 44)
+        let cancel = button("Остановить обработку", action: #selector(cancelProcessing(_:)), height: 44)
         cancel.identifier = NSUserInterfaceItemIdentifier("transcription.cancel")
         cancel.setContentHuggingPriority(.required, for: .horizontal)
         cancel.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -284,7 +284,7 @@ extension AppController {
         processingValidationLabel?.stringValue = L10n.text(reason)
         processingValidationLabel?.isHidden = reason.isEmpty
         cancelProcessingButton?.isEnabled = transcriptionJob != nil && !cancellationRequested && !isClosing
-        cancelProcessingButton?.title = L10n.text(cancellationRequested ? "Остановка запрошена" : "Остановить после текущего файла")
+        cancelProcessingButton?.title = L10n.text(cancellationRequested ? "Остановка запрошена" : "Остановить обработку")
         // Live recording is gated on the same jobs (batch, media import); its
         // controls were refreshed only from Live's own paths and stayed disabled
         // after a batch or an import had finished.

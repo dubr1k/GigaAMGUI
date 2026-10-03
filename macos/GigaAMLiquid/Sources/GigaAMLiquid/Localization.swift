@@ -304,7 +304,7 @@ enum L10n {
         "Ничего не найдено": "No results found",
         "Транскрипция и сохранённые файлы обработки.": "Transcript and saved processing files.",
         "Подготовка аудио": "Audio preprocessing",
-        "Остановить после текущего файла": "Stop after the current file",
+        "Остановить обработку": "Stop processing",
         "Остановка запрошена": "Stop requested",
         "Остановка после текущего файла.": "Stopping after the current file.",
         "Готовые файлы сохранены на диске.": "Generated files are saved on disk.",

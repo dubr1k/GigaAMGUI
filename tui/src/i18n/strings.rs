@@ -127,7 +127,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ("results.open_error", "Не удалось открыть: {error}", "Cannot open: {error}"),
     ("progress.saved", "Сохранено", "Saved"),
     ("btn.start", "Запустить", "Start"),
-    ("btn.stop", "После файла", "After file"),
+    ("btn.stop", "Остановить", "Stop"),
     ("btn.force_stop", "Прервать сейчас", "Terminate now"),
     ("btn.clear", "Очистить", "Clear"),
     ("footer.start", "запустить", "start"),

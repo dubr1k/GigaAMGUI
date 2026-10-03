@@ -580,8 +580,8 @@ mod tests {
                     terminal.draw(|f| draw_all(f, &mut app)).unwrap();
                     let text = terminal.backend().to_string();
                     let label = match (kind, lang) {
-                        (JobKind::Asr, Lang::Ru) => "После файла",
-                        (JobKind::Asr, Lang::En) => "After file",
+                        (JobKind::Asr, Lang::Ru) => "Остановить",
+                        (JobKind::Asr, Lang::En) => "Stop",
                         (JobKind::Llm, Lang::Ru) => "Отменить запрос",
                         (JobKind::Llm, Lang::En) => "Cancel request",
                     };
