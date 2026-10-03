@@ -25,12 +25,17 @@ def load_json(path: str, default: Any) -> Any:
 
 def save_json_atomic(path: str, data: Any):
     """Атомарно сохраняет data как JSON в path."""
+    save_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def save_text_atomic(path: str, text: str):
+    """Атомарно сохраняет text (UTF-8) в path."""
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(suffix='.tmp', dir=directory)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(text)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.formatters import generate_markdown, generate_srt, generate_vtt
 from src.core.subtitles import SubtitleOptions
+from src.utils.atomic_json import save_text_atomic
 from src.utils.time_formatter import TimeFormatter
 
 from .types import TranscriptEvent
@@ -59,7 +58,7 @@ def export_session(
     if selection.vtt:
         exports.append((session_dir / "transcript.vtt", generate_vtt(utterances, subtitle_options)))
     for path, content in exports:
-        _write_atomic(path, content)
+        save_text_atomic(str(path), content)
     return [path for path, _ in exports]
 
 
@@ -118,17 +117,3 @@ def _utterances(events: Iterable[TranscriptEvent], sample_rate: int) -> list[dic
         }
         for event in events
     ]
-
-
-def _write_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            file.write(content)
-            file.flush()
-            os.fsync(file.fileno())
-        Path(temporary).replace(path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
