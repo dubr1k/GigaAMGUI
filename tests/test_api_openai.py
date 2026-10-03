@@ -400,6 +400,23 @@ def test_oversized_upload_leaves_nothing_behind(client, fake_processor, monkeypa
     assert set(api.UPLOAD_DIR.glob("req_*")) == before
 
 
+def test_upload_write_error_leaves_nothing_behind(tmp_path, monkeypatch):
+    # Диск заполнен / клиент оборвал загрузку посреди тела: req_* не должна оставаться навсегда
+    monkeypatch.setattr(api, "UPLOAD_DIR", tmp_path)
+
+    class _Broken:
+        def read(self, _size):
+            raise OSError(28, "No space left on device")
+
+    class _Upload:
+        filename = "a.wav"
+        file = _Broken()
+
+    with pytest.raises(OSError):
+        api._save_upload(_Upload())
+    assert list(tmp_path.glob("req_*")) == []
+
+
 def test_stream_disconnect_cleans_up_after_task_completes(fake_processor, monkeypatch):
     """Клиент отваливается после первого чанка; work_dir живёт, пока executor не закончит."""
     monkeypatch.setattr(api, "ModelLoader", _FakeModelLoader)

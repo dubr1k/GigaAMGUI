@@ -448,13 +448,19 @@ def _save_upload(file: UploadFile) -> tuple[Path, Path]:
     target = work_dir / filename
     written = 0
     too_large = False
-    with open(target, "wb") as out:
-        while chunk := file.file.read(1024 * 1024):
-            written += len(chunk)
-            if written > MAX_FILE_SIZE:
-                too_large = True
-                break
-            out.write(chunk)
+    try:
+        with open(target, "wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_FILE_SIZE:
+                    too_large = True
+                    break
+                out.write(chunk)
+    except BaseException:
+        # Нет места, обрыв чтения тела: без этого req_* оставалась навсегда — уборка
+        # вызывающего (_cleanup) знает work_dir только после успешного возврата
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
     if too_large:
         # rmtree только после закрытия файла: на Windows открытый файл не даст удалить директорию
         shutil.rmtree(work_dir, ignore_errors=True)
