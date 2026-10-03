@@ -15,6 +15,7 @@ from src.utils import audio_preprocessing
 
 LOG_SOURCES = [
     Path("src/core/processor.py"),
+    Path("src/core/diarization_stage.py"),
     Path("src/core/preprocessing_messages.py"),
     Path("src/core/export.py"),
     Path("src/core/model_loader.py"),

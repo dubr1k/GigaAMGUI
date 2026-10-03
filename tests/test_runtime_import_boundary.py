@@ -35,6 +35,8 @@ MODULES = (
     "src.core.processor",
     "src.core.model_loader",
     "src.core.export",
+    "src.core.processing_support",
+    "src.core.diarization_stage",
     "src.core.progress",
     "src.core.devices",
     "src.core.runtime_options",

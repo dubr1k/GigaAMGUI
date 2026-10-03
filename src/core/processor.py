@@ -4,15 +4,10 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import os
-import shutil
-import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from ..config import DIARIZATION_BACKEND
 from ..utils.audio_converter import AudioConverter
@@ -22,102 +17,26 @@ from ..utils.deepfilter_backend import DeepFilterNetBinaryBackend
 from ..utils.output_naming import output_filename
 from ..utils.time_formatter import TimeFormatter
 from . import export, formatters
+from .diarization_stage import DiarizationStageMixin
 from .preprocessing_messages import (
     PREPROCESSING_ACTIONS_RU as _PREPROCESSING_ACTIONS_RU,  # noqa: F401 — старый импорт
 )
 from .preprocessing_messages import log_preprocessing_report
 from .preprocessing_messages import preprocessing_reason_ru as _preprocessing_reason_ru  # noqa: F401
+from .processing_support import (  # DiarizationSetupError — для старых импортов
+    DiarizationOutcome,
+    DiarizationSetupError,  # noqa: F401
+    _accepts_event_argument,
+    _accepts_keyword,
+    _TempFiles,
+)
 from .progress import ProgressEvent, ProgressPlan
 from .subtitles import SubtitleOptions
-
-if TYPE_CHECKING:
-    from .diarization.base import DiarizationBackend
 
 _module_logger = logging.getLogger(__name__)
 
 
-class _TempFiles:
-    """Временные файлы одной обработки: личный каталог и удаление на выходе.
-
-    WAV пишутся в системный temp (TMPDIR/TEMP), а не в папку результатов: она
-    может не существовать (новая папка в CLI), синхронизироваться облаком или
-    лежать на медленном сетевом диске, а недоделанный WAV там остаётся мусором.
-    Объём — ~115 МБ на час записи (16 кГц mono), плюс копия после очистки звука.
-    Контекст покрывает и конвертацию, и подготовку: исключение между ними
-    (например, из progress-колбэка) раньше оставляло WAV на диске.
-    """
-
-    def __init__(self, *, protected: str):
-        self._protected = os.path.abspath(protected)
-        self._paths: list[str] = []
-        self.directory = ""
-
-    def __enter__(self) -> _TempFiles:
-        self.directory = tempfile.mkdtemp(prefix="gigaam-")
-        return self
-
-    def add(self, *paths: str | None) -> None:
-        self._paths.extend(path for path in paths if path)
-
-    def __exit__(self, *_exc) -> None:
-        # Внешний конвертер может вернуть путь вне нашего каталога, а то и сам
-        # исходный файл: удаляем только своё и никогда — исходник.
-        for path in self._paths:
-            if os.path.abspath(path) == self._protected:
-                continue
-            try:
-                if os.path.isfile(path):
-                    os.remove(path)
-            except OSError:
-                pass
-        shutil.rmtree(self.directory, ignore_errors=True)
-
-
-class DiarizationSetupError(RuntimeError):
-    """Backend диаризации не удалось даже создать (причина — в ``__cause__``)."""
-
-
-@dataclass
-class DiarizationOutcome:
-    """Итог стадии диаризации одного файла."""
-
-    utterances: list
-    applied: bool = False
-    error: str | None = None
-    # Диаризацию запросили и она могла запуститься (для pyannote есть токен):
-    # тогда об отсутствии файлов _diarize* стоит предупредить.
-    attempted: bool = False
-
-
-def _accepts_event_argument(callback: Callable) -> bool:
-    """Можно ли вызвать колбэк одним ProgressEvent (иначе — legacy (stage, value)).
-
-    Решается по сигнатуре, а не пробным вызовом: прежний ``except TypeError``
-    принимал TypeError изнутри клиента за несовпадение сигнатуры и повторял
-    вызов в legacy-форме, подменяя настоящую ошибку чужой.
-    """
-    try:
-        signature = inspect.signature(callback)
-    except (TypeError, ValueError):
-        return True
-    try:
-        signature.bind(None)
-    except TypeError:
-        return False
-    return True
-
-
-def _accepts_keyword(function: Callable, name: str) -> bool:
-    try:
-        parameters = inspect.signature(function).parameters
-    except (TypeError, ValueError):
-        return False
-    return name in parameters or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
-    )
-
-
-class TranscriptionProcessor:
+class TranscriptionProcessor(DiarizationStageMixin):
     """Класс для обработки файлов транскрибации"""
 
     def __init__(
@@ -175,54 +94,6 @@ class TranscriptionProcessor:
             callback(event)
         else:
             callback(event.stage, event.file_progress)
-
-    @property
-    def diarization_manager(self) -> DiarizationBackend | None:
-        """Ленивая загрузка выбранного backend с актуальным HF-токеном."""
-        from ..config import ONNX_MODEL_DIR, ONNX_PROVIDER
-        from .diarization.factory import create_diarization_backend
-        from .diarization.names import normalize_diarization_backend
-
-        backend = normalize_diarization_backend(self._active_diarization_backend)
-        hf_token = os.getenv("HF_TOKEN", "").strip()
-        # Provider переключается в настройках уже после создания processor,
-        # поэтому берём актуальное значение loader-а, а не снимок из .env.
-        provider = getattr(self.model_loader, "requested_provider", None) or ONNX_PROVIDER
-
-        # Токен можно заменить в GUI уже после создания processor. Не держим
-        # менеджер (и загруженный им pipeline) со старым токеном.
-        if (
-            self._diarization_manager is not None
-            and (
-                getattr(self._diarization_manager, "backend", "pyannote") != backend
-                or (backend == "onnx" and self._diarization_provider != provider)
-                or (
-                    backend == "pyannote"
-                    and getattr(self._diarization_manager, "hf_token", hf_token) != hf_token
-                )
-            )
-        ):
-            self._diarization_manager = None
-
-        if backend == "pyannote" and not hf_token:
-            self._diarization_manager = None
-            return None
-
-        if self._diarization_manager is None:
-            try:
-                self._diarization_manager = create_diarization_backend(
-                    backend,
-                    hf_token=hf_token or None,
-                    device="auto",
-                    provider=provider,
-                    model_dir=ONNX_MODEL_DIR,
-                )
-                self._diarization_provider = provider
-                self._diarization_factory_error = None
-            except Exception as e:
-                self._diarization_factory_error = e
-                self.logger(f"Не удалось подготовить определение говорящих: {e}")
-        return self._diarization_manager
 
     def _update_progress(
         self,
@@ -608,83 +479,6 @@ class TranscriptionProcessor:
             **kwargs,
         )
 
-    def _run_diarization(
-        self,
-        audio_path: str,
-        utterances: list,
-        *,
-        requested: bool,
-        num_speakers: int | None,
-    ) -> DiarizationOutcome:
-        """Диаризация с понятной причиной отказа; транскрипт не теряется никогда."""
-        if not requested:
-            return DiarizationOutcome(utterances)
-
-        if (
-            self._active_diarization_backend == "pyannote"
-            and not os.getenv("HF_TOKEN", "").startswith("hf_")
-        ):
-            token_error = (
-                "Диаризация pyannote требует HuggingFace read-токен "
-                "с префиксом hf_."
-            )
-            self.logger(f"Ошибка: {token_error}")
-            self.logger("Укажите токен в настройках диаризации (определения говорящих).")
-            return DiarizationOutcome(utterances, error=token_error)
-
-        if not utterances:
-            return DiarizationOutcome(utterances, attempted=True)
-
-        self.logger(f"Определяем, кто говорит ({self._active_diarization_backend})…")
-        try:
-            manager = self.diarization_manager
-            runtime_details = []
-            if manager is not None:
-                device = getattr(manager, "device", None)
-                provider = getattr(manager, "provider", None)
-                if device:
-                    runtime_details.append(f"устройство {device}")
-                if provider:
-                    runtime_details.append(f"провайдер {provider}")
-            if runtime_details:
-                self.logger(
-                    "Определение говорящих выполняется на: "
-                    + ", ".join(runtime_details)
-                )
-            self._update_progress("diarization", None)
-            mapped = self._apply_diarization(
-                audio_path,
-                utterances,
-                manager=manager,
-                num_speakers=num_speakers,
-                progress_callback=self._stage_reporter("diarization"),
-            )
-            self._update_progress("diarization", 1.0)
-            fallback_reason = getattr(manager, "last_fallback_reason", None)
-            if fallback_reason:
-                self.logger(
-                    "Внимание: определение говорящих переключилось на запасной режим — "
-                    + fallback_reason
-                )
-                manager.last_fallback_reason = None
-            self.logger(f"Говорящих найдено: {len(set(u.get('speaker', 'Неизвестный спикер') for u in mapped))}")
-            return DiarizationOutcome(mapped, applied=True, attempted=True)
-        except Exception as e:
-            # Диаризация не удалась — сохраняем транскрипт БЕЗ фиктивной
-            # разметки «Спикер №1» и даём пользователю реальную причину.
-            self.logger(f"Не удалось определить говорящих, текст сохранён без разметки по говорящим: {e}")
-            if (
-                self._active_diarization_backend == "pyannote"
-                and not isinstance(e, DiarizationSetupError)
-            ):
-                self.logger("Частая причина: на huggingface.co не приняты условия ВСЕХ моделей —")
-                self.logger("  pyannote/segmentation-3.0, pyannote/speaker-diarization-3.1")
-                self.logger("  и модели эмбеддингов (wespeaker-voxceleb-resnet34-LM),")
-                self.logger("либо у токена нет права read.")
-            else:
-                self.logger("Причина указана выше.")
-            return DiarizationOutcome(utterances, error=str(e), attempted=True)
-
     def _summarize_transcript(self, utterances: list, filename: str) -> str:
         """Журнал по итогам распознавания; возвращает обычный TXT."""
         if not utterances:
@@ -787,70 +581,6 @@ class TranscriptionProcessor:
             'srt': lambda: self._generate_srt(utterances, subtitle_options),
             'vtt': lambda: self._generate_vtt(utterances, subtitle_options),
         }
-
-    def _apply_diarization(
-        self,
-        audio_path: str,
-        utterances: list,
-        num_speakers: int | None = None,
-        progress_callback=None,
-        manager=None,
-    ) -> list:
-        """
-        Применяет диаризацию к сегментам транскрипции.
-
-        Args:
-            audio_path: путь к аудио файлу
-            utterances: список сегментов транскрипции
-            num_speakers: количество спикеров (если известно)
-            manager: уже полученный backend (иначе берётся diarization_manager)
-
-        Returns:
-            list: utterances с добавленной информацией о спикерах
-        """
-        # Свойство diarization_manager при каждом обращении заново пробует
-        # фабрику, поэтому backend берём один раз.
-        if manager is None:
-            manager = self.diarization_manager
-        if not manager:
-            cause = self._diarization_factory_error
-            if cause is not None:
-                raise DiarizationSetupError(
-                    f"Не удалось подготовить определение говорящих: {type(cause).__name__}: {cause}"
-                ) from cause
-            raise RuntimeError(
-                "Менеджер диаризации недоступен. Проверьте HF_TOKEN (нужен доступ read)."
-            )
-
-        try:
-            kwargs = {}
-            if num_speakers is not None:
-                kwargs['num_speakers'] = num_speakers
-
-            speaker_segments = manager.diarize(
-                audio_path,
-                **kwargs,
-                progress_callback=progress_callback,
-            )
-            if not speaker_segments:
-                raise RuntimeError(
-                    "Диаризатор не вернул ни одного speaker-сегмента."
-                )
-
-            # Сопоставляем спикеров с сегментами транскрипции
-            return manager.map_speakers_to_transcription(
-                utterances,
-                speaker_segments
-            )
-
-        except Exception as e:
-            # НЕ маскируем сбой фиктивным «Спикер №1» — пробрасываем наверх,
-            # чтобы process_file показал настоящую причину (иначе пользователь
-            # видит «найден 1 спикер» и думает, что диаризация сработала).
-            # Traceback — в лог приложения, а не в журнал пользователя.
-            self.logger(f"Ошибка при определении говорящих: {e}")
-            _module_logger.error("Diarization failed for %s", audio_path, exc_info=True)
-            raise
 
     def _generate_srt(
         self,
