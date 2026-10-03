@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -25,8 +27,16 @@ jobs:
         run: ruff check .
       - name: Compile Python
         run: python -m compileall -q api.py cli.py src tests
+      # Текстовые контракты упаковки (pins, specs, Dockerfile, гейты бандла)
+      # раньше гонялись только на тегах, и дрейф всплывал уже при релизе.
+      # Все они обходятся одним pytest — без torch, numpy и dotenv.
       - name: Run release regression tests
-        run: python -m pytest tests/test_macos_swift_packaging.py tests/test_release_hardening.py
+        run: >-
+          python -m pytest
+          tests/test_macos_swift_packaging.py tests/test_release_hardening.py
+          tests/test_packaging_runtime_deps.py tests/test_macos_packaging_config.py
+          tests/test_tui_requirements.py tests/test_data_paths.py
+          tests/test_dockerignore.py tests/test_bundle_module_gate.py tests/test_ci_hardening.py
 
   tui:
     name: TUI tests
@@ -35,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v6
         with:
@@ -66,6 +78,8 @@ jobs:
         working-directory: desktop
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -85,6 +99,8 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Build native client
         run: swift build -c release --package-path macos/GigaAMLiquid
       - name: Test UI-free client logic
