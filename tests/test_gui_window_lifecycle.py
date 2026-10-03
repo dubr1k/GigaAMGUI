@@ -24,6 +24,7 @@ sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
 from src.gui.app_qt import GigaTranscriberQtApp  # noqa: E402
 from src.gui.asr_backend_dialog import ASRBackendDialog  # noqa: E402
+from src.live.session import LiveStatus, SessionResult  # noqa: E402
 from src.live.types import CaptureState  # noqa: E402
 
 
@@ -33,10 +34,12 @@ def _isolated_gui_config(monkeypatch, tmp_path):
 
 
 class FakeSession:
-    def __init__(self, tmp_path: Path, *, state=CaptureState.RECORDING, stop_error=None, release=None):
+    def __init__(self, tmp_path: Path, *, state=CaptureState.RECORDING, stop_error=None, release=None, hold=None):
         self.state = state
         self.stop_error = stop_error
         self.release = release
+        # hold: поток остановки уже запущен, но stop() ещё не сменил состояние.
+        self.hold = hold
         self.stop_calls = 0
         self.session_dir = tmp_path / "2026-10-03_12-00-00"
         self.session_dir.mkdir(exist_ok=True)
@@ -46,13 +49,18 @@ class FakeSession:
 
     def stop(self):
         self.stop_calls += 1
+        if self.hold is not None:
+            self.hold.wait(10)
+        # Как LiveSession.stop(): второй вызов — и во время STOPPING тоже — отказ.
+        if self.state in (CaptureState.IDLE, CaptureState.STOPPING, CaptureState.STOPPED):
+            raise RuntimeError("session is not running")
         self.state = CaptureState.STOPPING
         if self.release is not None:
             self.release.wait(10)
         if self.stop_error is not None:
             raise self.stop_error
         self.state = CaptureState.STOPPED
-        return types.SimpleNamespace(session_dir=self.session_dir)
+        return SessionResult(self.session_dir, {}, [])
 
     def conversation(self):
         return []
@@ -169,6 +177,49 @@ def test_failed_live_stop_reenables_the_controls_and_shows_why(window, tmp_path)
     window._stop_live_session()
     assert _pump_until(lambda: "disk full" in window.lbl_live_problem.text())
 
+    assert window.btn_live_start.isEnabled() is True
+    assert window.btn_live_stop.isEnabled() is False
+
+
+def test_stop_is_requested_once_even_before_the_session_reports_stopping(window, tmp_path):
+    """Поток остановки стартует раньше, чем сессия перейдёт в STOPPING.
+
+    Поздний статус RECORDING из очереди сигналов снова включал «Остановить»,
+    а проверка состояния во втором клике (или при выходе) ещё видела запись:
+    второй stop() той же сессии падал с «session is not running», и окно
+    сообщало, что сессию сохранить не удалось, хотя первый stop() её сохранял.
+    """
+    hold = threading.Event()
+    session = FakeSession(tmp_path, hold=hold)
+    window.live_session = session
+    window._update_live_control_state(CaptureState.RECORDING)
+
+    window._stop_live_session()
+    window._update_live_status(LiveStatus(CaptureState.RECORDING, set(), set()))
+    assert window.btn_live_stop.isEnabled() is False
+    assert window.btn_live_start.isEnabled() is False
+    window._stop_live_session()
+
+    hold.set()
+    assert _pump_until(lambda: "Сохранено" in window.lbl_live_status.text())
+    assert session.stop_calls == 1
+    assert window.lbl_live_problem.isHidden()
+    assert window.btn_live_start.isEnabled() is True
+
+
+def test_a_session_that_is_no_longer_running_is_not_reported_as_a_failed_save(window, tmp_path):
+    hold = threading.Event()
+    session = FakeSession(tmp_path, hold=hold)
+    window.live_session = session
+    window._stop_live_session()
+    # Сессию остановили раньше, чем до неё дошёл поток остановки окна.
+    session.state = CaptureState.STOPPED
+    hold.set()
+
+    assert _pump_until(lambda: window.live_session is None)
+    assert window.lbl_live_problem.isHidden()
+    assert window.lbl_live_status.text() == "Остановлено"
+    assert "session is not running" in window.log_text.toPlainText()
     assert window.btn_live_start.isEnabled() is True
     assert window.btn_live_stop.isEnabled() is False
 
