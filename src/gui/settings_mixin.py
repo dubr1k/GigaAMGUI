@@ -414,11 +414,13 @@ class SettingsMixin:
         self.user_settings.set_value("llm_provider", self._normalize_llm_provider(self.combo_llm_provider.currentText()))
         self.user_settings.set_value("llm_api_url", self.entry_llm_api_url.text().strip())
         llm_api_key = self.entry_llm_api_key.text().strip()
-        if llm_api_key:
+        # Пустое поле при сохранённом ключе — это удаление ключа: раньше .env
+        # писался только для непустого значения, и стереть ключ было нельзя.
+        if llm_api_key != os.environ.get("LLM_API_KEY", "").strip():
             try:
                 save_env_value("LLM_API_KEY", llm_api_key)
             except OSError as exc:
-                self.log(f"Не удалось сохранить LLM API key: {exc}")
+                self.log(self._t(f"Не удалось сохранить LLM API key: {exc}", f"Could not save the LLM API key: {exc}"))
         self.user_settings.set_value("llm_model", self.entry_llm_model.text().strip())
         self.user_settings.set_value("llm_temperature", self.entry_llm_temperature.text().strip())
         for spec in cli_tools.cli_specs():

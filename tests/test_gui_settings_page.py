@@ -73,6 +73,22 @@ def test_settings_provider_choice_survives_a_language_switch(window):
     assert window.settings_llm_provider.currentText() == "Другое"
 
 
+def test_clearing_the_llm_api_key_removes_the_saved_key(window, monkeypatch, tmp_path):
+    from src.config import save_env_value, user_env_path
+
+    monkeypatch.setenv("LLM_API_KEY", "")
+    save_env_value("LLM_API_KEY", "sk-old-key")
+    window.entry_llm_api_key.setText("sk-old-key")
+    window._save_ui_settings()
+    assert "LLM_API_KEY=sk-old-key" in user_env_path().read_text(encoding="utf-8")
+
+    window.entry_llm_api_key.setText("")
+    window._save_ui_settings()
+
+    assert os.environ["LLM_API_KEY"] == ""
+    assert "sk-old-key" not in user_env_path().read_text(encoding="utf-8")
+
+
 def test_cancelled_hf_token_prompt_does_not_persist_diarization(window, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setattr(window, "_show_hf_token_dialog", lambda: False)
