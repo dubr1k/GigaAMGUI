@@ -61,7 +61,11 @@ fn main() -> io::Result<()> {
             return Ok(());
         }
         Some("transcribe" | "llm") => {
+            // Ctrl+C in the shell no longer reaches the worker (its own group);
+            // the signal stops it through the same orderly path.
+            signals::install();
             let code = run_headless(&argv)?;
+            signals::reraise();
             std::process::exit(code);
         }
         Some("--help" | "-h") => {

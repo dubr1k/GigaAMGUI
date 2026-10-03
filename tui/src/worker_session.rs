@@ -1,4 +1,6 @@
-//! Interactive JSONL transport. No pipe I/O or process waits on the UI thread.
+//! JSONL transport to the worker, for the interactive UI and headless mode alike:
+//! its own process group/Job, bounded lines, reaping. No pipe I/O or process
+//! waits on the caller's thread.
 use std::{
     collections::VecDeque,
     io::{self, BufRead, BufReader, Read},
@@ -21,6 +23,33 @@ const TICK: Duration = Duration::from_millis(20);
 const MAX_LINE: usize = 64 * 1024;
 const MAX_PROTOCOL_LINE: usize = 8 * 1024 * 1024;
 const DIAGNOSTIC_TAIL: usize = 128;
+
+/// What happens to the worker's stderr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stderr {
+    /// Read, sanitized and delivered as [`WorkerEventKind::Diagnostic`] (the UI).
+    Diagnostics,
+    /// Passed straight to our own stderr (headless human output).
+    Inherit,
+    /// Discarded (headless `--json` / `--quiet`).
+    Discard,
+}
+
+/// Per-client transport policy.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Transport {
+    pub stderr: Stderr,
+    /// Longest protocol line accepted; a longer one is a protocol failure.
+    pub max_protocol_line: usize,
+}
+
+impl Transport {
+    /// The UI negotiates compact ASR events (`hello`), so 8 MiB is plenty.
+    pub(crate) const INTERACTIVE: Self = Self {
+        stderr: Stderr::Diagnostics,
+        max_protocol_line: MAX_PROTOCOL_LINE,
+    };
+}
 // Larger legitimate JSON events must not multiply into hundreds of queued copies.
 pub(crate) const EVENT_CAPACITY: usize = 8;
 
@@ -53,9 +82,20 @@ impl WorkerSession {
         command: Command,
         events: SyncSender<WorkerEvent>,
     ) -> Self {
+        Self::spawn_with(generation, command, Transport::INTERACTIVE, events)
+    }
+
+    pub fn spawn_with(
+        generation: u64,
+        command: Command,
+        transport: Transport,
+        events: SyncSender<WorkerEvent>,
+    ) -> Self {
         let (commands, incoming) = mpsc::sync_channel(64);
         let (control, requests) = mpsc::sync_channel(1);
-        thread::spawn(move || controller(command, generation, incoming, requests, events));
+        thread::spawn(move || {
+            controller(command, transport, generation, incoming, requests, events)
+        });
         Self { commands, control }
     }
 
@@ -82,6 +122,7 @@ impl WorkerSession {
 // Dropping the session disconnects control; the controller still owns cleanup.
 fn controller(
     mut command: Command,
+    transport: Transport,
     generation: u64,
     commands: Receiver<Value>,
     control: Receiver<()>,
@@ -90,7 +131,11 @@ fn controller(
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(match transport.stderr {
+            Stderr::Diagnostics => Stdio::piped(),
+            Stderr::Inherit => Stdio::inherit(),
+            Stderr::Discard => Stdio::null(),
+        });
     let (mut child, tree) = match ProcessTree::spawn(&mut command) {
         Ok(pair) => pair,
         Err(error) => {
@@ -114,26 +159,23 @@ fn controller(
     let (data_tx, data_rx) = mpsc::sync_channel(EVENT_CAPACITY);
     // Each producer can report at most one fault; diagnostics never use this path.
     let (fault_tx, faults) = mpsc::channel();
-    let readers = vec![
+    let mut readers = vec![
         reader(
             child.stdout.take().expect("piped stdout"),
-            true,
+            Some(transport.max_protocol_line),
             data_tx.clone(),
-            fault_tx.clone(),
-        ),
-        reader(
-            child.stderr.take().expect("piped stderr"),
-            false,
-            data_tx,
             fault_tx.clone(),
         ),
         writer(
             child.stdin.take().expect("piped stdin"),
             commands,
-            fault_tx,
+            fault_tx.clone(),
             shutdown.clone(),
         ),
     ];
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(reader(stderr, None, data_tx, fault_tx));
+    }
     let mut pending = None;
     let failure = loop {
         match control.try_recv() {
@@ -199,7 +241,6 @@ fn controller(
     }
     // On a failed cleanup, unblock any reader waiting to deliver data as well.
     drop(data_rx);
-    let mut readers = readers;
     result = join_finished(&mut readers, result);
     if omitted > 0 {
         publish(
@@ -323,22 +364,24 @@ fn writer(
     })
 }
 
+/// `protocol_line`: `Some(limit)` for stdout (the protocol), `None` for stderr.
 fn reader(
     stream: impl Read + Send + 'static,
-    stdout: bool,
+    protocol_line: Option<usize>,
     data: SyncSender<WorkerEventKind>,
     faults: Sender<String>,
 ) -> JoinHandle<()> {
+    let stdout = protocol_line.is_some();
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         loop {
-            match bounded_line(
-                &mut reader,
-                if stdout { MAX_PROTOCOL_LINE } else { MAX_LINE },
-            ) {
+            match bounded_line(&mut reader, protocol_line.unwrap_or(MAX_LINE)) {
                 Ok(Some((line, truncated))) => {
                     if stdout && truncated {
-                        let _ = faults.send("worker protocol exceeds the 8 MiB message limit; reduce the batch/answer size or update TUI and worker together".into());
+                        let _ = faults.send(format!(
+                            "worker protocol exceeds the {} MiB message limit; reduce the batch/answer size or update TUI and worker together",
+                            protocol_line.unwrap_or_default() / (1024 * 1024)
+                        ));
                         break;
                     }
                     let value = if stdout && !truncated {

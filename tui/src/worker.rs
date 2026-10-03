@@ -1,10 +1,9 @@
 //! The Python worker process: spawning, the JSON line protocol and the payloads sent to it.
 
 use std::{
-    io::{self, BufRead, BufReader, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver},
+    process::{ChildStdin, Command},
 };
 
 use serde::Deserialize;
@@ -246,26 +245,6 @@ pub(crate) fn worker_command() -> Command {
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8");
     command
-}
-
-/// Headless diagnostics remain inherited (human output) or suppressed (`--json`).
-pub(crate) fn spawn_worker_with(stderr: Stdio) -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
-    let mut child = worker_command()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()?;
-    let stdin = child.stdin.take().expect("worker stdin");
-    let stdout = child.stdout.take().expect("worker stdout");
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                let _ = tx.send(value);
-            }
-        }
-    });
-    Ok((child, stdin, rx))
 }
 
 pub(crate) fn send(stdin: &mut ChildStdin, message: Value) -> io::Result<()> {

@@ -4,9 +4,8 @@ use std::{
     collections::HashSet,
     io::{self, Write},
     path::PathBuf,
-    process::Stdio,
     sync::mpsc::{self, Receiver},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde_json::{json, Value};
@@ -18,7 +17,11 @@ use crate::{
     },
     i18n::Lang,
     settings::{load_settings, TuiSettings},
-    worker::{llm_settings_from, send, spawn_worker_with},
+    signals,
+    worker::{llm_settings_from, worker_command},
+    worker_session::{
+        Stderr, Transport, WorkerEvent, WorkerEventKind, WorkerSession, EVENT_CAPACITY,
+    },
 };
 
 /// The arguments after the program name as UTF-8. `std::env::args()` panics on
@@ -498,26 +501,33 @@ pub(crate) fn run_headless(argv: &[String]) -> io::Result<i32> {
     };
     // `--json` promises a clean stderr and `--quiet` a silent run; the worker's own
     // diagnostics (Python warnings, download progress) would break both.
-    let worker_stderr = if json_output || quiet {
-        Stdio::null()
+    let stderr = if json_output || quiet {
+        Stderr::Discard
     } else {
-        Stdio::inherit()
+        Stderr::Inherit
     };
-    let (mut child, mut worker, events) = match spawn_worker_with(worker_stderr) {
-        Ok(parts) => parts,
+    // The same transport as the UI: the worker gets its own process group/Job, so
+    // stopping it also stops CLI agents it launched (`child.kill()` left them
+    // running), lines are bounded, and a dead worker is an event, not a silence.
+    let (sender, events) = mpsc::sync_channel(EVENT_CAPACITY);
+    let session = WorkerSession::spawn_with(
+        HEADLESS_GENERATION,
+        worker_command(),
+        Transport {
+            stderr,
+            max_protocol_line: HEADLESS_MAX_LINE,
+        },
+        sender,
+    );
+    let result = match session.try_send(payload) {
+        Ok(()) => headless_event_loop(&events, json_output, quiet, started_type, terminal_type),
         Err(error) => {
             eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
-            return Ok(3);
+            Ok(3)
         }
     };
-    if let Err(error) = send(&mut worker, payload) {
-        eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
-        let _ = child.kill();
-        return Ok(3);
-    }
-    let result = headless_event_loop(&events, json_output, quiet, started_type, terminal_type);
-    let _ = child.kill();
-    let _ = child.wait();
+    session.stop();
+    await_stopped(&events);
     match result {
         Ok(code) => Ok(code),
         // `gigaam transcribe … | head -1`: the reader went away; nothing to report.
@@ -526,10 +536,43 @@ pub(crate) fn run_headless(argv: &[String]) -> io::Result<i32> {
     }
 }
 
+/// Headless has one worker for its whole life.
+const HEADLESS_GENERATION: u64 = 1;
+/// Headless keeps the full (non-compact) ASR events of its JSON contract, and
+/// `completed` repeats every result with its word timings: a batch of long
+/// recordings is far beyond the UI's 8 MiB. Still bounded, never unlimited.
+const HEADLESS_MAX_LINE: usize = 256 * 1024 * 1024;
+/// No event at all for this long (model downloads report progress on stderr
+/// only) means the worker hangs.
+const HEADLESS_SILENCE: Duration = Duration::from_secs(3600);
+/// How often the loop looks at termination signals between events.
+const HEADLESS_POLL: Duration = Duration::from_millis(200);
+
+/// Waits (bounded) for the transport to confirm the worker tree is gone.
+fn await_stopped(events: &Receiver<WorkerEvent>) {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        match events.recv_timeout(HEADLESS_POLL) {
+            Ok(WorkerEvent {
+                kind: WorkerEventKind::Stopped(result),
+                ..
+            }) => {
+                if let Err(error) = result {
+                    eprintln!("gigaam: worker shutdown: {error}");
+                }
+                return;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            _ => {}
+        }
+    }
+    eprintln!("gigaam: worker shutdown: termination was not confirmed");
+}
+
 /// Consumes worker events until the terminal one; on a write failure returns the
 /// exit code computed so far together with the error.
 fn headless_event_loop(
-    events: &Receiver<Value>,
+    events: &Receiver<WorkerEvent>,
     json_output: bool,
     quiet: bool,
     started_type: &str,
@@ -540,14 +583,47 @@ fn headless_event_loop(
     let mut progress_line_open = false;
     let mut streamed_modes: HashSet<String> = HashSet::new();
     let stdout = io::stdout();
+    let mut last_event = Instant::now();
     loop {
-        let event = match events.recv_timeout(Duration::from_secs(3600)) {
-            Ok(event) => event,
+        if signals::requested() {
+            // The caller stops the worker tree and re-raises the signal.
+            break;
+        }
+        let kind = match events.recv_timeout(HEADLESS_POLL) {
+            Ok(event) => event.kind,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                eprintln!("gigaam: worker stopped responding");
-                break;
+                if last_event.elapsed() >= HEADLESS_SILENCE {
+                    eprintln!("gigaam: worker stopped responding");
+                    break;
+                }
+                continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                eprintln!("gigaam: worker exited unexpectedly (try `gigaam --update`)");
+                exit_code = 3;
+                break;
+            }
+        };
+        last_event = Instant::now();
+        let event = match kind {
+            WorkerEventKind::Message(value) => value,
+            // Only non-protocol stdout lines arrive here (stderr is inherited or
+            // discarded); they used to be dropped silently.
+            WorkerEventKind::Diagnostic(text) => {
+                if !json_output && !quiet {
+                    eprintln!("worker {text}");
+                }
+                continue;
+            }
+            WorkerEventKind::Failed(error) => {
+                if progress_line_open {
+                    eprint!("\r\x1b[K");
+                }
+                eprintln!("gigaam: worker unavailable: {error} (try `gigaam --update`)");
+                exit_code = 3;
+                break;
+            }
+            WorkerEventKind::Stopped(_) => {
                 eprintln!("gigaam: worker exited unexpectedly (try `gigaam --update`)");
                 exit_code = 3;
                 break;
