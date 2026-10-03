@@ -33,6 +33,21 @@ from .types import BackendCapabilities, TranscriptionSegment, TranscriptionWord,
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
 
 
+def gigaam_checkpoint_files(revision: object) -> tuple[str, ...]:
+    """Файлы, которые ``gigaam.load_model`` ищет в download_root для revision.
+
+    Короткие имена v3 (``e2e_rnnt``) gigaam хранит как ``v3_e2e_rnnt``; e2e-модели
+    кроме чекпоинта требуют SentencePiece-токенизатор.
+    """
+    name = str(revision)
+    if name in {"ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"}:
+        name = f"v3_{name}"
+    files = [f"{name}.ckpt"]
+    if name != "v1_rnnt" and "e2e" in name:
+        files.append(f"{name}_tokenizer.model")
+    return tuple(files)
+
+
 class PyTorchBackend:
     """ASR backend implemented via torch + gigaam."""
 
@@ -67,12 +82,7 @@ class PyTorchBackend:
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         ]
         model_dir = "models/gigaam"
-        revision = str(self.model_revision)
-        if revision in {"ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"}:
-            revision = f"v3_{revision}"
-        required = [f"{revision}.ckpt"]
-        if revision != "v1_rnnt" and "e2e" in revision:
-            required.append(f"{revision}_tokenizer.model")
+        required = gigaam_checkpoint_files(self.model_revision)
 
         for root in candidates:
             candidate = os.path.join(root, model_dir)

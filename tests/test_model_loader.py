@@ -210,3 +210,15 @@ def test_configure_model_also_selects_backend_model_name(monkeypatch):
 
     assert captured["model_revision"] == "v3_e2e_rnnt"
     assert captured["model_name"] == "v3_e2e_rnnt"
+
+
+def test_missing_pytorch_resources_name_the_absent_tokenizer(tmp_path, monkeypatch):
+    model_dir = tmp_path / "gigaam"
+    model_dir.mkdir()
+    (model_dir / "v3_e2e_rnnt.ckpt").write_bytes(b"ckpt")
+    monkeypatch.setenv("GIGAAM_PYTORCH_MODEL_DIR", str(model_dir))
+    monkeypatch.setattr(PyTorchBackend, "_bundled_download_root", lambda self: None)
+
+    loader = ModelLoader(requested_backend="pytorch", model_revision="v3_e2e_rnnt")
+
+    assert loader.missing_asr_resources() == ("GigaAM tokenizer: v3_e2e_rnnt_tokenizer.model",)

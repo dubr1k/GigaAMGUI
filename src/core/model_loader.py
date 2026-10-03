@@ -16,7 +16,7 @@ from ..config import (
 from ..utils.model_cache import hf_repo_is_cached
 from .asr.factory import create_backend_from_config
 from .asr.models import onnx_model_repo, validate_asr_model
-from .asr.pytorch_backend import PyTorchBackend
+from .asr.pytorch_backend import PyTorchBackend, gigaam_checkpoint_files
 from .asr.types import ProgressCallback
 from .devices import empty_accelerator_cache
 from .runtime_options import validate_onnx_provider
@@ -207,19 +207,14 @@ class ModelLoader:
 
         if backend.name == "pytorch":
             bundled = backend._bundled_download_root()  # noqa: SLF001
-            revision = str(backend.model_revision)
-            if revision in {"ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"}:
-                revision = f"v3_{revision}"
             configured = os.environ.get("GIGAAM_PYTORCH_MODEL_DIR")
             root_value = bundled or configured
             root = Path(root_value) if root_value else Path.home() / ".cache" / "gigaam"
             missing = []
-            if not (root / f"{revision}.ckpt").is_file():
-                missing.append(f"GigaAM checkpoint: {revision}.ckpt")
-            if revision != "v1_rnnt" and "e2e" in revision:
-                tokenizer = root / f"{revision}_tokenizer.model"
-                if not tokenizer.is_file():
-                    missing.append(f"GigaAM tokenizer: {tokenizer.name}")
+            for name in gigaam_checkpoint_files(backend.model_revision):
+                if not (root / name).is_file():
+                    kind = "tokenizer" if name.endswith("_tokenizer.model") else "checkpoint"
+                    missing.append(f"GigaAM {kind}: {name}")
             return tuple(missing)
         return ()
 
