@@ -126,10 +126,6 @@ _RUNTIME_MODULE_PREFIXES = (
 )
 
 
-def _has_cyrillic(text: str) -> bool:
-    return bool(re.search(r"[а-яА-ЯёЁ]", text))
-
-
 def base_dir() -> Path:
     """
     Корневая папка кэша приложения. Внутри — рантаймы torch, кэш моделей

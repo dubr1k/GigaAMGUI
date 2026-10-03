@@ -118,11 +118,6 @@ def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
     return target
 
 
-def _has_cyrillic(text: str) -> bool:
-    """Проверяет наличие кириллических символов в строке"""
-    return bool(re.search(r'[а-яА-ЯёЁ]', text))
-
-
 # Папка с моделями, привезёнными офлайн-сборкой (заполняется ниже).
 BUNDLED_MODELS_DIR = None
 
