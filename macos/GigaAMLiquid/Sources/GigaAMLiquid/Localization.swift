@@ -442,6 +442,7 @@ enum L10n {
         "Выключено — CLI работает как чистый запрос к модели: агент не читает файлы и не сохраняет сессию. Включайте, только если хотите, чтобы он мог пользоваться своими инструментами. Ключ API хранится в Связке ключей.": "Off: the CLI runs as a plain model request; the agent reads no files and keeps no session. Turn it on only if you want it to use its own tools. The API key is stored in the Keychain.",
         "Связка ключей недоступна": "Keychain unavailable",
         "Не удалось прочитать HF Token из Связки ключей: %@": "Could not read the HF Token from the Keychain: %@",
-        "Не удалось прочитать API Key из Связки ключей: %@": "Could not read the API Key from the Keychain: %@"
+        "Не удалось прочитать API Key из Связки ключей: %@": "Could not read the API Key from the Keychain: %@",
+        "Пропущено фрагментов звука по 100 мс: %@.": "Dropped 100 ms audio chunks: %@."
     ]
 }

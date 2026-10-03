@@ -51,10 +51,12 @@ final class LiveSessionJob {
     /// Capture starts on the first `recording` status, i.e. once the model is ready.
     private var capturing = false
     private var secrets: [String] = []
-    private let backlogLock = NSLock()
-    private var backlog = 0
     /// 50 chunks × 100 ms = 5 s per source; beyond that the worker is not keeping up.
-    private let maxBufferedChunks = 50
+    private static let maxBufferedChunks = 50
+    /// Touched from the audio threads; thread-safe by itself.
+    private let backlog = BacklogGate(limit: LiveSessionJob.maxBufferedChunks)
+    /// The detail of the overflow event the client reports to the worker.
+    private static let backlogDetail = "client backlog"
 
     /// `makeCaptures` receives the sink for captured audio; it holds the job weakly.
     private let resolveRuntime: PythonRuntime.Provider
@@ -134,24 +136,25 @@ final class LiveSessionJob {
     func handleCapture(_ event: LiveCaptureEvent) {
         switch event {
         case .chunk(let chunk):
-            backlogLock.lock()
-            let queued = backlog
-            if queued < maxBufferedChunks { backlog += 1 }
-            backlogLock.unlock()
-            guard queued < maxBufferedChunks else {
+            // One report per burst of dropped chunks, not one status update and two
+            // log lines (ours and the worker's echo) per 100 ms of audio.
+            switch backlog.admit() {
+            case .dropFirst:
                 queue.async {
                     guard !self.finished else { return }
                     self.emit(.captureEvent(source: chunk.source, kind: "overflow", detail: L10n.text("Worker не успевает обрабатывать звук; фрагмент пропущен.")))
-                    try? self.worker?.send(["type": "live_capture_event", "source": chunk.source.rawValue, "kind": "overflow", "detail": "client backlog"])
+                    try? self.worker?.send(["type": "live_capture_event", "source": chunk.source.rawValue, "kind": "overflow", "detail": Self.backlogDetail])
                 }
                 return
+            case .drop:
+                return
+            case .accept(let endedBurst):
+                if endedBurst > 0 {
+                    queue.async { self.emit(.log(L10n.format("Пропущено фрагментов звука по 100 мс: %@.", String(endedBurst)))) }
+                }
             }
             queue.async {
-                defer {
-                    self.backlogLock.lock()
-                    self.backlog -= 1
-                    self.backlogLock.unlock()
-                }
+                defer { self.backlog.release() }
                 guard !self.finished else { return }
                 try? self.worker?.send([
                     "type": "live_audio", "source": chunk.source.rawValue, "seq": chunk.seq,
@@ -250,6 +253,8 @@ final class LiveSessionJob {
         case .final(let id, let name, let sampleStart, let sampleEnd, let text, let speaker):
             emit(.final(id: id, source: source(name), sampleStart: sampleStart, sampleEnd: sampleEnd, text: text, speaker: speaker))
         case .captureEvent(let name, let kind, let detail):
+            // Our own overflow report comes back from the worker; it was shown already.
+            guard !(kind == "overflow" && detail == Self.backlogDetail) else { return }
             emit(.captureEvent(source: source(name), kind: kind, detail: safe(detail)))
         case .answerChunk(let turnID, let text):
             emit(.answerChunk(turnID: turnID, text: text))

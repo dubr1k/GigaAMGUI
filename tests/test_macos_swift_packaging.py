@@ -686,3 +686,14 @@ def test_swift_live_controls_follow_every_job_that_gates_them() -> None:
     assert "refreshLiveControls()" in _swift_block(main, "private func refreshProcessingControls() {")
     assert "refreshLiveControls()" in _swift_block(main, "private func finishLLM() {")
     assert "refreshLiveControls()" in _swift_block(main, "@objc private func runLLM(_ sender: Any?) {")
+
+
+def test_swift_processing_log_has_one_capped_writer() -> None:
+    # Seven places appended to the log string directly and skipped its size cap;
+    # every line now goes through appendLogLine (LogBuffer keeps the newest lines).
+    main = _liquid_sources()
+    assert "transcriptionLog" not in main
+    assert main.count("processingLog.append(") == 1
+    assert "processingLog.append(line)" in _swift_block(main, "func appendLogLine(_ line: String) {")
+    job = (LIQUID_APP / "LiveSessionJob.swift").read_text(encoding="utf-8")
+    assert "switch backlog.admit() {" in job and "case .dropFirst:" in job

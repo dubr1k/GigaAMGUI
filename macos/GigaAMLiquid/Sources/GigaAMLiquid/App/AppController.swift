@@ -73,7 +73,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     var cancellationRequested = false
     var transcriptionProgress: Double? = 0
     var transcriptionStatus = "Нет активных задач"
-    var transcriptionLog = ""
+    /// The shared processing log (batch, Live, LLM); capped, see LogBuffer.
+    var processingLog = LogBuffer()
     weak var processingValidationLabel: NSTextField?
     weak var startProcessingButton: NSButton?
     weak var cancelProcessingButton: NSButton?

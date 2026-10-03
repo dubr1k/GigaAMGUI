@@ -338,7 +338,7 @@ extension AppController {
         cancellationRequested = false
         transcriptionProgress = nil
         transcriptionStatus = "Запуск распознавания…"
-        transcriptionLog = ""
+        processingLog.clear()
         let job = NativeTranscriptionJob(files: transcriptionFiles, outputDirectory: destination.folder, settings: settings) { [weak self] event in
             self?.receiveTranscriptionEvent(event)
         }
@@ -360,8 +360,14 @@ extension AppController {
     /// UI translates it with the table shared with PyQt (LogTranslation.swift,
     /// generated from src/core/log_i18n.py).
     func appendProcessingLog(_ message: String) {
-        transcriptionLog += (L10n.isEnglish ? LogTranslation.englishText(message) : message) + "\n"
-        if transcriptionLog.utf8.count > 131_072 { transcriptionLog = String(transcriptionLog.suffix(65_536)) }
+        appendLogLine(L10n.isEnglish ? LogTranslation.englishText(message) : message)
+    }
+
+    /// A line that is already in the UI language (job errors, client notes).
+    /// Every writer goes through here or appendProcessingLog: direct appends to
+    /// the log string skipped the size cap.
+    func appendLogLine(_ line: String) {
+        processingLog.append(line)
     }
 
     func receiveTranscriptionEvent(_ event: NativeTranscriptionEvent) {
@@ -383,7 +389,7 @@ extension AppController {
             if let index = transcriptionResults.firstIndex(where: { $0.inputURL == result.inputURL }) { transcriptionResults[index] = result }
             else { transcriptionResults.append(result) }
             if selectedResultURL == nil { selectedResultURL = result.inputURL }
-            if let error = result.error { transcriptionLog += "\(result.inputURL.lastPathComponent): \(error)\n" }
+            if let error = result.error { appendLogLine("\(result.inputURL.lastPathComponent): \(error)") }
             refreshSelectedFiles()
             if !isClosing, currentPage == .result { show(page: .result) }
         case .completed(let success, let cancelled):
@@ -391,7 +397,7 @@ extension AppController {
             if success && !cancelled { transcriptionProgress = 1 }
             refreshProgress()
         case .failed(let message):
-            transcriptionLog += message + "\n"
+            appendLogLine(message)
             finishTranscription(status: message, pendingState: "Не обработан: ошибка")
         }
     }
@@ -410,7 +416,7 @@ extension AppController {
         let alert = NSAlert()
         alert.messageText = L10n.text("Журнал обработки")
         alert.addButton(withTitle: L10n.text("Понятно"))
-        let editor = textEditor(transcriptionLog.isEmpty ? L10n.text(transcriptionStatus) : transcriptionLog, key: nil, height: 300)
+        let editor = textEditor(processingLog.isEmpty ? L10n.text(transcriptionStatus) : processingLog.text, key: nil, height: 300)
         editor.frame = NSRect(x: 0, y: 0, width: 650, height: 300)
         if let text = editor.documentView as? NSTextView {
             text.isEditable = false

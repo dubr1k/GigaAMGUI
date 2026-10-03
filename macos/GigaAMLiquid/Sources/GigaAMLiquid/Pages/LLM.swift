@@ -235,7 +235,7 @@ extension AppController {
             case .tool(let tool):
                 self.llmToolStatuses[tool.provider] = tool
             case .failed(let message):
-                self.transcriptionLog += "LLM tools: \(message)\n"
+                self.appendLogLine("LLM tools: \(message)")
             }
             self.refreshLLMToolRows()
             self.refreshLLMProviderStatus()
@@ -280,7 +280,7 @@ extension AppController {
                 self.llmToolStatuses[status.provider] = status
                 self.saveLLMToolsCache()
             } else if case .failed(let message) = result {
-                self.transcriptionLog += "LLM tools: \(message)\n"
+                self.appendLogLine("LLM tools: \(message)")
             }
             self.refreshLLMToolRows()
             self.refreshLLMProviderStatus()
@@ -452,7 +452,7 @@ extension AppController {
             finishLLM()
         case .failed(let message):
             llmStatusLabel?.stringValue = message
-            transcriptionLog += message + "\n"
+            appendLogLine(message)
             finishLLM()
         case .log(let message):
             appendProcessingLog(message)

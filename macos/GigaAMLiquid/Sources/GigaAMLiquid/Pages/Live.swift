@@ -236,7 +236,7 @@ extension AppController {
         liveTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refreshLiveClock() }
         liveState = "starting"
         liveStatusLabel?.stringValue = L10n.text("Запуск…")
-        transcriptionLog = ""
+        processingLog.clear()
         refreshLiveControls()
         refreshProcessingControls()
         renderLiveTranscript()
@@ -350,7 +350,7 @@ extension AppController {
             liveLevelView?.fraction = Double(min(1, rms * 4))
         case .captureEvent(_, let kind, let detail):
             if kind != "status" { liveStatusLabel?.stringValue = detail }
-            transcriptionLog += "[live/\(kind)] \(detail)\n"
+            appendLogLine("[live/\(kind)] \(detail)")
         case .answerChunk(_, let text):
             liveAnswerText += text
             liveAnswerView?.string = liveAnswerText
@@ -372,7 +372,7 @@ extension AppController {
                 finishLive(status: L10n.text("Сессия сохранена") + (names.isEmpty ? "" : " · " + names))
             }
         case .failed(let message):
-            transcriptionLog += message + "\n"
+            appendLogLine(message)
             finishLive(status: message)
         case .log(let message):
             appendProcessingLog(message)
