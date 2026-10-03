@@ -44,6 +44,67 @@ import Testing
         job.terminate()
     }
 
+    private func terminal(in log: EventLog<LiveSessionEvent>) async throws -> String {
+        let event = try await log.wait { event in
+            switch event {
+            case .stopped, .failed: return true
+            default: return false
+            }
+        }
+        if case .failed(let message) = event { return "failed: \(message)" }
+        return "stopped"
+    }
+
+    private func errorStatuses(in log: EventLog<LiveSessionEvent>) -> [String] {
+        log.events.compactMap { if case .captureEvent(_, "error", let detail) = $0 { return detail } else { return nil } }
+    }
+
+    /// While stopping, any error used to end the job and throw away the
+    /// live_stopped that followed — the UI said "failed" for a saved session.
+    @Test func rejectedCommandWhileStoppingKeepsTheSavedSession() async throws {
+        let worker = try FakeWorker(replies: [
+            "live_start": [Self.recording],
+            "live_stop": [#"{"type":"error","message":"live_audio pcm is not valid base64 int16"}"#, Self.stopped],
+        ])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.stop()
+        #expect(try await terminal(in: log) == "stopped")
+    }
+
+    /// A question before the first final is answered with the worker's reason,
+    /// not shown as a raw English status line.
+    @Test func rejectedQuestionIsAnsweredAndTheSessionGoesOn() async throws {
+        let worker = try FakeWorker(replies: [
+            "live_start": [Self.recording],
+            "live_ask": [#"{"type":"error","message":"No final transcript events are available yet"}"#],
+            "live_stop": [Self.stopped],
+        ])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.ask("Что решили?", settings: ["provider": "API"])
+        let result = try await answer(in: log)
+        #expect(result.status == "rejected")
+        #expect(result.text == "No final transcript events are available yet")
+        #expect(errorStatuses(in: log).isEmpty)
+        job.stop()
+        #expect(try await terminal(in: log) == "stopped")
+    }
+
+    @Test func cancellingAFinishedAnswerChangesNothing() async throws {
+        let worker = try FakeWorker(replies: [
+            "live_start": [Self.recording],
+            "live_ask_cancel": [#"{"type":"error","message":"No assistant question is running"}"#],
+            "live_stop": [Self.stopped],
+        ])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.cancelAsk()
+        job.stop()
+        #expect(try await terminal(in: log) == "stopped")
+        #expect(errorStatuses(in: log).isEmpty)
+    }
+
     @Test func failedAnswerIsStillRedacted() async throws {
         let worker = try FakeWorker(replies: [
             "live_start": [Self.recording],

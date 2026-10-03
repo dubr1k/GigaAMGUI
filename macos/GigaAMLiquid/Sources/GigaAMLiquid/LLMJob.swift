@@ -112,7 +112,8 @@ final class LLMJob {
         case "log":
             emit(.log(safe(object["message"] as? String ?? "")))
         default:
-            break
+            // The worker is shared with the TUI and gains events over time.
+            emit(.log(L10n.format("Пропущено неизвестное событие воркера: %@", type)))
         }
     }
 

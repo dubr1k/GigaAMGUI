@@ -3330,7 +3330,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             if !failed.isEmpty {
                 liveStatusLabel?.stringValue = L10n.text("Источник недоступен: ") + failed.map(\.rawValue).joined(separator: ", ")
             } else {
-                let titles = ["recording": "Идёт запись", "paused": "Пауза", "starting": "Запуск…", "stopping": "Остановка…", "failed": "Захват не удался"]
+                // Every CaptureState of src/live/types.py; an unknown state shows as is.
+                let titles = ["idle": "Ожидание", "starting": "Запуск…", "recording": "Идёт запись", "paused": "Пауза",
+                              "stopping": "Остановка…", "stopped": "Остановлено", "failed": "Захват не удался"]
                 liveStatusLabel?.stringValue = L10n.text(titles[state] ?? state)
             }
             refreshLiveControls()
@@ -3357,6 +3359,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             switch status {
             case "complete": liveAnswerText = text
             case "cancelled": liveAnswerText = L10n.text("Запрос отменён.")
+            // The worker refused the question itself (asked before the first phrase, …).
+            case "rejected": liveAnswerText = L10n.text("Ассистент не ответил: ") + L10n.workerMessage(text)
             default: liveAnswerText = L10n.text("Ошибка LLM: ") + text
             }
             liveAnswerView?.string = liveAnswerText

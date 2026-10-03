@@ -13,6 +13,18 @@ enum L10n {
         String(format: text(source), arguments: arguments)
     }
 
+    /// The worker reports in English; the ones the user reads in the UI are known
+    /// here by their exact text (src/services/live_worker_service.py). Others pass as is.
+    static func workerMessage(_ message: String) -> String {
+        workerMessages[message].map(text) ?? message
+    }
+
+    private static let workerMessages: [String: String] = [
+        "No final transcript events are available yet": "В записи ещё нет распознанных фраз — спросите после первой.",
+        "Question is required": "Введите вопрос.",
+        "LLM settings are required": "LLM не настроена.",
+    ]
+
     private static let english: [String: String] = [
         "Обработка": "Processing",
         "Результат обработки": "Processing result",
@@ -348,6 +360,12 @@ enum L10n {
         "Масштабировать": "Zoom",
         "Все окна — на передний план": "Bring All to Front",
         "Справка": "Help",
-        "Пропущено неизвестное событие воркера: %@": "Skipped an unknown worker event: %@"
+        "Пропущено неизвестное событие воркера: %@": "Skipped an unknown worker event: %@",
+        "Ожидание": "Idle",
+        "Остановлено": "Stopped",
+        "Ассистент не ответил: ": "The assistant did not answer: ",
+        "В записи ещё нет распознанных фраз — спросите после первой.": "No phrase has been recognised yet; ask after the first one.",
+        "Введите вопрос.": "Enter a question.",
+        "LLM не настроена.": "LLM is not configured."
     ]
 }

@@ -416,8 +416,27 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     assert "if firstFinal { refreshLiveControls() }" in receive
     job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LiveSessionJob.swift").read_text(encoding="utf-8")
     # Ошибка до первого live_status (например, старый companion без live_*) завершает
-    # job, иначе UI навсегда остаётся в «Запуск…».
-    assert "if !sessionReported || stopping { finish(.failed(message)) }" in job
+    # job, иначе UI навсегда остаётся в «Запуск…». После него ошибки — отказы отдельных
+    # команд, в том числе во время остановки: live_stopped за ними не выбрасывается.
+    assert "switch LiveErrorPolicy.disposition(of: raw, sessionReported: sessionReported) {" in job
+    assert "case .fatal: finish(.failed(message))" in job
+    policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
+    assert "guard sessionReported else { return .fatal }" in policy
+
+
+def test_swift_live_error_texts_match_the_worker() -> None:
+    # The live worker's `error` carries no command id, so Liquid recognises
+    # per-command rejections by their exact text; a reworded message in Python
+    # would silently turn a rejected question into a fatal or ignored error.
+    service = Path("src/services/live_worker_service.py").read_text(encoding="utf-8")
+    policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
+    messages = re.findall(r'"([A-Z][^"\\]+)"', policy.split("public enum LiveErrorPolicy", 1)[1])
+    assert len(messages) >= 5
+    localization = (LIQUID_APP / "Localization.swift").read_text(encoding="utf-8")
+    shown = localization.split("private static let workerMessages", 1)[1].split("\n    ]\n", 1)[0]
+    messages += re.findall(r'^\s*"([^"]+)":', shown, flags=re.MULTILINE)
+    for message in messages:
+        assert f'"{message}"' in service, message
 
 
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:

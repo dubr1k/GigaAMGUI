@@ -1,4 +1,5 @@
 import Foundation
+import GigaAMLiquidCore
 
 struct LiveSessionSettings {
     var sessionRoot: URL
@@ -267,16 +268,24 @@ final class LiveSessionJob {
             if let message { emit(.log(message)) }
             finish(.stopped(sessionDir: directory, saved: saved, error: message))
         case "error":
-            let message = safe(object["message"] as? String ?? "Live worker error.")
+            let raw = object["message"] as? String ?? "Live worker error."
+            let message = safe(raw)
             // Before the first live_status the only thing we sent was live_start, so an error
             // (rejected settings, an old companion without live support, …) is terminal.
-            // Afterwards errors concern single commands (a bad chunk, a rejected question).
-            if !sessionReported || stopping { finish(.failed(message)) }
-            else { emit(.captureEvent(source: .mic, kind: "error", detail: message)) }  // surfaced in the status label
+            // Afterwards errors concern single commands (a bad chunk, a second pause, a
+            // question too early) — also while stopping, where ending the job here threw
+            // away the live_stopped that follows.
+            switch LiveErrorPolicy.disposition(of: raw, sessionReported: sessionReported) {
+            case .fatal: finish(.failed(message))
+            case .questionRejected: emit(.answer(turnID: "", status: "rejected", text: message))
+            case .ignorable: break
+            case .logged: emit(.log(message))
+            }
         case "log":
             emit(.log(safe(object["message"] as? String ?? "")))
         default:
-            break
+            // The worker is shared with the TUI and gains events over time.
+            emit(.log(L10n.format("Пропущено неизвестное событие воркера: %@", type)))
         }
     }
 
