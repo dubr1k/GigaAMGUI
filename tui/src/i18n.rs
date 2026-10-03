@@ -1080,6 +1080,41 @@ mod tests {
         }
     }
 
+    /// Every `.rs` file under `src/`, as `/`-separated paths relative to it. The
+    /// source scanners below walk the tree instead of listing files: a hand-kept
+    /// list silently stops covering a module once it is added or moved.
+    fn rust_sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        files.sort();
+        let sources: Vec<(String, String)> = files
+            .into_iter()
+            .map(|path| {
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                (relative, std::fs::read_to_string(&path).unwrap())
+            })
+            .collect();
+        assert!(sources.iter().any(|(file, _)| file == "ui/processing.rs"));
+        sources
+    }
+
     #[test]
     fn keys_used_in_sources_exist() {
         // `t(lang, "key")`, `tf(lang, "key", …)` and `tn(lang, n, "key")`.
@@ -1087,28 +1122,10 @@ mod tests {
             r#"\bt[fn]?\(\s*[a-z_.]+\s*,\s*(?:[a-z_.()]+\s*,\s*)?"([a-z0-9_.-]+)""#,
         )
         .unwrap();
-        for file in [
-            "app.rs",
-            "commands.rs",
-            "main.rs",
-            "pets.rs",
-            "settings.rs",
-            "worker.rs",
-            "ui/mod.rs",
-            "ui/processing.rs",
-            "ui/llm.rs",
-            "ui/settings.rs",
-            "ui/log.rs",
-            "ui/help.rs",
-            "ui/menu.rs",
-            "keys.rs",
-        ] {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src")
-                .join(file);
-            let Ok(src) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+        for (file, src) in rust_sources() {
+            if file == "i18n.rs" {
+                continue; // its doc comments spell the call shapes with placeholder keys
+            }
             for cap in re.captures_iter(&src) {
                 let key = &cap[1];
                 assert!(
@@ -1123,11 +1140,23 @@ mod tests {
     /// literals. Empty: every message goes through [`t`] / [`tf`].
     const ALLOWED_LITERAL_STATUSES: &[&str] = &[];
 
+    /// Sources the English-literal scan skips, each for a stated reason; every
+    /// other file under `src/` is scanned, including modules added later.
+    const NOT_INTERACTIVE_SOURCES: &[&str] = &[
+        // Agent-facing output stays English.
+        "headless.rs",
+        // Its file errors carry OS text and reach the status line only through
+        // `err.settings_save`.
+        "settings.rs",
+        // Provider names and the JSON protocol.
+        "worker.rs",
+        // The string table itself.
+        "i18n.rs",
+    ];
+
     /// Scans the interactive sources for English literals reaching `status`, the
     /// log, or a `String` through `.into()` / `unwrap_or`, outside their test
-    /// modules. Not scanned: `headless.rs` (agent-facing output stays English),
-    /// `settings.rs` (its file errors carry OS text and reach the status line only
-    /// through `err.settings_save`) and `worker.rs` (provider names, JSON protocol).
+    /// modules. [`NOT_INTERACTIVE_SOURCES`] lists the files left out and why.
     #[test]
     fn no_english_literal_reaches_the_status_line_or_the_log() {
         let patterns = [
@@ -1145,24 +1174,10 @@ mod tests {
         ]
         .map(|pattern| regex_lite::Regex::new(pattern).unwrap());
         let mut found = Vec::new();
-        for file in [
-            "app.rs",
-            "commands.rs",
-            "keys.rs",
-            "main.rs",
-            "pets.rs",
-            "ui/mod.rs",
-            "ui/processing.rs",
-            "ui/llm.rs",
-            "ui/settings.rs",
-            "ui/log.rs",
-            "ui/help.rs",
-            "ui/menu.rs",
-        ] {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src")
-                .join(file);
-            let src = std::fs::read_to_string(&path).unwrap_or_default();
+        for (file, src) in rust_sources() {
+            if NOT_INTERACTIVE_SOURCES.contains(&file.as_str()) {
+                continue;
+            }
             let src = src.split("#[cfg(test)]").next().unwrap_or_default();
             for (offset, line) in src.lines().enumerate() {
                 if line.trim_start().starts_with("//") {

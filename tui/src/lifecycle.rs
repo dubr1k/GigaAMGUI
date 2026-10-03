@@ -38,12 +38,17 @@ impl Connection {
                     .iter()
                     .all(|name| items.iter().any(|item| item.as_str() == Some(name)))
             });
+        // The detail is technical (what the worker actually announced); the
+        // localized sentence around it comes from `status.worker_incompatible`.
         if !compatible {
             self.state = ConnectionState::Unavailable;
-            return Err("Incompatible worker protocol or capabilities".into());
+            return Err(format!(
+                "protocol_version {}, capabilities {} (expected {PROTOCOL_VERSION} with resolve_inputs, asr, llm)",
+                value["protocol_version"], value["capabilities"]
+            ));
         }
         if self.state != ConnectionState::Connecting {
-            return Err("Unexpected worker readiness response".into());
+            return Err("ready received twice".into());
         }
         self.state = ConnectionState::Ready;
         Ok(())
