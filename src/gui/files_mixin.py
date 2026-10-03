@@ -255,12 +255,10 @@ class FilesMixin:
         """Open files received from Finder, Dock, CLI args, or another app instance."""
         media_files, transcript_files = self._collect_supported_open_paths(paths)
         if media_files:
-            if hasattr(self, "tabs"):
-                self.tabs.setCurrentIndex(0)
+            self._show_tab("processing")
             self._apply_dropped_or_selected_files(media_files, append=append)
         if transcript_files:
-            if hasattr(self, "tabs"):
-                self.tabs.setCurrentIndex(1)
+            self._show_tab("llm")
             self.transcript_files_for_llm = transcript_files if not append else self._merge_paths(
                 self.transcript_files_for_llm, transcript_files
             )

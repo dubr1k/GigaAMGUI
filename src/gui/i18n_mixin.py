@@ -49,13 +49,16 @@ class I18nMixin:
         self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
         if hasattr(self, "_title_label"):
             self._title_label.setText("GigaAMGUI v3")
-        if hasattr(self, "tabs"):
-            self.tabs.setTabText(0, "Обработка" if is_ru else "Processing")
-            self.tabs.setTabText(1, "Live")
-            self.tabs.setTabText(2, "LLM")
-            self.tabs.setTabText(3, "API")
-            self.tabs.setTabText(4, "Журнал" if is_ru else "Log")
-            self.tabs.setTabText(5, "Настройки" if is_ru else "Settings")
+        if hasattr(self, "_tab_pages"):
+            for name, text in (
+                ("processing", "Обработка" if is_ru else "Processing"),
+                ("live", "Live"),
+                ("llm", "LLM"),
+                ("api", "API"),
+                ("journal", "Журнал" if is_ru else "Log"),
+                ("settings", "Настройки" if is_ru else "Settings"),
+            ):
+                self.tabs.setTabText(self.tabs.indexOf(self._tab_pages[name]), text)
         if hasattr(self, "btn_start"):
             self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ" if is_ru else "START PROCESSING")
         if hasattr(self, "btn_clear"):

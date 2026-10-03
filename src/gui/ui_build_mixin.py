@@ -311,7 +311,8 @@ class UiBuildMixin:
         llm_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         llm_scroll.setWidget(self._create_llm_tab())
         tabs.addTab(llm_scroll, "LLM")
-        tabs.addTab(self._create_api_tab(), "API")
+        api_tab = self._create_api_tab()
+        tabs.addTab(api_tab, "API")
 
         # ── Вкладка «Журнал» (2.0: таблица событий + технический журнал) ──
         log_tab = QWidget()
@@ -406,8 +407,19 @@ class UiBuildMixin:
         log_layout.addWidget(technical_log)
         self._refresh_journal_labels()
         tabs.addTab(log_tab, "Журнал")
-        tabs.addTab(self._create_settings_tab(), "Настройки")
+        settings_tab = self._create_settings_tab()
+        tabs.addTab(settings_tab, "Настройки")
         self.tabs = tabs
+        # Вкладки ищутся по странице, а не по номеру: номер 1 когда-то был
+        # LLM, а после появления Live открывал не ту вкладку.
+        self._tab_pages = {
+            "processing": proc_scroll,
+            "live": live_scroll,
+            "llm": llm_scroll,
+            "api": api_tab,
+            "journal": log_tab,
+            "settings": settings_tab,
+        }
         self._apply_language()
 
         # Статус-бар: краткие подсказки и состояние
@@ -425,6 +437,11 @@ class UiBuildMixin:
 
         self._apply_theme()
         self._restore_geometry()
+
+    def _show_tab(self, name: str) -> None:
+        page = getattr(self, "_tab_pages", {}).get(name)
+        if page is not None:
+            self.tabs.setCurrentWidget(page)
 
     # ──────────────────────────────────────────────────────────────
     # Меню, статус, геометрия окна, журнал

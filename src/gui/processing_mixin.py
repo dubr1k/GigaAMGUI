@@ -602,8 +602,9 @@ class ProcessingMixin:
             if not self.llm_output_dir:
                 self.llm_output_dir = self.llm_transcript_dir
                 self._update_llm_output_dir_label(self.llm_output_dir)
-            self.lbl_llm_files.setText(self._t(f"Выбрано транскриптов: {len(generated_files)}", f"Selected transcripts: {len(generated_files)}"))
-            self.lbl_llm_files.setStyleSheet(self._transparent_label_style(self._colors()["text_sub"]))
+            # Список, счётчик и кнопки вкладки LLM — из одного места: раньше
+            # здесь менялась только подпись, а список показывал старые файлы.
+            self._refresh_llm_files_list()
 
         if getattr(self, "_last_processing_results", []):
             self._show_processing_result()
@@ -661,7 +662,7 @@ class ProcessingMixin:
         self.result_file_picker.setCurrentIndex(0)
         self._populate_processing_result(records[0])
         self.processing_stack.setCurrentWidget(self._processing_result_page)
-        self.tabs.setCurrentIndex(0)
+        self._show_tab("processing")
 
     def _select_processing_result(self, index: int):
         record = self.result_file_picker.itemData(index)

@@ -59,3 +59,30 @@ def test_repopulating_the_transcript_replaces_segment_rows(window):
     _flush_deletes()
     assert window.result_transcript.findChildren(QPushButton) == []
     assert [label.text() for label in window.result_transcript.findChildren(QLabel)] == ["текст без таймкодов"]
+
+
+def test_opening_transcripts_switches_to_the_llm_tab(window, tmp_path):
+    transcript = tmp_path / "meeting.txt"
+    transcript.write_text("текст", encoding="utf-8")
+    window.tabs.setCurrentIndex(0)
+    window.transcript_files_for_llm = []
+
+    window.open_paths_from_system([str(transcript)])
+
+    assert window.tabs.tabText(window.tabs.currentIndex()) == "LLM"
+    assert window.llm_files_list.count() == 1
+
+
+def test_finished_batch_lists_its_transcripts_on_the_llm_tab(window, tmp_path, monkeypatch):
+    transcript = tmp_path / "meeting.txt"
+    transcript.write_text("текст", encoding="utf-8")
+    monkeypatch.setattr(window, "_show_completion_dialog", lambda *a, **k: None)
+    window.transcript_files_for_llm = []
+    window._refresh_llm_files_list()
+    window._last_generated_transcript_files = [str(transcript)]
+
+    window._on_processing_finished(True, "Готово")
+
+    assert window.transcript_files_for_llm == [str(transcript)]
+    assert window.llm_files_list.count() == 1
+    assert window.llm_files_list.isHidden() is False
