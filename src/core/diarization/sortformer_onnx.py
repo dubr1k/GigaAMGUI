@@ -492,7 +492,7 @@ class SortformerOnnxDiarizationManager(SpeakerMappingMixin):
         return merged
 
     def _predictions_to_segments(self, predictions: np.ndarray, *, audio_duration: float):
-        from ...utils.diarization import SpeakerSegment  # noqa: PLC0415
+        from .base import SpeakerSegment  # noqa: PLC0415
 
         raw = []
         for speaker in range(_NUM_SPEAKERS):

@@ -179,8 +179,8 @@ class TranscriptionProcessor:
     def diarization_manager(self) -> DiarizationBackend | None:
         """Ленивая загрузка выбранного backend с актуальным HF-токеном."""
         from ..config import ONNX_MODEL_DIR, ONNX_PROVIDER
-        from ..utils.diarization import normalize_diarization_backend
         from .diarization.factory import create_diarization_backend
+        from .diarization.names import normalize_diarization_backend
 
         backend = normalize_diarization_backend(self._active_diarization_backend)
         hf_token = os.getenv("HF_TOKEN", "").strip()
@@ -383,7 +383,7 @@ class TranscriptionProcessor:
             self.logger(message)
             return fail(message)
 
-        from ..utils.diarization import normalize_diarization_backend
+        from .diarization.names import normalize_diarization_backend
 
         self._active_diarization_backend = normalize_diarization_backend(diarization_backend)
         self._progress_plan = ProgressPlan(has_diarization=enable_diarization)

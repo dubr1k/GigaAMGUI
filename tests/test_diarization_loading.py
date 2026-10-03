@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from src.core.diarization import pyannote_backend
 from src.core.model_preparation import PreparationState
 from src.core.processor import TranscriptionProcessor
 from src.utils import diarization
@@ -22,7 +23,8 @@ def test_processor_recreates_manager_when_hf_token_changes(monkeypatch):
             self.device = device
             created.append(self)
 
-    monkeypatch.setattr(diarization, "DiarizationManager", FakeManager)
+    # Фабрика создаёт pyannote-менеджер из core.diarization.pyannote_backend.
+    monkeypatch.setattr(pyannote_backend, "DiarizationManager", FakeManager)
     monkeypatch.setenv("HF_TOKEN", "hf_first")
     processor = TranscriptionProcessor(object(), _Stats())
 
@@ -125,7 +127,7 @@ def test_pipeline_preserves_internal_type_error_without_legacy_retry(monkeypatch
             raise TypeError("missing packaged pipeline component")
 
     _install_pipeline_dependencies(monkeypatch, FakePipeline)
-    monkeypatch.setattr(diarization, "diagnose_hf_access", lambda _token: "all repos OK")
+    monkeypatch.setattr(pyannote_backend, "diagnose_hf_access", lambda _token: "all repos OK")
     manager = diarization.DiarizationManager(hf_token="hf_runtime", device="cpu")
 
     with pytest.raises(ValueError, match="missing packaged pipeline component"):

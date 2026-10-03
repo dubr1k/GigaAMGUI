@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from src.core.diarization import sortformer_nemo
 from src.core.model_preparation import PreparationState
 from src.core.processor import TranscriptionProcessor
 from src.utils import diarization
@@ -72,7 +73,7 @@ def test_sortformer_prepare_checks_its_own_model_not_pyannote(monkeypatch):
     events = []
     checked = []
     monkeypatch.setattr(
-        diarization,
+        sortformer_nemo,
         "hf_repo_is_cached",
         lambda repo: checked.append(repo) or False,
     )
