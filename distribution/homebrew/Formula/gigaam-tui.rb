@@ -8,7 +8,7 @@ class GigaamTui < Formula
   depends_on "ffmpeg"
 
   def install
-    system "cargo", "build", "--release", "--manifest-path", "tui/Cargo.toml"
+    system "cargo", "build", "--release", "--locked", "--manifest-path", "tui/Cargo.toml"
 
     libexec.install "src", "requirements-tui.txt", "bin"
     libexec.install "tui/target/release/gigaam-tui"

@@ -131,7 +131,10 @@ soundfile==0.13.1
 soxr==1.0.0
 speechbrain==1.0.3
 SQLAlchemy==2.0.44
-sympy==1.13.1
+# sympy не пиним: его версию задаёт torch (2.6 требует ровно 1.13.1, 2.8 —
+# >=1.13.3). Пин 1.13.1 делал диапазон torch ниже фактически «только 2.6»:
+# pip молча откатывал torch 2.8/cu128 (инструкция для Blackwell выше) и
+# build-time torch 2.8 в CI обратно на 2.6+cu124, скачивая его второй раз.
 tensorboardX==2.6.4
 threadpoolctl==3.6.0
 tokenizers==0.22.1

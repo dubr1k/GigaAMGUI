@@ -21,6 +21,18 @@ recording and misdirects the diagnosis. Extra channels are dropped instead.
 """
 
 
+class RecorderCloseError(OSError):
+    """Some tracks could not be finalized; ``recordings`` still names every file.
+
+    One writer failing to flush used to end the close loop, leaving every later
+    FLAC unfinalized and the session without its recordings list.
+    """
+
+    def __init__(self, failures: list[str], recordings: dict[CaptureSource, Path]) -> None:
+        super().__init__("; ".join(failures))
+        self.recordings = recordings
+
+
 class SessionRecorder:
     def __init__(
         self,
@@ -63,12 +75,36 @@ class SessionRecorder:
             self._write("mix", chunk)
 
     def close(self) -> dict[CaptureSource, Path]:
-        for writer in self._writers.values():
-            writer.close()
-        return {
+        failures: list[str] = []
+        # Каждый writer закрывается сам по себе: FLAC без закрытия остаётся
+        # без заголовка, и одна ошибка не должна стоить остальных дорожек.
+        for track, writer in list(self._writers.items()):
+            try:
+                writer.close()
+            except Exception as exc:
+                name = track.value if isinstance(track, CaptureSource) else track
+                failures.append(f"{name}: {type(exc).__name__}: {exc}")
+        self._writers.clear()
+        recordings = {
             source: paths[0]
             for source, paths in self._paths.items()
             if isinstance(source, CaptureSource) and paths
+        }
+        if failures:
+            raise RecorderCloseError(failures, recordings)
+        return recordings
+
+    def recording_files(self) -> dict[str, list[Path]]:
+        """Every segment of every track ("mic", "system", "mix"), in order.
+
+        A track rolls over to `<name>-002.flac` after `segment_max_bytes` —
+        about 15.5 min of 48 kHz stereo — so the first file alone is not the
+        recording.
+        """
+        return {
+            track.value if isinstance(track, CaptureSource) else track: list(paths)
+            for track, paths in self._paths.items()
+            if paths
         }
 
     def artifacts(self) -> dict[str, dict[str, Any]]:
@@ -150,3 +186,21 @@ class SessionRecorder:
         bytes_limit = self._segment_max_bytes // (chunk.channels * 3)
         duration_limit = chunk.sample_rate * self._segment_max_duration_seconds
         return max(1, min(bytes_limit, duration_limit))
+
+
+def join_segments(paths: list[Path], destination: Path, *, block_frames: int = 480_000) -> Path:
+    """Concatenate one track's segments into a single file, block by block.
+
+    Diarization labels speakers per file; diarizing segments one by one would
+    give the same person a new label in every segment.
+    """
+    with sf.SoundFile(str(paths[0])) as first:
+        rate, channels = first.samplerate, first.channels
+    with sf.SoundFile(
+        str(destination), mode="w", samplerate=rate, channels=channels, format="FLAC", subtype="PCM_16",
+    ) as output:
+        for path in paths:
+            with sf.SoundFile(str(path)) as part:
+                for block in part.blocks(blocksize=block_frames, dtype="float32", always_2d=True):
+                    output.write(block)
+    return destination

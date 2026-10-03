@@ -37,17 +37,6 @@ def _autoclose(window, monkeypatch):
     window.close()
 
 
-def test_file_progress_still_accepts_integer():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    window = GigaTranscriberQtApp()
-
-    window._update_file_progress(50)
-
-    assert window.progress_bar_file.value() == 50
-    window.close()
-
-
 def test_llm_progress_updates_bar():
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
@@ -379,7 +368,7 @@ def test_speakers_spinbox_auto_value():
 def test_desktop_gui_selects_and_persists_onnx_coreml(monkeypatch):
     window = _new_window()
     monkeypatch.setattr(
-        "src.gui.app_qt.ASRBackendDialog.pick_configuration",
+        "src.gui.menu_mixin.ASRBackendDialog.pick_configuration",
         lambda *args, **kwargs: ("onnx", "coreml"),
     )
 

@@ -180,3 +180,58 @@ def test_clearing_with_nothing_remembered_stays_a_noop(window):
 
     assert window.files_to_process == []
     assert window.transcript_files_for_llm == []
+
+
+def test_restored_queue_matches_a_folder_picked_with_subfolders(tmp_path, window, monkeypatch):
+    from PyQt6.QtWidgets import QFileDialog
+
+    folder = tmp_path / "recordings"
+    (folder / "day2").mkdir(parents=True)
+    (folder / "a.wav").write_bytes(b"")
+    (folder / "day2" / "b.mp3").write_bytes(b"")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_a, **_k: str(folder))
+    window.output_dir = ""
+
+    window._select_files_folder()
+    picked = sorted(window.files_to_process)
+    window._rebuild_pending_audio_files()
+
+    assert sorted(window.files_to_process) == picked == sorted(
+        [str(folder / "a.wav"), str(folder / "day2" / "b.mp3")]
+    )
+
+
+def test_restored_queue_of_picked_files_does_not_walk_subfolders(tmp_path, window):
+    folder = tmp_path / "downloads"
+    (folder / "nested").mkdir(parents=True)
+    (folder / "talk.wav").write_bytes(b"")
+    (folder / "nested" / "other.wav").write_bytes(b"")
+    window.output_dir = ""
+
+    window._apply_dropped_or_selected_files([str(folder / "talk.wav")])
+    window._rebuild_pending_audio_files()
+
+    assert window.files_to_process == [str(folder / "talk.wav")]
+
+
+@pytest.mark.parametrize("saved_home", [False, True])
+def test_first_launch_does_not_queue_text_files_from_the_home_folder(tmp_path, monkeypatch, saved_home):
+    """Без сохранённой папки транскриптов окно сканировало домашнюю папку."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "notes.txt").write_text("список покупок", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    app = QApplication.instance() or QApplication([])
+    if saved_home:
+        # Прежние версии сохраняли этот домашний дефолт при каждом выходе.
+        from src.utils import UserSettings
+
+        UserSettings().set_value("llm_transcript_dir", str(home))
+
+    win = GigaTranscriberQtApp()
+    try:
+        assert win.transcript_files_for_llm == []
+        assert win.llm_files_list.count() == 0
+    finally:
+        win.close()
+        app.processEvents()

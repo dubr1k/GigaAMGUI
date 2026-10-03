@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .live_display_mixin import LIVE_READY_TEXT, LIVE_WAVEFORM_TEXTS
+
 
 class _GrowingTextEdit(QTextEdit):
     """QTextEdit whose size hint is its minimum, so it stretches to fill the
@@ -45,7 +47,8 @@ class LiveUiMixin:
         title = QLabel(self._t("Live", "Live"))
         title.setObjectName("page_title")
         title_block.addWidget(title)
-        subtitle = QLabel(self._t("Запись и расшифровка в реальном времени", "Live capture and transcription"))
+        subtitle = QLabel()
+        self._bilingual(subtitle.setText, "Запись и расшифровка в реальном времени", "Live capture and transcription")
         subtitle.setObjectName("page_subtitle")
         title_block.addWidget(subtitle)
         heading.addLayout(title_block)
@@ -56,6 +59,26 @@ class LiveUiMixin:
         workspace.setObjectName("live_three_pane_layout")
         workspace.setSpacing(self._px(6))
 
+        workspace.addWidget(self._create_live_source_pane())
+        workspace.addWidget(self._create_live_capture_pane(), 1)
+        workspace.addWidget(self._create_live_parameters_pane())
+
+        layout.addLayout(workspace, 1)
+
+        self.combo_live_source.currentIndexChanged.connect(self._update_live_source_controls)
+        self.combo_live_diarization.currentIndexChanged.connect(self._update_live_export_controls)
+        for checkbox in self.live_export_checkboxes.values():
+            checkbox.stateChanged.connect(self._update_live_export_controls)
+        # Устройства перечитывает _restore_live_settings (в фоне, с сохранённым выбором).
+        self._update_live_output_folder_label(self.live_output_dir.text())
+        self._update_live_source_controls()
+        self._update_live_export_controls()
+        self._update_live_control_state()
+        self.signals.live_status.connect(self._update_live_recorder_display)
+        return tab
+
+    def _create_live_source_pane(self) -> QWidget:
+        """Левая колонка: источник и устройства, папка сессии, оверлей."""
         source_pane = QWidget()
         source_pane.setObjectName("live_source_pane")
         # Wide enough for a label plus a readable device name; the earlier
@@ -88,6 +111,12 @@ class LiveUiMixin:
         self.combo_live_system_device = QComboBox()
         self.lbl_live_system_device = QLabel(self._t("Системный звук:", "System audio:"))
         source_form.addRow(self.lbl_live_system_device, self.combo_live_system_device)
+        for combo in (self.combo_live_mic_device, self.combo_live_system_device):
+            # Список приходит из фонового потока; пустой комбо не должен
+            # схлопываться до пары символов, пока устройства не ответили.
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setPlaceholderText(self._t("Поиск устройств…", "Looking for devices…"))
 
         # Short captions: the row label already says "Дорожки:" and the long
         # "Записывать дорожку …" was cut to "Записыв" in the side pane.
@@ -154,8 +183,10 @@ class LiveUiMixin:
         quick_layout.addWidget(self.btn_live_clear)
         source_layout.addWidget(quick_actions)
         source_layout.addStretch()
-        workspace.addWidget(source_pane)
+        return source_pane
 
+    def _create_live_capture_pane(self) -> QWidget:
+        """Центр: таймер, статус, кнопки записи и сама расшифровка."""
         capture_pane = QWidget()
         capture_pane.setObjectName("live_capture_pane")
         capture_pane.setMinimumWidth(self._px(235))
@@ -163,7 +194,8 @@ class LiveUiMixin:
         capture_layout.setContentsMargins(0, 0, 0, 0)
         capture_layout.setSpacing(self._px(6))
 
-        recorder = QGroupBox(self._t("Запись", "Recording"))
+        recorder = QGroupBox()
+        self._bilingual(recorder.setTitle, "Запись", "Recording")
         recorder.setObjectName("live_recorder_card")
         recorder_layout = QVBoxLayout(recorder)
         recorder_layout.setContentsMargins(self._px(10), self._px(7), self._px(10), self._px(8))
@@ -171,23 +203,31 @@ class LiveUiMixin:
         self._live_timer_clock = QElapsedTimer()
         self._live_timer_elapsed_ms = 0
         self._live_timer_active = False
-        self._live_timer_ticker = QTimer(tab)
+        self._live_timer_ticker = QTimer(capture_pane)
         self._live_timer_ticker.setInterval(1000)
         self._live_timer_ticker.timeout.connect(self._refresh_live_recorder_timer)
         self.lbl_live_timer = QLabel("00:00:00")
         self.lbl_live_timer.setObjectName("live_timer_display")
         self.lbl_live_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_timer.setFixedHeight(self._px(22))
-        self.lbl_live_timer.setToolTip(self._t("Таймер отражает длительность активной записи.", "The timer reflects active capture duration."))
+        self._bilingual(
+            self.lbl_live_timer.setToolTip,
+            "Таймер отражает длительность активной записи.",
+            "The timer reflects active capture duration.",
+        )
         recorder_layout.addWidget(self.lbl_live_timer)
-        self.lbl_live_waveform = QLabel(self._t("Аудиосигнал появится во время записи", "Audio signal appears during capture"))
+        self.lbl_live_waveform = QLabel(self._t(*LIVE_WAVEFORM_TEXTS["idle"]))
         self.lbl_live_waveform.setObjectName("live_waveform_display")
         self.lbl_live_waveform.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_waveform.setWordWrap(True)
         self.lbl_live_waveform.setMaximumHeight(self._px(40))
-        self.lbl_live_waveform.setToolTip(self._t("Индикатор аудиосигнала ожидает активную сессию.", "The audio signal indicator is waiting for an active session."))
+        self._bilingual(
+            self.lbl_live_waveform.setToolTip,
+            "Индикатор аудиосигнала ожидает активную сессию.",
+            "The audio signal indicator is waiting for an active session.",
+        )
         recorder_layout.addWidget(self.lbl_live_waveform)
-        self.lbl_live_status = QLabel(self._t("Готово к записи", "Ready for live capture"))
+        self.lbl_live_status = QLabel(self._t(*LIVE_READY_TEXT))
         self.lbl_live_status.setObjectName("live_status_display")
         self.lbl_live_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_status.setWordWrap(True)
@@ -224,12 +264,18 @@ class LiveUiMixin:
         recorder_layout.addLayout(self.live_controls_layout)
         capture_layout.addWidget(recorder)
 
-        transcript_panel = QGroupBox(self._t("Live transcript", "Live transcript"))
+        transcript_panel = QGroupBox()
+        self._bilingual(transcript_panel.setTitle, "Live-расшифровка", "Live transcript")
         transcript_panel.setObjectName("live_transcript_card")
         transcript_layout = QVBoxLayout(transcript_panel)
         transcript_layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(8))
         transcript_layout.setSpacing(self._px(3))
-        transcript_hint = QLabel(self._t("Таймкоды и мягкие метки спикеров появятся по мере распознавания.", "Timecodes and restrained speaker labels appear as speech is recognized."))
+        transcript_hint = QLabel()
+        self._bilingual(
+            transcript_hint.setText,
+            "Таймкоды и мягкие метки спикеров появятся по мере распознавания.",
+            "Timecodes and restrained speaker labels appear as speech is recognized.",
+        )
         transcript_hint.setObjectName("page_subtitle")
         transcript_hint.setWordWrap(True)
         transcript_hint.setMaximumHeight(self._px(28))
@@ -243,8 +289,10 @@ class LiveUiMixin:
         self.live_transcript.setPlaceholderText(self._t("Расшифровка появится здесь", "Transcript appears here"))
         transcript_layout.addWidget(self.live_transcript, 1)
         capture_layout.addWidget(transcript_panel, 1)
-        workspace.addWidget(capture_pane, 1)
+        return capture_pane
 
+    def _create_live_parameters_pane(self) -> QWidget:
+        """Правая колонка: диаризация, усиление и форматы экспорта."""
         parameters_pane = QWidget()
         parameters_pane.setObjectName("live_parameters_pane")
         parameters_pane.setMinimumWidth(self._px(220))
@@ -265,7 +313,18 @@ class LiveUiMixin:
         parameters_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.combo_live_diarization = QComboBox()
         self.combo_live_diarization.addItem(self._t("Выключено", "Off"), "off")
-        self.combo_live_diarization.addItem(self._t("Оценка в реальном времени", "Live estimate"), "live_estimate")
+        self.combo_live_diarization.addItem(
+            self._t("Оценка в реальном времени (недоступно)", "Live estimate (unavailable)"), "live_estimate",
+        )
+        # Ни один backend диаризации не умеет estimate_events: сессия грузила
+        # Sortformer и сообщала, что оценки нет. Пункт виден, но не выбирается.
+        estimate_item = self.combo_live_diarization.model().item(self.combo_live_diarization.findData("live_estimate"))
+        estimate_item.setEnabled(False)
+        self._bilingual(
+            estimate_item.setToolTip,
+            "Пока не поддерживается: используйте «После остановки».",
+            "Not supported yet: use After stop.",
+        )
         self.combo_live_diarization.addItem(self._t("После остановки", "After stop"), "after_stop")
         self.combo_live_diarization.setToolTip(
             self._t(
@@ -345,54 +404,4 @@ class LiveUiMixin:
         exports_group_layout.addLayout(subtitle_layout)
         parameters_layout.addWidget(self.grp_live_exports)
         parameters_layout.addStretch()
-        workspace.addWidget(parameters_pane)
-
-        layout.addLayout(workspace, 1)
-
-        self.combo_live_source.currentIndexChanged.connect(self._update_live_source_controls)
-        self.combo_live_diarization.currentIndexChanged.connect(self._update_live_export_controls)
-        for checkbox in self.live_export_checkboxes.values():
-            checkbox.stateChanged.connect(self._update_live_export_controls)
-        self._refresh_live_devices()
-        self._update_live_output_folder_label(self.live_output_dir.text())
-        self._update_live_source_controls()
-        self._update_live_export_controls()
-        self._update_live_control_state()
-        self.signals.live_status.connect(self._update_live_recorder_display)
-        return tab
-
-    def _update_live_recorder_display(self, status) -> None:
-        state = getattr(getattr(status, "state", None), "value", "")
-        if state == "starting":
-            self._live_timer_ticker.stop()
-            self._live_timer_elapsed_ms = 0
-            self._live_timer_active = False
-            self.lbl_live_timer.setText("00:00:00")
-        elif state == "recording":
-            if not self._live_timer_active:
-                self._live_timer_clock.start()
-                self._live_timer_active = True
-                self._live_timer_ticker.start()
-            self.lbl_live_waveform.setText(self._t("Захват аудио", "Capturing audio"))
-        elif state == "paused":
-            self._pause_live_recorder_timer()
-            self.lbl_live_waveform.setText(self._t("Запись на паузе", "Capture paused"))
-        elif state in {"stopped", "failed"}:
-            self._pause_live_recorder_timer()
-            self.lbl_live_waveform.setText(self._t("Аудиосигнал завершён", "Audio capture complete"))
-
-    def _pause_live_recorder_timer(self) -> None:
-        if self._live_timer_active:
-            self._live_timer_elapsed_ms += self._live_timer_clock.elapsed()
-            self._live_timer_active = False
-        self._live_timer_ticker.stop()
-        self._refresh_live_recorder_timer()
-
-    def _refresh_live_recorder_timer(self) -> None:
-        elapsed_ms = self._live_timer_elapsed_ms
-        if self._live_timer_active:
-            elapsed_ms += self._live_timer_clock.elapsed()
-        total_seconds = elapsed_ms // 1000
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        self.lbl_live_timer.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        return parameters_pane

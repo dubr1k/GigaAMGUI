@@ -336,6 +336,85 @@ def test_processor_failure_cleans_up_and_maps_to_processing_failed(backend, uplo
     assert _leftovers(upload_dir) == []
 
 
+def test_processor_failure_reason_reaches_the_client(backend, tmp_path, fake_processor, monkeypatch):
+    # Процессор объясняет провал в result["error"] — клиент должен увидеть причину, а не «see the log»
+    monkeypatch.setattr(_FakeProcessor, "process_file",
+                        lambda self, *a, **kw: {"success": False, "error": "boom: ffmpeg could not decode\ntrace"})
+    err = _err(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+    assert err.code == "processing_failed" and err.status == 500
+    assert "boom: ffmpeg could not decode" in err.message
+    assert "trace" not in err.message  # только первая строка: без многострочных подробностей сервера
+
+
+class _ListLogger:
+    def __init__(self):
+        self.lines = []
+
+    def debug(self, message, *_a, **_k):
+        self.lines.append(str(message))
+
+    info = warning = error = debug
+
+
+def test_processor_failure_reason_hides_server_paths(backend, tmp_path, upload_dir, fake_processor, monkeypatch):
+    """Удалённый клиент видит причину, но не раскладку диска сервера: абсолютные
+    пути (рабочая папка под upload_dir, временные файлы) — только именем файла.
+    Полный текст остаётся в журнале сервера."""
+    seen = {}
+
+    def fail(self, filepath, output_dir, *_a, **_kw):
+        seen["error"] = (f"Не удалось создать папку для результатов {output_dir}: "
+                         f"[Errno 13] Permission denied: '{output_dir}'\n{filepath}")
+        seen["work_dir"] = Path(output_dir)
+        return {"success": False, "error": seen["error"]}
+
+    monkeypatch.setattr(_FakeProcessor, "process_file", fail)
+    backend.logger = _ListLogger()
+    err = _err(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+
+    name = seen["work_dir"].name
+    assert seen["work_dir"].parent == upload_dir
+    assert err.message == (
+        f"Transcription failed: Не удалось создать папку для результатов {name}: "
+        f"[Errno 13] Permission denied: '{name}'"
+    )
+    assert str(tmp_path) not in err.message
+    assert any(seen["error"] in line for line in backend.logger.lines)  # сервер видит полный текст
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("/srv/gigaam/uploads/req_1/x.wav: boom", "x.wav: boom"),
+    ("Permission denied: '/srv/up/req_1'.", "Permission denied: 'req_1'."),
+    ("Ошибка: файл не найден: /tmp/gigaam_a1/temp.wav.", "Ошибка: файл не найден: temp.wav."),
+    (r"open C:\Users\svc\AppData\Local\Temp\gigaam\temp.wav failed", "open temp.wav failed"),
+    (r"\\nas\share\inbox\call.mp3 is gone", "call.mp3 is gone"),
+    ("load ~/.cache/huggingface/hub/model.onnx", "load model.onnx"),
+    ('File "/srv/app/src/core/processor.py", line 12', 'File "processor.py", line 12'),
+    ("/srv/up/dir/", "dir"),
+    # Не пути сервера: URL, id моделей, дроби и «и/или» остаются как есть
+    ("see https://huggingface.co/pyannote/segmentation-3.0", "see https://huggingface.co/pyannote/segmentation-3.0"),
+    ("pyannote/segmentation-3.0 и/или 1/2, 16 kHz/mono", "pyannote/segmentation-3.0 и/или 1/2, 16 kHz/mono"),
+    ("CUDA out of memory", "CUDA out of memory"),
+])
+def test_redact_server_paths(text, expected):
+    from src.services.transcription_api import redact_server_paths
+
+    assert redact_server_paths(text) == expected
+
+
+def test_redact_server_paths_handles_known_paths_with_spaces():
+    from src.services.transcription_api import redact_server_paths
+
+    known = "/srv/user uploads/req 1/запись 1.wav"
+    assert redact_server_paths(f"cannot open {known}: EOF", known_paths=[known]) == "cannot open запись 1.wav: EOF"
+
+
+def test_processor_failure_without_reason_keeps_generic_message(backend, tmp_path, fake_processor):
+    fake_processor.fail = True
+    err = _err(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+    assert err.message == "Transcription failed on the server. See the server log."
+
+
 def test_processor_exception_cleans_up(backend, upload_dir, fake_processor, monkeypatch):
     monkeypatch.setattr(_FakeProcessor, "process_file", lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("x")))
     err = _err(backend.transcribe(url="https://example.org/x", opts=TranscribeOptions(), progress=None))
@@ -586,6 +665,41 @@ def test_summarize_provider_and_model_overrides(backend, fake_provider):
     assert call["provider"] == "Other" and call["settings"]["provider"] == "Other" and call["settings"]["model"] == "gpt-x"
     err = _err(backend.summarize("t", "summary", None, "Skynet", None))
     assert err.code == "unsupported_parameter" and err.param == "provider"
+
+
+def _codex_commands(monkeypatch) -> list:
+    """Настоящий llm_service до subprocess: команды Codex записываются, ответ — JSON agent_message."""
+    import subprocess
+
+    commands = []
+
+    def run_command(command, *, input_text=None, cancel_check=None):
+        commands.append(list(command))
+        event = '{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}'
+        return subprocess.CompletedProcess(command, 0, event + "\n", "")
+
+    monkeypatch.setattr(llm_service, "_run_command", run_command)
+    return commands
+
+
+def test_summarize_codex_model_override_reaches_the_command(backend, tmp_path, monkeypatch):
+    # Codex читает только codex_model (общий `model` — это модель API); раньше model=X
+    # из summarize молча терялся, а в ответе всё равно стояло "model": X
+    commands = _codex_commands(monkeypatch)
+    out = _run(backend.summarize("t", "summary", None, "Codex", "o3"))
+    assert out["provider"] == "Codex" and out["model"] == "o3"
+    command = commands[0]
+    assert command[command.index("-m") + 1] == "o3"
+
+
+def test_summarize_codex_ignores_shared_api_model_and_reports_it_honestly(backend, tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "user_settings.json").write_text('{"llm_provider": "Codex", "llm_model": "gpt-4.1-mini"}')
+    commands = _codex_commands(monkeypatch)
+    out = _run(backend.summarize("t", "summary", None, None, None))
+    assert "-m" not in commands[0]  # модель API не уходит в Codex
+    assert out["model"] == ""       # и не выдаётся за использованную
 
 
 def test_summarize_provider_from_settings(backend, fake_provider, tmp_path):

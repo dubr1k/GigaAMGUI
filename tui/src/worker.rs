@@ -1,21 +1,17 @@
-//! The Python worker process: spawning, the JSON line protocol and the payloads sent to it.
+//! The Python worker process: spawning, the JSON line protocol and its types.
+//! Commands built from the UI state live in `requests.rs`; this module knows
+//! nothing about `App`.
 
 use std::{
-    io::{self, BufRead, BufReader, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver},
+    process::{ChildStdin, Command},
 };
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{
-    app::{llm_input_files, App},
-    commands::BACK_MENU_OPTION,
-    i18n::t,
-    settings::TuiSettings,
-};
+use crate::{providers::cli_providers, settings::TuiSettings};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -41,84 +37,6 @@ impl Default for LlmTool {
     }
 }
 
-/// Запасной список на случай, если воркер ещё не ответил на `llm_tools`.
-pub(crate) const FALLBACK_PROVIDERS: [&str; 7] = [
-    "API",
-    "Claude Code",
-    "Codex",
-    "OpenCode",
-    "Pi",
-    "oh-my-pi",
-    "Other",
-];
-
-/// Префикс ключей settings для провайдера — совпадает с `cli_tools.PROVIDERS`.
-pub(crate) fn provider_prefix(provider: &str) -> &'static str {
-    match provider {
-        "Claude Code" => "claude",
-        "Codex" => "codex",
-        "OpenCode" => "opencode",
-        "Pi" => "pi",
-        "oh-my-pi" => "omp",
-        "Other" => "other",
-        _ => "api",
-    }
-}
-
-pub(crate) fn llm_tool_for<'a>(app: &'a App, provider: &str) -> Option<&'a LlmTool> {
-    app.llm_tools.iter().find(|tool| tool.provider == provider)
-}
-
-pub(crate) fn provider_menu_options(app: &App) -> Vec<String> {
-    let providers: Vec<String> = if app.llm_providers.is_empty() {
-        FALLBACK_PROVIDERS
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect()
-    } else {
-        app.llm_providers.clone()
-    };
-    providers
-        .into_iter()
-        .map(|provider| match llm_tool_for(app, &provider) {
-            Some(tool) if tool.status == "found" => format!(
-                "{provider} · {}",
-                tool.version
-                    .as_deref()
-                    .unwrap_or(t(app.lang, "value.found"))
-            ),
-            Some(tool) if tool.status == "broken" => {
-                format!("{provider} · {}", t(app.lang, "llm.broken"))
-            }
-            Some(tool) if tool.status == "missing" => {
-                format!("{provider} · {}", t(app.lang, "llm.not_installed"))
-            }
-            _ => provider,
-        })
-        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
-        .collect()
-}
-
-pub(crate) fn provider_from_menu_option(option: &str) -> &str {
-    option.split(" · ").next().unwrap_or(option).trim()
-}
-
-pub(crate) fn llm_settings_payload(app: &App) -> Value {
-    llm_settings_from(&TuiSettings::from(app), &app.llm_tools)
-}
-
-/// The `llm_start` command for the current queue of transcripts and modes.
-pub(crate) fn llm_start_payload(app: &App) -> Value {
-    json!({
-        "type": "llm_start",
-        "files": llm_input_files(app),
-        "modes": app.llm_modes,
-        "prompt": app.llm_prompt,
-        "settings": llm_settings_payload(app),
-        "output_dir": app.output_dir,
-    })
-}
-
 /// The `settings` object of `llm_start`, built from persisted settings plus the
 /// tool registry (empty in headless mode: the worker then locates binaries itself).
 pub(crate) fn llm_settings_from(settings: &TuiSettings, tools: &[LlmTool]) -> Value {
@@ -129,19 +47,13 @@ pub(crate) fn llm_settings_from(settings: &TuiSettings, tools: &[LlmTool]) -> Va
         "model": if settings.llm_provider == "Codex" { String::new() } else { settings.llm_model.clone() },
         "temperature": settings.llm_temperature,
     });
-    for (provider, binary) in [
-        ("Claude Code", "claude"),
-        ("Codex", "codex"),
-        ("OpenCode", "opencode"),
-        ("Pi", "pi"),
-        ("oh-my-pi", "omp"),
-    ] {
+    for provider in cli_providers() {
         let path = tools
             .iter()
-            .find(|tool| tool.provider == provider)
+            .find(|tool| tool.provider == provider.name)
             .and_then(|tool| tool.path.clone())
-            .unwrap_or_else(|| binary.to_owned());
-        payload[format!("{}_path", provider_prefix(provider))] = Value::String(path);
+            .unwrap_or_else(|| provider.binary.unwrap_or_default().to_owned());
+        payload[format!("{}_path", provider.prefix)] = Value::String(path);
     }
     payload["other_path"] = Value::String(String::new());
     for (prefix, path) in &settings.llm_tool_paths {
@@ -155,25 +67,6 @@ pub(crate) fn llm_settings_from(settings: &TuiSettings, tools: &[LlmTool]) -> Va
     }
     payload["llm_allow_tools"] = Value::Bool(settings.llm_allow_tools);
     payload
-}
-
-pub(crate) fn start_payload(app: &App, files: &[String]) -> Value {
-    json!({
-        "type": "start",
-        "files": files,
-        "output_dir": app.output_dir,
-        "formats": app.formats,
-        "diarization": app.diarization,
-        "diarization_backend": app.diarization_backend,
-        "num_speakers": app.num_speakers,
-        "backend": app.backend,
-        "model": app.model,
-        "onnx_provider": app.onnx_provider,
-        "audio_preprocessing_mode": app.audio_preprocessing_mode,
-        "subtitle_sentence_split": app.subtitle_sentence_split,
-        "subtitle_max_lines": app.subtitle_max_lines,
-        "subtitle_max_width": app.subtitle_max_width,
-    })
 }
 
 fn python_in(directory: &Path) -> Option<PathBuf> {
@@ -238,27 +131,14 @@ pub(crate) fn worker_command() -> Command {
         command
     };
     command.current_dir(project_root);
+    // The protocol is UTF-8. Without these a piped Python stdout on Windows uses
+    // the ANSI code page: Cyrillic paths arrive as bytes `from_slice` rejects, or
+    // the worker dies on UnicodeEncodeError (cp1252). The worker also reconfigures
+    // its streams itself, for frozen builds that ignore the environment.
     command
-}
-
-/// Headless diagnostics remain inherited (human output) or suppressed (`--json`).
-pub(crate) fn spawn_worker_with(stderr: Stdio) -> io::Result<(Child, ChildStdin, Receiver<Value>)> {
-    let mut child = worker_command()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()?;
-    let stdin = child.stdin.take().expect("worker stdin");
-    let stdout = child.stdout.take().expect("worker stdout");
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                let _ = tx.send(value);
-            }
-        }
-    });
-    Ok((child, stdin, rx))
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8");
+    command
 }
 
 pub(crate) fn send(stdin: &mut ChildStdin, message: Value) -> io::Result<()> {
@@ -275,23 +155,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn llm_settings_payload_uses_discovered_tool_paths() {
-        let mut app = crate::test_support::ready_app();
-        app.llm_provider = "Claude Code".into();
-        app.llm_tools.push(LlmTool {
-            id: "claude".into(),
-            provider: "Claude Code".into(),
-            status: "found".into(),
-            path: Some("/opt/homebrew/bin/claude".into()),
-            version: Some("2.1.275".into()),
-            install_hint: String::new(),
-        });
+    fn llm_settings_follow_the_provider_registry_order() {
+        let payload = llm_settings_from(&TuiSettings::default(), &[]);
+        let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys[5..11],
+            [
+                "claude_path",
+                "codex_path",
+                "opencode_path",
+                "pi_path",
+                "omp_path",
+                "other_path"
+            ]
+        );
+        assert_eq!(payload["omp_path"], "omp");
+        assert_eq!(payload["other_path"], "");
+    }
 
-        let payload = llm_settings_payload(&app);
-
-        assert_eq!(payload["provider"], "Claude Code");
-        assert_eq!(payload["claude_path"], "/opt/homebrew/bin/claude");
-        assert_eq!(payload["codex_path"], "codex");
-        assert_eq!(payload["temperature"], 0.2);
+    #[test]
+    fn worker_command_asks_python_for_a_utf8_protocol_stream() {
+        // Windows pipes get the ANSI code page otherwise; the protocol is UTF-8.
+        let command = worker_command();
+        let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+        for (name, value) in [("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8")] {
+            assert_eq!(
+                environment
+                    .get(std::ffi::OsStr::new(name))
+                    .copied()
+                    .flatten(),
+                Some(std::ffi::OsStr::new(value)),
+                "{name}"
+            );
+        }
     }
 }

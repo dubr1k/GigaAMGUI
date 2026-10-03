@@ -97,3 +97,19 @@ def test_entrypoint_preserves_explicit_huggingface_override(tmp_path):
     assert exported["HF_HOME"] == str(explicit_hf)
     assert exported["HUGGINGFACE_HUB_CACHE"] == str(explicit_hf / "hub")
     assert str(explicit_hf) in calls
+
+
+def test_entrypoint_hands_task_directories_to_the_app_user(tmp_path):
+    # Bind mount ./uploads, ./results, ./logs создаётся Docker'ом как root:root,
+    # если на хосте каталогов не было, — приложение под uid 1000 не могло писать.
+    app_root = tmp_path / "app root"
+    _data_root, _exported, calls = _run_entrypoint(
+        tmp_path,
+        extra_env={"GIGAAM_APP_DIR": str(app_root), "UPLOAD_DIR": "uploads", "RESULTS_DIR": "/srv/results"},
+    )
+
+    chowns = [line for line in calls.splitlines() if line.startswith("chown:")]
+    task_dirs = (str(app_root / "uploads"), "/srv/results", str(app_root / "logs"))
+    assert any(all(path in line for path in task_dirs) for line in chowns), chowns
+    # Не рекурсивно: старые результаты и модели остаются как есть.
+    assert all(" -R" not in line and "-R " not in line for line in chowns)

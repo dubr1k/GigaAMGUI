@@ -11,29 +11,22 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSlider,
     QSpinBox,
     QStackedWidget,
-    QTableWidget,
     QTabWidget,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import __version__ as APP_VERSION
 from ..config import APP_TITLE, OUTPUT_FORMATS
 
 
@@ -67,8 +60,81 @@ class UiBuildMixin:
         root_layout.setContentsMargins(self._px(16), self._px(12), self._px(16), self._px(12))
         root_layout.setSpacing(self._px(8))
         self.setCentralWidget(root)
+        root_layout.addLayout(self._create_header_row())
 
-        # Заголовок + кнопка темы
+        tabs = QTabWidget()
+        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
+        root_layout.addWidget(tabs, 1)
+
+        start_page = self._create_processing_start_page()
+        # Result state is part of the Processing tab, populated only from real output data.
+        result_page = self._create_processing_result_page()
+
+        # Default size policy: with the 2.0 "Ignored" policy the scroll area
+        # squeezed the page below its minimum and rows overlapped instead of
+        # showing a scroll bar.
+        self.processing_stack = _CurrentPageStack()
+        self._processing_start_page = start_page
+        self._processing_result_page = result_page
+        self.processing_stack.addWidget(start_page)
+        self.processing_stack.addWidget(result_page)
+        self.processing_stack.currentChanged.connect(self.processing_stack.updateGeometry)
+        proc_scroll = self._wrap_in_scroll(self.processing_stack)
+        tabs.addTab(proc_scroll, "Обработка")
+        live_scroll = self._wrap_in_scroll(self._create_live_tab())
+        tabs.addTab(live_scroll, "Live")
+        llm_scroll = self._wrap_in_scroll(self._create_llm_tab())
+        tabs.addTab(llm_scroll, "LLM")
+        api_tab = self._create_api_tab()
+        tabs.addTab(api_tab, "API")
+        log_tab = self._create_journal_tab()
+        tabs.addTab(log_tab, "Журнал")
+        settings_tab = self._create_settings_tab()
+        tabs.addTab(settings_tab, "Настройки")
+        self.tabs = tabs
+        # «Настройки» — второе представление настроек вкладок «Обработка» и LLM:
+        # перечитываем их при каждом открытии, а не только при старте.
+        tabs.currentChanged.connect(lambda _index: self._sync_support_surface_settings())
+        # Вкладки ищутся по странице, а не по номеру: номер 1 когда-то был
+        # LLM, а после появления Live открывал не ту вкладку.
+        self._tab_pages = {
+            "processing": proc_scroll,
+            "live": live_scroll,
+            "llm": llm_scroll,
+            "api": api_tab,
+            "journal": log_tab,
+            "settings": settings_tab,
+        }
+
+        # Статус-бар: краткие подсказки и состояние
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage(self._t("Готов к работе", "Ready to work"))
+
+        # Диалог настроек LLM строится заранее: его поля читают настройки и
+        # обработка, даже если диалог ни разу не открывали.
+        self._ensure_llm_settings_dialog()
+        self._apply_language()
+
+        # Esc — отмена текущей обработки
+        esc = QAction(self)
+        esc.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        esc.triggered.connect(self._cancel_processing)
+        self.addAction(esc)
+
+        self._apply_theme()
+        self._restore_geometry()
+
+    def _wrap_in_scroll(self, page: QWidget) -> QScrollArea:
+        """Страница вкладки в прокрутке: при маленьком окне — полоса, а не наезд строк."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(page)
+        return scroll
+
+    def _create_header_row(self) -> QHBoxLayout:
+        """Заголовок по центру, справа — переключатели языка и темы."""
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
 
@@ -96,14 +162,10 @@ class UiBuildMixin:
         self._btn_theme.setToolTip("Переключить тему")
         self._btn_theme.clicked.connect(self._toggle_theme)
         header_row.addWidget(self._btn_theme)
+        return header_row
 
-        root_layout.addLayout(header_row)
-
-        tabs = QTabWidget()
-        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
-        root_layout.addWidget(tabs, 1)
-
-        # ── Вкладка «Обработка» ──
+    def _create_processing_start_page(self) -> QWidget:
+        """Вкладка «Обработка»: пять нумерованных секций, запуск, прогресс, сброс."""
         content_widget = QWidget()
         main_layout = QVBoxLayout(content_widget)
         main_layout.setContentsMargins(self._px(8), self._px(14), self._px(8), self._px(6))
@@ -121,7 +183,7 @@ class UiBuildMixin:
         self.btn_start = QPushButton("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.btn_start.setObjectName("start_button")
         self.btn_start.setFixedHeight(self._px(52))
-        self.btn_start.setToolTip("Начать транскрибацию выбранных файлов  (Ctrl+Enter)")
+        self._bilingual(self.btn_start.setToolTip, "Начать транскрибацию выбранных файлов  (Ctrl+Enter)", "Start transcribing the selected files  (Ctrl+Enter)")
         self.btn_start.setShortcut(QKeySequence("Ctrl+Return"))
         self.btn_start.clicked.connect(self._start_processing_thread)
         main_layout.addWidget(self.btn_start)
@@ -131,438 +193,26 @@ class UiBuildMixin:
         self.btn_clear = QPushButton("ОЧИСТИТЬ ВСЕ")
         self.btn_clear.setObjectName("clear_button")
         self.btn_clear.setFixedHeight(self._px(40))
-        self.btn_clear.setToolTip("Сбросить файлы, папки, журнал и прогресс")
+        self._bilingual(self.btn_clear.setToolTip, "Сбросить файлы, папки, журнал и прогресс", "Reset files, folders, log and progress")
         self.btn_clear.clicked.connect(self._clear_all)
         main_layout.addWidget(self.btn_clear)
 
         main_layout.addStretch()
+        content_widget.setObjectName("processing_page")
+        return content_widget
 
-        start_page = content_widget
-        start_page.setObjectName("processing_page")
-
-        # Result state is part of the Processing tab, populated only from real output data.
-        result_page = QWidget()
-        result_page.setObjectName("processing_result_page")
-        result_layout = QVBoxLayout(result_page)
-        result_layout.setContentsMargins(self._px(16), self._px(14), self._px(16), self._px(16))
-        result_layout.setSpacing(self._px(10))
-        result_head = QHBoxLayout()
-        result_head.setSpacing(self._px(8))
-        result_title_col = QVBoxLayout()
-        result_title_col.setSpacing(0)
-        self.result_title = QLabel("Результат обработки")
-        self.result_title.setObjectName("section_title")
-        result_title_col.addWidget(self.result_title)
-        self.result_meta = QLabel("")
-        self.result_meta.setObjectName("muted_label")
-        result_title_col.addWidget(self.result_meta)
-        result_head.addLayout(result_title_col, 1)
-        self.result_file_picker = QComboBox()
-        self.result_file_picker.setObjectName("result_file_picker")
-        self.result_file_picker.setMinimumWidth(self._px(170))
-        self.result_file_picker.currentIndexChanged.connect(self._select_processing_result)
-        result_head.addWidget(self.result_file_picker)
-        self.btn_back_to_processing = QPushButton("К обработке")
-        self.btn_back_to_processing.setObjectName("secondary_button")
-        self.btn_back_to_processing.clicked.connect(lambda: self.processing_stack.setCurrentWidget(self._processing_start_page))
-        result_head.addWidget(self.btn_back_to_processing)
-        result_layout.addLayout(result_head)
-        result_body = QHBoxLayout()
-        result_body.setSpacing(self._px(10))
-        result_left = QVBoxLayout()
-        result_left.setSpacing(self._px(8))
-        player_panel = QFrame()
-        player_panel.setObjectName("glass_panel")
-        player_layout = QVBoxLayout(player_panel)
-        player_layout.setContentsMargins(self._px(14), self._px(12), self._px(14), self._px(12))
-        player_layout.setSpacing(self._px(7))
-        self.result_media_name = QLabel("")
-        self.result_media_name.setObjectName("section_title")
-        player_layout.addWidget(self.result_media_name)
-        self.result_timeline = QSlider(Qt.Orientation.Horizontal)
-        self.result_timeline.setObjectName("waveform_timeline")
-        self.result_timeline.setRange(0, 0)
-        self.result_timeline.sliderReleased.connect(self._seek_result_playback)
-        player_layout.addWidget(self.result_timeline)
-        time_row = QHBoxLayout()
-        self.result_position_label = QLabel("00:00 / 00:00")
-        self.result_position_label.setObjectName("muted_label")
-        time_row.addWidget(self.result_position_label)
-        time_row.addStretch()
-        self.result_player_status = QLabel("")
-        self.result_player_status.setObjectName("muted_label")
-        time_row.addWidget(self.result_player_status)
-        player_layout.addLayout(time_row)
-        player_controls = QHBoxLayout()
-        player_controls.setSpacing(self._px(6))
-        self.btn_result_back = QPushButton("−10")
-        self.btn_result_back.setObjectName("secondary_button")
-        self.btn_result_back.clicked.connect(lambda: self._seek_result_by(-10_000))
-        player_controls.addWidget(self.btn_result_back)
-        self.btn_result_play = QPushButton("▶")
-        self.btn_result_play.setObjectName("primary_button")
-        self.btn_result_play.clicked.connect(self._toggle_result_playback)
-        player_controls.addWidget(self.btn_result_play)
-        self.btn_result_forward = QPushButton("+10")
-        self.btn_result_forward.setObjectName("secondary_button")
-        self.btn_result_forward.clicked.connect(lambda: self._seek_result_by(10_000))
-        player_controls.addWidget(self.btn_result_forward)
-        self.result_speed = QComboBox()
-        self.result_speed.setObjectName("compact_select")
-        for speed in (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
-            self.result_speed.addItem(f"{speed:g}x", speed)
-        self.result_speed.currentIndexChanged.connect(self._set_result_playback_rate)
-        player_controls.addWidget(self.result_speed)
-        player_controls.addStretch()
-        self.result_volume = QSlider(Qt.Orientation.Horizontal)
-        self.result_volume.setObjectName("volume_slider")
-        self.result_volume.setRange(0, 100)
-        self.result_volume.setValue(100)
-        self.result_volume.setFixedWidth(self._px(90))
-        self.result_volume.valueChanged.connect(self._set_result_volume)
-        player_controls.addWidget(self.result_volume)
-        player_layout.addLayout(player_controls)
-        result_left.addWidget(player_panel)
-        self.result_tabs = QTabWidget()
-        self.result_tabs.setObjectName("result_tabs")
-        self.result_tabs.setUsesScrollButtons(False)
-        self.result_transcript = QWidget()
-        self.result_transcript_layout = QVBoxLayout(self.result_transcript)
-        self.result_transcript_layout.setContentsMargins(self._px(8), self._px(8), self._px(8), self._px(6))
-        self.result_transcript_layout.setSpacing(self._px(8))
-        self.result_transcript_layout.addStretch()
-        self.result_tabs.addTab(self.result_transcript, "Текст")
-        self.result_srt = QTextEdit()
-        self.result_srt.setObjectName("result_document")
-        self.result_srt.setReadOnly(True)
-        self.result_tabs.addTab(self.result_srt, "SRT")
-        self.result_diarization = QTextEdit()
-        self.result_diarization.setObjectName("result_document")
-        self.result_diarization.setReadOnly(True)
-        self.result_tabs.addTab(self.result_diarization, "Диар.")
-        self.result_summary = QTextEdit()
-        self.result_summary.setObjectName("result_document")
-        self.result_summary.setReadOnly(True)
-        self.result_tabs.addTab(self.result_summary, "Итог")
-        self.result_json = QTextEdit()
-        self.result_json.setObjectName("result_document")
-        self.result_json.setReadOnly(True)
-        self.result_json.setFont(self._font(9, fixed=True))
-        self.result_tabs.addTab(self.result_json, "JSON")
-        result_left.addWidget(self.result_tabs, 1)
-        result_body.addLayout(result_left, 5)
-        result_rail = QFrame()
-        result_rail.setObjectName("dense_panel")
-        result_rail.setMinimumWidth(self._px(185))
-        result_rail.setMaximumWidth(self._px(220))
-        rail_layout = QVBoxLayout(result_rail)
-        rail_layout.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
-        rail_layout.setSpacing(self._px(7))
-        rail_actions_title = QLabel("Действия")
-        rail_actions_title.setObjectName("section_title")
-        rail_layout.addWidget(rail_actions_title)
-        self.result_actions_layout = QVBoxLayout()
-        self.result_actions_layout.setSpacing(self._px(2))
-        rail_layout.addLayout(self.result_actions_layout)
-        rail_topics_title = QLabel("Ключевые темы")
-        rail_topics_title.setObjectName("section_title")
-        rail_layout.addWidget(rail_topics_title)
-        self.result_topics = QLabel("Появятся после LLM-обработки результата.")
-        self.result_topics.setObjectName("muted_label")
-        self.result_topics.setWordWrap(True)
-        rail_layout.addWidget(self.result_topics)
-        rail_summary_title = QLabel("Краткое содержание")
-        rail_summary_title.setObjectName("section_title")
-        rail_layout.addWidget(rail_summary_title)
-        self.result_summary_rail = QLabel("Не создавалось автоматически.")
-        self.result_summary_rail.setObjectName("muted_label")
-        self.result_summary_rail.setWordWrap(True)
-        rail_layout.addWidget(self.result_summary_rail)
-        rail_layout.addStretch()
-        result_body.addWidget(result_rail)
-        result_layout.addLayout(result_body, 1)
-
-        # Default size policy: with the 2.0 "Ignored" policy the scroll area
-        # squeezed the page below its minimum and rows overlapped instead of
-        # showing a scroll bar.
-        self.processing_stack = _CurrentPageStack()
-        self._processing_start_page = start_page
-        self._processing_result_page = result_page
-        self.processing_stack.addWidget(start_page)
-        self.processing_stack.addWidget(result_page)
-        self.processing_stack.currentChanged.connect(self.processing_stack.updateGeometry)
-        proc_scroll = QScrollArea()
-        proc_scroll.setWidgetResizable(True)
-        proc_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        proc_scroll.setWidget(self.processing_stack)
-        tabs.addTab(proc_scroll, "Обработка")
-
-        live_scroll = QScrollArea()
-        live_scroll.setWidgetResizable(True)
-        live_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        live_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        live_scroll.setWidget(self._create_live_tab())
-        tabs.addTab(live_scroll, "Live")
-
-        llm_scroll = QScrollArea()
-        llm_scroll.setWidgetResizable(True)
-        llm_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        llm_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        llm_scroll.setWidget(self._create_llm_tab())
-        tabs.addTab(llm_scroll, "LLM")
-        tabs.addTab(self._create_api_tab(), "API")
-
-        # ── Вкладка «Журнал» (2.0: таблица событий + технический журнал) ──
-        log_tab = QWidget()
-        log_tab.setObjectName("log_page")
-        log_layout = QVBoxLayout(log_tab)
-        log_layout.setContentsMargins(self._px(8), self._px(14), self._px(8), self._px(8))
-        log_layout.setSpacing(self._px(8))
-        journal_heading = QVBoxLayout()
-        journal_heading.setSpacing(self._px(2))
-        self.journal_title = QLabel("Журнал")
-        self.journal_title.setObjectName("page_title")
-        journal_heading.addWidget(self.journal_title)
-        self.journal_subtitle = QLabel("Текущие события обработки из журнала приложения.")
-        self.journal_subtitle.setObjectName("page_subtitle")
-        journal_heading.addWidget(self.journal_subtitle)
-        log_layout.addLayout(journal_heading)
-
-        journal_controls = QHBoxLayout()
-        journal_controls.setSpacing(self._px(6))
-        self._journal_filter_buttons = {}
-        for key, text in (("all", "Все"), ("ready", "Готово"), ("processing", "В обработке"), ("error", "Ошибка")):
-            button = QPushButton(text)
-            button.setObjectName("journal_filter")
-            button.setCheckable(True)
-            button.setAutoExclusive(True)
-            button.setProperty("journal_filter", key)
-            button.clicked.connect(self._filter_journal_rows)
-            journal_controls.addWidget(button)
-            self._journal_filter_buttons[key] = button
-        self._journal_filter_buttons["all"].setChecked(True)
-        journal_controls.addStretch()
-        self.journal_search = QLineEdit()
-        self.journal_search.setObjectName("journal_search")
-        self.journal_search.setPlaceholderText("Поиск…")
-        self.journal_search.setClearButtonEnabled(True)
-        self.journal_search.setFixedHeight(self._px(32))
-        self.journal_search.setMinimumWidth(self._px(210))
-        self.journal_search.textChanged.connect(self._filter_journal_rows)
-        journal_controls.addWidget(self.journal_search)
-        log_layout.addLayout(journal_controls)
-
-        self.journal_table = QTableWidget(0, 4)
-        self.journal_table.setObjectName("journal_table")
-        self.journal_table.setHorizontalHeaderLabels(("Файл", "Длительность", "Статус", "Дата"))
-        self.journal_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.journal_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.journal_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.journal_table.setShowGrid(False)
-        self.journal_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.journal_table.verticalHeader().hide()
-        header = self.journal_table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in (1, 2, 3):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.journal_table.setMinimumHeight(self._px(220))
-        log_layout.addWidget(self.journal_table, 1)
-        self.journal_empty = QLabel("События обработки появятся здесь после запуска.")
-        self.journal_empty.setObjectName("journal_empty")
-        self.journal_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        log_layout.addWidget(self.journal_empty, 1)
-
-        technical_log = QFrame()
-        technical_log.setObjectName("progress_card")
-        technical_log_layout = QVBoxLayout(technical_log)
-        technical_log_layout.setContentsMargins(self._px(14), self._px(10), self._px(14), self._px(10))
-        technical_log_layout.setSpacing(self._px(6))
-        log_toolbar = QHBoxLayout()
-        self.journal_technical_title = QLabel("Технический журнал")
-        self.journal_technical_title.setObjectName("section_title")
-        log_toolbar.addWidget(self.journal_technical_title)
-        log_toolbar.addStretch()
-        self.btn_log_copy = QPushButton("Копировать")
-        self.btn_log_copy.setObjectName("text_button")
-        self.btn_log_copy.clicked.connect(self._copy_log)
-        log_toolbar.addWidget(self.btn_log_copy)
-        self.btn_log_save = QPushButton("Сохранить…")
-        self.btn_log_save.setObjectName("text_button")
-        self.btn_log_save.clicked.connect(self._save_log)
-        log_toolbar.addWidget(self.btn_log_save)
-        self.btn_log_clear = QPushButton("Очистить журнал")
-        self.btn_log_clear.setObjectName("text_button")
-        self.btn_log_clear.clicked.connect(self._clear_log)
-        log_toolbar.addWidget(self.btn_log_clear)
-        technical_log_layout.addLayout(log_toolbar)
-        self.log_text = QTextEdit()
-        self.log_text.setObjectName("log_document")
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(self._font(10, fixed=True))
-        self.log_text.setMaximumHeight(self._px(150))
-        technical_log_layout.addWidget(self.log_text)
-        log_layout.addWidget(technical_log)
-        self._journal_entries = []
-        self._refresh_journal_labels()
-        tabs.addTab(log_tab, "Журнал")
-        tabs.addTab(self._create_settings_tab(), "Настройки")
-        self.tabs = tabs
-        self._apply_language()
-
-        # Статус-бар: краткие подсказки и состояние
-        self.status_bar = self.statusBar()
-        self.status_bar.showMessage(self._t("Готов к работе", "Ready to work"))
-
-        self._ensure_llm_settings_dialog()
-        self._apply_language()
-
-        # Esc — отмена текущей обработки
-        esc = QAction(self)
-        esc.setShortcut(QKeySequence(Qt.Key.Key_Escape))
-        esc.triggered.connect(self._cancel_processing)
-        self.addAction(esc)
-
-        self._apply_theme()
-        self._restore_geometry()
+    def _show_tab(self, name: str) -> None:
+        page = getattr(self, "_tab_pages", {}).get(name)
+        if page is not None:
+            self.tabs.setCurrentWidget(page)
 
     # ──────────────────────────────────────────────────────────────
-    # Меню, статус, геометрия окна, журнал
+    # Секции вкладки «Обработка»: прогресс, файлы, папка, форматы
     # ──────────────────────────────────────────────────────────────
 
-    def _build_menu_bar(self):
-        menubar = self.menuBar()
-        menubar.clear()
-
-        self._menu_file = menubar.addMenu("Файл")
-        file_menu = self._menu_file
-        self._act_files = QAction("Выбрать файлы…", self)
-        act_files = self._act_files
-        act_files.setShortcut(QKeySequence.StandardKey.Open)
-        act_files.setStatusTip("Добавить аудио- или видеофайлы в очередь")
-        act_files.triggered.connect(self._select_files)
-        file_menu.addAction(act_files)
-
-        self._act_folder = QAction("Выбрать папку с файлами…", self)
-        act_folder = self._act_folder
-        act_folder.setStatusTip("Добавить все медиафайлы из папки и подпапок")
-        act_folder.triggered.connect(self._select_files_folder)
-        file_menu.addAction(act_folder)
-
-        self._act_out = QAction("Папка сохранения…", self)
-        act_out = self._act_out
-        act_out.setStatusTip("Выбрать папку для результатов транскрибации")
-        act_out.triggered.connect(self._select_output_folder)
-        file_menu.addAction(act_out)
-
-        file_menu.addSeparator()
-        self._act_open_res = QAction("Открыть папку с результатами", self)
-        act_open_res = self._act_open_res
-        act_open_res.setStatusTip("Открыть папку с готовыми файлами")
-        act_open_res.triggered.connect(self._open_results_folder)
-        file_menu.addAction(act_open_res)
-
-        file_menu.addSeparator()
-        self._act_quit = QAction("Выход", self)
-        act_quit = self._act_quit
-        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
-        act_quit.triggered.connect(self.close)
-        file_menu.addAction(act_quit)
-
-        self._menu_view = menubar.addMenu("Вид")
-        view_menu = self._menu_view
-        self._act_theme = QAction("Переключить тему", self)
-        self._act_theme.setShortcut(QKeySequence("Ctrl+T"))
-        self._act_theme.setStatusTip("Светлая / тёмная тема оформления")
-        self._act_theme.triggered.connect(self._toggle_theme)
-        view_menu.addAction(self._act_theme)
-
-        self._act_accent = QAction("Акцентный цвет…", self)
-        self._act_accent.setStatusTip("Выбрать акцентный цвет интерфейса")
-        self._act_accent.triggered.connect(self._choose_accent_color)
-        view_menu.addAction(self._act_accent)
-
-        self._act_accent_reset = QAction("Сбросить акцентный цвет", self)
-        self._act_accent_reset.setStatusTip("Вернуть стандартный акцентный цвет")
-        self._act_accent_reset.triggered.connect(self._reset_accent_color)
-        view_menu.addAction(self._act_accent_reset)
-
-        self._menu_settings = menubar.addMenu("Настройки")
-        settings_menu = self._menu_settings
-        self._act_asr_model = QAction("Модель распознавания…", self)
-        self._act_asr_model.setStatusTip("Выбрать модель GigaAM для следующей обработки")
-        self._act_asr_model.triggered.connect(self._select_asr_model)
-        settings_menu.addAction(self._act_asr_model)
-
-        self._act_asr_backend = QAction("Движок распознавания…", self)
-        act_asr_backend = self._act_asr_backend
-        act_asr_backend.setStatusTip("Выбрать backend для распознавания речи")
-        act_asr_backend.triggered.connect(self._select_asr_backend)
-        settings_menu.addAction(act_asr_backend)
-
-        settings_menu.addSeparator()
-        self._act_device = QAction("Устройство (CPU / GPU)…", self)
-        act_device = self._act_device
-        act_device.setStatusTip("Выбрать CPU или видеокарту NVIDIA для распознавания")
-        act_device.triggered.connect(self._change_device)
-        settings_menu.addAction(act_device)
-
-        settings_menu.addSeparator()
-        self._act_data_dir = QAction("Папка данных и моделей…", self)
-        self._act_data_dir.setStatusTip("Выбрать диск для моделей, кэшей и runtime")
-        self._act_data_dir.triggered.connect(self._select_data_directory)
-        settings_menu.addAction(self._act_data_dir)
-
-        settings_menu.addSeparator()
-        self._act_llm = QAction("LLM API…", self)
-        act_llm = self._act_llm
-        act_llm.setStatusTip("Настроить API URL, ключ, модель и папку результатов LLM")
-        act_llm.triggered.connect(self._open_llm_settings_dialog)
-        settings_menu.addAction(act_llm)
-
-        self._menu_help = menubar.addMenu("Справка")
-        help_menu = self._menu_help
-        self._act_about = QAction("О программе", self)
-        act_about = self._act_about
-        act_about.triggered.connect(self._show_about)
-        help_menu.addAction(act_about)
-
-    def _show_about(self):
-        diag = self.model_loader.diagnostics() if self.model_loader is not None else {}
-        diag_lines = [
-            f"requested_backend={diag.get('requested_backend')}",
-            f"active_backend={diag.get('active_backend')}",
-            f"model={diag.get('model')}",
-            f"device={diag.get('device')}",
-            f"repo={diag.get('repo')}",
-            f"fallback_reason={diag.get('fallback_reason')}",
-            f"cache_root={diag.get('cache_root')}",
-        ]
-        diagnostics = "<br>".join(diag_lines)
-        QMessageBox.about(
-            self,
-            self._t("О программе", "About"),
-            (
-                f"<b>{APP_TITLE}</b><br>Версия {APP_VERSION}<br><br>"
-                "Локальная транскрибация аудио и видео на модели <b>GigaAM v3</b> с поддержкой диаризации спикеров.<br><br>"
-                "Возможности: пакетная обработка, загрузка по ссылке, таймкоды, экспорт в TXT / Markdown / SRT / VTT.<br><br>"
-                f"Диагностика ASR:<br>{diagnostics}<br><br>"
-                "Поддерживаемые форматы ввода: mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, 3gp."
-            ) if self._lang == "ru" else (
-                f"<b>{APP_TITLE}</b><br>Version {APP_VERSION}<br><br>"
-                "Local audio and video transcription powered by <b>GigaAM v3</b> with speaker diarization support.<br><br>"
-                "Features: batch processing, URL download, timecodes, export to TXT / Markdown / SRT / VTT.<br><br>"
-                f"ASR diagnostics:<br>{diagnostics}<br><br>"
-                "Supported input formats: mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, 3gp."
-            )
-        )
-
-    _ACCENT_LIGHT = "#3b82f6"
-    _CONVERSION_BAND = 0.15
+    _PROGRESS_FONT_PT = "gigaam_progress_font_pt"
 
     def _make_progress_bar(self, height: int, font_pt: int) -> QProgressBar:
-        c = self._colors()
         bar = QProgressBar()
         scaled_height = self._px(height)
         # На macOS шкала скругляется в «пилюлю», только когда border-radius РОВНО
@@ -573,7 +223,22 @@ class UiBuildMixin:
         bar.setFixedHeight(scaled_height)
         bar.setTextVisible(True)
         bar.setRange(0, 100)
-        radius = scaled_height // 2
+        # По этому свойству _apply_theme находит шкалы и перекрашивает их тем же стилем.
+        bar.setProperty(self._PROGRESS_FONT_PT, font_pt)
+        self._style_progress_bar(bar)
+        return bar
+
+    def _style_progress_bar(self, bar: QProgressBar) -> None:
+        """Единственный стиль шкал: «пилюля» и вертикальный градиент.
+
+        Раньше _apply_theme перезаписывал стиль шкал своим — с радиусом _px(11)
+        вместо половины высоты (прямоугольник на macOS при масштабе ≠ 1) и
+        горизонтальным градиентом, который «плывёт» по мере заполнения; шкалу
+        LLM он не трогал вовсе, и та оставалась в цветах прежней темы.
+        """
+        c = self._colors()
+        radius = bar.height() // 2
+        font_pt = bar.property(self._PROGRESS_FONT_PT) or 10
         r, r2 = c["progress_chunk"], c["progress_chunk2"]
         bar.setStyleSheet(
             f"QProgressBar {{ border: none; border-radius: {radius}px;"
@@ -585,7 +250,6 @@ class UiBuildMixin:
             f"  background-color: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
             f"  stop:0 {r}, stop:1 {r2}); }}"
         )
-        return bar
 
     def _create_progress_section(self, parent_layout):
         c = self._colors()
@@ -607,7 +271,7 @@ class UiBuildMixin:
         head_row.addWidget(self.lbl_file_counter)
         self.btn_cancel = QPushButton("Отменить")
         self.btn_cancel.setObjectName("cancel_button")
-        self.btn_cancel.setToolTip("Остановить обработку после текущего файла  (Esc)")
+        self._bilingual(self.btn_cancel.setToolTip, "Остановить обработку после текущего файла  (Esc)", "Stop processing after the current file  (Esc)")
         self.btn_cancel.setFixedHeight(self._px(28))
         self.btn_cancel.clicked.connect(self._cancel_processing)
         self.btn_cancel.setVisible(False)
@@ -637,6 +301,8 @@ class UiBuildMixin:
         self.progress_bar_file = self._make_progress_bar(height=16, font_pt=8)
         frame_layout.addWidget(self.progress_bar_file)
 
+        # Строка статуса меняется во время работы: переводит её _retranslate_shell,
+        # и только пока она «пустая».
         self.lbl_status = QLabel(self._t("Готов к работе", "Ready to work"))
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_status.setFixedHeight(self._px(28))
@@ -650,7 +316,7 @@ class UiBuildMixin:
 
         self.btn_open_result = QPushButton("Открыть папку с результатами")
         self.btn_open_result.setObjectName("open_result_button")
-        self.btn_open_result.setToolTip("Открыть папку с готовыми файлами в проводнике")
+        self._bilingual(self.btn_open_result.setToolTip, "Открыть папку с готовыми файлами в проводнике", "Open the folder with finished files in the file manager")
         self.btn_open_result.setFixedHeight(self._px(34))
         self.btn_open_result.clicked.connect(self._open_results_folder)
         self.btn_open_result.setVisible(False)
@@ -677,7 +343,7 @@ class UiBuildMixin:
 
         self.btn_select_folder = QPushButton("Выбрать папку")
         btn_select_folder = self.btn_select_folder
-        btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок")
+        self._bilingual(btn_select_folder.setToolTip, "Добавить все медиафайлы из папки и подпапок", "Add all media files from the folder and subfolders")
         btn_select_folder.clicked.connect(self._select_files_folder)
         btn_select_folder.setFixedHeight(self._px(36))
         btn_select_folder.setMinimumWidth(self._px(150))
@@ -855,4 +521,86 @@ class UiBuildMixin:
         group.setLayout(layout)
         return group
 
-    # _show_hf_token_dialog вынесен в FilesMixin (рядом с _toggle_diarization).
+    def _retranslate_shell(self, is_ru: bool) -> None:
+        """Заголовок окна, переключатели, вкладки и строка статуса."""
+        self._btn_lang.setText("EN" if is_ru else "RU")  # shows the language it switches to
+        self._btn_theme.setToolTip("Переключить тему" if is_ru else "Toggle theme")
+        self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
+        if hasattr(self, "_title_label"):
+            self._title_label.setText("GigaAMGUI v3")
+        if hasattr(self, "_tab_pages"):
+            for name, text in (
+                ("processing", "Обработка" if is_ru else "Processing"),
+                ("live", "Live"),
+                ("llm", "LLM"),
+                ("api", "API"),
+                ("journal", "Журнал" if is_ru else "Log"),
+                ("settings", "Настройки" if is_ru else "Settings"),
+            ):
+                self.tabs.setTabText(self.tabs.indexOf(self._tab_pages[name]), text)
+        # Переводим только «пустые» состояния: статус идущей обработки или
+        # текст ошибки при смене языка затирался словами «Готов к работе».
+        ready = ("Готов к работе", "Ready to work")
+        if hasattr(self, "status_bar") and self.status_bar.currentMessage() in ("", *ready):
+            self.status_bar.showMessage(ready[0] if is_ru else ready[1])
+        if hasattr(self, "lbl_status") and self.lbl_status.text() in ready:
+            self.lbl_status.setText(ready[0] if is_ru else ready[1])
+
+    def _retranslate_processing_page(self, is_ru: bool) -> None:
+        """Вкладка «Обработка»: секции, кнопки, очередь, форматы."""
+        if not hasattr(self, "grp_files"):
+            return
+        if hasattr(self, "btn_start"):
+            self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ" if is_ru else "START PROCESSING")
+        if hasattr(self, "btn_clear"):
+            self.btn_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+        self.grp_files.setTitle("1. Выбор файлов" if is_ru else "1. File selection")
+        self.grp_output.setTitle("2. Папка сохранения результатов" if is_ru else "2. Output folder")
+        self.grp_audio_preprocessing.setTitle("3. Подготовка аудио" if is_ru else "3. Audio preprocessing")
+        self.grp_diarization.setTitle("4. Диаризация спикеров" if is_ru else "4. Speaker diarization")
+        self.grp_formats.setTitle("5. Форматы вывода" if is_ru else "5. Output formats")
+        self.lbl_overall.setText("Общий прогресс" if is_ru else "Overall progress")
+        self.btn_select_files.setText("Выбрать файлы" if is_ru else "Choose files")
+        self.btn_select_files.setToolTip("Выбрать аудио/видео файлы для обработки  (Ctrl+O)" if is_ru else "Choose audio/video files for processing  (Ctrl+O)")
+        self.btn_select_folder.setText("Выбрать папку" if is_ru else "Choose folder")
+        self.btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок" if is_ru else "Add all media files from the folder and subfolders")
+        self.btn_upload.setText("Загрузить" if is_ru else "Download")
+        self.btn_upload.setToolTip("Скачать медиа по ссылке и добавить в очередь" if is_ru else "Download media by URL and add it to the queue")
+        self.btn_output_select.setText("Выбрать папку" if is_ru else "Choose folder")
+        self.btn_open_result.setText("Открыть папку с результатами" if is_ru else "Open results folder")
+        if hasattr(self, "lbl_output_folder") and (self.lbl_output_folder.text().startswith("Папка не выбрана") or self.lbl_output_folder.text().startswith("Folder not selected")):
+            self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)" if is_ru else "Folder not selected (default: next to the file)")
+        self.btn_cancel.setText("Отменить" if is_ru else "Cancel")
+        self.input_path.setPlaceholderText("Ссылка на медиа (YouTube и др.)" if is_ru else "Media URL (YouTube, etc.)")
+        self.input_path.setToolTip("Вставьте ссылку и нажмите «Загрузить»" if is_ru else "Paste a link and press 'Download'")
+        if not self.files_to_process:
+            self.lbl_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
+        self.btn_remove_file.setText("Убрать выбранное" if is_ru else "Remove selected")
+        self.btn_remove_file.setToolTip("Убрать выделенные файлы из очереди  (Delete)" if is_ru else "Remove selected files from the queue  (Delete)")
+        self.btn_clear_files.setText("Очистить список" if is_ru else "Clear list")
+        self.btn_clear_files.setToolTip("Убрать все файлы из очереди (настройки сохранятся)" if is_ru else "Remove all files from the queue (settings will be kept)")
+        self.files_list.setToolTip("Очередь файлов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "File queue. Select items and press Delete to remove them.")
+        if self.lbl_input_folder.text().startswith("Папка не выбрана") or self.lbl_input_folder.text().startswith("Folder not selected"):
+            self.lbl_input_folder.setText("Папка не выбрана" if is_ru else "Folder not selected")
+        self.drop_hint.setText("Перетащите сюда файлы или папки  ·  либо нажмите «Выбрать файлы»" if is_ru else "Drop files or folders here  ·  or click 'Choose files'")
+        format_labels = {
+            "txt": ("Текст", "Text"),
+            "txt_timecodes": ("Таймкоды", "Timecodes"),
+            "txt_diarize": ("Диар.", "Diar."),
+            "txt_diarize_timecodes": ("Диар. + время", "Diar. + time"),
+            "md": ("Markdown", "Markdown"),
+            "srt": ("SRT", "SRT"),
+            "vtt": ("VTT", "VTT"),
+        }
+        for fmt, cb in self.format_checkboxes.items():
+            ru_label, en_label = format_labels.get(fmt, (cb.text(), cb.text()))
+            cb.setText(ru_label if is_ru else en_label)
+        self.cb_subtitle_sentence_split.setText(
+            "Разбивать по предложениям" if is_ru else "Split by sentences"
+        )
+        self.lbl_subtitle_max_lines.setText(
+            "Строк:" if is_ru else "Lines:"
+        )
+        self.lbl_subtitle_max_width.setText(
+            "Символов:" if is_ru else "Characters:"
+        )

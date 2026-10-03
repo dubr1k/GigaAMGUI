@@ -7,7 +7,6 @@ POST /v1/audio/transcriptions, GET /v1/models, GET /health. Клиенты OpenA
 
 import asyncio
 import hmac
-import json
 import os
 import shutil
 import tempfile
@@ -21,14 +20,11 @@ from platform import platform as runtime_platform
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from limits import parse_many
 from slowapi import Limiter
-from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -38,14 +34,18 @@ from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.services import (  # noqa: I001
     file_policy,
-    mcp_backend,
+    openai_errors,
+    openai_stream,
     transcript_formats,
+    transcription_api,
     transcription_service,  # noqa: F401  (тесты подменяют api.transcription_service.build_processor)
 )
 from src.services import health as health_service
 from src.services.api_keys import KeyStore, hash_key, key_from_headers
-from src.services.mcp_backend import BackendError, LocalBackend
+from src.services.mcp_backend import LocalBackend
 from src.services.mcp_http import backend_options_from_env, mount_mcp
+from src.services.openai_errors import OpenAIError, openai_error
+from src.services.transcription_api import BackendError
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
 from src.utils.media_downloader import MediaDownloader
@@ -119,37 +119,6 @@ logger = None
 processing_semaphore = None
 
 
-# ==================== OpenAI error envelope ====================
-
-
-class OpenAIError(Exception):
-    def __init__(self, status_code: int, message: str, *, type_: str = "invalid_request_error",
-                 param: str | None = None, code: str | None = None):
-        super().__init__(message)
-        self.status_code = status_code
-        self.message = message
-        self.type = type_
-        self.param = param
-        self.code = code
-
-    def payload(self) -> dict[str, Any]:
-        return {"error": {"message": self.message, "type": self.type, "param": self.param, "code": self.code}}
-
-
-def openai_error(status: int, message: str, *, type_: str = "invalid_request_error",
-                 param: str | None = None, code: str | None = None) -> OpenAIError:
-    return OpenAIError(status, message, type_=type_, param=param, code=code)
-
-
-_STATUS_TYPES = {401: "authentication_error", 429: "rate_limit_error"}
-
-
-def _type_for_status(status: int) -> str:
-    if status in _STATUS_TYPES:
-        return _STATUS_TYPES[status]
-    return "server_error" if status >= 500 else "invalid_request_error"
-
-
 # ==================== КЛЮЧИ ====================
 # Само хранилище — src/services/api_keys.KeyStore (общее с веб-панелью и MCP).
 # Модульные VALID_API_KEY_HASHES / API_KEYS_FILE / load_api_keys / save_api_keys
@@ -159,7 +128,8 @@ _hash_key = hash_key
 
 
 def _asr_health() -> dict[str, object]:
-    return health_service.asr_health(model_loader)
+    # Публичный /health: без путей сервера (cache_root, repo)
+    return health_service.public_asr_health(model_loader)
 
 
 def _runtime_info() -> dict[str, object]:
@@ -201,7 +171,7 @@ def verify_api_key(
 
 def is_supported_format(filename: str) -> bool:
     """Проверяет поддерживаемый формат файла"""
-    return file_policy.is_supported_by_glob(filename, SUPPORTED_FORMATS[1])
+    return file_policy.is_supported_media(filename)
 
 
 def safe_filename(filename: str | None) -> str:
@@ -211,15 +181,15 @@ def safe_filename(filename: str | None) -> str:
 
 # ==================== МОДЕЛИ ====================
 
-# Реестр моделей и алиасов живёт в mcp_backend (общий с MCP); здесь — реэкспорт.
-DEFAULT_MODEL = mcp_backend.DEFAULT_MODEL
-MODEL_ALIASES = mcp_backend.MODEL_ALIASES
-resolve_model = mcp_backend.resolve_model
-_model_object = mcp_backend.model_object
+# Реестр моделей и алиасов живёт в transcription_api (общий с MCP); здесь — реэкспорт.
+DEFAULT_MODEL = transcription_api.DEFAULT_MODEL
+MODEL_ALIASES = transcription_api.MODEL_ALIASES
+resolve_model = transcription_api.resolve_model
+_model_object = transcription_api.model_object
 
 
 def models_payload() -> dict[str, Any]:
-    return mcp_backend.models_payload(model_loader)
+    return transcription_api.models_payload(model_loader)
 
 
 # ==================== LIFESPAN ====================
@@ -339,43 +309,10 @@ app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials
 
 # ==================== ОБРАБОТЧИКИ ОШИБОК ====================
 # Все ошибки — в конверте OpenAI: {"error": {"message", "type", "param", "code"}}.
+# Обработчики — src/services/openai_errors.py; здесь только необработанные
+# исключения: им нужны логгер и API_DEBUG этого модуля.
 
-
-@app.exception_handler(OpenAIError)
-async def _openai_error_handler(_: Request, exc: OpenAIError):
-    return JSONResponse(exc.payload(), status_code=exc.status_code)
-
-
-@app.exception_handler(BackendError)
-async def _backend_error_handler(_: Request, exc: BackendError):
-    # Ошибки общего с MCP слоя — те же коды и параметры, что раньше поднимал api.py сам
-    err = openai_error(exc.status, exc.message, type_=_type_for_status(exc.status), param=exc.param, code=exc.code)
-    return JSONResponse(err.payload(), status_code=exc.status)
-
-
-@app.exception_handler(StarletteHTTPException)
-async def _http_error_handler(_: Request, exc: StarletteHTTPException):
-    err = openai_error(exc.status_code, str(exc.detail), type_=_type_for_status(exc.status_code))
-    return JSONResponse(err.payload(), status_code=exc.status_code)
-
-
-@app.exception_handler(RequestValidationError)
-async def _validation_handler(_: Request, exc: RequestValidationError):
-    first = exc.errors()[0] if exc.errors() else {}
-    loc = [str(p) for p in first.get("loc", []) if p not in ("body", "query")]
-    err = openai_error(422, first.get("msg", "Invalid request"), param=".".join(loc) or None)
-    return JSONResponse(err.payload(), status_code=422)
-
-
-@app.exception_handler(RateLimitExceeded)
-async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    err = openai_error(429, f"Rate limit exceeded: {exc.detail}", type_="rate_limit_error", code="rate_limit_exceeded")
-    response = JSONResponse(err.payload(), status_code=429)
-    # Retry-After / X-RateLimit-* — по ним OpenAI SDK делает backoff
-    view_rate_limit = getattr(request.state, "view_rate_limit", None)
-    if view_rate_limit is not None:
-        response = request.app.state.limiter._inject_headers(response, view_rate_limit)
-    return response
+openai_errors.install_handlers(app)
 
 
 @app.exception_handler(Exception)
@@ -448,13 +385,19 @@ def _save_upload(file: UploadFile) -> tuple[Path, Path]:
     target = work_dir / filename
     written = 0
     too_large = False
-    with open(target, "wb") as out:
-        while chunk := file.file.read(1024 * 1024):
-            written += len(chunk)
-            if written > MAX_FILE_SIZE:
-                too_large = True
-                break
-            out.write(chunk)
+    try:
+        with open(target, "wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_FILE_SIZE:
+                    too_large = True
+                    break
+                out.write(chunk)
+    except BaseException:
+        # Нет места, обрыв чтения тела: без этого req_* оставалась навсегда — уборка
+        # вызывающего (_cleanup) знает work_dir только после успешного возврата
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
     if too_large:
         # rmtree только после закрытия файла: на Windows открытый файл не даст удалить директорию
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -471,24 +414,6 @@ def _parse_bool(value: str | bool | None) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _queue_progress(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, event_or_stage, progress=None) -> None:
-    """SSE-комментарий о прогрессе. Процессор шлёт ProgressEvent одним аргументом
-    (или (stage, value) — legacy) из executor-потока — переключаемся в loop."""
-    stage = getattr(event_or_stage, "stage", None) or (event_or_stage if isinstance(event_or_stage, str) else "processing")
-    value = getattr(event_or_stage, "file_progress", None)
-    if value is None:
-        value = progress
-    pct = f"{int(float(value) * 100)}%" if isinstance(value, (int, float)) else "…"
-    try:
-        loop.call_soon_threadsafe(queue.put_nowait, f": progress {stage} {pct}\n\n")
-    except RuntimeError:
-        pass  # loop закрыт (сервер останавливается) — прогресс уже некому отдавать
-
-
-def _sse(payload: dict[str, Any]) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 @app.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)],
@@ -532,8 +457,8 @@ async def create_transcription(
         raise openai_error(400, f"Unknown timestamp granularity: {', '.join(sorted(bad))}.",
                            param="timestamp_granularities", code="unsupported_parameter")
     # Проверка и нормализация параметров — общий с MCP код; BackendError → конверт OpenAI в обработчике
-    opts = mcp_backend.prepare_options(
-        mcp_backend.TranscribeOptions(
+    opts = transcription_api.prepare_options(
+        transcription_api.TranscribeOptions(
             model=model, language=language, format=_BACKEND_FORMATS[response_format],
             word_timestamps="word" in granularities, diarize=_parse_bool(diarize),
             diarization_backend=diarization_backend, num_speakers=num_speakers,
@@ -546,10 +471,10 @@ async def create_transcription(
     progress_queue: asyncio.Queue[str] = asyncio.Queue()
 
     def blocking() -> dict[str, Any]:
-        return mcp_backend.run_transcription(
+        return transcription_api.run_transcription(
             file_path, work_dir, opts, model_loader=model_loader, stats_manager=stats_manager,
             loader_factory=ModelLoader, logger=logger,
-            progress=lambda stage, fraction: _queue_progress(loop, progress_queue, stage, fraction))
+            progress=lambda stage, fraction: openai_stream.queue_progress(loop, progress_queue, stage, fraction))
 
     async def run() -> dict[str, Any]:
         async with processing_semaphore:
@@ -565,7 +490,9 @@ async def create_transcription(
     if not streaming:
         try:
             result = await run()
-        except OpenAIError:
+        except (OpenAIError, BackendError):
+            # BackendError несёт код и причину (processing_failed: «Transcription failed: …») —
+            # её конверт строит свой обработчик; общий ответ ниже — только для непредвиденного
             _cleanup(work_dir)
             raise
         except Exception as exc:
@@ -589,48 +516,9 @@ async def create_transcription(
             logger.error(f"[api] streamed transcription failed: {exc}", exc_info=exc)
         _cleanup(work_dir)
 
-    async def events():
-        task = asyncio.ensure_future(run())
-        task.add_done_callback(finished)
-        getter = asyncio.ensure_future(progress_queue.get())
-        try:
-            while not task.done():
-                done, _ = await asyncio.wait({task, getter}, timeout=5.0, return_when=asyncio.FIRST_COMPLETED)
-                if getter in done:
-                    yield getter.result()
-                    getter = asyncio.ensure_future(progress_queue.get())
-                elif not done:
-                    yield ": keepalive\n\n"
-            # Свежий getter мог забрать комментарий, пришедший вместе с завершением
-            if getter.done() and not getter.cancelled():
-                yield getter.result()
-            while not progress_queue.empty():
-                yield progress_queue.get_nowait()
-            result = task.result()
-            utts = result.get("utterances") or []
-            # Все дельты, кроме последней, с пробелом на конце — конкатенация равна full_text
-            parts = [t for t in (u.get("transcription", "").strip() for u in utts) if t]
-            for index, text in enumerate(parts):
-                delta = text if index == len(parts) - 1 else text + " "
-                yield _sse({"type": "transcript.text.delta", "delta": delta})
-            done_event = {"type": "transcript.text.done", "text": transcript_formats.full_text(utts),
-                          "usage": transcript_formats.usage(result.get("media_duration") or 0.0)}
-            if response_format == "verbose_json":
-                done_event.update({k: v for k, v in render(result)[0].items() if k not in done_event})
-            yield _sse(done_event)
-        except Exception as exc:
-            # Ошибку самой задачи уже залогировал finished; остальное (render) — здесь
-            from_task = task.done() and not task.cancelled() and exc is task.exception()
-            if logger and not from_task:
-                logger.error(f"[api] streamed transcription failed: {exc}", exc_info=True)
-            # Клиенту — SSE-событие без внутренностей
-            err = openai_error(500, "Transcription failed on the server. See the server log.",
-                               type_="server_error", code="processing_failed")
-            yield _sse({"type": "error", "error": err.payload()["error"]})
-        finally:
-            getter.cancel()  # и при обрыве соединения клиентом (GeneratorExit)
-
-    return StreamingResponse(events(), media_type="text/event-stream",
+    events = openai_stream.transcription_events(run, finished, progress_queue, render=render,
+                                                verbose=response_format == "verbose_json", logger=logger)
+    return StreamingResponse(events, media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

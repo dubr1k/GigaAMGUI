@@ -188,3 +188,37 @@ def test_configure_onnx_provider_unloads_backend():
 
     assert loader.requested_provider == "cuda"
     assert loader._backend is None
+
+
+def test_configure_model_also_selects_backend_model_name(monkeypatch):
+    # Фабрика строит MLXBackend(model=model_name). configure_model менял только
+    # revision, и после переключения с multilingual_ctc на v3_e2e_rnnt MLX
+    # получал старое имя, падал на загрузке и молча уходил в PyTorch.
+    import src.core.model_loader as model_loader_module
+
+    captured = {}
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(name="mlx", is_loaded=lambda: False), None
+
+    monkeypatch.setattr(model_loader_module, "create_backend_from_config", factory)
+    loader = ModelLoader(model_name="multilingual_ctc", model_revision="multilingual_ctc")
+
+    loader.configure_model("v3_e2e_rnnt")
+    loader._ensure_backend()
+
+    assert captured["model_revision"] == "v3_e2e_rnnt"
+    assert captured["model_name"] == "v3_e2e_rnnt"
+
+
+def test_missing_pytorch_resources_name_the_absent_tokenizer(tmp_path, monkeypatch):
+    model_dir = tmp_path / "gigaam"
+    model_dir.mkdir()
+    (model_dir / "v3_e2e_rnnt.ckpt").write_bytes(b"ckpt")
+    monkeypatch.setenv("GIGAAM_PYTORCH_MODEL_DIR", str(model_dir))
+    monkeypatch.setattr(PyTorchBackend, "_bundled_download_root", lambda self: None)
+
+    loader = ModelLoader(requested_backend="pytorch", model_revision="v3_e2e_rnnt")
+
+    assert loader.missing_asr_resources() == ("GigaAM tokenizer: v3_e2e_rnnt_tokenizer.model",)

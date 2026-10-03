@@ -65,6 +65,16 @@ def test_asr_health_swallows_diagnostics_error():
     assert result["loader_loaded"] is False
 
 
+def test_public_asr_health_drops_server_paths():
+    loader = _Loader({"active_backend": "onnx", "repo": "salute-developers/GigaAM",
+                      "cache_root": "/home/app/.cache/huggingface"}, True)
+    result = health.public_asr_health(loader)
+    assert "cache_root" not in result and "repo" not in result
+    assert result["active_backend"] == "onnx" and result["loader_loaded"] is True
+    # Полный набор остаётся у авторизованных потребителей (MCP server_status)
+    assert health.asr_health(loader)["cache_root"] == "/home/app/.cache/huggingface"
+
+
 def test_runtime_info_uses_callables():
     assert health.runtime_info(lambda: "Darwin", lambda: "arm64") == {
         "platform": "Darwin",

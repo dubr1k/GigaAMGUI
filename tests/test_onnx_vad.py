@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from src.core.asr import onnx_vad as onnx_vad_module
 from src.core.asr.onnx_vad import OnnxVadSegmenter
 from src.core.asr.vad import VadUnavailableError
 
@@ -58,9 +57,11 @@ def test_missing_segment_batch_is_reported_before_audio_read():
 def test_vad_uses_its_own_bundled_snapshot(monkeypatch, tmp_path):
     calls = []
     bundled = tmp_path / "silero"
+    from src.utils import model_cache
+
     monkeypatch.setattr(
-        onnx_vad_module,
-        "resolve_model_dir",
+        model_cache,
+        "resolve_bundled_snapshot",
         lambda repo_id, **_kwargs: bundled if repo_id == "istupakov/silero-vad-onnx" else None,
     )
     segmenter = OnnxVadSegmenter(

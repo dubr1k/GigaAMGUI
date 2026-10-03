@@ -248,3 +248,110 @@ def test_tagged_build_workflow_publishes_matching_release_notes_after_assets():
 def test_all_specs_remain_valid_python_after_shared_contract_changes():
     for spec in PACKAGING_DIR.glob("*.spec"):
         ast.parse(spec.read_text(encoding="utf-8-sig"), filename=str(spec))
+
+
+def test_no_spec_hardcodes_a_developer_machine_path():
+    # Шесть Windows-спеков указывали project_root и DLL conda на чужой диск
+    # (C:\Users\<имя>\...): на любой другой машине сборка падала на datas.
+    import re
+
+    machine_path = re.compile(r"[A-Za-z]:\\\\?Users\\\\?|/Users/[^/\s]+/|/home/[^/\s]+/")
+    for spec in sorted(PACKAGING_DIR.glob("*.spec")):
+        text = spec.read_text(encoding="utf-8-sig")
+        assert not machine_path.search(text), spec.name
+        assert "project_root = os.path.dirname(os.path.abspath(SPECPATH))" in text, spec.name
+
+
+def _load_spec_common(monkeypatch):
+    import importlib.util
+    import sys
+    import types
+
+    hooks = types.ModuleType("PyInstaller.utils.hooks")
+    for name in ("collect_all", "collect_data_files", "collect_dynamic_libs", "get_all_package_paths"):
+        setattr(hooks, name, lambda *args, **kwargs: None)
+    for name in ("PyInstaller", "PyInstaller.utils"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "PyInstaller.utils.hooks", hooks)
+    spec = importlib.util.spec_from_file_location("_spec_common_under_test", COMMON_SPEC)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_conda_extra_binaries_come_from_the_active_environment(monkeypatch, tmp_path):
+    common = _load_spec_common(monkeypatch)
+    env = tmp_path / "miniconda3" / "envs" / "gigaam_5k"
+    (env / "DLLs").mkdir(parents=True)
+    (env / "DLLs" / "_lzma.pyd").write_bytes(b"")
+    (env / "DLLs" / "_sqlite3.pyd").write_bytes(b"")
+    base_bin = tmp_path / "miniconda3" / "Library" / "bin"
+    base_bin.mkdir(parents=True)
+    (base_bin / "liblzma.dll").write_bytes(b"")
+    monkeypatch.setattr(common.sys, "prefix", str(env))
+
+    found = common.windows_conda_extra_binaries()
+
+    assert found == [
+        (str(env / "DLLs" / "_lzma.pyd"), "."),
+        (str(env / "DLLs" / "_sqlite3.pyd"), "."),
+        (str(base_bin / "liblzma.dll"), "."),
+    ]
+
+
+def test_conda_extra_binaries_are_empty_outside_conda(monkeypatch, tmp_path):
+    common = _load_spec_common(monkeypatch)
+    monkeypatch.setattr(common.sys, "prefix", str(tmp_path / "venv"))
+    assert common.windows_conda_extra_binaries() == []
+
+
+def test_collect_required_refuses_missing_or_empty_packages(monkeypatch):
+    import pytest
+
+    common = _load_spec_common(monkeypatch)
+    monkeypatch.setattr(common, "collect_all", lambda package: ([], [], []))
+    with pytest.raises(SystemExit, match="gigaam"):
+        common.collect_required("gigaam")
+
+    def broken(package):
+        raise RuntimeError("metadata not found")
+
+    monkeypatch.setattr(common, "collect_all", broken)
+    with pytest.raises(SystemExit, match="transformers"):
+        common.collect_required("transformers")
+    assert common.collect_optional("transformers") == ([], [], [])
+
+    monkeypatch.setattr(common, "collect_all", lambda package: ([("a", "b")], [], [package]))
+    assert common.collect_required("einops") == ([("a", "b")], [], ["einops"])
+
+
+def test_release_specs_do_not_skip_required_packages_silently():
+    # safe_collect печатал «[skip]» и возвращал пустоту: сборка зеленела без
+    # gigaam/transformers/PyQt6. Релизные спеки собирают через collect_required.
+    for name in ("gigaam_app_portable.spec", "gigaam_app_mac.spec", "gigaam_app_mac_x86_64.spec"):
+        text = (PACKAGING_DIR / name).read_text(encoding="utf-8")
+        assert "safe_collect" not in text, name
+        assert "collect_required" in text, name
+
+
+def test_editable_package_roots_point_the_analysis_at_editable_sources(monkeypatch, tmp_path):
+    import importlib.machinery
+
+    common = _load_spec_common(monkeypatch)
+    editable_init = tmp_path / "venv" / "src" / "gigaam" / "gigaam" / "__init__.py"
+    regular_init = tmp_path / "site-packages" / "numpy" / "__init__.py"
+    specs = {
+        "gigaam": importlib.machinery.ModuleSpec("gigaam", None, origin=str(editable_init), is_package=True),
+        "numpy": importlib.machinery.ModuleSpec("numpy", None, origin=str(regular_init), is_package=True),
+    }
+    on_paths = {"numpy"}
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: specs.get(name))
+    monkeypatch.setattr(
+        importlib.machinery.PathFinder,
+        "find_spec",
+        classmethod(lambda cls, name, path=None: specs[name] if name in on_paths else None),
+    )
+
+    roots = common.editable_package_roots(["gigaam", "numpy", "missing"])
+
+    assert roots == [str((tmp_path / "venv" / "src" / "gigaam").resolve())]

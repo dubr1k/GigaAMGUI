@@ -11,8 +11,42 @@ use std::{
     sync::mpsc,
 };
 
-pub(crate) fn result_command(path: &Path, folder: bool) -> io::Result<Command> {
+/// `canonicalize` on Windows returns verbatim paths (`\\?\C:\…`). explorer.exe
+/// does not understand them, and they look alien in the UI. The prefix is
+/// dropped only for drive and UNC paths, where the plain form names the same
+/// file; anything else keeps it.
+pub(crate) fn without_verbatim_prefix(path: &str) -> String {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.as_bytes().get(1) == Some(&b':')
+                && rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) =>
+        {
+            rest.to_owned()
+        }
+        _ => path.to_owned(),
+    }
+}
+
+/// `fs::canonicalize` without the Windows verbatim prefix.
+pub(crate) fn canonical_path(path: &Path) -> io::Result<std::path::PathBuf> {
     let path = path.canonicalize()?;
+    Ok(match path.to_str() {
+        Some(text) if cfg!(windows) => without_verbatim_prefix(text).into(),
+        _ => path,
+    })
+}
+
+/// explorer.exe exits with 1 even after it opened the target and reports real
+/// problems in its own window, so on Windows the exit code says nothing.
+fn opener_failed(status: std::process::ExitStatus) -> bool {
+    !cfg!(windows) && !status.success()
+}
+
+pub(crate) fn result_command(path: &Path, folder: bool) -> io::Result<Command> {
+    let path = canonical_path(path)?;
     if !path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -86,10 +120,10 @@ impl App {
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                     loop {
                         if let Some(status) = child.try_wait()? {
-                            return if status.success() {
-                                Ok(())
-                            } else {
+                            return if opener_failed(status) {
                                 Err(io::Error::other(format!("opener exited with {status}")))
+                            } else {
+                                Ok(())
                             };
                         }
                         if std::time::Instant::now() >= deadline {
@@ -131,14 +165,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{app::dispatch, commands::clear_queue, ui::Action};
+    use crate::{action::Action, app::dispatch, commands::clear_queue};
 
     #[test]
     fn opener_preserves_one_literal_path_and_rejects_missing_or_unsafe_targets() {
         let dir = crate::settings::isolated_config_dir();
         let path = dir.join("Запись ; & (1).TXT");
         std::fs::write(&path, "result").unwrap();
-        let canonical = std::fs::canonicalize(&path).unwrap();
+        let canonical = canonical_path(&path).unwrap();
         let command = result_command(&path, false).unwrap();
         assert!(command.get_args().any(|arg| arg == canonical.as_os_str()));
         assert!(result_command(&dir.join("missing.txt"), false).is_err());
@@ -150,6 +184,39 @@ mod tests {
         assert!(folder
             .get_args()
             .any(|arg| arg == canonical.parent().unwrap().as_os_str()));
+    }
+
+    #[test]
+    fn verbatim_prefixes_are_removed_only_where_the_plain_form_means_the_same() {
+        assert_eq!(
+            without_verbatim_prefix(r"\\?\C:\Записи\a.txt"),
+            r"C:\Записи\a.txt"
+        );
+        assert_eq!(
+            without_verbatim_prefix(r"\\?\UNC\server\share\a.txt"),
+            r"\\server\share\a.txt"
+        );
+        // Not a drive path: the prefix is load-bearing (device paths, volume GUIDs).
+        assert_eq!(
+            without_verbatim_prefix(r"\\?\Volume{1234}\a.txt"),
+            r"\\?\Volume{1234}\a.txt"
+        );
+        assert_eq!(without_verbatim_prefix("/tmp/a.txt"), "/tmp/a.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_opener_is_reported() {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(opener_failed(std::process::ExitStatus::from_raw(1 << 8)));
+        assert!(!opener_failed(std::process::ExitStatus::from_raw(0)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explorer_exit_code_one_is_not_a_failure() {
+        use std::os::windows::process::ExitStatusExt;
+        assert!(!opener_failed(std::process::ExitStatus::from_raw(1)));
     }
 
     #[test]

@@ -11,7 +11,10 @@ enum SecureStore {
         }
     }
 
-    static func string(for account: String) -> String? {
+    /// The stored value, or nil when nothing is stored. A real Keychain failure
+    /// (locked or denied keychain, an unreadable item) throws: reading it as "no
+    /// token" let a job run without the token and blame the model licence.
+    static func string(for account: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -20,9 +23,23 @@ enum SecureStore {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        return try value(status: status, item: item)
+    }
+
+    /// The lookup's outcome: not found is "no value", anything else but success is an error.
+    static func value(status: OSStatus, item: CFTypeRef?) throws -> String? {
+        switch status {
+        case errSecItemNotFound:
+            return nil
+        case errSecSuccess:
+            guard let data = item as? Data, let text = String(data: data, encoding: .utf8) else {
+                throw Failure(status: errSecDecode)
+            }
+            return text
+        default:
+            throw Failure(status: status)
+        }
     }
 
     static func set(_ value: String, for account: String) throws {

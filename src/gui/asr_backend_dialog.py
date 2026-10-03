@@ -15,6 +15,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..core.runtime_options import ASR_BACKENDS, ONNX_PROVIDERS
+
 
 def _module_available(module_name: str) -> bool:
     try:
@@ -59,7 +61,8 @@ class ASRBackendDialog(QDialog):
         ),
     }
 
-    PROVIDERS = ("auto", "cpu", "cuda", "tensorrt", "coreml", "directml")
+    # Порядок пунктов — как в общих списках настроек (runtime_options).
+    PROVIDERS = ONNX_PROVIDERS
 
     def __init__(
         self,
@@ -78,7 +81,7 @@ class ASRBackendDialog(QDialog):
 
         self.backend_combo = QComboBox(self)
         self.backend_combo.setObjectName("asr_backend_combo")
-        for backend in ("auto", "mlx", "onnx", "pytorch"):
+        for backend in ASR_BACKENDS:
             self.backend_combo.addItem(self._label(backend), backend)
 
         mlx_index = self.backend_combo.findData("mlx")

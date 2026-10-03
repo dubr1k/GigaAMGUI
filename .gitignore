@@ -8,6 +8,8 @@ scripts/
 !scripts/
 scripts/*
 !scripts/verify_macos_bundle.py
+!scripts/check_torch_triple.py
+!scripts/check_site_packages.py
 !scripts/install_tui.sh
 !scripts/tui/
 !scripts/tui/gigaam-launcher.sh
@@ -239,3 +241,8 @@ CLAUDE.md
 
 # Local release staging (zipped .app etc.)
 out/
+
+# Распакованные сборки и офлайн-модели (scripts/build_offline_models.py --output
+# offline/models/hf): гигабайты вендорного кода, которые иначе попадают в
+# `ruff check .` и в граф graphify (там это было 83% узлов).
+/offline/

@@ -12,7 +12,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import APP_BUILD_VERSION, APP_MARKETING_VERSION, APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package
+from _spec_common import APP_BUILD_VERSION, APP_MARKETING_VERSION, APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package, collect_required, editable_package_roots
 
 runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
 onnx_d, onnx_b, onnx_h = collect_onnx_runtime_deps()
@@ -24,13 +24,6 @@ project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в 
 icon_icns = os.path.join(project_root, "assets", "icon.icns")
 icon_file = icon_icns if os.path.exists(icon_icns) else None
 
-
-def safe_collect(package):
-    try:
-        return collect_all(package)
-    except Exception as exc:
-        print(f"[skip] {package}: {exc}")
-        return [], [], []
 
 
 bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
@@ -99,7 +92,7 @@ binaries = []
 hiddenimports = []
 
 for package in packages:
-    collector = collect_static_package if package == "pyannote.audio" else safe_collect
+    collector = collect_static_package if package == "pyannote.audio" else collect_required
     package_datas, package_binaries, package_hiddenimports = collector(package)
     datas += package_datas
     binaries += package_binaries
@@ -173,7 +166,8 @@ hiddenimports = sorted(set(hiddenimports + [
 
 a = Analysis(
     [os.path.join(project_root, "native_worker.py" if worker_only else "app.py")],
-    pathex=[project_root],
+    # editable gigaam (`pip install -e`) иначе невидим анализу — см. _spec_common.
+    pathex=[project_root, *editable_package_roots(["gigaam", "gigaam_mlx"])],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

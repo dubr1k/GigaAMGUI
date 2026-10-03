@@ -16,8 +16,10 @@ from ..config import (
 from ..utils.model_cache import hf_repo_is_cached
 from .asr.factory import create_backend_from_config
 from .asr.models import onnx_model_repo, validate_asr_model
-from .asr.pytorch_backend import PyTorchBackend
+from .asr.pytorch_backend import PyTorchBackend, gigaam_checkpoint_files
 from .asr.types import ProgressCallback
+from .devices import empty_accelerator_cache
+from .runtime_options import validate_onnx_provider
 
 
 class ModelLoader:
@@ -190,12 +192,13 @@ class ModelLoader:
             return ()
 
         if backend.name == "onnx":
-            explicit = getattr(backend, "model_dir", None)
-            if explicit is not None:
-                directory = Path(explicit)
-                if directory.is_dir() and any(path.is_file() for path in directory.rglob("*")):
-                    return ()
             repo_id = onnx_model_repo(backend.model_revision)
+            location = backend.model_location()
+            directory = location.path
+            if directory is not None and Path(directory).is_dir() and any(
+                path.is_file() for path in Path(directory).rglob("*")
+            ):
+                return ()
             return () if hf_repo_is_cached(repo_id) else (f"ONNX ASR: {repo_id}",)
 
         if backend.name == "mlx":
@@ -204,19 +207,14 @@ class ModelLoader:
 
         if backend.name == "pytorch":
             bundled = backend._bundled_download_root()  # noqa: SLF001
-            revision = str(backend.model_revision)
-            if revision in {"ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"}:
-                revision = f"v3_{revision}"
             configured = os.environ.get("GIGAAM_PYTORCH_MODEL_DIR")
             root_value = bundled or configured
             root = Path(root_value) if root_value else Path.home() / ".cache" / "gigaam"
             missing = []
-            if not (root / f"{revision}.ckpt").is_file():
-                missing.append(f"GigaAM checkpoint: {revision}.ckpt")
-            if revision != "v1_rnnt" and "e2e" in revision:
-                tokenizer = root / f"{revision}_tokenizer.model"
-                if not tokenizer.is_file():
-                    missing.append(f"GigaAM tokenizer: {tokenizer.name}")
+            for name in gigaam_checkpoint_files(backend.model_revision):
+                if not (root / name).is_file():
+                    kind = "tokenizer" if name.endswith("_tokenizer.model") else "checkpoint"
+                    missing.append(f"GigaAM {kind}: {name}")
             return tuple(missing)
         return ()
 
@@ -229,16 +227,7 @@ class ModelLoader:
     def _empty_cache(self):
         """Освобождает кэш ускорителя."""
         if self._backend is None:
-            if self.device in {"cuda", "mps"}:
-                try:
-                    import torch
-
-                    if self.device == "cuda" and torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    elif self.device == "mps" and hasattr(torch, "mps"):
-                        torch.mps.empty_cache()
-                except Exception:
-                    pass
+            empty_accelerator_cache(self.device)
             return
 
         if self._backend and hasattr(self._backend, "_empty_cache"):
@@ -251,19 +240,27 @@ class ModelLoader:
         self,
         audio_path: str,
         progress_callback: ProgressCallback | None = None,
+        logger=None,
+        cancel_check=None,
     ):
-        """Транскрибирует длинное аудио через выбранную стратегию сегментации."""
+        """Транскрибирует длинное аудио через выбранную стратегию сегментации.
+
+        ``logger`` — журнал текущего файла: модель загружается один раз, и
+        logger из load_model принадлежит той задаче, которая её загрузила.
+        """
         if self._backend is None:
             raise RuntimeError("Модель не загружена")
 
         if not self._backend.is_loaded():
             raise RuntimeError("Модель не загружена")
 
+        kwargs = {"progress_callback": progress_callback}
+        if logger is not None:
+            kwargs["logger"] = logger
+        if cancel_check is not None:
+            kwargs["cancel_check"] = cancel_check
         try:
-            return self._backend.transcribe_longform(
-                audio_path,
-                progress_callback=progress_callback,
-            )
+            return self._backend.transcribe_longform(audio_path, **kwargs)
         finally:
             # ONNX backend может подменить сессию на CPU прямо во время
             # inference. Без ресинка loader держал бы ссылку на упавшую
@@ -354,6 +351,9 @@ class ModelLoader:
     def configure_model(self, model_revision: str) -> None:
         """Select an ASR model for the next load."""
         selected = validate_asr_model(model_revision)
+        # Фабрика передаёт MLX именно model_name: если обновить только
+        # revision, MLX грузил прежнюю модель, падал и молча уступал PyTorch.
+        self._model_name = selected
         if selected != self._model_revision:
             self._model_revision = selected
             self.unload()
@@ -365,9 +365,7 @@ class ModelLoader:
 
     def configure_onnx_runtime(self, *, provider: str) -> None:
         """Выбрать ONNX Runtime provider для следующей загрузки модели."""
-        selected = (provider or "auto").strip().lower() or "auto"
-        if selected not in {"auto", "cpu", "cuda", "tensorrt", "coreml", "directml"}:
-            raise ValueError(f"Unsupported ONNX provider: {selected}")
+        selected = validate_onnx_provider(provider)
         if selected != self._onnx_provider:
             self._onnx_provider = selected
             self.unload()

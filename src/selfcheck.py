@@ -40,6 +40,10 @@ _CHAIN = [
     "pyannote.audio.models.embedding.wespeaker",
     "pyannote.audio.pipelines.speaker_verification",
     "pyannote.audio.pipelines.speaker_diarization",
+    # Подмодуль, а не сам пакет: каталог-пустышка gigaam/ (конфликтные копии
+    # Syncthing) импортируется как namespace-пакет, и `import gigaam` проходит,
+    # хотя модели в бандле нет — так собирались локальные сборки Liquid.
+    "gigaam.model",
     "docx",
 ]
 
@@ -92,7 +96,8 @@ def _import_module(name: str) -> None:
 def _apply_app_patches() -> None:
     """Применяет те же рантайм-патчи, что и приложение ПЕРЕД импортом pyannote.
 
-    Реальный путь диаризации (src/utils/diarization.py::_load_pipeline) сначала
+    Реальный путь диаризации (src/core/diarization/pyannote_backend.py,
+    DiarizationManager._load_pipeline) сначала
     вызывает apply_pyannote_patch(), и только потом импортирует pyannote.audio.
     Импорт модуля pyannote_patch на уровне модуля ставит заглушки torchaudio
     backend (set_audio_backend/get_audio_backend удалены в torchaudio 2.10+),

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.formatters import generate_markdown, generate_srt, generate_vtt
 from src.core.subtitles import SubtitleOptions
+from src.utils.atomic_json import write_text_atomic
 from src.utils.time_formatter import TimeFormatter
 
 from .types import TranscriptEvent
@@ -59,7 +58,7 @@ def export_session(
     if selection.vtt:
         exports.append((session_dir / "transcript.vtt", generate_vtt(utterances, subtitle_options)))
     for path, content in exports:
-        _write_atomic(path, content)
+        write_text_atomic(path, content)
     return [path for path, _ in exports]
 
 
@@ -84,15 +83,24 @@ def _format_timecodes(events: Iterable[TranscriptEvent], sample_rate: int) -> st
 
 
 def _format_diarized(events: Iterable[TranscriptEvent]) -> str:
-    return "".join(f"{event.speaker}: {event.text}\n" for event in events if event.speaker)
+    return "".join(f"{_speaker_label(event)}: {event.text}\n" for event in events)
 
 
 def _format_diarized_timecodes(events: Iterable[TranscriptEvent], sample_rate: int) -> str:
     return "".join(
-        f"[{_short_timestamp(event.sample_start / sample_rate)}] {event.speaker}: {event.text}\n"
+        f"[{_short_timestamp(event.sample_start / sample_rate)}] {_speaker_label(event)}: {event.text}\n"
         for event in events
-        if event.speaker
     )
+
+
+def _speaker_label(event: TranscriptEvent) -> str:
+    """The speaker when diarization named one, otherwise the source.
+
+    Events without a speaker used to be left out, so a session whose
+    diarization was unavailable wrote an empty diarized transcript while the
+    status promised it was "retaining source labels".
+    """
+    return event.speaker or event.source_label
 
 
 def _short_timestamp(seconds: float) -> str:
@@ -109,17 +117,3 @@ def _utterances(events: Iterable[TranscriptEvent], sample_rate: int) -> list[dic
         }
         for event in events
     ]
-
-
-def _write_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            file.write(content)
-            file.flush()
-            os.fsync(file.fileno())
-        Path(temporary).replace(path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise

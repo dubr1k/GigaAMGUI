@@ -14,6 +14,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +34,11 @@ class BundleProfile:
     #: Смок нативного рантайма (флаг app.py) и обязательный маркер в его выводе.
     runtime_smoke: tuple[str, str]
     extra_smokes: tuple[tuple[str, str | None], ...] = field(default=())
+    #: Модули, которые обязаны лежать в PYZ-архиве исполняемого файла. Каталог
+    #: пакета в Frameworks/Resources ещё не значит, что код внутри: пустой
+    #: namespace-пакет gigaam (только конфликтные копии Syncthing) проходил
+    #: проверку required_packages, а PyTorch-бэкенд падал у пользователя.
+    required_modules: tuple[str, ...] = field(default=())
 
 
 PROFILES = {
@@ -42,6 +48,7 @@ PROFILES = {
         required_packages=("mlx", "gigaam_mlx"),
         forbidden_packages=(),
         runtime_smoke=("--asr-runtime-smoke", '"backend": "mlx"'),
+        required_modules=("gigaam.model", "gigaam.decoding", "gigaam_mlx.model", "onnx_asr"),
     ),
     "x86_64-onnx": BundleProfile(
         name="x86_64-onnx",
@@ -51,6 +58,7 @@ PROFILES = {
         # либо лишний гигабайт веса; и то и другое должно валить сборку.
         forbidden_packages=("torch", "mlx", "gigaam_mlx", "pyannote"),
         runtime_smoke=("--onnx-runtime-smoke", '"backend": "onnx"'),
+        required_modules=("onnx_asr",),
         # Смока диаризации здесь сознательно нет: он тянет модель из сети, а тот
         # же путь уже закрыт `--offline-models-smoke` на привезённых моделях —
         # и в CI, и локально, без стомегабайтной докачки посреди сборки.
@@ -82,6 +90,42 @@ def _run_smoke(executable: Path, flag: str, marker: str | None, timeout: int = 6
     output = (smoke.stdout or "") + (smoke.stderr or "")
     if smoke.returncode != 0 or (marker is not None and marker not in output):
         print(f"Frozen smoke failed {flag} ({smoke.returncode}): {output[-4000:]}")
+        return 1
+    return 0
+
+
+def frozen_modules(executable: Path) -> set[str]:
+    """Имена модулей из PYZ-архива внутри исполняемого файла PyInstaller."""
+    from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
+
+    archive = CArchiveReader(str(executable))
+    names: set[str] = set()
+    for entry in archive.toc:
+        if not entry.endswith(".pyz"):
+            continue
+        # ZlibArchiveReader читает только файл, поэтому PYZ из CArchive
+        # выгружаем во временный файл.
+        with tempfile.NamedTemporaryFile(suffix=".pyz", delete=False) as handle:
+            handle.write(archive.extract(entry))
+            pyz_path = handle.name
+        try:
+            names.update(ZlibArchiveReader(pyz_path).toc)
+        finally:
+            os.unlink(pyz_path)
+    return names
+
+
+def check_required_modules(executable: Path, modules: tuple[str, ...]) -> int:
+    if not modules:
+        return 0
+    try:
+        present = frozen_modules(executable)
+    except Exception as exc:
+        print(f"Cannot read the PYZ archive of {executable}: {type(exc).__name__}: {exc}")
+        return 1
+    missing = [module for module in modules if module not in present]
+    if missing:
+        print(f"Modules missing from the frozen archive of {executable.name}: {', '.join(missing)}")
         return 1
     return 0
 
@@ -152,6 +196,9 @@ def verify_bundle(bundle_path: str, profile_name: str | None = None) -> int:
             )
             return 1
 
+    if check_required_modules(candidates[0], profile.required_modules):
+        return 1
+
     smoke_flag, smoke_marker = profile.runtime_smoke
     if _run_smoke(candidates[0], smoke_flag, smoke_marker, timeout=120):
         return 1
@@ -180,8 +227,25 @@ def verify_bundle(bundle_path: str, profile_name: str | None = None) -> int:
     return 0
 
 
+def verify_modules_only(bundle_path: str, profile_name: str | None = None) -> int:
+    """Только проверка PYZ — для GigaAMWorker.app, у которого нет GUI-смоков."""
+    profile = PROFILES[profile_name or default_profile()]
+    exe = Path(bundle_path) / "Contents" / "MacOS"
+    candidates = [p for p in exe.iterdir() if p.is_file() and os.access(p, os.X_OK)] if exe.exists() else []
+    if not candidates:
+        print(f"No executable found in {exe}")
+        return 1
+    if check_required_modules(candidates[0], profile.required_modules):
+        return 1
+    print(f"Frozen modules verified ({profile.name}): {bundle_path}")
+    return 0
+
+
 def main() -> int:
     args = [arg for arg in sys.argv[1:]]
+    modules_only = "--modules-only" in args
+    if modules_only:
+        args.remove("--modules-only")
     profile_name = None
     if "--profile" in args:
         index = args.index("--profile")
@@ -194,8 +258,10 @@ def main() -> int:
             return 1
         del args[index:index + 2]
     if len(args) != 1:
-        print("Usage: python scripts/verify_macos_bundle.py [--profile NAME] <path_to_app>")
+        print("Usage: python scripts/verify_macos_bundle.py [--profile NAME] [--modules-only] <path_to_app>")
         return 1
+    if modules_only:
+        return verify_modules_only(args[0], profile_name)
     return verify_bundle(args[0], profile_name)
 
 

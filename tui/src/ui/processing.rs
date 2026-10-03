@@ -9,22 +9,12 @@ use ratatui::{
 
 use crate::{
     app::{App, FileState, Focus},
-    commands::short_name,
+    commands::{parent_name, short_name},
     i18n::{t, tf},
+    options::PARAM_ROWS,
+    queue::QueueItem,
     ui::{Action, AreaId, ButtonId},
 };
-
-/// The rows of the parameter panel, top to bottom: the label key and the command
-/// whose menu (or pre-filled command line) the row opens.
-pub(crate) const PARAM_ROWS: [(&str, &str); 7] = [
-    ("params.backend", "/backend"),
-    ("params.model", "/model"),
-    ("params.formats", "/formats"),
-    ("params.diarize", "/diarize"),
-    ("params.speakers", "/speakers"),
-    ("params.audio", "/audio-mode"),
-    ("params.output", "/output"),
-];
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let [top, bottom] = Layout::vertical([Constraint::Min(6), Constraint::Length(5)]).areas(area);
@@ -74,11 +64,16 @@ pub(crate) fn fit_middle(text: &str, width: usize) -> String {
     out
 }
 
-fn state_of(app: &App, _index: usize, file: &str) -> FileState {
-    if app.running() && !app.llm_running() && app.current_file.as_deref() == Some(file) {
+/// The row's own state, not a lookup by path: `App::file_state` scans the queue,
+/// which made every frame O(n²) in the queue length.
+fn state_of(app: &App, item: &QueueItem) -> FileState {
+    if app.running()
+        && !app.llm_running()
+        && app.progress.current_file.as_deref() == Some(&item.path)
+    {
         FileState::Processing
     } else {
-        app.file_state(file)
+        item.state
     }
 }
 
@@ -206,7 +201,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(index, item)| {
             let file = &item.path;
-            let state = state_of(app, index, file);
+            let state = state_of(app, item);
             let (key, colour) = match state {
                 FileState::Pending => ("state.pending", p.muted),
                 FileState::Processing => ("state.processing", p.accent),
@@ -222,10 +217,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
                         Style::default().fg(p.text).add_modifier(Modifier::BOLD),
                     ),
                     Line::styled(
-                        fit_middle(
-                            file.rsplit_once('/').map_or("", |(parent, _)| parent),
-                            name_width,
-                        ),
+                        fit_middle(parent_name(file), name_width),
                         Style::default().fg(p.muted),
                     ),
                 ]),
@@ -470,7 +462,7 @@ mod tests {
                 for pet_enabled in [false, true] {
                     let mut app = crate::test_support::ready_app();
                     app.lang = lang;
-                    app.pet_enabled = pet_enabled;
+                    app.pet.enabled = pet_enabled;
                     app.queue.add("/Users/test/meeting.wav".into());
                     let mut terminal =
                         ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
@@ -523,7 +515,7 @@ mod tests {
                 for pet_enabled in [false, true] {
                     let mut app = crate::test_support::ready_app();
                     app.lang = lang;
-                    app.pet_enabled = pet_enabled;
+                    app.pet.enabled = pet_enabled;
                     app.queue.add("/a.wav".into());
                     app.queue.add("/b.wav".into());
                     app.begin_batch(RunSelection::Pending, false);
@@ -588,8 +580,8 @@ mod tests {
                     terminal.draw(|f| draw_all(f, &mut app)).unwrap();
                     let text = terminal.backend().to_string();
                     let label = match (kind, lang) {
-                        (JobKind::Asr, Lang::Ru) => "После файла",
-                        (JobKind::Asr, Lang::En) => "After file",
+                        (JobKind::Asr, Lang::Ru) => "Остановить",
+                        (JobKind::Asr, Lang::En) => "Stop",
                         (JobKind::Llm, Lang::Ru) => "Отменить запрос",
                         (JobKind::Llm, Lang::En) => "Cancel request",
                     };
@@ -622,9 +614,9 @@ mod tests {
         // ratatui's Gauge paints the filled part as `█` in the gauge fg, so a theme
         // with every colour Reset still shows the bar in the terminal foreground.
         let mut app = crate::test_support::ready_app();
-        app.progress = 0.5;
+        app.progress.fraction = 0.5;
         app.batch = Some(crate::batch::BatchRun::new(vec!["/a.wav".into()]));
-        app.current_file = Some("/a.wav".into());
+        app.progress.current_file = Some("/a.wav".into());
         app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
         let render = |app: &mut App| {
             let backend = ratatui::backend::TestBackend::new(100, 40);
@@ -804,11 +796,11 @@ mod tests {
             app.queue.add(path.into());
         }
         app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
-        app.file_index = 0;
-        app.current_file = Some("/tmp/a.wav".into());
-        app.stage = "transcription".into();
-        app.processed_seconds = Some(190.0);
-        app.total_seconds = Some(450.0);
+        app.progress.file_index = 0;
+        app.progress.current_file = Some("/tmp/a.wav".into());
+        app.progress.stage = "transcription".into();
+        app.progress.processed_seconds = Some(190.0);
+        app.progress.total_seconds = Some(450.0);
         let backend = ratatui::backend::TestBackend::new(100, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();

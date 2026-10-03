@@ -140,3 +140,50 @@ def test_worker_and_mcp_imports_are_direct_requirements():
         if normalized(_DISTRIBUTION_FOR_MODULE.get(module, module)) not in declared
     }
     assert not missing, f"не объявлены в {TUI_REQUIREMENTS}: {missing}"
+
+
+#: Пакеты, у которых смена мажорной версии меняла API, на котором стоит
+#: воркер: pyannote.audio 4 возвращает DiarizeOutput вместо Annotation,
+#: transformers 5 / huggingface-hub 1.x приезжают с ним; тройка torch — одна ветка.
+_MAJOR_SENSITIVE = {
+    "pyannote.audio", "transformers", "huggingface-hub", "numpy", "torch", "torchaudio", "torchvision",
+}
+
+
+def _specifiers(path: Path) -> dict[str, str]:
+    specs = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith("-") or "@" in line:
+            continue
+        name = re.split(r"[<>=!~;\[ ]", line, maxsplit=1)[0].strip().lower().replace("_", "-")
+        specs[name] = line[len(name):].split(";", 1)[0].strip()
+    return specs
+
+
+def test_tui_requirements_stay_on_the_tested_major_lines():
+    from packaging.specifiers import SpecifierSet
+
+    tui = _specifiers(TUI_REQUIREMENTS)
+    main = _specifiers(Path("requirements.txt"))
+    for name in sorted(_MAJOR_SENSITIVE):
+        spec = SpecifierSet(tui[name])
+        assert any(item.operator in {"<", "<=", "=="} for item in spec), f"{name}: no upper bound ({spec})"
+        pinned = main.get(name, "")
+        if pinned.startswith("=="):
+            assert spec.contains(pinned[2:], prereleases=True), f"{name}: TUI {spec} excludes tested {pinned}"
+
+
+def test_every_tui_installer_builds_with_the_committed_lockfile():
+    # CI собирает TUI с --locked; установщики без него брали свежие версии
+    # крейтов, и у пользователя собиралось не то, что проверено.
+    installers = [
+        INSTALL_TUI_SCRIPT,
+        Path("distribution/homebrew/Formula/gigaam-tui.rb"),
+        Path("distribution/npm/gigaam-tui/bin/gigaam.js"),
+    ]
+    for installer in installers:
+        text = installer.read_text(encoding="utf-8")
+        builds = [line for line in text.splitlines() if re.search(r"""cargo["',\s\[\]]+build\b""", line)]
+        assert builds, installer
+        assert all("--locked" in line for line in builds), (installer, builds)

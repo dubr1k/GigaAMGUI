@@ -11,23 +11,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .core.runtime_options import (
+    parse_bool,
+    validate_backend_name,
+    validate_onnx_provider,
+)
 from .data_paths import bootstrap_data_dir
 
 APP_CONFIG_DIR_NAME = "GigaAMTranscriber"
-
-
-def _validate_backend_name(value: str) -> str:
-    normalized = (value or "").strip().lower()
-    if normalized not in {"auto", "mlx", "onnx", "pytorch"}:
-        raise ValueError(f"Unsupported ASR backend: {normalized}")
-    return normalized
-
-
-def _validate_onnx_provider(value: str | None) -> str:
-    normalized = (value or "auto").strip().lower() or "auto"
-    if normalized not in {"auto", "cpu", "cuda", "tensorrt", "coreml", "directml"}:
-        raise ValueError(f"Unsupported ONNX provider: {normalized}")
-    return normalized
 
 
 def _validate_onnx_quantization(value: str | None) -> str | None:
@@ -37,19 +28,6 @@ def _validate_onnx_quantization(value: str | None) -> str | None:
     if normalized != "int8":
         raise ValueError(f"Unsupported ONNX quantization: {normalized}")
     return normalized
-
-
-def _parse_bool(value: str | bool | None, *, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}:
-        return True
-    if normalized in {"0", "false", "f", "no", "n", "off", "disable", "disabled"}:
-        return False
-    return default
 
 
 def user_config_dir() -> Path:
@@ -74,8 +52,35 @@ def project_env_path() -> Path:
     return Path(__file__).resolve().parent.parent / ".env"
 
 
+_ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ENV_BARE_VALUE = re.compile(r"[A-Za-z0-9_\-.:/+=@,]*")
+
+
+def _env_quoted(value: str) -> str:
+    """Значение для .env: голое, если безопасно, иначе в двойных кавычках.
+
+    python-dotenv раскрывает в двойных кавычках \\\\, \\", \\n, \\r, \\t — этим
+    и экранируем. Без кавычек перевод строки в значении (вставленный токен)
+    дописывал в .env произвольные ключи, а пробелы по краям и «#» терялись.
+    """
+    if _ENV_BARE_VALUE.fullmatch(value):
+        return value
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
 def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
-    """Save one KEY=value pair to the persistent user .env file."""
+    """Save one KEY=value pair to the persistent user .env file (atomically)."""
+    if not _ENV_KEY.fullmatch(key):
+        raise ValueError(f"Некорректное имя переменной окружения: {key!r}")
+    from .utils.atomic_json import write_text_atomic
+
     target = env_path or user_env_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
@@ -84,15 +89,11 @@ def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
             line for line in target.read_text(encoding="utf-8").splitlines()
             if not line.startswith(f"{key}=")
         ]
-    lines.append(f"{key}={value}")
-    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines.append(f"{key}={_env_quoted(value)}")
+    # Атомарно: обрыв записи не должен оставить .env без остальных ключей.
+    write_text_atomic(target, "\n".join(lines) + "\n")
     os.environ[key] = value
     return target
-
-
-def _has_cyrillic(text: str) -> bool:
-    """Проверяет наличие кириллических символов в строке"""
-    return bool(re.search(r'[а-яА-ЯёЁ]', text))
 
 
 # Папка с моделями, привезёнными офлайн-сборкой (заполняется ниже).
@@ -177,7 +178,7 @@ ONNX_ONLY_BUILD = bool(
 # бы MLX или PyTorch и полез бы за ними в сеть — ровно то, ради чего затевался
 # офлайн-вариант. Явная настройка пользователя по-прежнему главнее.
 _DEFAULT_ASR_BACKEND = "onnx" if (BUNDLED_MODELS_DIR or ONNX_ONLY_BUILD) else "auto"
-ASR_BACKEND = _validate_backend_name(os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND))
+ASR_BACKEND = validate_backend_name(os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND))
 # По той же причине диаризация по умолчанию тоже ONNX: pyannote требует torch
 # и токен HuggingFace, которых в офлайн-наборе нет.
 _DEFAULT_DIARIZATION_BACKEND = "onnx" if (BUNDLED_MODELS_DIR or ONNX_ONLY_BUILD) else "pyannote"
@@ -188,7 +189,7 @@ DIARIZATION_BACKEND = (
     or "pyannote"
 )
 ASR_MODEL = os.getenv("ASR_MODEL", MODEL_REVISION)
-ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
+ASR_ALLOW_FALLBACK = parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
 ASR_SEGMENTATION_MODE = os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
 if ASR_SEGMENTATION_MODE not in {"vad", "overlap_chunks", "fixed_chunks"}:
     ASR_SEGMENTATION_MODE = "vad"
@@ -204,7 +205,7 @@ ASR_VAD_DEVICE = (
     os.getenv("ASR_VAD_DEVICE", _DEFAULT_VAD_DEVICE).strip().lower() or _DEFAULT_VAD_DEVICE
 )
 MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
-ONNX_PROVIDER = _validate_onnx_provider(os.getenv("ONNX_PROVIDER"))
+ONNX_PROVIDER = validate_onnx_provider(os.getenv("ONNX_PROVIDER"))
 ONNX_QUANTIZATION = _validate_onnx_quantization(os.getenv("ONNX_QUANTIZATION"))
 ONNX_MODEL_DIR = os.getenv("ONNX_MODEL_DIR", "").strip() or None
 ONNX_VAD_MODEL = os.getenv("ONNX_VAD_MODEL", "silero").strip() or "silero"

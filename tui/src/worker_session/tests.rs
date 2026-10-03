@@ -179,6 +179,51 @@ time.sleep(30)
     stopped(&rx);
 }
 
+/// A token-level `llm_chunk` stream used to cost one queue slot per token: with a
+/// UI that drains slowly, the pipe filled up and the worker blocked inside
+/// `emit` (holding its write lock), delaying every other message.
+#[test]
+fn a_token_stream_is_folded_while_the_consumer_is_busy() {
+    let (tx, rx) = mpsc::sync_channel(EVENT_CAPACITY);
+    let session = WorkerSession::spawn_with_command(
+        7,
+        python(
+            r#"
+import json, sys
+for index in range(3000):
+    sys.stdout.write(json.dumps({'type':'llm_chunk','mode':'summary','text':str(index)+','}) + '\n')
+print(json.dumps({'type':'llm_completed','success':True}), flush=True)
+sys.stdin.readline()
+"#,
+        ),
+        tx,
+    );
+    let started = Instant::now();
+    let mut text = String::new();
+    let mut chunks = 0;
+    loop {
+        std::thread::sleep(Duration::from_millis(10)); // a slow consumer
+        match receive(&rx) {
+            WorkerEventKind::Message(value) if value["type"] == "llm_chunk" => {
+                assert_eq!(value["mode"], "summary");
+                text.push_str(value["text"].as_str().unwrap());
+                chunks += 1;
+            }
+            WorkerEventKind::Message(value) => {
+                assert_eq!(value["type"], "llm_completed", "order is kept");
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    session.stop();
+    stopped(&rx);
+    let expected: String = (0..3000).map(|index| format!("{index},")).collect();
+    assert_eq!(text, expected);
+    assert!(chunks < 3000, "{chunks} events for 3000 tokens");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
 #[test]
 fn exit_and_stdout_eof_report_one_failure_then_reap() {
     for script in [
@@ -263,6 +308,46 @@ sys.stdin.readline()
             );
         }
     }
+}
+
+/// A grandchild in its own session escapes the process-group kill and holds
+/// stdout open: the first stop cannot be confirmed. The controller used to exit
+/// after reporting that, so Ctrl+R's `stop()` reached nobody and the TUI showed
+/// "reconnecting…" forever. A later stop must retry and confirm.
+#[cfg(unix)]
+#[test]
+fn an_unconfirmed_stop_can_be_retried_once_the_tree_is_gone() {
+    let (tx, rx) = mpsc::sync_channel(128);
+    let session = WorkerSession::spawn_with_command(
+        7,
+        python(
+            r#"
+import json, subprocess, sys
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'], start_new_session=True)
+print(json.dumps({'type':'tree', 'child':child.pid}), flush=True)
+sys.stdin.readline()
+"#,
+        ),
+        tx,
+    );
+    let WorkerEventKind::Message(tree) = receive(&rx) else {
+        panic!("missing tree")
+    };
+    session.stop();
+    let first = loop {
+        if let WorkerEventKind::Stopped(result) = receive(&rx) {
+            break result;
+        }
+    };
+    assert!(first.is_err(), "the escaped grandchild keeps the pipe open");
+    let child = tree["child"].as_u64().unwrap() as u32;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running(child) {
+        assert!(Instant::now() < deadline, "fixture grandchild did not exit");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    session.stop();
+    stopped(&rx);
 }
 
 #[cfg(unix)]

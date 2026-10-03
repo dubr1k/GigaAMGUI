@@ -15,6 +15,9 @@ from src.utils import audio_preprocessing
 
 LOG_SOURCES = [
     Path("src/core/processor.py"),
+    Path("src/core/diarization_stage.py"),
+    Path("src/core/preprocessing_messages.py"),
+    Path("src/core/export.py"),
     Path("src/core/model_loader.py"),
     Path("src/core/asr/pytorch_backend.py"),
     Path("src/core/asr/mlx_backend.py"),
@@ -125,6 +128,7 @@ FFmpeg не смог подготовить звук (код ошибки 254). 
 Определение говорящих выполняется на: устройство cpu, провайдер CPUExecutionProvider
 Готово за 2 мин 3 сек (подготовка звука 1.2 с, распознавание 118.4 с)
 Остановка запрошена: закончим текущий файл и остановимся.
+Остановка запрошена: прерываем текущий файл, его результаты не сохранятся.
 Не удалось загрузить модель распознавания"""
 
 

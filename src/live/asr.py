@@ -6,7 +6,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -34,6 +34,8 @@ class _SpeechRun:
     silence_samples: int = 0
     last_partial_end: int | None = None
     voiced_samples: int = 0
+    voiced_parts: list[int] = field(default_factory=list)
+    """Voiced samples of each `audio` part, so a forced cut can split the count."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,32 @@ MIN_SPEECH_SAMPLES = 3_200
 It used to be a full second of voiced 100 ms chunks plus at least two words,
 which silently dropped every short phrase: «Привет! Как у тебя дела?» from a
 quiet microphone measured 0.4 s and was decoded correctly, then discarded."""
+MAX_UTTERANCE_SECONDS = 25
+"""Longest run that is decoded as one window.
+
+A run used to end only after 3 s below the gate, so continuous audio (a
+lecture, music, a TV) kept one run open for the whole session: hundreds of
+partials, not one final, nothing journaled, and at stop the entire session
+went to the model as a single window — the backends have no long-form split,
+so that ran out of memory or took minutes, and a failure lost the transcript.
+"""
+IDLE_FINAL_SECONDS = 5.0
+"""Wall time without any audio after which an open run is finalized.
+
+A run ends after 3 s of *audio* below the gate, but a WASAPI loopback goes
+quiet by sending nothing: the silence that would end the run never arrives,
+and the last phrase before a pause stayed a draft until the next sound."""
+OFFSET_JUMP_SAMPLES = 1_600
+"""A forward jump in a source's offsets larger than this (0.1 s) ends its run.
+
+The timeline jumps over time a source spent silent without delivering; the
+run before the jump is over, and joining audio across it would decode the
+two sides as one window with offsets that no longer match the audio."""
+CUT_SEARCH_SECONDS = 5
+"""How far back from the limit a forced cut looks for the quietest frame.
+
+Cutting exactly at the limit splits a word; within the last few seconds there
+is almost always a pause between words to cut at instead."""
 
 
 class _EnergyGate:
@@ -83,24 +111,61 @@ class _EnergyGate:
     # Per-frame smoothing that keeps the ~2 s floor time constant the gate had
     # with 100 ms chunks (0.95 per chunk ≈ 0.99 per 20 ms frame).
     _FLOOR_ALPHA = 0.01
+    # While open the floor follows the quietest frame of the last two seconds
+    # with a ~30 s time constant. Adapting only while closed meant steady
+    # noise above the release threshold (a fan, music) held the gate open for
+    # the whole session. The minimum, not the level, is what it follows:
+    # speech always has quiet frames between words, so a talker is never
+    # learned as the room — only sound that never dips is.
+    _OPEN_FLOOR_ALPHA = 0.02 / 30
+    _FLOOR_WINDOW_FRAMES = 100
 
     def __init__(self) -> None:
         self._noise_floor = 0.001
         self._active = False
+        self._frame_index = 0
+        self._window: deque[tuple[int, float]] = deque()
 
     def voiced_samples(self, audio: np.ndarray) -> int:
         voiced = 0
         for start in range(0, len(audio), FRAME_SAMPLES):
             frame = audio[start:start + FRAME_SAMPLES]
             rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64))))
+            quietest = self._remember(rms)
             attack = max(0.015, self._noise_floor * 4)
             release = max(0.010, self._noise_floor * 2.5)
             self._active = rms >= (release if self._active else attack)
             if self._active:
                 voiced += len(frame)
+                self._noise_floor += (quietest - self._noise_floor) * self._OPEN_FLOOR_ALPHA
             else:
                 self._noise_floor += (rms - self._noise_floor) * self._FLOOR_ALPHA
         return voiced
+
+    def _remember(self, rms: float) -> float:
+        """Sliding minimum of frame RMS over the last `_FLOOR_WINDOW_FRAMES`."""
+        index = self._frame_index
+        self._frame_index += 1
+        while self._window and self._window[-1][1] >= rms:
+            self._window.pop()
+        self._window.append((index, rms))
+        while self._window[0][0] <= index - self._FLOOR_WINDOW_FRAMES:
+            self._window.popleft()
+        return self._window[0][1]
+
+
+def asr_scheduler_factory(backend: WindowBackend, *, scheduler_class: type | None = None):
+    """The `scheduler_factory` a LiveSession takes: one scheduler per source, one shared backend.
+
+    The backend is shared so decodes of all sources are serialized on one
+    model. `scheduler_class` lets a front-end pass the name it imported (and
+    that its tests replace).
+    """
+    def factory(source, on_final, on_partial, on_error):
+        cls = scheduler_class or LiveAsrScheduler
+        return cls(backend, on_final=on_final, on_partial=on_partial, on_error=on_error)
+
+    return factory
 
 
 def _normalize_word(word: str) -> str:
@@ -118,12 +183,14 @@ class LiveAsrScheduler:
         partial_context_seconds: float = 12.0,
         partial_minimum_seconds: float = 1.5,
         final_silence_seconds: float = 3.0,
+        idle_final_seconds: float = IDLE_FINAL_SECONDS,
         on_partial: Callable[[TranscriptEvent], None] | None = None,
         on_final: Callable[[TranscriptEvent], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
     ) -> None:
         if min(
             partial_delay_seconds, partial_context_seconds, partial_minimum_seconds, final_silence_seconds,
+            idle_final_seconds,
         ) <= 0:
             raise ValueError("live ASR timing values must be positive")
         if partial_minimum_seconds > partial_context_seconds:
@@ -133,6 +200,9 @@ class LiveAsrScheduler:
         self._partial_context_seconds = partial_context_seconds
         self._partial_minimum_seconds = partial_minimum_seconds
         self._final_silence_seconds = final_silence_seconds
+        self._idle_final_seconds = idle_final_seconds
+        self._next_offsets: dict[CaptureSource, int] = {}
+        self._last_audio_at: dict[CaptureSource, float] = {}
         self._on_partial = on_partial
         self._on_final = on_final
         self._on_error = on_error
@@ -145,14 +215,10 @@ class LiveAsrScheduler:
         self._partial_hypotheses: dict[str, _Hypothesis] = {}
         self._refresh_seconds = partial_delay_seconds
         self._closed = False
+        self._aborted = False
         self._condition = threading.Condition()
         self._worker = threading.Thread(target=self._run, name="live-asr", daemon=True)
         self._worker.start()
-
-    @property
-    def pending_partial_offset(self) -> int | None:
-        with self._condition:
-            return None if self._partial_job is None else self._partial_job.end
 
     @property
     def refresh_seconds(self) -> float:
@@ -167,6 +233,14 @@ class LiveAsrScheduler:
         with self._condition:
             if self._closed:
                 raise RuntimeError("scheduler is closed")
+            expected = self._next_offsets.get(chunk.source)
+            if expected is not None and chunk.sample_offset - expected > OFFSET_JUMP_SAMPLES:
+                jumped = self._runs.get(chunk.source)
+                if jumped is not None:
+                    self._queue_final(chunk.source, jumped, paragraph_break_after=True)
+                self._pre_roll.pop(chunk.source, None)
+            self._next_offsets[chunk.source] = chunk.sample_offset + len(audio)
+            self._last_audio_at[chunk.source] = time.monotonic()
             run = self._runs.get(chunk.source)
             if voiced:
                 if run is None:
@@ -175,27 +249,33 @@ class LiveAsrScheduler:
                         chunk.sample_offset - len(pre_roll),
                         chunk.sample_offset,
                         [pre_roll] if len(pre_roll) else [],
+                        voiced_parts=[0] if len(pre_roll) else [],
                     )
                     self._runs[chunk.source] = run
+                    # The worker sleeps without a timeout while no run is
+                    # open; it must start timing this one.
+                    self._condition.notify()
                 run.audio.append(audio.copy())
+                run.voiced_parts.append(voiced)
                 run.end = chunk.sample_offset + len(audio)
                 run.voiced_samples += voiced
                 run.silence_start = None
                 run.silence_samples = 0
+                if run.end - run.start >= MAX_UTTERANCE_SECONDS * chunk.sample_rate:
+                    run = self._cut_run(chunk.source, run)
                 if self._should_refresh_partial(run, chunk.sample_rate):
                     self._schedule_partial(chunk.source, run)
             elif run is not None:
                 run.audio.append(audio.copy())
+                run.voiced_parts.append(0)
                 run.end = chunk.sample_offset + len(audio)
                 if run.silence_start is None:
                     run.silence_start = chunk.sample_offset
                 run.silence_samples += len(audio)
                 if run.silence_samples >= self._final_silence_seconds * chunk.sample_rate:
-                    self._final_jobs.append(
-                        self._job(chunk.source, run, is_final=True, paragraph_break_after=True)
-                    )
-                    del self._runs[chunk.source]
-                    self._condition.notify()
+                    self._queue_final(chunk.source, run, paragraph_break_after=True)
+                elif run.end - run.start >= MAX_UTTERANCE_SECONDS * chunk.sample_rate:
+                    self._cut_run(chunk.source, run)
                 elif (
                     run.silence_samples >= PAUSE_PARTIAL_SECONDS * chunk.sample_rate
                     and (run.last_partial_end is None or run.last_partial_end <= run.silence_start)
@@ -209,30 +289,109 @@ class LiveAsrScheduler:
     def flush(self) -> None:
         with self._condition:
             for source, run in list(self._runs.items()):
-                self._final_jobs.append(self._job(source, run, is_final=True))
-                del self._runs[source]
+                self._queue_final(source, run)
             self._condition.notify_all()
 
     def record_decode_duration(self, seconds: float) -> None:
         with self._condition:
             self._refresh_seconds = min(1.5, max(0.25, seconds))
 
-    def close(self, timeout: float | None = None) -> None:
+    def close(self, timeout: float | None = None) -> bool:
         """Drain queued decodes; `timeout` bounds the wait, `None` waits fully.
 
         Abandoning the queue here used to drop every final that had not been
         decoded within a second, which silently emptied short sessions.
+        Returns whether the queue was drained; on False the caller decides
+        whether to keep waiting or to `abort()`.
         """
         self.flush()
         with self._condition:
             self._closed = True
             self._condition.notify_all()
         self._worker.join(timeout=timeout)
+        return not self._worker.is_alive()
 
-    @property
-    def pending_jobs(self) -> int:
+    def abort(self) -> None:
+        """Drop queued work and publish nothing more, including the decode in flight.
+
+        A decode that never returns (a wedged GPU backend) must not hold stop()
+        forever; whatever it produces after the session has exported would only
+        land in a closed journal.
+        """
         with self._condition:
-            return len(self._final_jobs) + (0 if self._partial_job is None else 1)
+            self._aborted = True
+            self._closed = True
+            self._final_jobs.clear()
+            self._partial_job = None
+            self._runs.clear()
+            self._condition.notify_all()
+
+    def _queue_final(
+        self, source: CaptureSource, run: _SpeechRun, *, paragraph_break_after: bool = False,
+    ) -> None:
+        """End `run` with a final; its queued draft must not outlive it.
+
+        The worker takes finals before the pending partial, so a draft queued
+        for the same run used to be decoded after its final and published as
+        a newer revision — Liquid showed it as a draft repeating the phrase.
+        """
+        self._final_jobs.append(
+            self._job(source, run, is_final=True, paragraph_break_after=paragraph_break_after)
+        )
+        partial = self._partial_job
+        if partial is not None and partial.source is source and partial.event_start == run.start:
+            self._partial_job = None
+        if self._runs.get(source) is run:
+            del self._runs[source]
+        self._condition.notify()
+
+    def _finalize_idle_runs(self) -> None:
+        now = time.monotonic()
+        for source, run in list(self._runs.items()):
+            if now - self._last_audio_at.get(source, now) >= self._idle_final_seconds:
+                self._queue_final(source, run, paragraph_break_after=True)
+
+    def _cut_run(self, source: CaptureSource, run: _SpeechRun) -> _SpeechRun:
+        """Finalize a run that reached the length limit; the rest starts a new run.
+
+        The cut goes to the quietest 20 ms frame of the last
+        `CUT_SEARCH_SECONDS` before the limit (the latest one on a tie), which
+        in speech is a pause between words.
+        """
+        audio = np.concatenate(run.audio)
+        limit = min(len(audio), MAX_UTTERANCE_SECONDS * 16_000)
+        search_from = max(FRAME_SAMPLES, limit - CUT_SEARCH_SECONDS * 16_000)
+        frame_count = (limit - search_from) // FRAME_SAMPLES
+        if frame_count > 0:
+            window = audio[search_from:search_from + frame_count * FRAME_SAMPLES].astype(np.float64)
+            levels = np.sqrt(np.mean(np.square(window.reshape(frame_count, -1)), axis=1))
+            quietest = frame_count - 1 - int(np.argmin(levels[::-1]))
+            cut = search_from + quietest * FRAME_SAMPLES
+        else:
+            cut = limit
+        head_voiced = 0
+        consumed = 0
+        for part, part_voiced in zip(run.audio, run.voiced_parts, strict=False):
+            if consumed + len(part) <= cut:
+                head_voiced += part_voiced
+            elif consumed < cut and len(part):
+                head_voiced += round(part_voiced * (cut - consumed) / len(part))
+            consumed += len(part)
+        head = _SpeechRun(run.start, run.start + cut, [audio[:cut]], voiced_samples=head_voiced)
+        self._queue_final(source, head)
+        tail_voiced = max(0, run.voiced_samples - head_voiced)
+        rest = _SpeechRun(
+            run.start + cut,
+            run.end,
+            [audio[cut:]],
+            voiced_samples=tail_voiced,
+            voiced_parts=[tail_voiced],
+        )
+        if run.silence_start is not None:
+            rest.silence_start = max(run.silence_start, rest.start)
+            rest.silence_samples = min(run.silence_samples, rest.end - rest.start)
+        self._runs[source] = rest
+        return rest
 
     def _schedule_partial(self, source: CaptureSource, run: _SpeechRun) -> None:
         self._partial_job = self._job(source, run, is_final=False)
@@ -290,7 +449,14 @@ class LiveAsrScheduler:
         while True:
             with self._condition:
                 while not self._final_jobs and self._partial_job is None and not self._closed:
-                    self._condition.wait()
+                    self._finalize_idle_runs()
+                    if self._final_jobs:
+                        break
+                    # Open runs need the clock to end them; with none open
+                    # there is nothing to time and the worker just sleeps.
+                    self._condition.wait(
+                        timeout=min(0.5, max(0.05, self._idle_final_seconds / 4)) if self._runs else None
+                    )
                 if self._final_jobs:
                     job = self._final_jobs.popleft()
                 elif self._partial_job is not None:
@@ -305,13 +471,13 @@ class LiveAsrScheduler:
                 segments = self._backend.transcribe_window(job.audio, 16_000, job.start)
                 self._publish(job, segments)
             except Exception as exc:
-                if self._on_error is not None:
+                if self._on_error is not None and not self._aborted:
                     self._on_error(exc)
             finally:
                 self.record_decode_duration(time.monotonic() - started)
 
     def _publish(self, job: _Job, segments: list[TranscriptionSegment]) -> None:
-        if not segments:
+        if not segments or self._aborted:
             return
         text = " ".join(segment["transcription"].strip() for segment in segments).strip()
         if not text:

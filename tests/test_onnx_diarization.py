@@ -125,7 +125,7 @@ def test_prepare_eagerly_downloads_and_initializes_both_onnx_models(monkeypatch)
 
     calls = []
     events = []
-    monkeypatch.setattr(onnx_backend, "hf_repo_is_cached", lambda _repo: False)
+    monkeypatch.setattr(onnx_backend, "onnx_model_is_local", lambda _repo, **_kwargs: False)
 
     class Segmenter:
         def _ensure_session(self):

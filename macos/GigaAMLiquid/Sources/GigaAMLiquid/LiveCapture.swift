@@ -42,8 +42,9 @@ protocol LiveCaptureSource: AnyObject {
 }
 
 /// Resamples arbitrary input buffers to 16 kHz mono int16 and emits fixed-size chunks
-/// with a monotonic sample offset. Not thread-safe by itself: each capture source
-/// feeds its chunker from a single audio callback queue.
+/// with a monotonic sample offset. Thread-safe: the audio callback appends, while
+/// pause/resume and the final flush come from the session's queue — and the
+/// microphone tap can still be running when capture stops.
 final class PcmChunker {
     private let source: LiveSource
     private let targetFormat: AVAudioFormat
@@ -54,7 +55,20 @@ final class PcmChunker {
     private var pending = [Int16]()
     private var seq = 0
     private var sampleOffset = 0
-    var isPaused = false
+    private let lock = NSLock()
+    private var paused = false
+    private var finished = false
+
+    var isPaused: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return paused }
+        set { lock.lock(); paused = newValue; lock.unlock() }
+    }
+
+    /// Host-clock nanoseconds, the clock of the tap's AVAudioTime and of the
+    /// ScreenCaptureKit presentation timestamps.
+    static func nanoseconds(hostTime: UInt64) -> Int64 {
+        Int64(AVAudioTime.seconds(forHostTime: hostTime) * 1_000_000_000)
+    }
 
     init(source: LiveSource, targetRate: Double = 16_000, chunkFrames: Int = 1600, onChunk: @escaping (LiveAudioChunk) -> Void) {
         self.source = source
@@ -64,12 +78,14 @@ final class PcmChunker {
     }
 
     func append(buffer: AVAudioPCMBuffer, hostTime: UInt64) throws {
-        guard !isPaused, buffer.frameLength > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !paused, !finished, buffer.frameLength > 0 else { return }
         if inputFormat != buffer.format {
             inputFormat = buffer.format
             converter = AVAudioConverter(from: buffer.format, to: targetFormat)
         }
-        guard let converter else { throw WorkerFailure("Unsupported audio format for live capture.") }
+        guard let converter else { throw WorkerFailure(L10n.text("Неподдерживаемый формат звука для записи.")) }
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
         guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
@@ -85,7 +101,7 @@ final class PcmChunker {
         let frames = Int(output.frameLength)
         guard frames > 0, let samples = output.int16ChannelData?[0] else { return }
         pending.append(contentsOf: UnsafeBufferPointer(start: samples, count: frames))
-        let timestampNs = Int64(AVAudioTime.seconds(forHostTime: hostTime) * 1_000_000_000)
+        let timestampNs = Self.nanoseconds(hostTime: hostTime)
         while pending.count >= chunkFrames {
             let chunk = Array(pending[0..<chunkFrames])
             pending.removeFirst(chunkFrames)
@@ -93,9 +109,17 @@ final class PcmChunker {
         }
     }
 
-    func flush() {
+    /// Emits the trailing partial chunk and refuses anything after it: a tap block
+    /// still in flight when capture stops would otherwise reach the worker after
+    /// live_stop. The trailing chunk is stamped on the host clock like the others
+    /// (it used to get wall-clock epoch time, ~56 years off).
+    func finish() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
         guard !pending.isEmpty else { return }
-        emit(pending, timestampNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000))
+        emit(pending, timestampNs: Self.nanoseconds(hostTime: mach_absolute_time()))
         pending.removeAll()
     }
 
@@ -181,7 +205,7 @@ final class MicrophoneCapture: LiveCaptureSource {
         observer = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        chunker.flush()
+        chunker.finish()
     }
 
     /// Route a specific CoreAudio device into the engine's input unit.
@@ -287,6 +311,6 @@ final class SystemAudioCapture: NSObject, LiveCaptureSource, SCStreamOutput, SCS
         stream.stopCapture { _ in semaphore.signal() }
         _ = semaphore.wait(timeout: .now() + 3)
         self.stream = nil
-        queue.sync { chunker.flush() }
+        queue.sync { chunker.finish() }
     }
 }

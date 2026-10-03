@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 
 use crate::{
+    action::{Action, AreaId, ButtonId},
     app::{dispatch, esc_is_cancel, esc_should_soft_cancel, llm_can_run, on_off, App, Focus, Page},
     commands::{
         apply_command_menu, command_menu_options, command_suggestions, complete_path,
@@ -17,8 +18,8 @@ use crate::{
     },
     i18n::{t, tf},
     input::InputMode,
+    options::{LLM_MODES, PARAM_ROWS},
     settings::save_app_settings,
-    ui::{llm::MODES, processing::PARAM_ROWS, Action, AreaId, ButtonId},
 };
 
 /// Lines `PgUp` / `PgDn` move the LLM answer, the log and the help by.
@@ -47,62 +48,26 @@ fn shortcut_code(code: KeyCode, ctrl: bool) -> KeyCode {
     }
 }
 
+/// What every layer below needs to know about the key and the screen.
+#[derive(Clone, Copy)]
+struct KeyContext {
+    ctrl: bool,
+    idle: bool,
+    menu_open: bool,
+    /// Neither the input line nor a menu is open.
+    no_input: bool,
+}
+
+/// The layers in the order they were tried in one long `match` before, which
+/// is the semantics: the first layer (and within it the first arm) that claims
+/// a key wins, and later layers never see it. Modal dialogs, then the input
+/// editor, then keys that act on every page, then keys of the current page,
+/// then shortcuts, menus and the input line.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let code = shortcut_code(key.code, ctrl);
-    if app.stop_confirmation {
-        return match key.code {
-            KeyCode::Char('y' | 'Y' | 'н' | 'Н') => dispatch(app, Action::ConfirmStop(true)),
-            KeyCode::Esc | KeyCode::Char('n' | 'N' | 'т' | 'Т') => {
-                dispatch(app, Action::ConfirmStop(false))
-            }
-            _ => Vec::new(),
-        };
-    }
-    if app.rerun_confirmation.is_some() {
-        return match key.code {
-            KeyCode::Char('y' | 'Y' | 'н' | 'Н') => dispatch(app, Action::ConfirmRerun(true)),
-            KeyCode::Esc | KeyCode::Char('n' | 'N' | 'т' | 'Т') => {
-                dispatch(app, Action::ConfirmRerun(false))
-            }
-            _ => Vec::new(),
-        };
-    }
-    if app.show_path {
-        return match code {
-            KeyCode::Esc | KeyCode::Enter => dispatch(app, Action::ShowPath(false)),
-            KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Path, -1)),
-            KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Path, 1)),
-            KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::Path, -ANSWER_PAGE)),
-            KeyCode::PageDown => dispatch(app, Action::Scroll(AreaId::Path, ANSWER_PAGE)),
-            _ => Vec::new(),
-        };
-    }
-    if app.results_open {
-        return match code {
-            KeyCode::Esc | KeyCode::F(9) => dispatch(app, Action::ShowResults(false)),
-            KeyCode::Enter => dispatch(app, Action::OpenResult(false)),
-            KeyCode::Char('o' | 'O' | 'щ' | 'Щ') => dispatch(app, Action::OpenResult(true)),
-            KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Results, -1)),
-            KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Results, 1)),
-            KeyCode::Home => dispatch(app, Action::SelectResult(0)),
-            KeyCode::End => dispatch(app, Action::SelectResult(usize::MAX)),
-            KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::ResultPath, -ANSWER_PAGE)),
-            KeyCode::PageDown => dispatch(app, Action::Scroll(AreaId::ResultPath, ANSWER_PAGE)),
-            _ => Vec::new(),
-        };
-    }
-    // The help overlay is modal: it scrolls, closes, and swallows everything else
-    // except Ctrl+C, which must always reach the quit path.
-    if app.help_open && !(ctrl && code == KeyCode::Char('c')) {
-        return match code {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(12) => dispatch(app, Action::Help),
-            KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Help, -1)),
-            KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Help, 1)),
-            KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::Help, -ANSWER_PAGE)),
-            KeyCode::PageDown => dispatch(app, Action::Scroll(AreaId::Help, ANSWER_PAGE)),
-            _ => Vec::new(),
-        };
+    if let Some(commands) = modal_key(app, key.code, code, ctrl) {
+        return commands;
     }
     let idle = !app.running();
     let menu_open = app.command_menu.is_some();
@@ -111,142 +76,22 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         app.status = t(app.lang, "status.inputs_cancelled").into();
         return Vec::new();
     }
-    if idle && !menu_open && app.input.mode != InputMode::Hidden {
-        let handled = match key.code {
-            KeyCode::Char('u' | 'U' | 'г' | 'Г') if ctrl => {
-                app.input.clear();
-                true
-            }
-            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
-                app.input.insert(&c.to_string());
-                app.selected_command = 0;
-                true
-            }
-            KeyCode::Left => {
-                app.input.left();
-                true
-            }
-            KeyCode::Right => {
-                app.input.right();
-                true
-            }
-            KeyCode::Home => {
-                app.input.home();
-                true
-            }
-            KeyCode::End => {
-                app.input.end();
-                true
-            }
-            KeyCode::Backspace => {
-                app.input.backspace();
-                true
-            }
-            KeyCode::Delete => {
-                app.input.delete();
-                true
-            }
-            KeyCode::Esc => {
-                app.input.close();
-                app.focus = Focus::Queue;
-                true
-            }
-            _ => false,
-        };
-        if handled {
-            return Vec::new();
-        }
+    if idle && !menu_open && app.input.mode != InputMode::Hidden && editor_key(app, key, ctrl) {
+        return Vec::new();
     }
     let no_input = app.input.mode == InputMode::Hidden && !menu_open;
+    let context = KeyContext {
+        ctrl,
+        idle,
+        menu_open,
+        no_input,
+    };
+    if let Some(commands) = global_key(app, code, context).or_else(|| page_key(app, code, context))
+    {
+        return commands;
+    }
     let on_page = |page: Page| app.page == page && no_input && !menu_open;
     match code {
-        KeyCode::Char('r') if ctrl && no_input => return dispatch(app, Action::Reconnect),
-        KeyCode::Char('z' | 'Z' | 'я' | 'Я') if ctrl && idle && no_input => {
-            return dispatch(app, Action::UndoRemove)
-        }
-        KeyCode::Insert if idle && no_input => return dispatch(app, Action::AddFiles),
-        KeyCode::F(11) => return dispatch(app, Action::Button(ButtonId::ClearLog)),
-        KeyCode::Char('l') if ctrl => return dispatch(app, Action::Button(ButtonId::ClearLog)),
-        KeyCode::Char('c') if idle && key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.request_exit("ctrl-c", "Ctrl+C");
-        }
-        KeyCode::Char('q') | KeyCode::F(10) if idle && no_input => app.exit_requested = true,
-        KeyCode::F(1) => return dispatch(app, Action::Tab(Page::Processing)),
-        KeyCode::F(2) => return dispatch(app, Action::Tab(Page::Llm)),
-        KeyCode::F(3) => return dispatch(app, Action::Tab(Page::Settings)),
-        KeyCode::F(4) => return dispatch(app, Action::Tab(Page::Log)),
-        KeyCode::Tab if no_input && !menu_open => {
-            return dispatch(app, Action::Tab(app.page.next()));
-        }
-        KeyCode::BackTab => return dispatch(app, Action::Tab(app.page.previous())),
-        KeyCode::Right if on_page(Page::Processing) => app.focus = Focus::Params,
-        KeyCode::Left if on_page(Page::Processing) => app.focus = Focus::Queue,
-        KeyCode::Char('L') | KeyCode::F(6) if idle && no_input => {
-            return dispatch(app, Action::Button(ButtonId::RunLlm));
-        }
-        KeyCode::Char('l') if idle && no_input && llm_can_run(app) => {
-            return dispatch(app, Action::Button(ButtonId::RunLlm));
-        }
-        KeyCode::F(9) if no_input => {
-            return dispatch(app, Action::ShowResults(true));
-        }
-        KeyCode::Char('r') if no_input && !app.saved_results().is_empty() => {
-            return dispatch(app, Action::ShowResults(true));
-        }
-        KeyCode::PageUp if app.page == Page::Llm && !menu_open => {
-            return dispatch(app, Action::Scroll(AreaId::LlmOutput, -ANSWER_PAGE));
-        }
-        KeyCode::PageDown if app.page == Page::Llm && !menu_open => {
-            return dispatch(app, Action::Scroll(AreaId::LlmOutput, ANSWER_PAGE));
-        }
-        // The Log page: the wheel keys move the view, `End` re-arms the follow.
-        KeyCode::Up if on_page(Page::Log) => return dispatch(app, Action::Scroll(AreaId::Log, -1)),
-        KeyCode::Down if on_page(Page::Log) => {
-            return dispatch(app, Action::Scroll(AreaId::Log, 1))
-        }
-        KeyCode::PageUp if on_page(Page::Log) => {
-            return dispatch(app, Action::Scroll(AreaId::Log, -ANSWER_PAGE));
-        }
-        KeyCode::PageDown if on_page(Page::Log) => {
-            return dispatch(app, Action::Scroll(AreaId::Log, ANSWER_PAGE));
-        }
-        KeyCode::End if on_page(Page::Log) => app.log_follow = true,
-        // The Settings page: a cursor list, `Enter` performs the row's action.
-        KeyCode::Up if on_page(Page::Settings) => {
-            return dispatch(app, Action::Scroll(AreaId::Settings, -1));
-        }
-        KeyCode::Down if on_page(Page::Settings) => {
-            return dispatch(app, Action::Scroll(AreaId::Settings, 1));
-        }
-        KeyCode::Enter if idle && on_page(Page::Settings) => {
-            return dispatch(app, Action::SettingsRow(app.settings_cursor));
-        }
-        // The LLM page: one cursor walks the transcripts and then the mode rows.
-        KeyCode::Up if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
-            Some(0) => app.llm_mode_cursor = None,
-            Some(index) => app.llm_mode_cursor = Some(index - 1),
-            None => {
-                let index = app.llm_input_cursor.saturating_sub(1);
-                return dispatch(app, Action::LlmInput(index));
-            }
-        },
-        KeyCode::Down if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
-            Some(index) => app.llm_mode_cursor = Some((index + 1).min(MODES.len() - 1)),
-            None if app.llm_input_cursor + 1 < crate::app::llm_input_files(app).len() => {
-                return dispatch(app, Action::LlmInput(app.llm_input_cursor + 1));
-            }
-            None => app.llm_mode_cursor = Some(0),
-        },
-        KeyCode::Char(' ') if idle && on_page(Page::Llm) => {
-            if let Some(index) = app.llm_mode_cursor {
-                return dispatch(app, Action::ToggleMode(MODES[index.min(MODES.len() - 1)].0));
-            }
-        }
-        KeyCode::Delete | KeyCode::Backspace
-            if idle && on_page(Page::Llm) && app.llm_mode_cursor.is_none() =>
-        {
-            return dispatch(app, Action::RemoveLlmInput(app.llm_input_cursor));
-        }
         KeyCode::Char('d') | KeyCode::F(7) if idle && no_input => {
             app.diarization = !app.diarization;
             app.log(tf(
@@ -256,12 +101,17 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             ));
             save_app_settings(app);
         }
+        // SRT subtitles on/off. It used to replace the whole selection with txt or
+        // txt+srt and save that, wiping a choice made in `/formats` or the desktop app.
         KeyCode::Char('f') | KeyCode::F(8) if idle && no_input => {
-            app.formats = if app.formats.len() == 1 {
-                vec!["txt".into(), "srt".into()]
+            if let Some(index) = app.formats.iter().position(|format| format == "srt") {
+                app.formats.remove(index);
+                if app.formats.is_empty() {
+                    app.formats.push("txt".into());
+                }
             } else {
-                vec!["txt".into()]
-            };
+                app.formats.push("srt".into());
+            }
             app.log(tf(
                 app.lang,
                 "status.formats",
@@ -431,6 +281,229 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         _ => {}
     }
     Vec::new()
+}
+
+/// Confirmations and overlays take every key while they are open. The
+/// confirmations read the raw key (`y`/`n` in either layout); the overlays the
+/// layout-independent code. Ctrl+C always passes the help through to quitting.
+fn modal_key(app: &mut App, raw: KeyCode, code: KeyCode, ctrl: bool) -> Option<Vec<Value>> {
+    if app.stop_confirmation {
+        return Some(match raw {
+            KeyCode::Char('y' | 'Y' | 'н' | 'Н') => dispatch(app, Action::ConfirmStop(true)),
+            KeyCode::Esc | KeyCode::Char('n' | 'N' | 'т' | 'Т') => {
+                dispatch(app, Action::ConfirmStop(false))
+            }
+            _ => Vec::new(),
+        });
+    }
+    if app.rerun_confirmation.is_some() {
+        return Some(match raw {
+            KeyCode::Char('y' | 'Y' | 'н' | 'Н') => dispatch(app, Action::ConfirmRerun(true)),
+            KeyCode::Esc | KeyCode::Char('n' | 'N' | 'т' | 'Т') => {
+                dispatch(app, Action::ConfirmRerun(false))
+            }
+            _ => Vec::new(),
+        });
+    }
+    if app.show_path {
+        return Some(match code {
+            KeyCode::Esc | KeyCode::Enter => dispatch(app, Action::ShowPath(false)),
+            KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Path, -1)),
+            KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Path, 1)),
+            KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::Path, -ANSWER_PAGE)),
+            KeyCode::PageDown => dispatch(app, Action::Scroll(AreaId::Path, ANSWER_PAGE)),
+            _ => Vec::new(),
+        });
+    }
+    if app.results_open {
+        return Some(match code {
+            KeyCode::Esc | KeyCode::F(9) => dispatch(app, Action::ShowResults(false)),
+            KeyCode::Enter => dispatch(app, Action::OpenResult(false)),
+            KeyCode::Char('o' | 'O' | 'щ' | 'Щ') => dispatch(app, Action::OpenResult(true)),
+            KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Results, -1)),
+            KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Results, 1)),
+            KeyCode::Home => dispatch(app, Action::SelectResult(0)),
+            KeyCode::End => dispatch(app, Action::SelectResult(usize::MAX)),
+            KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::ResultPath, -ANSWER_PAGE)),
+            KeyCode::PageDown => dispatch(app, Action::Scroll(AreaId::ResultPath, ANSWER_PAGE)),
+            _ => Vec::new(),
+        });
+    }
+    // The help overlay is modal: it scrolls, closes, and swallows everything else
+    // except Ctrl+C, which must always reach the quit path.
+    if app.help_open && !(ctrl && code == KeyCode::Char('c')) {
+        return Some(match code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(12) => dispatch(app, Action::Help),
+            KeyCode::Up => dispatch(app, Action::Scroll(AreaId::Help, -1)),
+            KeyCode::Down => dispatch(app, Action::Scroll(AreaId::Help, 1)),
+            KeyCode::PageUp => dispatch(app, Action::Scroll(AreaId::Help, -ANSWER_PAGE)),
+            KeyCode::PageDown => dispatch(app, Action::Scroll(AreaId::Help, ANSWER_PAGE)),
+            _ => Vec::new(),
+        });
+    }
+    None
+}
+
+/// An open input line edits text; returns whether the key was consumed. It reads
+/// the raw key so that `й` types `й` instead of quitting.
+fn editor_key(app: &mut App, key: KeyEvent, ctrl: bool) -> bool {
+    match key.code {
+        KeyCode::Char('u' | 'U' | 'г' | 'Г') if ctrl => app.input.clear(),
+        KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+            app.input.insert(&c.to_string());
+            app.selected_command = 0;
+        }
+        KeyCode::Left => app.input.left(),
+        KeyCode::Right => app.input.right(),
+        KeyCode::Home => app.input.home(),
+        KeyCode::End => app.input.end(),
+        KeyCode::Backspace => app.input.backspace(),
+        KeyCode::Delete => app.input.delete(),
+        KeyCode::Esc => {
+            app.input.close();
+            app.focus = Focus::Queue;
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Keys that act the same on every page: reconnect, undo, tabs, quitting, the
+/// log, LLM runs and the results list.
+fn global_key(app: &mut App, code: KeyCode, context: KeyContext) -> Option<Vec<Value>> {
+    let KeyContext {
+        ctrl,
+        idle,
+        menu_open,
+        no_input,
+    } = context;
+    let on_page = |page: Page| app.page == page && no_input && !menu_open;
+    Some(match code {
+        KeyCode::Char('r') if ctrl && no_input => dispatch(app, Action::Reconnect),
+        KeyCode::Char('z' | 'Z' | 'я' | 'Я') if ctrl && idle && no_input => {
+            dispatch(app, Action::UndoRemove)
+        }
+        KeyCode::Insert if idle && no_input => dispatch(app, Action::AddFiles),
+        KeyCode::F(11) => dispatch(app, Action::Button(ButtonId::ClearLog)),
+        KeyCode::Char('l') if ctrl => dispatch(app, Action::Button(ButtonId::ClearLog)),
+        KeyCode::Char('c') if idle && ctrl => {
+            app.request_exit("ctrl-c", "Ctrl+C");
+            Vec::new()
+        }
+        KeyCode::Char('q') | KeyCode::F(10) if idle && no_input => {
+            app.exit_requested = true;
+            Vec::new()
+        }
+        KeyCode::F(1) => dispatch(app, Action::Tab(Page::Processing)),
+        KeyCode::F(2) => dispatch(app, Action::Tab(Page::Llm)),
+        KeyCode::F(3) => dispatch(app, Action::Tab(Page::Settings)),
+        KeyCode::F(4) => dispatch(app, Action::Tab(Page::Log)),
+        KeyCode::Tab if no_input && !menu_open => dispatch(app, Action::Tab(app.page.next())),
+        KeyCode::BackTab => dispatch(app, Action::Tab(app.page.previous())),
+        KeyCode::Right if on_page(Page::Processing) => {
+            app.focus = Focus::Params;
+            Vec::new()
+        }
+        KeyCode::Left if on_page(Page::Processing) => {
+            app.focus = Focus::Queue;
+            Vec::new()
+        }
+        KeyCode::Char('L') | KeyCode::F(6) if idle && no_input => {
+            dispatch(app, Action::Button(ButtonId::RunLlm))
+        }
+        KeyCode::Char('l') if idle && no_input && llm_can_run(app) => {
+            dispatch(app, Action::Button(ButtonId::RunLlm))
+        }
+        KeyCode::F(9) if no_input => dispatch(app, Action::ShowResults(true)),
+        KeyCode::Char('r') if no_input && !app.saved_results().is_empty() => {
+            dispatch(app, Action::ShowResults(true))
+        }
+        _ => return None,
+    })
+}
+
+/// Keys of the current page: the LLM answer, the Log and Settings pages and the
+/// LLM page's cursor.
+fn page_key(app: &mut App, code: KeyCode, context: KeyContext) -> Option<Vec<Value>> {
+    let KeyContext {
+        idle,
+        menu_open,
+        no_input,
+        ..
+    } = context;
+    let on_page = |page: Page| app.page == page && no_input && !menu_open;
+    Some(match code {
+        KeyCode::PageUp if app.page == Page::Llm && !menu_open => {
+            dispatch(app, Action::Scroll(AreaId::LlmOutput, -ANSWER_PAGE))
+        }
+        KeyCode::PageDown if app.page == Page::Llm && !menu_open => {
+            dispatch(app, Action::Scroll(AreaId::LlmOutput, ANSWER_PAGE))
+        }
+        // The Log page: the wheel keys move the view, `End` re-arms the follow.
+        KeyCode::Up if on_page(Page::Log) => dispatch(app, Action::Scroll(AreaId::Log, -1)),
+        KeyCode::Down if on_page(Page::Log) => dispatch(app, Action::Scroll(AreaId::Log, 1)),
+        KeyCode::PageUp if on_page(Page::Log) => {
+            dispatch(app, Action::Scroll(AreaId::Log, -ANSWER_PAGE))
+        }
+        KeyCode::PageDown if on_page(Page::Log) => {
+            dispatch(app, Action::Scroll(AreaId::Log, ANSWER_PAGE))
+        }
+        KeyCode::End if on_page(Page::Log) => {
+            app.log_follow = true;
+            Vec::new()
+        }
+        // The Settings page: a cursor list, `Enter` performs the row's action.
+        KeyCode::Up if on_page(Page::Settings) => {
+            dispatch(app, Action::Scroll(AreaId::Settings, -1))
+        }
+        KeyCode::Down if on_page(Page::Settings) => {
+            dispatch(app, Action::Scroll(AreaId::Settings, 1))
+        }
+        KeyCode::Enter if idle && on_page(Page::Settings) => {
+            dispatch(app, Action::SettingsRow(app.settings_cursor))
+        }
+        // The LLM page: one cursor walks the transcripts and then the mode rows.
+        KeyCode::Up if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
+            Some(0) => {
+                app.llm_mode_cursor = None;
+                Vec::new()
+            }
+            Some(index) => {
+                app.llm_mode_cursor = Some(index - 1);
+                Vec::new()
+            }
+            None => {
+                let index = app.llm_input_cursor.saturating_sub(1);
+                dispatch(app, Action::LlmInput(index))
+            }
+        },
+        KeyCode::Down if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
+            Some(index) => {
+                app.llm_mode_cursor = Some((index + 1).min(LLM_MODES.len() - 1));
+                Vec::new()
+            }
+            None if app.llm_input_cursor + 1 < crate::app::llm_input_files(app).len() => {
+                dispatch(app, Action::LlmInput(app.llm_input_cursor + 1))
+            }
+            None => {
+                app.llm_mode_cursor = Some(0);
+                Vec::new()
+            }
+        },
+        KeyCode::Char(' ') if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
+            Some(index) => dispatch(
+                app,
+                Action::ToggleMode(LLM_MODES[index.min(LLM_MODES.len() - 1)].0),
+            ),
+            None => Vec::new(),
+        },
+        KeyCode::Delete | KeyCode::Backspace
+            if idle && on_page(Page::Llm) && app.llm_mode_cursor.is_none() =>
+        {
+            dispatch(app, Action::RemoveLlmInput(app.llm_input_cursor))
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -760,11 +833,11 @@ mod tests {
         assert_eq!(app.page, Page::Llm);
         press(&mut app, KeyCode::PageDown);
         assert_eq!(
-            app.scroll[&crate::ui::AreaId::LlmOutput],
+            app.scroll[&crate::action::AreaId::LlmOutput],
             ANSWER_PAGE as u16
         );
         press(&mut app, KeyCode::PageUp);
-        assert_eq!(app.scroll[&crate::ui::AreaId::LlmOutput], 0);
+        assert_eq!(app.scroll[&crate::action::AreaId::LlmOutput], 0);
 
         // Delete on the LLM page acts on the transcript list, not the queue.
         app.queue.add("/tmp/a.wav".into());
@@ -885,6 +958,93 @@ mod tests {
             app.exit_requested,
             "the second Ctrl+C quits even with the help open"
         );
+    }
+
+    #[test]
+    fn f_toggles_subtitles_without_dropping_the_other_formats() {
+        let _config = isolated_config_dir();
+        let mut app = crate::test_support::ready_app();
+        app.formats = vec!["txt".into(), "md".into(), "vtt".into()];
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.formats, ["txt", "md", "vtt", "srt"]);
+        assert_eq!(crate::settings::load_settings().formats, app.formats);
+        press(&mut app, KeyCode::F(8));
+        assert_eq!(
+            app.formats,
+            ["txt", "md", "vtt"],
+            "a multi-format choice survives"
+        );
+        app.formats = vec!["srt".into()];
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.formats, ["txt"], "never an empty selection");
+    }
+
+    #[test]
+    fn rerun_confirmation_takes_only_yes_no_and_escape() {
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/done.wav".into());
+        app.queue.items[0].state = crate::queue::FileState::Done;
+        dispatch(&mut app, Action::Run(crate::queue::RunSelection::Selected));
+        assert!(app.rerun_confirmation.is_some());
+        assert!(press(&mut app, KeyCode::Char('q')).is_empty());
+        assert!(!app.exit_requested, "other keys are swallowed");
+        press(&mut app, KeyCode::Char('т')); // `n` in the Russian layout
+        assert!(app.rerun_confirmation.is_none());
+        dispatch(&mut app, Action::Run(crate::queue::RunSelection::Selected));
+        let commands = press(&mut app, KeyCode::Char('н')); // `y`
+        assert_eq!(commands[0]["type"], "start");
+    }
+
+    #[test]
+    fn the_path_overlay_scrolls_and_closes_with_enter() {
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/a.wav".into());
+        dispatch(&mut app, Action::ShowPath(true));
+        assert!(app.show_path);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.scroll[&AreaId::Path], ANSWER_PAGE as u16);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.scroll[&AreaId::Path], ANSWER_PAGE as u16 - 1);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.show_path && !app.exit_requested);
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.show_path);
+    }
+
+    #[test]
+    fn log_page_keys_scroll_and_end_follows_again() {
+        let mut app = crate::test_support::ready_app();
+        press(&mut app, KeyCode::F(4));
+        assert_eq!(app.page, Page::Log);
+        press(&mut app, KeyCode::Up);
+        assert!(!app.log_follow, "scrolling up stops following");
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.scroll[&AreaId::Log], ANSWER_PAGE as u16);
+        press(&mut app, KeyCode::End);
+        assert!(app.log_follow);
+        app.input.replace("/x".into());
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.scroll[&AreaId::Log],
+            ANSWER_PAGE as u16,
+            "an open editor takes the arrows"
+        );
+    }
+
+    #[test]
+    fn the_results_list_selects_with_home_and_end() {
+        let mut app = crate::test_support::ready_app();
+        app.result_files = vec!["/a.txt".into(), "/b.txt".into(), "/c.txt".into()];
+        press(&mut app, KeyCode::F(9));
+        assert!(app.results_open);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.result_cursor, 2);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.result_cursor, 1);
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.result_cursor, 0);
+        press(&mut app, KeyCode::F(9));
+        assert!(!app.results_open);
     }
 
     #[test]

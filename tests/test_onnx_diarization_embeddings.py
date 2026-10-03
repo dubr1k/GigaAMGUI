@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 
-from src.core.diarization import onnx_embeddings as embeddings_module
 from src.core.diarization.onnx_embeddings import OnnxSpeakerEmbeddings
 from src.core.diarization.onnx_segmentation import SegmentationResult
 
@@ -191,9 +190,11 @@ def test_only_active_speech_reaches_the_embedding_model():
 def test_embeddings_use_matching_bundled_snapshot(monkeypatch, tmp_path):
     calls = []
     bundled = tmp_path / "wespeaker"
+    from src.utils import model_cache
+
     monkeypatch.setattr(
-        embeddings_module,
-        "resolve_model_dir",
+        model_cache,
+        "resolve_bundled_snapshot",
         lambda repo_id, **_kwargs: bundled,
     )
     extractor = OnnxSpeakerEmbeddings(

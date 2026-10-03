@@ -2,14 +2,137 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Callable, Mapping
+from time import monotonic
 
 import numpy as np
 
+from src.core.asr.types import StreamResampler
+
 from .types import CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
+
+IDLE_GAP_SECONDS = 0.5
+"""How far a source may fall behind the clock before the gap counts as silence.
+
+Arrival jitter stays far below this; a WASAPI loopback whose endpoint plays
+nothing delivers no packets at all and falls behind by the whole pause."""
+MAX_IDLE_GAP_SECONDS = 24 * 3600
+"""A larger jump says the timestamps changed clocks, not that a source was quiet."""
+MAX_SOURCE_START_DELAY_NS = 5_000_000_000
+"""Largest start delay between sources that is taken from their clocks alone."""
+MAX_CLOCK_DISAGREEMENT_NS = 1_000_000_000
+"""How far capture timestamps and arrival times may disagree and still be one clock."""
+
+
+class AsrFeed:
+    """Recognition's copy of one source: mono, at the model rate, contiguous.
+
+    Each chunk used to be resampled on its own by linear interpolation: no
+    anti-aliasing, and endpoint-inclusive positions that stretched every
+    chunk by one sample's worth. The feed keeps one resampler per source run
+    and numbers its output contiguously; only a jump in the source offsets
+    (a discarded gap) restarts it and re-derives the position.
+    """
+
+    def __init__(self, asr_rate: int) -> None:
+        self._asr_rate = asr_rate
+        self._resampler: StreamResampler | None = None
+        self._rate: int | None = None
+        self._expected_offset: int | None = None
+        self._next_offset = 0
+
+    def derive(self, aligned: PcmChunk, position: int) -> PcmChunk | None:
+        """The chunk for the ASR scheduler, or None while the filter fills.
+
+        `position` is where the chunk starts on the session timeline, at the
+        model rate; it is used whenever the source's offsets do not continue
+        the previous chunk (the first chunk, a gap, a quiet stretch).
+        """
+        if aligned.sample_offset != self._expected_offset or aligned.sample_rate != self._rate:
+            self._rate = aligned.sample_rate
+            self._resampler = (
+                None if aligned.sample_rate == self._asr_rate
+                else StreamResampler(aligned.sample_rate, self._asr_rate)
+            )
+            self._next_offset = position
+        self._expected_offset = aligned.sample_offset + len(aligned.frames)
+        # All channels, downmixed: channel 0 alone missed a talker on input 2
+        # of a stereo interface entirely.
+        mono = aligned.frames.mean(axis=1, dtype=np.float32)[:, None]
+        audio = mono if self._resampler is None else self._resampler.process(mono)
+        if not len(audio):
+            return None
+        chunk = PcmChunk(aligned.source, self._asr_rate, 1, self._next_offset, audio.copy(), aligned.timestamp_ns)
+        self._next_offset += len(audio)
+        return chunk
+
+
+class SessionTimebase:
+    """Where each source's audio sits on the session timeline.
+
+    A source's position is its start delay plus the audio it has delivered
+    (sample offsets, issue #50); the clock is read once per source, at its
+    first chunk. A delay of up to 5 s is taken from the capture timestamps.
+    A longer one used to be ignored (WASAPI endpoints keep their own
+    epochs), which pinned a loopback that first sounded 8 s in to the
+    session start; it is now kept when the session's own clock saw the same
+    delay. Timestamps that disagree with the session clock mean unrelated
+    clocks, and then the arrival delay is the best estimate.
+    """
+
+    def __init__(self, clock: Callable[[], float] = monotonic) -> None:
+        self._clock = clock
+        self.origin_ns: int | None = None
+        self._origin_arrival = 0.0
+        self._starts: dict[CaptureSource, tuple[int, int]] = {}
+
+    def position_ns(self, chunk: PcmChunk) -> int:
+        """Nanoseconds from the session origin to the start of `chunk`."""
+        start = self._starts.get(chunk.source)
+        if start is None:
+            start = self._starts[chunk.source] = (self._start_delay_ns(chunk), chunk.sample_offset)
+        delay_ns, first_offset = start
+        return delay_ns + round((chunk.sample_offset - first_offset) * 1_000_000_000 / chunk.sample_rate)
+
+    def offset_at(self, source: CaptureSource, position_ns: float, sample_rate: int) -> float | None:
+        """The source offset that sits at `position_ns`, or None before its first chunk."""
+        start = self._starts.get(source)
+        if start is None:
+            return None
+        delay_ns, first_offset = start
+        return first_offset + (position_ns - delay_ns) * sample_rate / 1_000_000_000
+
+    def _start_delay_ns(self, chunk: PcmChunk) -> int:
+        arrival = self._clock()
+        if self.origin_ns is None:
+            self.origin_ns = chunk.timestamp_ns
+            self._origin_arrival = arrival
+            return 0
+        stamped = chunk.timestamp_ns - self.origin_ns
+        arrived = round((arrival - self._origin_arrival) * 1_000_000_000)
+        if -MAX_CLOCK_DISAGREEMENT_NS <= stamped <= MAX_SOURCE_START_DELAY_NS:
+            return max(0, stamped)
+        if abs(stamped - arrived) <= MAX_CLOCK_DISAGREEMENT_NS:
+            return max(0, stamped)
+        return max(0, arrived)
 
 
 class SourceTimeline:
+    """One source's chunks as a continuous, monotonic timeline.
+
+    Offsets are the adapter's: small gaps are filled with silence, overlaps
+    trimmed, large offset jumps kept as jumps. Timestamps are consulted only
+    for one thing: a source that stops delivering while time goes on — a
+    loopback endpoint with nothing playing sends no packets — falls behind
+    the clock, and once it is more than `idle_gap_seconds` behind its own
+    best pace, the gap is time it was silent. The timeline then jumps ahead
+    by it instead of carrying on where the audio stopped, which put every
+    later chunk early by the accumulated idle time and turned the mix off.
+    Jitter never accumulates into a jump: the reference is the point where
+    the source was furthest ahead of the clock. `resync()` after a pause.
+    """
+
     def __init__(
         self,
         source: CaptureSource,
@@ -17,6 +140,7 @@ class SourceTimeline:
         channels: int,
         on_event: Callable[[CaptureEvent], None] | None = None,
         max_gap_seconds: float = 1.0,
+        idle_gap_seconds: float = IDLE_GAP_SECONDS,
     ) -> None:
         if max_gap_seconds < 0:
             raise ValueError("max_gap_seconds must be non-negative")
@@ -25,7 +149,35 @@ class SourceTimeline:
         self._channels = channels
         self._on_event = on_event
         self._max_gap_frames = round(max_gap_seconds * sample_rate)
+        self._idle_gap_frames = idle_gap_seconds * sample_rate
+        self._max_idle_frames = MAX_IDLE_GAP_SECONDS * sample_rate
         self._next_offset: int | None = None
+        self._shift = 0
+        self._anchor: tuple[int, int] | None = None
+        self._expected: int | None = None
+        self._recorded = 0
+        self._breaks: list[tuple[int, int]] = []
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
+
+    def resync(self) -> None:
+        """Forget the clock reference: time spent paused is not silence."""
+        self._anchor = None
+
+    def recording_frame(self, offset: float) -> float:
+        """Where timeline `offset` falls in the frames this timeline emitted.
+
+        The source recording holds emitted frames only, so after a jump the
+        two drift apart; after-stop diarization maps its file times back
+        through this.
+        """
+        index = bisect_right(self._breaks, (offset, float("inf"))) - 1
+        if index < 0:
+            return 0.0
+        start, recorded = self._breaks[index]
+        return recorded + (offset - start)
 
     def ingest(self, chunk: PcmChunk) -> list[PcmChunk]:
         if chunk.source is not self._source:
@@ -69,7 +221,35 @@ class SourceTimeline:
 
         emitted.append(chunk)
         self._next_offset += len(chunk.frames)
-        return emitted
+        self._follow_clock(chunk)
+        return [self._place(part) for part in emitted]
+
+    def _follow_clock(self, chunk: PcmChunk) -> None:
+        position = chunk.sample_offset + self._shift
+        if self._anchor is None:
+            self._anchor = (chunk.timestamp_ns, position)
+            return
+        anchor_ns, anchor_position = self._anchor
+        behind = anchor_position + (chunk.timestamp_ns - anchor_ns) * self._sample_rate / 1_000_000_000 - position
+        if self._idle_gap_frames < behind <= self._max_idle_frames:
+            gap = round(behind)
+            self._shift += gap
+            self._emit_discontinuity(chunk, f"idle gap={gap / self._sample_rate:.3f}s")
+            self._anchor = (chunk.timestamp_ns, position + gap)
+        elif behind < 0 or behind > self._max_idle_frames:
+            self._anchor = (chunk.timestamp_ns, position)
+
+    def _place(self, chunk: PcmChunk) -> PcmChunk:
+        position = chunk.sample_offset + self._shift
+        if position != self._expected:
+            self._breaks.append((position, self._recorded))
+        self._recorded += len(chunk.frames)
+        self._expected = position + len(chunk.frames)
+        if not self._shift:
+            return chunk
+        return PcmChunk(
+            chunk.source, chunk.sample_rate, chunk.channels, position, chunk.frames.copy(), chunk.timestamp_ns,
+        )
 
     def _emit_discontinuity(self, chunk: PcmChunk, detail: str) -> None:
         if self._on_event is not None:
@@ -124,6 +304,8 @@ class AlignedMixer:
         self._channels: int | None = None
         self._written_frames = 0
         self._pending = np.zeros((0, 1), dtype=np.float32)
+        self._resamplers: dict[CaptureSource, StreamResampler] = {}
+        self._resampler_rates: dict[CaptureSource, int] = {}
 
     def mix(self, chunks: Mapping[CaptureSource, PcmChunk]) -> PcmChunk:
         if not chunks:
@@ -210,8 +392,7 @@ class AlignedMixer:
             (self._origin_ns or 0) + round(offset * 1_000_000_000 / sample_rate),
         )
 
-    @staticmethod
-    def _normalize(chunk: PcmChunk, sample_rate: int, channels: int) -> np.ndarray:
+    def _normalize(self, chunk: PcmChunk, sample_rate: int, channels: int) -> np.ndarray:
         frames = chunk.frames
         if chunk.channels != channels:
             if channels == 1:
@@ -226,9 +407,10 @@ class AlignedMixer:
                 )
         if chunk.sample_rate == sample_rate or not len(frames):
             return frames.copy()
-        frame_count = round(len(frames) * sample_rate / chunk.sample_rate)
-        positions = np.linspace(0, len(frames) - 1, frame_count, dtype=np.float32)
-        return np.stack(
-            [np.interp(positions, np.arange(len(frames)), frames[:, channel]) for channel in range(channels)],
-            axis=1,
-        ).astype(np.float32)
+        # One stateful resampler per source: chunks of a source arrive here in
+        # order, and resampling each on its own aliased and warped its edges.
+        resampler = self._resamplers.get(chunk.source)
+        if resampler is None or self._resampler_rates.get(chunk.source) != chunk.sample_rate:
+            resampler = self._resamplers[chunk.source] = StreamResampler(chunk.sample_rate, sample_rate)
+            self._resampler_rates[chunk.source] = chunk.sample_rate
+        return resampler.process(frames)

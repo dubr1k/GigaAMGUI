@@ -3,12 +3,26 @@
 use std::io::{self, Cursor, Write};
 
 use image::ImageReader;
-use ratatui_image::picker::ProtocolType;
+use ratatui_image::{
+    picker::{Picker, ProtocolType},
+    protocol::StatefulProtocol,
+};
 
 use crate::{
     app::App,
     i18n::{t, tf},
 };
+
+/// The companion's state: whether it is shown, which frame, and the terminal's
+/// image protocol (queried once at start-up).
+#[derive(Default)]
+pub(crate) struct PetState {
+    pub(crate) enabled: bool,
+    pub(crate) frame: usize,
+    pub(crate) picker: Option<Picker>,
+    pub(crate) protocol: Option<ProtocolType>,
+    pub(crate) image: Option<StatefulProtocol>,
+}
 
 const PET_IDLE_FRAMES: [&[u8]; 2] = [
     include_bytes!("../../assets/pets/unicorn-idle-01.png"),
@@ -24,7 +38,7 @@ impl App {
     pub(crate) fn clear_pet_layer(&self) {
         // Kitty images are persistent terminal layers and survive normal redraws.
         // Explicitly remove them on animation, resize, and when pets are disabled.
-        if self.pet_protocol == Some(ProtocolType::Kitty) {
+        if self.pet.protocol == Some(ProtocolType::Kitty) {
             let mut stdout = io::stdout();
             let _ = stdout.write_all(b"\x1b_Ga=d,d=A\x1b\\");
             let _ = stdout.flush();
@@ -33,13 +47,13 @@ impl App {
 
     pub(crate) fn refresh_pet_image(&mut self) -> Result<(), String> {
         self.clear_pet_layer();
-        let Some(picker) = self.pet_picker.as_ref() else {
+        let Some(picker) = self.pet.picker.as_ref() else {
             return Err(t(self.lang, "pets.unsupported").into());
         };
         let frame = if self.running() {
-            PET_RUN_FRAMES[self.pet_frame % PET_RUN_FRAMES.len()]
+            PET_RUN_FRAMES[self.pet.frame % PET_RUN_FRAMES.len()]
         } else {
-            PET_IDLE_FRAMES[self.pet_frame % PET_IDLE_FRAMES.len()]
+            PET_IDLE_FRAMES[self.pet.frame % PET_IDLE_FRAMES.len()]
         };
         let image = ImageReader::new(Cursor::new(frame))
             .with_guessed_format()
@@ -58,7 +72,7 @@ impl App {
                     &[("error", &error.to_string())],
                 )
             })?;
-        self.pet_image = Some(picker.new_resize_protocol(image));
+        self.pet.image = Some(picker.new_resize_protocol(image));
         Ok(())
     }
 }

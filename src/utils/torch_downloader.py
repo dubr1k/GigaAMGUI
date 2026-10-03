@@ -247,7 +247,19 @@ def install(
             _raise_if_cancelled(cancel_event)
             try:
                 url, sha, got = find_wheel(base_index, name, version=ver, py_specific=False, cancel_event=cancel_event)
-            except RuntimeError:
-                # Некоторые nvidia-пакеты лежат на обычном PyPI-индексе pytorch — пробуем без версии.
-                url, sha, got = find_wheel("https://pypi.org/simple", name, py_specific=False, cancel_event=cancel_event)
+            except DownloadCancelled:
+                raise
+            except (RuntimeError, OSError):
+                # Некоторых nvidia-пакетов нет на индексе pytorch: страница даёт
+                # 404 (urllib HTTPError — это OSError, а не RuntimeError) или
+                # нет подходящего колеса. Берём с PyPI ту же версию, которую
+                # требует torch: последняя версия CUDA-библиотеки с собранным
+                # torch может не совпасть по ABI.
+                url, sha, got = find_wheel(
+                    "https://pypi.org/simple",
+                    name,
+                    version=ver,
+                    py_specific=False,
+                    cancel_event=cancel_event,
+                )
             _download_and_extract(url, sha, target, log_cb=log_cb, name=f"{name} {got}", cancel_event=cancel_event)

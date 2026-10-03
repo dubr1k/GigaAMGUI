@@ -25,6 +25,13 @@ class TimeFormatter:
         return f"{int(m):02d}:{int(s):02d}"
 
     @staticmethod
+    def format_clock(seconds: float) -> str:
+        """Длительность записи для журнала: «M:SS» или «неизвестна» (0 — ffprobe не смог)."""
+        if not seconds or seconds <= 0:
+            return "неизвестна"
+        return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
+
+    @staticmethod
     def format_duration(seconds: float) -> str:
         """
         Форматирует длительность в читаемый вид

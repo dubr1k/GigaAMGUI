@@ -27,9 +27,9 @@ from PyInstaller.utils.hooks import (
 
 #: Тег релиза показывается в About; macOS требует числовой маркетинговый
 #: номер и не более трёх компонентов в CFBundleVersion.
-APP_VERSION = "2.5.7"
+APP_VERSION = "2.6.0"
 APP_MARKETING_VERSION = APP_VERSION.split("-", 1)[0]
-APP_BUILD_VERSION = "2.5.70"
+APP_BUILD_VERSION = "2.6.0"
 
 
 # Пакеты, которые импортирует рантайм-torchvision/pyannote, но не видит
@@ -165,6 +165,32 @@ def collect_pure_runtime_deps():
     return datas, binaries, hiddenimports
 
 
+def collect_required(package):
+    """collect_all() для пакета, без которого бандл неработоспособен.
+
+    Спеки собирали всё через safe_collect(), который при ошибке печатал
+    `[skip]` и возвращал пустые списки: сборка зеленела, а у пользователя
+    падал импорт (тот же класс ошибок, что #19). Пустой результат тоже
+    ошибка — collect_all() не бросает исключение для неустановленного пакета.
+    """
+    try:
+        datas, binaries, hiddenimports = collect_all(package)
+    except Exception as exc:
+        raise SystemExit(f"Не удалось собрать обязательный пакет {package}: {exc}") from exc
+    if not (datas or binaries or hiddenimports):
+        raise SystemExit(f"Обязательный пакет {package} собрался пустым — он не установлен в окружении сборки?")
+    return datas, binaries, hiddenimports
+
+
+def collect_optional(package):
+    """collect_all() для необязательного пакета: отсутствие — не ошибка."""
+    try:
+        return collect_all(package)
+    except Exception as exc:
+        print(f"[skip] {package}: {exc}")
+        return [], [], []
+
+
 def collect_onnx_runtime_deps():
     """Собирает Python-код, model metadata/data и native-библиотеки ONNX runtime."""
     datas, binaries, hiddenimports = [], [], []
@@ -179,3 +205,55 @@ def collect_onnx_runtime_deps():
         binaries += b
         hiddenimports += h
     return datas, binaries, hiddenimports
+
+
+def windows_conda_extra_binaries(dll_names=("_lzma.pyd", "_bz2.pyd", "_sqlite3.pyd")):
+    """DLL стандартной библиотеки conda-окружения, которые PyInstaller не видит сам.
+
+    Раньше пути были прописаны под одну машину (C:\\Users\\<имя>\\miniconda3\\…),
+    и на любой другой спеки собирались без них, а project_root рядом указывал на
+    чужой диск. Берём активное окружение сборки (sys.prefix) и корень conda
+    (на два уровня выше envs/<имя>): на исходной машине это те же самые пути.
+    """
+    prefix = Path(sys.prefix)
+    found = [
+        (str(prefix / "DLLs" / name), ".")
+        for name in dll_names
+        if (prefix / "DLLs" / name).exists()
+    ]
+    # liblzma.dll нужна _lzma.pyd, но обычно лежит только в корне conda.
+    roots = [prefix]
+    if prefix.parent.name.lower() == "envs":
+        roots.append(prefix.parent.parent)
+    for root in roots:
+        liblzma = root / "Library" / "bin" / "liblzma.dll"
+        if liblzma.exists():
+            found.append((str(liblzma), "."))
+            break
+    return found
+
+
+def editable_package_roots(packages):
+    """Каталоги, через которые анализ PyInstaller увидит пакеты из `pip install -e`.
+
+    PEP 660 editable-установка (так ставит gigaam строка `-e git+…` в
+    requirements.txt) кладёт в site-packages не путь, а import-finder.
+    Python пакет находит, а modulegraph PyInstaller ищет модули только по путям:
+    он пишет «ERROR: Hidden import 'gigaam.model' not found» и продолжает, и
+    локальные сборки уходили без кода модели, хотя в CI (обычная установка)
+    всё было на месте. Корень такого пакета надо явно добавить в pathex.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    roots = []
+    for name in packages:
+        spec = importlib.util.find_spec(name)
+        if spec is None or not spec.origin or spec.origin == "namespace":
+            continue
+        if importlib.machinery.PathFinder.find_spec(name, sys.path) is not None:
+            continue  # и так виден по путям (обычная установка)
+        root = str(Path(spec.origin).resolve().parent.parent)
+        if root not in roots:
+            roots.append(root)
+    return roots

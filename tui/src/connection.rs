@@ -102,10 +102,10 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::{
+        action::{Action, ButtonId},
         app::{dispatch, App},
         lifecycle::{Activity, ConnectionState, JobKind},
         queue::RunSelection,
-        ui::{Action, ButtonId},
         worker_session::{WorkerEvent, WorkerEventKind},
     };
     use serde_json::json;
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn rejected_start_after_early_cancel_does_not_leave_a_phantom_job() {
-        use crate::ui::{Action, ButtonId};
+        use crate::action::{Action, ButtonId};
         use crate::{app::dispatch, queue::RunSelection};
         for button in [ButtonId::Stop, ButtonId::CancelLlm] {
             let mut app = crate::test_support::ready_app();

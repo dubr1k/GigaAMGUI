@@ -26,9 +26,19 @@ from PyQt6.QtWidgets import (
 
 from ..utils import runtime_manager as rm
 
+# Язык диалогов без родительского окна: на старте, до главного окна, лаунчер
+# передаёт сюда сохранённый язык (set_default_language), иначе они всегда были бы
+# на русском.
+_default_language = "ru"
+
+
+def set_default_language(language: str) -> None:
+    global _default_language
+    _default_language = "en" if language == "en" else "ru"
+
 
 def _lang(parent=None) -> str:
-    return getattr(parent, "_lang", "ru") if parent is not None else "ru"
+    return getattr(parent, "_lang", _default_language) if parent is not None else _default_language
 
 
 def _t(parent, ru: str, en: str) -> str:
@@ -275,6 +285,16 @@ class InstallProgressDialog(QDialog):
             event.ignore()
         else:
             super().closeEvent(event)
+
+    def reject(self):
+        # Esc приходит сюда, минуя closeEvent. Закрытое окно возвращало
+        # «failed», пока установщик продолжал качать, и повторный выбор
+        # запускал вторую установку в тот же каталог. Пока поток жив, Esc —
+        # это «Отменить загрузку»; закрыться можно после его завершения.
+        if self._worker.isRunning():
+            self._request_cancel()
+            return
+        super().reject()
 
 
 def _install_with_progress(variant: str, parent=None) -> str:

@@ -8,7 +8,8 @@ from typing import Any
 
 import numpy as np
 
-from ...utils.model_cache import resolve_model_dir
+from ...utils.model_cache import onnx_model_location
+from ..asr.onnx_loading import load_speaker_embedding_model
 from ..asr.onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
@@ -53,15 +54,13 @@ class OnnxSpeakerEmbeddings:
         self._model: Any | None = None
 
     @staticmethod
-    def _load_model(*, providers: list[str], model_dir: str | None):
-        from onnx_asr.loader import Manager  # noqa: PLC0415
-
-        return Manager(
+    def _load_model(*, providers: list[str], model_dir, offline: bool | None = None):
+        return load_speaker_embedding_model(
+            ONNX_EMBEDDING_REPO,
+            model_dir,
+            offline=offline,
             providers=providers,
             preprocessor_config={"use_numpy_preprocessors": False},
-        ).create_se(
-            "wespeaker/wespeaker-voxceleb-resnet34",
-            local_dir=model_dir,
         )
 
     def _ensure_model(self):
@@ -71,11 +70,14 @@ class OnnxSpeakerEmbeddings:
                 available=self._available_provider_probe(),
             )
             factory = self._model_factory or self._load_model
-            model_dir = self.model_dir or resolve_model_dir(ONNX_EMBEDDING_REPO)
-            self._model = factory(
-                providers=onnx_session_providers(selection),
-                model_dir=model_dir,
-            )
+            location = onnx_model_location(ONNX_EMBEDDING_REPO, root=self.model_dir)
+            kwargs: dict[str, Any] = {
+                "providers": onnx_session_providers(selection),
+                "model_dir": location.path,
+            }
+            if location.offline is not None:
+                kwargs["offline"] = location.offline
+            self._model = factory(**kwargs)
         return self._model
 
     @staticmethod

@@ -1,4 +1,5 @@
 import Foundation
+import GigaAMLiquidCore
 
 struct LiveSessionSettings {
     var sessionRoot: URL
@@ -26,8 +27,9 @@ enum LiveSessionEvent {
     case captureEvent(source: LiveSource, kind: String, detail: String)
     case answerChunk(turnID: String, text: String)
     case answer(turnID: String, status: String, text: String)
-    /// `error` is set when the worker stopped the session but could not finish saving it.
-    case stopped(sessionDir: URL, saved: [URL], error: String?)
+    /// `recordings` lists every segment of every track; `outcome` says whether a
+    /// stage of the stop failed, and if so whether anything was saved.
+    case stopped(sessionDir: URL, exports: [URL], recordings: [URL], outcome: LiveStopOutcome)
     case failed(String)
     case log(String)
 }
@@ -37,7 +39,9 @@ enum LiveSessionEvent {
 /// else is serialized on `queue`, and exactly one terminal event is delivered.
 final class LiveSessionJob {
     private let settings: LiveSessionSettings
-    private let captures: [LiveCaptureSource]
+    /// Built by the owner's factory with a weak back-reference: captures must not
+    /// keep the job (and its worker and audio engine) alive after the session.
+    private var captures: [LiveCaptureSource] = []
     private let onEvent: (LiveSessionEvent) -> Void
     private let queue = DispatchQueue(label: "GigaAMLiquid.live", qos: .userInitiated)
     private var worker: WorkerProcess?
@@ -48,15 +52,24 @@ final class LiveSessionJob {
     /// Capture starts on the first `recording` status, i.e. once the model is ready.
     private var capturing = false
     private var secrets: [String] = []
-    private let backlogLock = NSLock()
-    private var backlog = 0
     /// 50 chunks × 100 ms = 5 s per source; beyond that the worker is not keeping up.
-    private let maxBufferedChunks = 50
+    private static let maxBufferedChunks = 50
+    /// Touched from the audio threads; thread-safe by itself.
+    private let backlog = BacklogGate(limit: LiveSessionJob.maxBufferedChunks)
+    /// The detail of the overflow event the client reports to the worker.
+    private static let backlogDetail = "client backlog"
 
-    init(settings: LiveSessionSettings, captures: [LiveCaptureSource], onEvent: @escaping (LiveSessionEvent) -> Void) {
+    /// `makeCaptures` receives the sink for captured audio; it holds the job weakly.
+    private let resolveRuntime: PythonRuntime.Provider
+
+    init(settings: LiveSessionSettings,
+         makeCaptures: (@escaping (LiveCaptureEvent) -> Void) -> [LiveCaptureSource],
+         runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
+         onEvent: @escaping (LiveSessionEvent) -> Void) {
         self.settings = settings
-        self.captures = captures
+        self.resolveRuntime = runtime
         self.onEvent = onEvent
+        captures = makeCaptures { [weak self] event in self?.handleCapture(event) }
     }
 
     func start() {
@@ -124,24 +137,25 @@ final class LiveSessionJob {
     func handleCapture(_ event: LiveCaptureEvent) {
         switch event {
         case .chunk(let chunk):
-            backlogLock.lock()
-            let queued = backlog
-            if queued < maxBufferedChunks { backlog += 1 }
-            backlogLock.unlock()
-            guard queued < maxBufferedChunks else {
+            // One report per burst of dropped chunks, not one status update and two
+            // log lines (ours and the worker's echo) per 100 ms of audio.
+            switch backlog.admit() {
+            case .dropFirst:
                 queue.async {
                     guard !self.finished else { return }
                     self.emit(.captureEvent(source: chunk.source, kind: "overflow", detail: L10n.text("Worker не успевает обрабатывать звук; фрагмент пропущен.")))
-                    try? self.worker?.send(["type": "live_capture_event", "source": chunk.source.rawValue, "kind": "overflow", "detail": "client backlog"])
+                    try? self.worker?.send(["type": "live_capture_event", "source": chunk.source.rawValue, "kind": "overflow", "detail": Self.backlogDetail])
                 }
                 return
+            case .drop:
+                return
+            case .accept(let endedBurst):
+                if endedBurst > 0 {
+                    queue.async { self.emit(.log(L10n.format("Пропущено фрагментов звука по 100 мс: %@.", String(endedBurst)))) }
+                }
             }
             queue.async {
-                defer {
-                    self.backlogLock.lock()
-                    self.backlog -= 1
-                    self.backlogLock.unlock()
-                }
+                defer { self.backlog.release() }
                 guard !self.finished else { return }
                 try? self.worker?.send([
                     "type": "live_audio", "source": chunk.source.rawValue, "seq": chunk.seq,
@@ -150,7 +164,8 @@ final class LiveSessionJob {
                 ])
             }
         case .level(let source, let rms):
-            emit(.level(source, rms))
+            // On the audio thread: `finished` belongs to the queue.
+            queue.async { self.emit(.level(source, rms)) }
         case .permissionDenied(let source, let detail):
             forwardCaptureEvent(source: source, kind: "permission_denied", detail: detail)
         case .deviceRemoved(let source, let detail):
@@ -170,19 +185,22 @@ final class LiveSessionJob {
     // MARK: - Worker → UI
 
     private func launch() throws {
-        let runtime = try PythonRuntime.resolve()
+        let runtime = try resolveRuntime()
         var environment = runtime.environment
         if let token = settings.hfToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             environment["HF_TOKEN"] = token
         }
         secrets = WorkerRedaction.secrets(in: environment)
         let worker = try WorkerProcess(
-            runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
+            role: .live, runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
             onLine: { self.consume($0) },
             onStderr: { self.emit(.log(self.safe($0))) },
-            onStdoutEnd: { self.finish(.failed("The live worker closed its output without stopping.")) },
+            onStdoutEnd: { self.finish(.failed(L10n.format("%@ закрыл вывод, не остановив сессию.", WorkerRole.live.name))) },
             onError: { self.finish(.failed($0)) },
-            onExit: { status in self.finish(.failed("The live worker exited without stopping (status \(status)).")) }
+            onExit: { status in
+                self.finish(.failed(L10n.format("%@ завершился, не остановив сессию (код %@).", WorkerRole.live.name, String(status))))
+                self.releaseWorker()
+            }
         )
         self.worker = worker
         try worker.send([
@@ -207,59 +225,74 @@ final class LiveSessionJob {
     }
 
     private func consume(_ line: Data) {
-        guard !finished, !line.isEmpty else { return }
-        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let type = object["type"] as? String else {
-            let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { emit(.log(safe(text))) }
+        guard !finished else { return }
+        switch LiveEventDecoder.decode(line) {
+        case nil:
             return
+        case .text(let text):
+            emit(.log(safe(text)))
+        case .unknown(let type), .invalid(let type):
+            // The worker is shared with the TUI and gains events over time.
+            emit(.log(L10n.format("Пропущено неизвестное событие воркера: %@", type)))
+        case .event(let event):
+            handle(event)
         }
-        let source = LiveSource(rawValue: object["source"] as? String ?? "") ?? .mic
-        switch type {
-        case "live_status":
+    }
+
+    private func handle(_ event: LiveWorkerEvent) {
+        func source(_ name: String) -> LiveSource { LiveSource(rawValue: name) ?? .mic }
+        switch event {
+        case .status(let state, let active, let failed, let sessionDir):
             sessionReported = true
-            let active = (object["active_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
-            let failed = (object["failed_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
-            let directory = (object["session_dir"] as? String).map { URL(fileURLWithPath: $0, isDirectory: true) }
-            emit(.status(state: object["state"] as? String ?? "", active: active, failed: failed, sessionDir: directory))
-            if object["state"] as? String == "recording" { startCaptures() }
-        case "live_loading":
+            emit(.status(state: state, active: active.compactMap(LiveSource.init(rawValue:)),
+                         failed: failed.compactMap(LiveSource.init(rawValue:)),
+                         sessionDir: sessionDir.map { URL(fileURLWithPath: $0, isDirectory: true) }))
+            if state == "recording" { startCaptures() }
+        case .loading:
             emit(.loading)
-        case "live_partial":
-            emit(.partial(id: object["event_id"] as? String ?? "", source: source,
-                          sampleStart: object["sample_start"] as? Int ?? 0, text: object["text"] as? String ?? ""))
-        case "live_final":
-            emit(.final(id: object["event_id"] as? String ?? "", source: source,
-                        sampleStart: object["sample_start"] as? Int ?? 0, sampleEnd: object["sample_end"] as? Int ?? 0,
-                        text: object["text"] as? String ?? "", speaker: object["speaker"] as? String))
-        case "live_capture_event":
-            emit(.captureEvent(source: source, kind: object["kind"] as? String ?? "", detail: safe(object["detail"] as? String ?? "")))
-        case "live_answer_chunk":
-            emit(.answerChunk(turnID: object["turn_id"] as? String ?? "", text: object["text"] as? String ?? ""))
-        case "live_answer":
-            emit(.answer(turnID: object["turn_id"] as? String ?? "", status: object["status"] as? String ?? "",
-                         text: safe(object["text"] as? String ?? "")))
-        case "live_stopped":
-            let exports = object["saved_files"] as? [String] ?? []
-            let recordings = (object["recordings"] as? [String: String] ?? [:]).sorted { $0.key < $1.key }.map(\.value)
-            let saved = (exports + recordings).map { URL(fileURLWithPath: $0) }
-            let directory = URL(fileURLWithPath: object["session_dir"] as? String ?? settings.sessionRoot.path)
-            // The worker reports a failed stop as live_stopped plus a message; showing
-            // it only in the log left the status claiming the session was saved.
-            let message = (object["message"] as? String).map(safe).flatMap { $0.isEmpty ? nil : $0 }
+        case .partial(let id, let name, let sampleStart, let text):
+            emit(.partial(id: id, source: source(name), sampleStart: sampleStart, text: text))
+        case .final(let id, let name, let sampleStart, let sampleEnd, let text, let speaker):
+            emit(.final(id: id, source: source(name), sampleStart: sampleStart, sampleEnd: sampleEnd, text: text, speaker: speaker))
+        case .captureEvent(let name, let kind, let detail):
+            // Our own overflow report comes back from the worker; it was shown already.
+            guard !(kind == "overflow" && detail == Self.backlogDetail) else { return }
+            emit(.captureEvent(source: source(name), kind: kind, detail: safe(detail)))
+        case .answerChunk(let turnID, let text):
+            emit(.answerChunk(turnID: turnID, text: text))
+        case .answer(let turnID, let status, let text):
+            // A completed answer is the user's content and replaces the streamed text:
+            // the log redaction would cut it to its last 8 KiB and rewrite prose such
+            // as "Bearer token". Only an error message is a diagnostic.
+            emit(.answer(turnID: turnID, status: status, text: status == "error" ? safe(text) : text))
+        case .stopped(let sessionDir, let exports, let recordings, let failure):
+            let directory = URL(fileURLWithPath: sessionDir ?? settings.sessionRoot.path)
+            // The worker reports failed stop stages as live_stopped plus a message;
+            // showing it only in the log left the status claiming the session was
+            // saved. Next to saved files it is a warning, not a failed stop.
+            let message = failure.map(safe)
             if let message { emit(.log(message)) }
-            finish(.stopped(sessionDir: directory, saved: saved, error: message))
-        case "error":
-            let message = safe(object["message"] as? String ?? "Live worker error.")
-            // Before the first live_status the only thing we sent was live_start, so an error
-            // (rejected settings, an old companion without live support, …) is terminal.
-            // Afterwards errors concern single commands (a bad chunk, a rejected question).
-            if !sessionReported || stopping { finish(.failed(message)) }
-            else { emit(.captureEvent(source: .mic, kind: "error", detail: message)) }  // surfaced in the status label
-        case "log":
-            emit(.log(safe(object["message"] as? String ?? "")))
-        default:
-            break
+            finish(.stopped(sessionDir: directory, exports: exports.map { URL(fileURLWithPath: $0) },
+                            recordings: recordings.map { URL(fileURLWithPath: $0) },
+                            outcome: LiveStopOutcome(message: message, savedFiles: exports, recordings: recordings)))
+        case .error(let text, let command):
+            let raw = text ?? L10n.text("Ошибка Live-воркера.")
+            let message = safe(raw)
+            // A current worker names the command: only a failed live_start or live_stop
+            // (or a session that is gone) ends the job. An older one does not; then
+            // before the first live_status the only thing we sent was live_start, so an
+            // error (rejected settings, an old companion without live support, …) is
+            // terminal. Otherwise errors concern single commands (a bad chunk, a second
+            // pause, a question too early) — also while stopping, where ending the job
+            // here threw away the live_stopped that follows.
+            switch LiveErrorPolicy.disposition(of: raw, command: command, sessionReported: sessionReported) {
+            case .fatal: finish(.failed(message))
+            case .questionRejected: emit(.answer(turnID: "", status: "rejected", text: message))
+            case .ignorable: break
+            case .logged: emit(.log(message))
+            }
+        case .log(let text):
+            emit(.log(safe(text)))
         }
     }
 
@@ -277,5 +310,12 @@ final class LiveSessionJob {
         worker?.closeInput()
         worker?.terminateGracefully(after: 2)
         DispatchQueue.main.async { self.onEvent(event) }
+    }
+
+    /// The worker's line readers hold this job through their callbacks; once the
+    /// process is gone, drop them so the job, its captures and the audio engine go.
+    private func releaseWorker() {
+        worker?.close()
+        worker = nil
     }
 }

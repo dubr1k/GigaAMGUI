@@ -114,6 +114,73 @@ class LLMClient:
             self._sleep_with_cancel(delay, cancel_check)
         return last_response
 
+    @staticmethod
+    def _error_detail(payload) -> str | None:
+        """Текст ошибки провайдера из JSON-тела или SSE-события."""
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("type") or error.get("code")
+            return str(message) if message else json.dumps(error, ensure_ascii=False)
+        if isinstance(error, str) and error:
+            return error
+        if payload.get("type") == "error":
+            return str(payload.get("message") or "ошибка без описания")
+        return None
+
+    @classmethod
+    def _raise_for_status(cls, response) -> None:
+        """raise_for_status с телом ответа: «404 Not Found» без него бесполезно."""
+        status = getattr(response, "status_code", 200)
+        if not isinstance(status, int) or status < 400:
+            response.raise_for_status()
+            return
+        try:
+            body = response.content.decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        detail = None
+        try:
+            detail = cls._error_detail(json.loads(body))
+        except ValueError:
+            pass
+        detail = detail or body.strip()[:500]
+        reason = getattr(response, "reason", "") or ""
+        message = f"LLM API: HTTP {status} {reason}".rstrip()
+        if detail:
+            message += f": {detail}"
+        raise requests.HTTPError(message, response=response)
+
+    def _iter_sse_events(self, response, cancel_check):
+        """JSON-события SSE-потока; ошибка в потоке становится исключением.
+
+        SSE по спецификации — UTF-8, но без charset в Content-Type requests
+        декодирует text/* как ISO-8859-1, и русский ответ превращался в мусор.
+        Ошибки посреди потока (OpenAI-совместимые {"error": ...}, Anthropic
+        event: error) раньше молча пропускались: оставался обрывок текста или
+        «ответ без текста».
+        """
+        response.encoding = "utf-8"
+        for line in response.iter_lines(decode_unicode=True):
+            if cancel_check and cancel_check():
+                response.close()
+                raise RuntimeError("LLM request cancelled")
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            detail = self._error_detail(event)
+            if detail:
+                response.close()
+                raise RuntimeError(f"LLM API вернул ошибку: {detail}")
+            yield event
+
     def process_transcript(
         self,
         transcript_text: str,
@@ -168,18 +235,9 @@ class LLMClient:
         if stream_callback:
             payload["stream"] = True
             response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True, cancel_check=cancel_check)
-            response.raise_for_status()
+            self._raise_for_status(response)
             parts = []
-            for line in response.iter_lines(decode_unicode=True):
-                if cancel_check and cancel_check():
-                    response.close()
-                    raise RuntimeError("LLM request cancelled")
-                if not line or not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data == "[DONE]":
-                    break
-                chunk = json.loads(data)
+            for chunk in self._iter_sse_events(response, cancel_check):
                 delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content", "")
                 if delta:
                     parts.append(delta)
@@ -187,7 +245,7 @@ class LLMClient:
             return self._extract_text_content("".join(parts))
 
         response = self._post_with_retry(endpoint, headers=headers, payload=payload, cancel_check=cancel_check)
-        response.raise_for_status()
+        self._raise_for_status(response)
         data = response.json()
         choices = data.get("choices") or []
         if not choices:
@@ -228,15 +286,9 @@ class LLMClient:
         if stream_callback:
             payload["stream"] = True
             response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True, cancel_check=cancel_check)
-            response.raise_for_status()
+            self._raise_for_status(response)
             parts = []
-            for line in response.iter_lines(decode_unicode=True):
-                if cancel_check and cancel_check():
-                    response.close()
-                    raise RuntimeError("LLM request cancelled")
-                if not line or not line.startswith("data: "):
-                    continue
-                event = json.loads(line[6:])
+            for event in self._iter_sse_events(response, cancel_check):
                 delta = event.get("delta") or {}
                 text = delta.get("text", "") if delta.get("type") == "text_delta" else ""
                 if text:
@@ -245,7 +297,7 @@ class LLMClient:
             return self._extract_text_content("".join(parts))
 
         response = self._post_with_retry(endpoint, headers=headers, payload=payload, cancel_check=cancel_check)
-        response.raise_for_status()
+        self._raise_for_status(response)
         data = response.json()
         content = data.get("content", "")
         return self._extract_text_content(content)

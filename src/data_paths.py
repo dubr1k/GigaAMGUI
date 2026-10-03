@@ -116,8 +116,9 @@ def apply_data_dir(
         "NEMO_HOME": layout.nemo_home,
         "GIGAAM_DEEPFILTER_DIR": layout.deepfilter_dir,
     }
-    # Офлайн-сборка читает готовые ONNX snapshots рядом с бинарником. Передача
-    # пустого user-каталога как явного model_dir отключает этот поиск.
+    # Офлайн-сборка читает готовые ONNX snapshots рядом с бинарником, корень
+    # для докачки ей не нужен. В остальных сборках ONNX_MODEL_DIR — корень:
+    # каждая модель скачивается в свой подкаталог (model_cache.onnx_model_location).
     if bundled_hf_cache_dir() is None:
         values["ONNX_MODEL_DIR"] = layout.onnx_model_dir
     for key, value in values.items():
@@ -171,13 +172,12 @@ def load_data_dir_selection(*, locator_path: str | os.PathLike[str] | None = Non
 
 
 def _save_locator(value: str | None, target: Path) -> Path:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(
+    from .utils.atomic_json import write_text_atomic
+
+    write_text_atomic(
+        target,
         json.dumps({"schema": 1, "data_dir": value}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
     )
-    os.replace(temporary, target)
     os.environ.pop(DATA_DIR_RECOVERY_ENV, None)
     return target
 

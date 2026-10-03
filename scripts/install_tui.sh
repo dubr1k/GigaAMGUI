@@ -220,7 +220,7 @@ fi
 # ever show a commit hash. Tags are tiny; fetch them so the release tag shows.
 git -C "$REPO_DIR" fetch --depth 1 --tags origin >/dev/null 2>&1 || true
 
-cargo build --release --manifest-path "$REPO_DIR/tui/Cargo.toml"
+cargo build --release --locked --manifest-path "$REPO_DIR/tui/Cargo.toml"
 if [[ "$FRESH" == true || ! -x "$VENV/bin/python" ]]; then
   rm -rf "$VENV"
   "$PYTHON" -m venv "$VENV"

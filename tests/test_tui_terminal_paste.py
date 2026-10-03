@@ -102,6 +102,41 @@ def test_unresponsive_worker_diagnostics_and_owned_descendant_force_stop(tmp_pat
                 pass
 
 
+@pytest.mark.parametrize("signal_number", [signal.SIGTERM, signal.SIGHUP])
+def test_termination_signal_stops_the_owned_worker_tree(tmp_path, terminal_factory, signal_number):
+    """SIGTERM (kill, logout) or SIGHUP (closed terminal window) killed the TUI
+    without running any destructor: the worker lives in its own process group, so
+    the worker and its LLM CLI child were orphaned and kept running."""
+    import psutil
+
+    terminal = terminal_factory(GIGAAM_TEST_BLOCK_ON_LLM="1")
+    terminal.wait(lambda t: "● Готово" in t.text)
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("fixture", encoding="utf-8")
+    terminal.command(f"/llm-file {transcript}")
+    terminal.send("\x1bOQ\x1b[17~")  # F2, F6
+    terminal.wait(lambda t: (tmp_path / "cli-child.pid").exists() and "LLM…" in t.text)
+    owned = [psutil.Process(int((tmp_path / name).read_text()))
+             for name in ("worker.pid", "cli-child.pid")]
+
+    def gone(process):
+        return not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
+
+    try:
+        os.kill(terminal.process.pid, signal_number)
+        terminal.wait(lambda t: t.process.poll() is not None and all(gone(process) for process in owned))
+        # The terminal is restored on the way out, as on a normal exit, and the
+        # parent still sees the process end by that signal.
+        assert b"\x1b[?1049l" in terminal.output
+        assert terminal.process.returncode == -signal_number
+    finally:
+        for process in owned:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+
+
 def test_two_file_progress_and_saved_results_survive_clear(tmp_path, terminal_factory):
     terminal = terminal_factory(GIGAAM_TEST_PROGRESS_GATES="1")
     for index in range(2):
@@ -426,3 +461,84 @@ def test_multiline_paste_queues_every_path(tmp_path, terminal_factory, separator
     queued(terminal, 3)
     assert all(path.name in terminal.queue_text for path in paths), terminal.text
     assert not any(line.startswith("Файлы:") for line in terminal.screen.lines), terminal.text
+
+
+def headless(tmp_path, *args, **environment):
+    """`gigaam transcribe|llm …` with the stub worker; no PTY involved."""
+    import subprocess
+
+    binary = os.environ.get("GIGAAM_TUI_TEST_BINARY")
+    if not binary:
+        pytest.skip("set GIGAAM_TUI_TEST_BINARY to the built TUI")
+    env = {
+        **os.environ,
+        "GIGAAM_CONFIG_DIR": str(tmp_path / "config"),
+        "GIGAAM_PYTHON": sys.executable,
+        "GIGAAM_PROJECT_ROOT": str(Path(__file__).resolve().parents[1]),
+        "GIGAAM_TUI_WORKER": "tests.fixtures.tui_worker_stub",
+        "GIGAAM_TEST_WORKER_DIR": str(tmp_path),
+        **environment,
+    }
+    env.pop("GIGAAM_TUI_WORKER_EXE", None)
+    return subprocess.Popen([binary, *args], env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+
+
+def wait_for(predicate, timeout=10):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "condition not reached"
+        time.sleep(0.05)
+
+
+def test_headless_signal_stops_the_worker_tree(tmp_path):
+    """Headless spawned the worker without a process group and stopped it with
+    child.kill(): the worker's CLI children survived every exit path, and a
+    SIGTERM to `gigaam` left even the worker running."""
+    import psutil
+
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("fixture", encoding="utf-8")
+    process = headless(tmp_path, "llm", str(transcript), "--mode", "summary", "--json",
+                       GIGAAM_TEST_BLOCK_ON_LLM="1")
+    owned = []
+    try:
+        wait_for(lambda: (tmp_path / "cli-child.pid").exists())
+        owned = [psutil.Process(int((tmp_path / name).read_text()))
+                 for name in ("worker.pid", "cli-child.pid")]
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=10)
+
+        def gone(item):
+            return not item.is_running() or item.status() == psutil.STATUS_ZOMBIE
+
+        wait_for(lambda: all(gone(item) for item in owned))
+        assert process.returncode == -signal.SIGTERM
+        lines = process.stdout.read().decode().splitlines()
+        assert json.loads(lines[0])["type"] == "llm_started", lines
+    finally:
+        if process.poll() is None:
+            process.kill()
+        for item in owned:
+            try:
+                item.kill()
+            except psutil.NoSuchProcess:
+                pass
+
+
+def test_headless_worker_death_is_reported_without_waiting(tmp_path):
+    sample = tmp_path / "a.wav"
+    sample.touch()
+    # The stub's start rejection arrives before `started`; the run ends on it.
+    process = headless(tmp_path, "transcribe", str(sample), "--json",
+                       GIGAAM_TEST_WORKER_FAIL_START="1")
+    try:
+        process.wait(timeout=20)
+    finally:
+        if process.poll() is None:
+            process.kill()
+    assert process.returncode == 1
+    lines = [json.loads(line) for line in process.stdout.read().decode().splitlines()]
+    assert lines[-1]["type"] == "error"
