@@ -217,10 +217,13 @@ def test_upload_endpoint_forwards_validated_subtitle_options(monkeypatch, tmp_pa
     monkeypatch.setattr(web_app, "_save_upload", fake_save_upload)
     monkeypatch.setattr(web_app, "process_transcription", fake_process)
 
+    class _File:
+        filename = "sample.wav"  # имена проверяются до сохранения
+
     async def scenario():
         response = await web_app.upload_files(
             request=None,
-            files=[object()],
+            files=[_File()],
             output_formats="srt,vtt",
             enable_diarization=False,
             diarization_backend="pyannote",

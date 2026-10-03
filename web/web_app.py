@@ -1055,9 +1055,26 @@ async def upload_files(
         subtitle_max_width=subtitle_max_width,
     )
 
+    # Пакет принимается целиком или никак: сначала имена всех файлов, потом запись
+    # всех на диск, и только затем задачи. Иначе на k-м файле клиент получал 400/413,
+    # а файлы 1..k-1 уже лежали на диске и обрабатывались.
+    unsupported = [file.filename or "" for file in files if not is_supported_format(file.filename or "")]
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Неподдерживаемый формат: {', '.join(unsupported)}. Поддерживаемые: {', '.join(MEDIA_EXTENSIONS)}",
+        )
+    saved = []
+    try:
+        for file in files:
+            saved.append(await _save_upload(file, request))
+    except BaseException:
+        for _task_id, file_path, _filename, _size in saved:
+            file_path.unlink(missing_ok=True)
+        raise
+
     uploaded = []
-    for file in files:
-        task_id, file_path, filename, file_size = await _save_upload(file, request)
+    for task_id, file_path, filename, file_size in saved:
         _register_task(task_id, filename, file_size, user, form.asr_selection)
         tasks_storage[task_id].update(form.task_fields())
         _persist_tasks_index()

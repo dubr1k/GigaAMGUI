@@ -174,6 +174,66 @@ def test_upload_rejects_unknown_output_format_before_saving(client, web_dirs):
     assert web_app.tasks_storage == {}
 
 
+def test_upload_rejects_batch_with_unsupported_file_before_saving_any(client, web_dirs, fake_processor):
+    # Раньше первые файлы успевали сохраниться и уйти в обработку, а на k-м приходил 400
+    upload_dir, _ = web_dirs
+    response = client.post(
+        "/api/upload",
+        files=[
+            ("files", ("first.wav", b"RIFF", "audio/wav")),
+            ("files", ("second.mp3", b"ID3", "audio/mpeg")),
+            ("files", ("notes.exe", b"MZ", "application/octet-stream")),
+        ],
+        data={"output_formats": "txt"},
+    )
+    assert response.status_code == 400
+    assert "notes.exe" in response.json()["detail"]
+    assert list(upload_dir.iterdir()) == []
+    assert web_app.tasks_storage == {}
+    assert fake_processor.calls == []
+
+
+def test_upload_failure_on_a_later_file_starts_nothing(web_dirs, monkeypatch):
+    # Файл k не записался (413, диск) — уже сохранённые 1..k-1 удаляются, ни одна задача не стартует
+    upload_dir, _ = web_dirs
+    started = []
+
+    async def fake_save_upload(file, _request):
+        if file.filename == "big.wav":
+            raise web_app.HTTPException(status_code=413, detail="too large")
+        path = upload_dir / f"id-{file.filename}"
+        path.write_bytes(b"RIFF")
+        return f"id-{file.filename}", path, file.filename, 4
+
+    async def fake_process(*args):
+        started.append(args)
+
+    monkeypatch.setattr(web_app, "_save_upload", fake_save_upload)
+    monkeypatch.setattr(web_app, "process_transcription", fake_process)
+    monkeypatch.setattr(web_app, "model_loader", _FakeLoader())
+
+    class _File:
+        def __init__(self, filename):
+            self.filename = filename
+
+    async def scenario():
+        with pytest.raises(web_app.HTTPException) as info:
+            await web_app.upload_files(
+                request=None, files=[_File("a.wav"), _File("big.wav")], output_formats="txt",
+                enable_diarization=False, diarization_backend="pyannote", num_speakers="",
+                asr_backend="", asr_model="", onnx_provider="", subtitle_sentence_split=True,
+                subtitle_max_lines=2, subtitle_max_width=64, user="alice",
+            )
+        await asyncio.sleep(0)
+        return info.value
+
+    error = asyncio.run(scenario())
+    assert error.status_code == 413
+    assert list(upload_dir.iterdir()) == []
+    assert web_app.tasks_storage == {}
+    assert started == []
+
+
 def test_download_url_rejects_unknown_output_format(client):
     response = client.post("/api/download-url", data={"url": "https://example.com/v", "output_formats": "pdf"})
     assert response.status_code == 400
