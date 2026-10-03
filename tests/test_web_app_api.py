@@ -14,6 +14,7 @@ import yt_dlp
 
 pytest.importorskip("fastapi")
 
+from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 os.environ.setdefault("WEB_SECRET", "x" * 32)
@@ -24,6 +25,7 @@ web_app = importlib.import_module("web.web_app")
 from src.core.subtitles import SubtitleOptions  # noqa: E402
 from src.services import transcription_service  # noqa: E402
 from web import auth, jobs  # noqa: E402
+from web.routes import transcribe as transcribe_routes  # noqa: E402
 from web.state import state, validated_login_rate_limit  # noqa: E402
 from web.task_registry import registry  # noqa: E402
 
@@ -497,7 +499,7 @@ def test_background_jobs_are_referenced_until_done(web_dirs, monkeypatch):
     async def scenario():
         nonlocal release
         release = asyncio.Event()
-        await web_app.download_from_url(
+        await transcribe_routes.download_from_url(
             request=None, user="alice", url="https://example.com/v", output_formats="txt",
             enable_diarization=False, diarization_backend="pyannote", num_speakers="", asr_backend="",
             asr_model="", onnx_provider="", subtitle_sentence_split=True, subtitle_max_lines=2,
@@ -556,7 +558,7 @@ def test_upload_failure_on_a_later_file_starts_nothing(web_dirs, monkeypatch):
 
     async def fake_save_upload(file, _request):
         if file.filename == "big.wav":
-            raise web_app.HTTPException(status_code=413, detail="too large")
+            raise HTTPException(status_code=413, detail="too large")
         path = upload_dir / f"id-{file.filename}"
         path.write_bytes(b"RIFF")
         return f"id-{file.filename}", path, file.filename, 4
@@ -564,7 +566,7 @@ def test_upload_failure_on_a_later_file_starts_nothing(web_dirs, monkeypatch):
     async def fake_process(*args):
         started.append(args)
 
-    monkeypatch.setattr(web_app, "_save_upload", fake_save_upload)
+    monkeypatch.setattr(transcribe_routes, "_save_upload", fake_save_upload)
     monkeypatch.setattr(jobs, "process_transcription", fake_process)
     monkeypatch.setattr(state, "model_loader", _FakeLoader())
 
@@ -573,8 +575,8 @@ def test_upload_failure_on_a_later_file_starts_nothing(web_dirs, monkeypatch):
             self.filename = filename
 
     async def scenario():
-        with pytest.raises(web_app.HTTPException) as info:
-            await web_app.upload_files(
+        with pytest.raises(HTTPException) as info:
+            await transcribe_routes.upload_files(
                 request=None, files=[_File("a.wav"), _File("big.wav")], output_formats="txt",
                 enable_diarization=False, diarization_backend="pyannote", num_speakers="",
                 asr_backend="", asr_model="", onnx_provider="", subtitle_sentence_split=True,
