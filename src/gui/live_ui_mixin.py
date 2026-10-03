@@ -1,8 +1,12 @@
-"""Live-tab widget construction for the desktop application."""
+"""Live-tab widgets and what they display: transcript, status, session folder."""
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
 from PyQt6.QtCore import QElapsedTimer, Qt, QTimer
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,6 +24,17 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ..live.types import CaptureEvent, CaptureEventKind, CaptureState, TranscriptEvent
+
+
+def _display_path(path: str | Path) -> str:
+    """Abbreviate the home folder the way Finder and the Liquid client do."""
+    path = Path(path)
+    try:
+        return str(Path("~") / path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
 
 
 class _GrowingTextEdit(QTextEdit):
@@ -412,3 +427,94 @@ class LiveUiMixin:
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         self.lbl_live_timer.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+
+    def _update_live_output_folder_label(self, path: str) -> None:
+        """Show the folder of the current/last session, or where the next one goes."""
+        session_dir = getattr(self, "_live_shown_session_dir", None)
+        if session_dir is not None and Path(session_dir).parent != Path(path):
+            self._live_shown_session_dir = session_dir = None
+        if session_dir is not None:
+            text = _display_path(session_dir)
+        elif path:
+            text = _display_path(path)
+        else:
+            text = self._t("Папка не выбрана", "Folder not selected")
+        label = self.lbl_live_output_folder
+        width = label.width()
+        # One line, elided in the middle: a wrapped path overflowed the card
+        # onto the buttons above it. The tooltip carries the full path.
+        shown = (
+            label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideMiddle, width)
+            if label.isVisible() and width > 40 else text
+        )
+        label.setText(shown)
+        label.setToolTip("\n".join(filter(None, (
+            str(session_dir or path),
+            self._t(
+                "Каждая запись сохраняется в свою папку ГГГГ-ММ-ДД_ЧЧ-ММ-СС: "
+                "транскрипт, субтитры и аудио.",
+                "Each recording is saved to its own YYYY-MM-DD_HH-MM-SS folder: "
+                "transcript, subtitles and audio.",
+            ),
+        ))))
+
+    def _show_live_session_folder(self, session_dir: Path) -> None:
+        self._live_shown_session_dir = Path(session_dir)
+        self._update_live_output_folder_label(self.live_output_dir.text().strip())
+
+    def _update_live_event(self, event) -> None:
+        if isinstance(event, TranscriptEvent):
+            presenter = self._live_transcript_presenter
+            delta = presenter.add_event(event)
+            if delta:
+                piece = presenter.rendered_delta(event, delta)
+                if presenter.rewrote:
+                    self._redraw_live_transcript(presenter.rendered_pieces())
+                else:
+                    self._append_live_transcript(piece)
+        elif isinstance(event, CaptureEvent):
+            self._show_live_capture_status(event)
+        self._update_live_overlay(event)
+
+    def _show_live_capture_status(self, event: CaptureEvent) -> None:
+        key = (event.source, event.detail)
+        now = time.monotonic()
+        if now - self._live_capture_status_times.get(key, float("-inf")) < 5:
+            return
+        self._live_capture_status_times[key] = now
+        self.lbl_live_status.setText(event.detail)
+        # State updates overwrite the status line, so problems get their own
+        # banner that survives until the next session starts.
+        if event.kind is not CaptureEventKind.DISCONTINUITY:
+            self.lbl_live_problem.setText(event.detail)
+            self.lbl_live_problem.show()
+
+    def _append_live_transcript(self, text: str) -> None:
+        scrollbar = self.live_transcript.verticalScrollBar()
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
+        position = scrollbar.value()
+        cursor = self.live_transcript.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(f"{text}\n")
+        scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
+
+    def _redraw_live_transcript(self, pieces: list[str]) -> None:
+        scrollbar = self.live_transcript.verticalScrollBar()
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
+        position = scrollbar.value()
+        self.live_transcript.setPlainText("".join(f"{piece}\n" for piece in pieces))
+        scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
+
+    def _clear_live_display(self) -> None:
+        self.live_transcript.clear()
+        self._live_transcript_presenter.clear()
+        if self.live_session is not None and self.live_session.status().state not in (CaptureState.STOPPED, CaptureState.IDLE):
+            try:
+                self.live_session.clear_conversation()
+            except RuntimeError:
+                pass  # разговор уже заморожен остановкой — чистить нечего
+        if self.live_overlay is not None:
+            self.live_overlay.clear_transcript()
+            self.live_overlay.set_conversation(
+                self.live_session.conversation() if self.live_session is not None else []
+            )
