@@ -1,4 +1,5 @@
 import Foundation
+import GigaAMLiquidCore
 
 /// One CLI provider's discovery result, as reported by the Python registry
 /// (`src/services/cli_tools.py`). The native app never looks for binaries itself:

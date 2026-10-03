@@ -1,4 +1,5 @@
 import Foundation
+import GigaAMLiquidCore
 
 struct LLMRequest {
     var text: String

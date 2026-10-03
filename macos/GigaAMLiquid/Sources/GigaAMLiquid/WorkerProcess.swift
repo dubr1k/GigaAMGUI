@@ -9,33 +9,6 @@ struct WorkerFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
-/// Redacts secrets and credential-looking substrings from worker output before it reaches logs or the UI.
-enum WorkerRedaction {
-    private static let credentialPatterns = [
-        #"\b(?:hf_|sk-)[A-Za-z0-9_-]+"#,
-        #"(?i)\bBearer\s+\S+"#,
-        #"(?i)((?:token|api[_-]?key|password|secret)[\"']?\s*[:=]\s*[\"']?)[^\s\"'&,}]+"#,
-        #"(?i)(https?://)[^\s/@]+:[^\s/@]+@"#
-    ].compactMap { try? NSRegularExpression(pattern: $0) }
-
-    static func safeText(_ text: String, secrets: [String]) -> String {
-        var value = text
-        for secret in secrets { value = value.replacingOccurrences(of: secret, with: "[redacted]") }
-        for pattern in credentialPatterns {
-            value = pattern.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: "[redacted]")
-        }
-        return String(value.suffix(8192))
-    }
-
-    /// Environment values that look like credentials, for `safeText(_:secrets:)`.
-    static func secrets(in environment: [String: String]) -> [String] {
-        environment.compactMap { key, value in
-            let name = key.uppercased()
-            return value.count >= 6 && ["TOKEN", "SECRET", "PASSWORD", "API_KEY"].contains(where: name.contains) ? value : nil
-        }
-    }
-}
-
 /// One JSONL worker process: stdin for commands, stdout for events, stderr for diagnostics.
 ///
 /// Every callback runs on `queue`. The owner decides what a line means; this

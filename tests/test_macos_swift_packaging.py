@@ -259,8 +259,11 @@ def test_swift_english_dictionary_has_no_duplicate_keys() -> None:
 def test_swift_worker_process_is_shared_between_jobs() -> None:
     worker = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/WorkerProcess.swift").read_text(encoding="utf-8")
     assert "final class WorkerProcess" in worker
-    assert "enum WorkerRedaction" in worker
     assert "F_SETNOSIGPIPE" in worker
+    # One redaction for every job's diagnostics, unit-tested in GigaAMLiquidCore.
+    redaction = (LIQUID_CORE / "WorkerRedaction.swift").read_text(encoding="utf-8")
+    assert "public enum WorkerRedaction" in redaction
+    assert "enum WorkerRedaction" not in _liquid_sources()
     # One line reader, unit-tested in GigaAMLiquidCore (LineFramingTests), for every job.
     reader = (LIQUID_CORE / "LineReader.swift").read_text(encoding="utf-8")
     assert "final class LineReader" in reader and "JSONLineFramer" in reader
