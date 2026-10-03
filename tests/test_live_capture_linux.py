@@ -413,3 +413,24 @@ def test_linux_without_pactl_reports_how_to_enumerate_monitors(monkeypatch):
     assert native.devices(CaptureSource.SYSTEM) == []
     with pytest.raises(CaptureUnavailable, match="pulseaudio-utils"):
         native.start(CaptureSource.SYSTEM, None, lambda *_: None)
+
+
+def test_linux_newest_source_output_is_chosen_by_number_not_by_text(monkeypatch):
+    """Sorted as strings, "99" came after "100" and the older stream was moved."""
+    from src.live.capture import pulse
+
+    class TwoNewOutputs(FakePactl):
+        def __call__(self, args, **kwargs):
+            if args[1:] == ["list", "source-outputs"]:
+                self.calls.append(list(args))
+                return self._ok(
+                    "Source Output #99\n" f'\tapplication.process.id = "{self.pid}"\n'
+                    "Source Output #100\n" f'\tapplication.process.id = "{self.pid}"\n'
+                )
+            return super().__call__(args, **kwargs)
+
+    fake = TwoNewOutputs()
+    monkeypatch.setattr(pulse.subprocess, "run", fake)
+
+    assert pulse.attach_to_monitor("sink.monitor", fake.pid)
+    assert fake.calls[-1] == ["pactl", "move-source-output", "100", "sink.monitor"]
