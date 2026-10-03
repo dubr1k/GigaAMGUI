@@ -17,7 +17,7 @@ from .chunking import (
     stitch_chunk,
     vad_regions_miss_active_audio,
 )
-from .longform import call_logger
+from .longform import VadFailureMemo, call_logger
 from .token_timestamps import tokens_to_words
 from .types import BackendCapabilities, TranscriptionSegment, normalize_window_audio
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
@@ -58,7 +58,8 @@ class MLXBackend:
         self._vad_segmenter_factory = vad_segmenter_factory or PyannoteVadSegmenter
         self._vad_segmenter: VadSegmenter | None = None
         self._vad_segmenter_key: tuple[bytes, str] | None = None
-        self._vad_failure_key: tuple[bytes, str] | None = None
+        self._vad_failure = VadFailureMemo()
+        self._vad_retry_pending = False
         self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
         if self.segmentation_strategy not in {"vad", "overlap_chunks", "fixed_chunks"}:
             raise ValueError(f"Неизвестный режим сегментации: {self.segmentation_strategy}")
@@ -253,7 +254,9 @@ class MLXBackend:
         token: str | None,
         segmenter_key: tuple[bytes, str],
     ) -> VadSegmenter:
-        if self._vad_failure_key == segmenter_key:
+        self._vad_retry_pending = False
+        if self._vad_failure.blocked(segmenter_key) is not None:
+            self._vad_retry_pending = True
             raise VadUnavailableError("previous VAD initialization failed")
         if self._vad_segmenter is None or self._vad_segmenter_key != segmenter_key:
             self._vad_segmenter = self._vad_segmenter_factory(
@@ -261,7 +264,7 @@ class MLXBackend:
                 device=segmenter_key[1],
             )
             self._vad_segmenter_key = segmenter_key
-            self._vad_failure_key = None
+            self._vad_failure.clear()
         return self._vad_segmenter
 
     @staticmethod
@@ -311,9 +314,12 @@ class MLXBackend:
         except Exception as exc:
             self._vad_segmenter = None
             self._vad_segmenter_key = None
-            self._vad_failure_key = (
-                segmenter_key if isinstance(exc, VadUnavailableError) else None
-            )
+            # Отказ «ещё рано повторять» не продлевает паузу перед повтором.
+            if not self._vad_retry_pending:
+                if isinstance(exc, VadUnavailableError):
+                    self._vad_failure.remember(segmenter_key, str(exc))
+                else:
+                    self._vad_failure.clear()
             return self._use_overlap_chunks(
                 audio,
                 self._vad_fallback_reason(exc),
@@ -580,7 +586,7 @@ class MLXBackend:
             self.tokenizer = None
             self._vad_segmenter = None
             self._vad_segmenter_key = None
-            self._vad_failure_key = None
+            self._vad_failure.clear()
             self.segmentation_mode = "not_run"
             self.segmentation_fallback_reason = None
             self._empty_cache()

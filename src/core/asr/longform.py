@@ -2,9 +2,44 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+import time
+from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
 from typing import Any
+
+# Неудачную инициализацию VAD не повторяем на каждом файле (батч иначе качал
+# бы недоступную модель снова и снова), но и не помним до перезапуска:
+# на долгоживущем сервере один сетевой сбой отключал VAD навсегда.
+VAD_RETRY_COOLDOWN_SECONDS = 300.0
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+class VadFailureMemo:
+    """Последний сбой инициализации VAD с ключом окружения и временем."""
+
+    def __init__(self) -> None:
+        self.clear()
+
+    def clear(self) -> None:
+        self._key: Hashable | None = None
+        self._reason: str | None = None
+        self._failed_at: float | None = None
+
+    def remember(self, key: Hashable, reason: str) -> None:
+        self._key = key
+        self._reason = reason
+        self._failed_at = _now()
+
+    def blocked(self, key: Hashable) -> str | None:
+        """Причина недавнего сбоя для этого ключа или None — можно пробовать."""
+        if self._failed_at is None or self._key != key:
+            return None
+        if _now() - self._failed_at >= VAD_RETRY_COOLDOWN_SECONDS:
+            return None
+        return self._reason
 
 
 @contextmanager

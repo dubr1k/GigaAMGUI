@@ -16,7 +16,7 @@ from .chunking import (
     stitch_chunk,
     vad_regions_miss_active_audio,
 )
-from .longform import call_logger
+from .longform import VadFailureMemo, call_logger
 from .models import onnx_model_name, onnx_model_repo, validate_asr_model
 from .onnx_loading import load_asr_model
 from .onnx_provider import (
@@ -72,7 +72,7 @@ class OnnxBackend:
         )
         self._vad_segmenter_factory = vad_segmenter_factory or OnnxVadSegmenter
         self._vad_segmenter: VadSegmenter | None = None
-        self._vad_unavailable_reason: str | None = None
+        self._vad_failure = VadFailureMemo()
         self._logger: Callable[[str], None] | None = None
         self._inference_lock = threading.Lock()
 
@@ -251,8 +251,9 @@ class OnnxBackend:
         return "executionprovider" in message or any(marker in message for marker in markers)
 
     def _ensure_vad_segmenter(self) -> VadSegmenter:
-        if self._vad_unavailable_reason is not None:
-            raise RuntimeError(self._vad_unavailable_reason)
+        blocked = self._vad_failure.blocked(self.vad_model)
+        if blocked is not None:
+            raise RuntimeError(blocked)
         if self._vad_segmenter is None:
             try:
                 self._vad_segmenter = self._vad_segmenter_factory(
@@ -263,9 +264,11 @@ class OnnxBackend:
                 )
             except Exception as exc:
                 # Модель VAD не поднимается в этом окружении. Без запоминания
-                # каждый файл батча заново пытался бы её скачать и загрузить.
-                self._vad_unavailable_reason = f"{type(exc).__name__}: {exc}"
+                # каждый файл батча заново пытался бы её скачать и загрузить;
+                # через VAD_RETRY_COOLDOWN_SECONDS попытка повторяется.
+                self._vad_failure.remember(self.vad_model, f"{type(exc).__name__}: {exc}")
                 raise
+            self._vad_failure.clear()
         return self._vad_segmenter
 
     def _transcribe_longform_unlocked(
@@ -457,7 +460,7 @@ class OnnxBackend:
         with self._inference_lock:
             self.model = None
             self._vad_segmenter = None
-            self._vad_unavailable_reason = None
+            self._vad_failure.clear()
             self.provider_selection = None
             self.device = None
             self.segmentation_mode = "not_run"

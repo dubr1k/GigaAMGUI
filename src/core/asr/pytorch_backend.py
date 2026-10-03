@@ -24,7 +24,7 @@ from .chunking import (
     stitch_chunk,
     vad_regions_miss_active_audio,
 )
-from .longform import call_logger
+from .longform import VadFailureMemo, call_logger
 from .types import BackendCapabilities, TranscriptionSegment, TranscriptionWord, normalize_window_audio
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
 
@@ -50,7 +50,7 @@ class PyTorchBackend:
         self._vad_segmenter_factory = vad_segmenter_factory or PyannoteVadSegmenter
         self._vad_segmenter: VadSegmenter | None = None
         self._vad_segmenter_key: tuple[bytes, str] | None = None
-        self._vad_failure_key: tuple[bytes, str] | None = None
+        self._vad_failure = VadFailureMemo()
         self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
         if self.segmentation_strategy not in {"vad", "overlap_chunks", "fixed_chunks"}:
             raise ValueError(f"Неизвестный режим сегментации: {self.segmentation_strategy}")
@@ -328,8 +328,10 @@ class PyTorchBackend:
             vad_device = resolve_vad_device(ASR_VAD_DEVICE)
             token_fingerprint = hashlib.sha256((hf_token or "").encode()).digest()
             segmenter_key = (token_fingerprint, vad_device)
+            retry_pending = False
             try:
-                if self._vad_failure_key == segmenter_key:
+                if self._vad_failure.blocked(segmenter_key) is not None:
+                    retry_pending = True
                     raise VadUnavailableError("previous VAD initialization failed")
                 if self._vad_segmenter is None or self._vad_segmenter_key != segmenter_key:
                     self._vad_segmenter = self._vad_segmenter_factory(
@@ -337,7 +339,7 @@ class PyTorchBackend:
                         device=vad_device,
                     )
                     self._vad_segmenter_key = segmenter_key
-                    self._vad_failure_key = None
+                    self._vad_failure.clear()
                 segmenter = self._vad_segmenter
                 boundaries = segmenter.segment_file(
                     audio_path,
@@ -370,9 +372,12 @@ class PyTorchBackend:
             except Exception as exc:
                 self._vad_segmenter = None
                 self._vad_segmenter_key = None
-                self._vad_failure_key = (
-                    segmenter_key if isinstance(exc, VadUnavailableError) else None
-                )
+                # Время сбоя не продлеваем отказом «ещё рано», иначе пауза
+                # перед повтором никогда бы не истекла.
+                if isinstance(exc, VadUnavailableError) and not retry_pending:
+                    self._vad_failure.remember(segmenter_key, str(exc))
+                elif not retry_pending:
+                    self._vad_failure.clear()
                 self.segmentation_mode = "overlap_chunks"
                 if isinstance(exc, VadUnavailableError):
                     recovery_hint = (
@@ -521,7 +526,7 @@ class PyTorchBackend:
             self.model = None
             self._vad_segmenter = None
             self._vad_segmenter_key = None
-            self._vad_failure_key = None
+            self._vad_failure.clear()
             self.segmentation_mode = "not_run"
             self.segmentation_fallback_reason = None
             self._empty_cache()
