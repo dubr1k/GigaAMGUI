@@ -21,6 +21,18 @@ recording and misdirects the diagnosis. Extra channels are dropped instead.
 """
 
 
+class RecorderCloseError(OSError):
+    """Some tracks could not be finalized; ``recordings`` still names every file.
+
+    One writer failing to flush used to end the close loop, leaving every later
+    FLAC unfinalized and the session without its recordings list.
+    """
+
+    def __init__(self, failures: list[str], recordings: dict[CaptureSource, Path]) -> None:
+        super().__init__("; ".join(failures))
+        self.recordings = recordings
+
+
 class SessionRecorder:
     def __init__(
         self,
@@ -63,13 +75,24 @@ class SessionRecorder:
             self._write("mix", chunk)
 
     def close(self) -> dict[CaptureSource, Path]:
-        for writer in self._writers.values():
-            writer.close()
-        return {
+        failures: list[str] = []
+        # Каждый writer закрывается сам по себе: FLAC без закрытия остаётся
+        # без заголовка, и одна ошибка не должна стоить остальных дорожек.
+        for track, writer in list(self._writers.items()):
+            try:
+                writer.close()
+            except Exception as exc:
+                name = track.value if isinstance(track, CaptureSource) else track
+                failures.append(f"{name}: {type(exc).__name__}: {exc}")
+        self._writers.clear()
+        recordings = {
             source: paths[0]
             for source, paths in self._paths.items()
             if isinstance(source, CaptureSource) and paths
         }
+        if failures:
+            raise RecorderCloseError(failures, recordings)
+        return recordings
 
     def artifacts(self) -> dict[str, dict[str, Any]]:
         return {

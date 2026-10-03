@@ -145,6 +145,7 @@ class LiveAsrScheduler:
         self._partial_hypotheses: dict[str, _Hypothesis] = {}
         self._refresh_seconds = partial_delay_seconds
         self._closed = False
+        self._aborted = False
         self._condition = threading.Condition()
         self._worker = threading.Thread(target=self._run, name="live-asr", daemon=True)
         self._worker.start()
@@ -217,17 +218,35 @@ class LiveAsrScheduler:
         with self._condition:
             self._refresh_seconds = min(1.5, max(0.25, seconds))
 
-    def close(self, timeout: float | None = None) -> None:
+    def close(self, timeout: float | None = None) -> bool:
         """Drain queued decodes; `timeout` bounds the wait, `None` waits fully.
 
         Abandoning the queue here used to drop every final that had not been
         decoded within a second, which silently emptied short sessions.
+        Returns whether the queue was drained; on False the caller decides
+        whether to keep waiting or to `abort()`.
         """
         self.flush()
         with self._condition:
             self._closed = True
             self._condition.notify_all()
         self._worker.join(timeout=timeout)
+        return not self._worker.is_alive()
+
+    def abort(self) -> None:
+        """Drop queued work and publish nothing more, including the decode in flight.
+
+        A decode that never returns (a wedged GPU backend) must not hold stop()
+        forever; whatever it produces after the session has exported would only
+        land in a closed journal.
+        """
+        with self._condition:
+            self._aborted = True
+            self._closed = True
+            self._final_jobs.clear()
+            self._partial_job = None
+            self._runs.clear()
+            self._condition.notify_all()
 
     @property
     def pending_jobs(self) -> int:
@@ -305,13 +324,13 @@ class LiveAsrScheduler:
                 segments = self._backend.transcribe_window(job.audio, 16_000, job.start)
                 self._publish(job, segments)
             except Exception as exc:
-                if self._on_error is not None:
+                if self._on_error is not None and not self._aborted:
                     self._on_error(exc)
             finally:
                 self.record_decode_duration(time.monotonic() - started)
 
     def _publish(self, job: _Job, segments: list[TranscriptionSegment]) -> None:
-        if not segments:
+        if not segments or self._aborted:
             return
         text = " ".join(segment["transcription"].strip() for segment in segments).strip()
         if not text:

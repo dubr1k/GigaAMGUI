@@ -199,12 +199,16 @@ class LiveWorkerService:
         except Exception as exc:
             self._emit("live_stopped", session_dir=str(session.session_dir), saved_files=[], recordings={}, message=str(exc))
         else:
-            self._emit(
-                "live_stopped",
-                session_dir=str(result.session_dir),
-                saved_files=[str(path) for path in result.exports],
-                recordings={source.value: str(path) for source, path in result.recordings.items()},
-            )
+            payload: dict[str, Any] = {
+                "session_dir": str(result.session_dir),
+                "saved_files": [str(path) for path in result.exports],
+                "recordings": {source.value: str(path) for source, path in result.recordings.items()},
+            }
+            # stop() finishes even when a stage fails; `message` is what clients
+            # already show as the stop error next to whatever was saved.
+            if result.errors:
+                payload["message"] = "; ".join(result.errors)
+            self._emit("live_stopped", **payload)
         finally:
             self._session = None
             self._adapters = {}

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -36,7 +37,7 @@ class AsrScheduler(Protocol):
 
     def flush(self) -> None: ...
 
-    def close(self) -> None: ...
+    def close(self, timeout: float | None = None) -> bool | None: ...
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,8 @@ class SessionResult:
     session_dir: Path
     recordings: dict[CaptureSource, Path]
     exports: list[Path]
+    errors: list[str] = field(default_factory=list)
+    """Stages of stop() that failed; the rest still ran (see `LiveSession.stop`)."""
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,13 @@ A writer that cannot open its file does not start working later, and retrying
 per chunk turns one fault into thousands of identical log lines — issue #48
 produced 15 255 of them in a single session."""
 CHECKPOINT_INTERVAL_SECONDS = 2.0
+STOP_DRAIN_TIMEOUT_SECONDS = 120.0
+"""How long stop() waits for each source's queued decodes.
+
+Stopping drains every queued final (issue #42), but a decode that never
+returns — a wedged GPU backend — must not keep the session in STOPPING for
+ever: after this the undecoded speech is abandoned and the session still
+closes its recordings and writes its exports."""
 # How long a source that has already produced audio may stay quiet before the
 # mixer stops waiting for it, and how long to wait for a source that has never
 # produced anything at all (an idle WASAPI loopback endpoint, typically).
@@ -127,6 +137,7 @@ class LiveSession:
             settings.record_mix_audio,
         )
         self._state = CaptureState.IDLE
+        self._started_adapters: dict[CaptureSource, CaptureAdapter] = {}
         self._active_sources: set[CaptureSource] = set()
         self._failed_sources: set[CaptureSource] = set()
         self._timelines: dict[CaptureSource, SourceTimeline] = {}
@@ -187,6 +198,9 @@ class LiveSession:
                 # Native adapters can emit an asynchronous permission/device event
                 # during start; mark source active before that callback can arrive.
                 self._active_sources.add(source)
+                # A start that raised may still have left a thread or a native
+                # stream behind; stop() owns every adapter it tried to start.
+                self._started_adapters[source] = adapter
                 try:
                     adapter.start(self._on_chunk, self._on_event)
                 except Exception as exc:
@@ -213,40 +227,109 @@ class LiveSession:
             self._notify_status()
 
     def stop(self) -> SessionResult:
+        """Stop capture, drain ASR, close recordings and write exports.
+
+        Every stage runs even when an earlier one fails: an adapter that throws
+        on stop used to abort the rest, leaving the FLAC files unfinalized, no
+        exports and the session stuck in STOPPING. Failures are collected into
+        `SessionResult.errors`, logged and reported as one status event; the
+        session always ends STOPPED.
+        """
         with self._lock:
-            if self._state in {CaptureState.STOPPED, CaptureState.IDLE}:
+            if self._state in {CaptureState.IDLE, CaptureState.STOPPING, CaptureState.STOPPED}:
                 raise RuntimeError("session is not running")
             self._state = CaptureState.STOPPING
-            adapters = [self._adapters[source] for source in self._active_sources]
-            schedulers = list(self._schedulers.values())
-        # Draining happens outside the lock: the ASR workers publish finals
-        # through _on_final, which needs the same lock, and exports must not
-        # run until the last decode has landed in the journal.
-        self._notify_status()
-        for adapter in adapters:
-            adapter.stop()
-        self.log(f"draining {len(schedulers)} asr scheduler(s) before export")
-        for scheduler in schedulers:
-            scheduler.flush()
-        for scheduler in schedulers:
-            scheduler.close()
-        with self._lock:
-            self._flush_mix_inputs()
-            recordings = self._recorder.close()
-            artifacts = getattr(self._recorder, "artifacts", None)
-            if callable(artifacts):
-                LiveSessionStore(self._session_dir.parent).update_metadata(
-                    self._session_dir,
-                    recordings=artifacts(),
-                )
-            if self._settings.diarization_mode is DiarizationMode.AFTER_STOP:
-                self._diarize_recordings(recordings)
-            self._freeze_conversation()
-            exports = export_session(self._session_dir, self._journal.latest_events(), self._export_selection)
-            self._active_sources.clear()
-            self._state = CaptureState.STOPPED
+            # Failed sources included: they still own a dispatch thread and,
+            # on macOS, an SCStream that keeps the screen-recording indicator on.
+            adapters = list(self._started_adapters.items())
+            schedulers = list(self._schedulers.items())
+        errors: list[str] = []
+        recordings: dict[CaptureSource, Path] = {}
+        exports: list[Path] = []
+        try:
             self._notify_status()
-            return SessionResult(self._session_dir, recordings, exports)
+            # Draining happens outside the lock: the ASR workers publish finals
+            # through _on_final, which needs the same lock, and exports must not
+            # run until the last decode has landed in the journal.
+            for source, adapter in adapters:
+                self._attempt(errors, f"stop {source.value} capture", adapter.stop)
+            self.log(f"draining {len(schedulers)} asr scheduler(s) before export")
+            for source, scheduler in schedulers:
+                self._attempt(errors, f"flush {source.value} recognition", scheduler.flush)
+            for source, scheduler in schedulers:
+                self._attempt(
+                    errors, f"drain {source.value} recognition",
+                    lambda source=source, scheduler=scheduler: self._drain_scheduler(source, scheduler),
+                )
+            with self._lock:
+                self._attempt(errors, "flush mix", self._flush_mix_inputs)
+                recordings = self._close_recorder(errors)
+                self._attempt(errors, "update metadata", self._record_artifacts)
+                if self._settings.diarization_mode is DiarizationMode.AFTER_STOP:
+                    self._attempt(errors, "diarize", lambda: self._diarize_recordings(recordings))
+                self._attempt(errors, "freeze conversation", self._freeze_conversation)
+                exports = self._attempt(
+                    errors, "export",
+                    lambda: export_session(self._session_dir, self._journal.latest_events(), self._export_selection),
+                ) or []
+        finally:
+            with self._lock:
+                self._active_sources.clear()
+                self._state = CaptureState.STOPPED
+        if errors:
+            self._notify(CaptureEvent(
+                CaptureEventKind.STATUS,
+                CaptureSource.MIC,
+                0,
+                0,
+                self._translate(
+                    "Сессия остановлена с ошибками: " + "; ".join(errors),
+                    "Session stopped with errors: " + "; ".join(errors),
+                ),
+            ))
+        self._notify_status()
+        return SessionResult(self._session_dir, recordings, exports, errors)
+
+    def _attempt(self, errors: list[str], stage: str, action: Callable[[], object]):
+        try:
+            return action()
+        except Exception as exc:
+            detail = f"{stage}: {type(exc).__name__}: {exc}"
+            errors.append(detail)
+            self.log(f"stop stage failed: {detail}")
+            return None
+
+    def _drain_scheduler(self, source: CaptureSource, scheduler: AsrScheduler) -> None:
+        if _accepts_timeout(scheduler.close):
+            drained = scheduler.close(timeout=STOP_DRAIN_TIMEOUT_SECONDS)
+        else:
+            drained = scheduler.close()
+        if drained is not False:
+            return
+        abort = getattr(scheduler, "abort", None)
+        if callable(abort):
+            abort()
+        raise TimeoutError(
+            f"recognition did not finish within {STOP_DRAIN_TIMEOUT_SECONDS:g} s; "
+            "undecoded speech was abandoned"
+        )
+
+    def _close_recorder(self, errors: list[str]) -> dict[CaptureSource, Path]:
+        try:
+            return self._recorder.close()
+        except Exception as exc:
+            detail = f"close recordings: {type(exc).__name__}: {exc}"
+            errors.append(detail)
+            self.log(f"stop stage failed: {detail}")
+            return dict(getattr(exc, "recordings", {}) or {})
+
+    def _record_artifacts(self) -> None:
+        artifacts = getattr(self._recorder, "artifacts", None)
+        if callable(artifacts):
+            LiveSessionStore(self._session_dir.parent).update_metadata(
+                self._session_dir,
+                recordings=artifacts(),
+            )
 
     def status(self) -> LiveStatus:
         with self._lock:
@@ -568,6 +651,11 @@ class LiveSession:
     def _on_event(self, event: CaptureEvent) -> None:
         with self._lock:
             self.log(f"capture event [{event.source.value}/{event.kind.value}]: {event.detail}")
+            if self._state in _FINISHING_STATES:
+                # Streams report their own teardown; a late DEVICE_REMOVED used
+                # to turn STOPPED into FAILED and re-enable Stop for a second
+                # export of the same session.
+                return
             if event.kind in {CaptureEventKind.PERMISSION_DENIED, CaptureEventKind.DEVICE_REMOVED, CaptureEventKind.DISK_FULL}:
                 self._mark_failed(event.source, event.detail)
             self._notify(event)
@@ -750,6 +838,8 @@ class LiveSession:
 
     def _mark_failed(self, source: CaptureSource, detail: str) -> None:
         self.log(f"source failed [{source.value}]: {detail}")
+        if self._state in _FINISHING_STATES:
+            return
         self._active_sources.discard(source)
         self._failed_sources.add(source)
         if not self._active_sources and self._state is not CaptureState.STARTING:
@@ -761,4 +851,19 @@ class LiveSession:
 
     def _notify(self, value: TranscriptEvent | CaptureEvent | LiveStatus) -> None:
         for callback in tuple(self._subscribers):
-            callback(value)
+            # A subscriber that throws (a closed worker pipe, a deleted Qt
+            # object) must not cost the session its stop or a capture thread.
+            try:
+                callback(value)
+            except Exception as exc:
+                self.log(f"subscriber failed: {type(exc).__name__}: {exc}")
+
+
+_FINISHING_STATES = frozenset({CaptureState.STOPPING, CaptureState.STOPPED})
+
+
+def _accepts_timeout(close: Callable[..., object]) -> bool:
+    try:
+        return "timeout" in inspect.signature(close).parameters
+    except (TypeError, ValueError):
+        return False

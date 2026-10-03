@@ -305,3 +305,31 @@ def test_live_ask_without_session_or_transcript_errors(service):
     svc.ask({"type": "live_ask", "question": "?", "settings": {}})
     errors = [m["message"] for m in _messages(output) if m["type"] == "error"]
     assert errors == ["No live session is running", "No final transcript events are available yet"]
+
+
+def test_live_stop_with_failed_stages_reports_saved_files_and_the_error(tmp_path):
+    """stop() now finishes despite failed stages; the client must still hear about them."""
+
+    class BrokenCloseScheduler(FakeScheduler):
+        def close(self):
+            raise RuntimeError("decoder crashed")
+
+    FakeScheduler.instances.clear()
+    messages = []
+    svc = LiveWorkerService(
+        lambda message_type, **payload: messages.append({"type": message_type, **payload}),
+        scheduler_factory=lambda source, on_final, on_partial, on_error: BrokenCloseScheduler(
+            source, on_final, on_partial, on_error,
+        ),
+    )
+    _start(svc, tmp_path)
+    svc.audio({"type": "live_audio", "source": "mic", "seq": 0, "sample_offset": 0, "timestamp_ns": 0, "pcm": _pcm()})
+    FakeScheduler.instances[0].final("готово")
+
+    svc.stop()
+
+    stopped = messages[-1]
+    assert stopped["type"] == "live_stopped"
+    assert any(name.endswith("transcript.txt") for name in stopped["saved_files"])
+    assert "decoder crashed" in stopped["message"]
+    assert not svc.is_running()
