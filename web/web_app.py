@@ -14,6 +14,7 @@ import traceback
 import uuid
 import warnings
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from platform import machine
@@ -930,26 +931,46 @@ async def get_asr_options(user: str = Depends(require_auth)):
     }
 
 
-@app.post("/api/upload")
-async def upload_files(
-    request: Request,
-    files: list[UploadFile] = File(...),
-    output_formats: str = Form("txt,txt_timecodes"),
-    enable_diarization: bool = Form(False),
-    diarization_backend: str = Form("pyannote"),
-    num_speakers: str = Form(""),
-    asr_backend: str = Form(""),
-    asr_model: str = Form(""),
-    onnx_provider: str = Form(""),
-    subtitle_sentence_split: bool = Form(True),
-    subtitle_max_lines: int = Form(2),
-    subtitle_max_width: int = Form(64),
-    user: str = Depends(require_auth),
-):
-    """Загрузка одного или нескольких файлов для транскрибации."""
-    if len(files) > 20:
-        raise HTTPException(status_code=400, detail="Максимум 20 файлов за раз")
+@dataclass(frozen=True)
+class TranscribeForm:
+    """Проверенные параметры формы транскрибации (общие у /api/upload и /api/download-url)."""
 
+    output_formats: list[str]
+    enable_diarization: bool
+    diarization_backend: str
+    num_speakers: int | None
+    asr_selection: transcription_service.AsrSelection
+    subtitle_options: SubtitleOptions
+
+    def task_fields(self) -> dict:
+        """Поля записи задачи, которые задаёт форма."""
+        return {
+            'output_formats': self.output_formats,
+            'enable_diarization': self.enable_diarization,
+            'diarization_backend': self.diarization_backend,
+            'num_speakers': self.num_speakers,
+            'subtitle_options': {
+                'sentence_split': self.subtitle_options.sentence_split,
+                'max_line_count': self.subtitle_options.max_line_count,
+                'max_line_width': self.subtitle_options.max_line_width,
+            },
+        }
+
+
+def _parse_transcribe_form(
+    *,
+    output_formats: str,
+    enable_diarization: bool,
+    diarization_backend: str,
+    num_speakers: str,
+    asr_backend: str,
+    asr_model: str,
+    onnx_provider: str,
+    subtitle_sentence_split: bool,
+    subtitle_max_lines: int,
+    subtitle_max_width: int,
+) -> TranscribeForm:
+    """Разбор и проверка параметров формы; ошибки — HTTP 400."""
     fmt_list = [f.strip() for f in output_formats.split(",") if f.strip()]
     if not fmt_list:
         fmt_list = ['txt', 'txt_timecodes']
@@ -982,28 +1003,62 @@ async def upload_files(
             status_code=400,
             detail="NVIDIA Sortformer определяет число спикеров автоматически",
         )
+    return TranscribeForm(
+        output_formats=fmt_list,
+        enable_diarization=enable_diarization,
+        diarization_backend=diarization_backend,
+        num_speakers=ns,
+        asr_selection=asr_selection,
+        subtitle_options=subtitle_options,
+    )
+
+
+@app.post("/api/upload")
+async def upload_files(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    output_formats: str = Form("txt,txt_timecodes"),
+    enable_diarization: bool = Form(False),
+    diarization_backend: str = Form("pyannote"),
+    num_speakers: str = Form(""),
+    asr_backend: str = Form(""),
+    asr_model: str = Form(""),
+    onnx_provider: str = Form(""),
+    subtitle_sentence_split: bool = Form(True),
+    subtitle_max_lines: int = Form(2),
+    subtitle_max_width: int = Form(64),
+    user: str = Depends(require_auth),
+):
+    """Загрузка одного или нескольких файлов для транскрибации."""
+    if len(files) > 20:
+        raise HTTPException(status_code=400, detail="Максимум 20 файлов за раз")
+
+    form = _parse_transcribe_form(
+        output_formats=output_formats,
+        enable_diarization=enable_diarization,
+        diarization_backend=diarization_backend,
+        num_speakers=num_speakers,
+        asr_backend=asr_backend,
+        asr_model=asr_model,
+        onnx_provider=onnx_provider,
+        subtitle_sentence_split=subtitle_sentence_split,
+        subtitle_max_lines=subtitle_max_lines,
+        subtitle_max_width=subtitle_max_width,
+    )
 
     uploaded = []
     for file in files:
         task_id, file_path, filename, file_size = await _save_upload(file, request)
-        _register_task(task_id, filename, file_size, user, asr_selection)
-        tasks_storage[task_id]['output_formats'] = fmt_list
-        tasks_storage[task_id]['enable_diarization'] = enable_diarization
-        tasks_storage[task_id]['diarization_backend'] = diarization_backend
-        tasks_storage[task_id]['num_speakers'] = ns
-        tasks_storage[task_id]['subtitle_options'] = {
-            'sentence_split': subtitle_options.sentence_split,
-            'max_line_count': subtitle_options.max_line_count,
-            'max_line_width': subtitle_options.max_line_width,
-        }
+        _register_task(task_id, filename, file_size, user, form.asr_selection)
+        tasks_storage[task_id].update(form.task_fields())
         _persist_tasks_index()
 
         asyncio.create_task(
             process_transcription(
-                task_id, file_path, filename, fmt_list,
-                enable_diarization, diarization_backend, ns,
-                asr_selection,
-                subtitle_options,
+                task_id, file_path, filename, form.output_formats,
+                form.enable_diarization, form.diarization_backend, form.num_speakers,
+                form.asr_selection,
+                form.subtitle_options,
             )
         )
         uploaded.append({
@@ -1036,50 +1091,22 @@ async def download_from_url(
     if not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="URL должен начинаться с http:// или https://")
 
-    fmt_list = [f.strip() for f in output_formats.split(",") if f.strip()]
-    if not fmt_list:
-        fmt_list = ['txt', 'txt_timecodes']
-    try:
-        diarization_backend = normalize_diarization_backend(diarization_backend)
-        asr_selection = transcription_service.normalize_asr_selection(
-            model_loader,
-            backend=asr_backend,
-            model=asr_model,
-            onnx_provider=onnx_provider,
-        )
-        subtitle_options = SubtitleOptions(
-            sentence_split=subtitle_sentence_split,
-            max_line_count=subtitle_max_lines,
-            max_line_width=subtitle_max_width,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    ns = None
-    if num_speakers.strip():
-        try:
-            ns = int(num_speakers.strip())
-            if ns <= 0:
-                ns = None
-        except ValueError:
-            ns = None
-    if enable_diarization and diarization_backend == "sortformer" and ns is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="NVIDIA Sortformer определяет число спикеров автоматически",
-        )
+    form = _parse_transcribe_form(
+        output_formats=output_formats,
+        enable_diarization=enable_diarization,
+        diarization_backend=diarization_backend,
+        num_speakers=num_speakers,
+        asr_backend=asr_backend,
+        asr_model=asr_model,
+        onnx_provider=onnx_provider,
+        subtitle_sentence_split=subtitle_sentence_split,
+        subtitle_max_lines=subtitle_max_lines,
+        subtitle_max_width=subtitle_max_width,
+    )
 
     task_id = uuid.uuid4().hex
-    _register_task(task_id, url.split("/")[-1][:80], 0, user, asr_selection)
-    tasks_storage[task_id]['output_formats'] = fmt_list
-    tasks_storage[task_id]['enable_diarization'] = enable_diarization
-    tasks_storage[task_id]['diarization_backend'] = diarization_backend
-    tasks_storage[task_id]['num_speakers'] = ns
-    tasks_storage[task_id]['subtitle_options'] = {
-        'sentence_split': subtitle_options.sentence_split,
-        'max_line_count': subtitle_options.max_line_count,
-        'max_line_width': subtitle_options.max_line_width,
-    }
+    _register_task(task_id, url.split("/")[-1][:80], 0, user, form.asr_selection)
+    tasks_storage[task_id].update(form.task_fields())
     tasks_storage[task_id]['status'] = 'downloading'
     tasks_storage[task_id]['stage'] = 'Загрузка медиа...'
     tasks_storage[task_id]['message'] = 'Загрузка по URL'
@@ -1087,9 +1114,10 @@ async def download_from_url(
 
     asyncio.create_task(
         _download_and_process(
-            task_id, url, fmt_list, enable_diarization, diarization_backend, ns,
-            asr_selection,
-            subtitle_options,
+            task_id, url, form.output_formats, form.enable_diarization,
+            form.diarization_backend, form.num_speakers,
+            form.asr_selection,
+            form.subtitle_options,
         )
     )
 
