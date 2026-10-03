@@ -9,6 +9,7 @@ import os
 
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -126,6 +127,14 @@ def display_results(console: Console, results: list[dict]):
             success_count += 1
 
     console.print(table)
+
+    # Почему не удалось: причина от процессора (result['error']), первая строка.
+    # escape — в тексте ошибок бывают [скобки] ([Errno 2] …), а не разметка rich.
+    for result in results:
+        reason = (result.get('error') or "").strip()
+        if not result['success'] and reason:
+            name = os.path.basename(result['file_path'])
+            console.print(f"[red]✗[/red] {escape(name)}: {escape(reason.splitlines()[0])}")
 
     # Итоговая статистика
     summary = Panel(

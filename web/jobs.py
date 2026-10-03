@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.config import AUDIO_PREPROCESSING_MODE, OUTPUT_FORMATS
+from src.core.progress import coerce_progress, stage_label
 from src.core.subtitles import SubtitleOptions
 from src.services import file_policy, transcription_api, transcription_service
 from src.utils.atomic_json import save_json_atomic
@@ -36,6 +37,16 @@ def start_background(coro) -> asyncio.Task:
     background_jobs.add(task)
     task.add_done_callback(background_jobs.discard)
     return task
+
+
+def stage_text(stage: str) -> str:
+    """Подпись стадии в поле `stage` задачи.
+
+    Формулировки общие для всех клиентов (`STAGE_LABELS`), но веб всегда отдавал
+    их с ASCII-многоточием «...»: поле уходит в SSE и /api/tasks и хранится в
+    сохранённом индексе задач, поэтому байты остаются прежними.
+    """
+    return stage_label(stage).replace("…", "...")
 
 
 async def process_transcription(
@@ -77,7 +88,7 @@ async def process_transcription(
                 'processed_seconds': 0.0,
                 'total_seconds': None,
                 'progress_indeterminate': False,
-                'stage': 'Подготовка...',
+                'stage': stage_text('preparing'),
                 'message': 'Обработка началась',
             })
             registry.persist()
@@ -91,47 +102,16 @@ async def process_transcription(
                 if task is None:
                     return
 
-                stage = None
-                stage_progress = None
-                processed_seconds = None
-                total_seconds = None
-
-                if isinstance(event_or_stage, dict):
-                    stage = event_or_stage.get('stage')
-                    stage_progress = event_or_stage.get('stage_progress')
-                    processed_seconds = event_or_stage.get('processed_seconds')
-                    total_seconds = event_or_stage.get('total_seconds')
-                    file_progress = event_or_stage.get('file_progress')
-                elif hasattr(event_or_stage, 'stage'):
-                    stage = getattr(event_or_stage, 'stage', None)
-                    stage_progress = getattr(event_or_stage, 'stage_progress', None)
-                    processed_seconds = getattr(event_or_stage, 'processed_seconds', None)
-                    total_seconds = getattr(event_or_stage, 'total_seconds', None)
-                    file_progress = getattr(event_or_stage, 'file_progress', None)
-                else:
-                    stage = event_or_stage
-                    file_progress = progress
-
-                if file_progress is None:
-                    file_progress = task.get('progress', 0) / 100
-
-                file_progress = max(0.0, min(float(file_progress), 1.0))
-                stage_names = {
-                    'preparing': 'Подготовка...',
-                    'conversion': 'Конвертация...',
-                    'preprocessing': 'Анализ и подготовка аудио...',
-                    'transcription': 'Распознавание речи...',
-                    'diarization': 'Диаризация...',
-                    'export': 'Экспорт...',
-                    'finalizing': 'Завершение...',
-                }
-                task['progress'] = int(file_progress * 100)
-                if stage:
-                    task['stage'] = stage_names.get(stage, stage)
-                task['stage_progress'] = stage_progress
-                task['processed_seconds'] = processed_seconds
-                task['total_seconds'] = total_seconds
-                task['progress_indeterminate'] = stage_progress is None
+                snapshot = coerce_progress(event_or_stage, progress)
+                # Без доли файла процент остаётся прежним (стадия без прогресса)
+                if snapshot.file_progress is not None:
+                    task['progress'] = snapshot.percent()
+                if snapshot.stage:
+                    task['stage'] = stage_text(snapshot.stage)
+                task['stage_progress'] = snapshot.stage_progress
+                task['processed_seconds'] = snapshot.processed_seconds
+                task['total_seconds'] = snapshot.total_seconds
+                task['progress_indeterminate'] = snapshot.indeterminate
 
             def logger(msg: str):
                 registry.log(task_id, msg)
@@ -175,8 +155,10 @@ async def process_transcription(
             )
 
             if not result['success']:
-                # Причину провала процессор кладёт в result['error']; старые версии её не дают
-                raise Exception(transcription_api.failure_reason(result) or "Обработка не удалась")
+                # Причину провала процессор кладёт в result['error']; старые версии её не дают.
+                # Клиенту — без путей сервера (папки загрузок и результатов).
+                reason = transcription_api.failure_reason(result, known_paths=(file_path, output_dir))
+                raise Exception(reason or "Обработка не удалась")
 
             if task_id not in registry.tasks:
                 if task_id in registry.deleted:

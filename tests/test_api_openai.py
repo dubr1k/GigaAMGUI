@@ -375,6 +375,20 @@ def test_processing_failure_reason_reaches_the_client(client, fake_processor, mo
     assert "ffmpeg could not decode the file" in events[-1]["error"]["message"]
 
 
+def test_processing_failure_reason_does_not_leak_server_paths(client, fake_processor, monkeypatch):
+    """Причина провала идёт клиенту, а пути сервера (UPLOAD_DIR/req_*) — только именем."""
+    def fail(self, filepath, output_dir, *_a, **_kw):
+        return {"success": False, "error": f"Ошибка: файл не найден: {filepath}"}
+
+    monkeypatch.setattr(_FakeProcessor, "process_file", fail)
+    r = _post(client)
+    message = _error(r)["message"]
+    assert message == "Transcription failed: Ошибка: файл не найден: speech.wav"
+    assert str(api.UPLOAD_DIR) not in r.text
+    events = _sse_events(_post(client, {"stream": "true"}).text)
+    assert events[-1]["error"]["message"] == "Transcription failed: Ошибка: файл не найден: speech.wav"
+
+
 def test_unexpected_processing_exception_stays_generic(client, fake_processor, monkeypatch):
     monkeypatch.setattr(_FakeProcessor, "process_file",
                         lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("/srv/secret/path exploded")))

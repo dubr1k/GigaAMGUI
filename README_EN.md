@@ -199,7 +199,8 @@ Russian aliases; F1–F12 are independent of the keyboard layout.
 startup without blocking the interface. After a disconnect, use Ctrl+R,
 `/reconnect` or Reconnect: the queue and results stay, and the previous job is
 never automatically repeated. Reconnect waits for confirmed old-worker shutdown.
-During ASR, Esc / After file finishes the current file and stops the queue;
+During ASR, Esc / After file interrupts the current file (nothing is saved for it
+and it is marked as interrupted) and stops the queue;
 during LLM, Esc / Cancel request asks for cancellation. Another Esc / Terminate
 now opens confirmation: Yes terminates the owned worker and descendants, while
 No/Esc returns to waiting for cooperative cancellation. Unfinished output may
@@ -293,6 +294,13 @@ Specialized variables (`HF_HOME`, `HUGGINGFACE_HUB_CACHE`, `TRANSFORMERS_CACHE`,
 `GIGAAM_PYTORCH_MODEL_DIR`, and `GIGAAM_DEEPFILTER_DIR`) retain priority for
 advanced layouts. On Windows, keep model/runtime paths free of Cyrillic
 characters because some native DLL loaders cannot handle them reliably.
+
+`ONNX_MODEL_DIR` is a root, not the folder of a single model: recognition, VAD
+and the ONNX diarization models are downloaded into their own sub-folders
+`<root>/<org>--<name>` (for example `istupakov--gigaam-v3-onnx`), and an empty
+or partially downloaded sub-folder is completed. The old layout — one ASR
+model folder with `config.json` inside — is still read; the other models then
+come from the offline bundle or the Hugging Face cache.
 
 Small user settings stay in the system config directory so changing disks does
 not reset language, tokens, or processing preferences. Set `GIGAAM_CONFIG_DIR`

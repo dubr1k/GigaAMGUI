@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any
 
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN
 from src.core.asr.models import ASR_MODELS
+from src.core.progress import coerce_progress
 from src.services import transcript_formats, transcription_service
 from src.utils.audio_preprocessing import normalize_preprocessing_mode
 from src.utils.diarization import normalize_diarization_backend
@@ -154,26 +156,59 @@ def prepare_options(opts: TranscribeOptions, model_loader, *, hf_token: str | No
 
 
 def _adapt_progress(progress: ProgressFn | None):
-    """Колбэк для процессора: он шлёт `ProgressEvent` одним аргументом либо (stage, value) — legacy."""
+    """Колбэк для процессора: он шлёт `ProgressEvent` одним аргументом либо (stage, value) — legacy.
+
+    Клиенту уходит id стадии (в MCP — текст уведомления) и доля файла 0..1 или None.
+    """
     if progress is None:
         return None
 
     def callback(event_or_stage, value=None, **_):
-        stage = getattr(event_or_stage, "stage", None) or (event_or_stage if isinstance(event_or_stage, str) else "processing")
-        fraction = getattr(event_or_stage, "file_progress", None)
-        if fraction is None:
-            fraction = value
-        progress(stage, float(fraction) if isinstance(fraction, (int, float)) else None)
+        snapshot = coerce_progress(event_or_stage, value)
+        progress(snapshot.stage or "processing", snapshot.file_progress)
 
     return callback
 
 
-def failure_reason(result: dict[str, Any]) -> str | None:
-    """Первая строка `result["error"]` процессора или None, если причины нет."""
+# Абсолютный путь: POSIX (/srv/…, ~/…), Windows (C:\…) или UNC (\\host\…). Перед ним не
+# буква/цифра, «:» или «/» — так URL (https://…), id моделей (org/name), дроби и «и/или»
+# путями не считаются. Путь кончается на пробеле, кавычке, «:» (/x.py:12) и скобках:
+# всё, что после, остаётся в тексте (хвост имени файла с пробелом или скобкой — тоже).
+_ABSOLUTE_PATH = re.compile(r"""(?<![\w.:/\\~-])(?:[A-Za-z]:[\\/]|\\\\|~?/)[^\s'"`<>|:;,()\[\]{}]+""")
+
+
+def _path_name(path: str) -> str:
+    return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
+
+
+def _redact_match(match: re.Match) -> str:
+    path = match.group(0)
+    stripped = path.rstrip(".")  # точка в конце фразы — не часть имени
+    name = _path_name(stripped)
+    return (name or stripped) + path[len(stripped):]
+
+
+def redact_server_paths(text: str, *, known_paths=()) -> str:
+    """Текст для удалённого клиента: абсолютные пути сервера заменены именем файла.
+
+    `known_paths` (рабочая папка запроса, путь загрузки) заменяются целиком первыми —
+    они могут содержать пробелы, на которых общее правило остановилось бы.
+    """
+    for path in sorted((str(p) for p in known_paths if p), key=len, reverse=True):
+        text = text.replace(path, _path_name(path) or path)
+    return _ABSOLUTE_PATH.sub(_redact_match, text)
+
+
+def failure_reason(result: dict[str, Any], *, known_paths=()) -> str | None:
+    """Первая строка `result["error"]` процессора для клиента или None, если причины нет.
+
+    Пути сервера в ней заменены именами файлов (`redact_server_paths`): клиент REST,
+    MCP или веб-панели не должен узнавать раскладку диска сервера.
+    """
     error = result.get("error")
     if not isinstance(error, str) or not error.strip():
         return None
-    return error.strip().splitlines()[0]
+    return redact_server_paths(error.strip().splitlines()[0], known_paths=known_paths)
 
 
 def run_transcription(file_path: Path, work_dir: Path, opts: TranscribeOptions, *, model_loader, stats_manager,
@@ -204,8 +239,11 @@ def run_transcription(file_path: Path, work_dir: Path, opts: TranscribeOptions, 
             diarization_backend=opts.diarization_backend, audio_preprocessing_mode=opts.audio_preprocessing,
         )
         if not result.get("success"):
-            # Процессор кладёт понятную пользователю причину в result["error"]; без неё — общий текст
-            reason = failure_reason(result)
+            # Процессор кладёт понятную пользователю причину в result["error"]; без неё — общий текст.
+            # Полный текст (с путями) — в журнал сервера, клиенту — без путей.
+            if logger and result.get("error"):
+                logger.warning(f"[transcribe] {file_path.name} failed: {result['error']}")
+            reason = failure_reason(result, known_paths=(work_dir, file_path))
             message = f"Transcription failed: {reason}" if reason else \
                 "Transcription failed on the server. See the server log."
             raise BackendError("processing_failed", message, 500)
@@ -247,6 +285,7 @@ def render_result(result: dict[str, Any], opts: TranscribeOptions) -> dict[str, 
 
 
 def first_line(exc: BaseException) -> str:
-    """Первая строка текста исключения: yt-dlp и CLI отдают многострочный stderr с путями сервера."""
+    """Первая строка текста исключения для клиента: yt-dlp и CLI отдают многострочный
+    stderr с путями сервера — остаётся одна строка, пути в ней — именами файлов."""
     text = str(exc).strip()
-    return text.splitlines()[0] if text else exc.__class__.__name__
+    return redact_server_paths(text.splitlines()[0]) if text else exc.__class__.__name__

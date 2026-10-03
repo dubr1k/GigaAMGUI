@@ -1214,6 +1214,23 @@ async function loadLlmTools(fresh = false) {
     }
 }
 
+// Промпты по умолчанию — с сервера (src/services/llm_prompts.py), те же, что у PyQt,
+// TUI и MCP. Раньше здесь стояли свои урезанные строки, и форма отправляла их вместо
+// полных. Сервер не ответил — поля остаются пустыми, и он подставит те же промпты сам.
+async function loadLlmPrompts() {
+    try {
+        const res = await fetch(`${API}/llm/prompts`);
+        if (!res.ok) return;
+        const data = await res.json();
+        [['llm-summary-prompt', data.summary], ['llm-tasks-prompt', data.tasks]].forEach(([id, text]) => {
+            const field = document.getElementById(id);
+            if (field && !field.value && typeof text === 'string') field.value = text;
+        });
+    } catch (e) {
+        console.warn('llm prompts load failed', e);
+    }
+}
+
 function setupLlmTab() {
     const llmInput = document.getElementById('llm-file-input');
     const llmDropZone = document.getElementById('llm-drop-zone');
@@ -1239,8 +1256,7 @@ function setupLlmTab() {
     updateLlmProviderFields();
     document.getElementById('btn-llm-rescan').addEventListener('click', () => loadLlmTools(true));
     loadLlmTools();
-    document.getElementById('llm-summary-prompt').value = `Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке.`;
-    document.getElementById('llm-tasks-prompt').value = `Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде.`;
+    loadLlmPrompts();
     document.getElementById('btn-llm-clear').addEventListener('click', () => {
         selectedLlmFiles = [];
         document.getElementById('llm-manual-text').value = '';

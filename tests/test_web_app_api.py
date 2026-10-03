@@ -155,6 +155,19 @@ def test_failed_file_shows_processor_reason(web_dirs, fake_processor, monkeypatc
     assert task["message"] == "boom"
 
 
+def test_failed_file_reason_hides_server_paths(web_dirs, fake_processor, monkeypatch):
+    upload_dir, _ = web_dirs
+    monkeypatch.setattr(state, "model_loader", _FakeLoader())
+    source = upload_dir / "t4 my voice.wav"
+    source.write_bytes(b"RIFF")
+    registry.register("t4", "my voice.wav", 4, "alice")
+    fake_processor.result = {"success": False, "error": f"Ошибка: файл не найден: {source}"}
+
+    _run_processing("t4", source, "my voice.wav")
+
+    assert registry.tasks["t4"]["message"] == "Ошибка: файл не найден: t4 my voice.wav"
+
+
 def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_processor, monkeypatch):
     upload_dir, _ = web_dirs
     monkeypatch.setattr(state, "model_loader", _FakeLoader())
@@ -166,6 +179,45 @@ def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_process
     _run_processing("t2", source, "voice.wav")
 
     assert registry.tasks["t2"]["message"] == "Обработка не удалась"
+
+
+def test_progress_fields_keep_their_wire_format(web_dirs, monkeypatch):
+    """Поля прогресса задачи уходят в SSE и /api/tasks: нормализация общая
+    (coerce_progress), а значения — прежние, вплоть до ASCII «...» в подписи."""
+    from src.core.progress import ProgressEvent
+
+    upload_dir, _ = web_dirs
+    monkeypatch.setattr(state, "model_loader", _FakeLoader())
+    source = upload_dir / "t3_voice.wav"
+    source.write_bytes(b"RIFF")
+    registry.register("t3", "voice.wav", 4, "alice")
+    seen = []
+    fields = ("progress", "stage", "stage_progress", "processed_seconds", "total_seconds", "progress_indeterminate")
+
+    class _Processor:
+        def __init__(self, *_a, progress_callback=None, **_kw):
+            self.progress_callback = progress_callback
+
+        def process_file(self, *_a, **_kw):
+            seen.append({key: registry.tasks["t3"][key] for key in fields})
+            self.progress_callback(ProgressEvent("transcription", 0.5, 0.42, 10.0, 20.0))
+            seen.append({key: registry.tasks["t3"][key] for key in fields})
+            self.progress_callback("diarization", None)  # legacy-пара без доли файла
+            seen.append({key: registry.tasks["t3"][key] for key in fields})
+            return {"success": False, "error": "stop"}
+
+    monkeypatch.setattr(transcription_service, "build_processor", lambda *a, **kw: _Processor(*a, **kw))
+
+    _run_processing("t3", source, "voice.wav")
+
+    assert seen == [
+        {"progress": 5, "stage": "Подготовка...", "stage_progress": 0.0, "processed_seconds": 0.0,
+         "total_seconds": None, "progress_indeterminate": False},
+        {"progress": 42, "stage": "Распознавание речи...", "stage_progress": 0.5, "processed_seconds": 10.0,
+         "total_seconds": 20.0, "progress_indeterminate": False},
+        {"progress": 42, "stage": "Диаризация...", "stage_progress": None, "processed_seconds": None,
+         "total_seconds": None, "progress_indeterminate": True},
+    ]
 
 
 # ==================== /health ====================
@@ -371,6 +423,7 @@ def llm_env(tmp_path, monkeypatch):
     def fake_run_provider(settings, text, prompt, *, provider, strict_empty_cli, **_):
         captured["settings"] = dict(settings)
         captured["provider"] = provider
+        captured["prompt"] = prompt
         return "ответ"
 
     monkeypatch.setattr(llm_service, "run_provider", fake_run_provider)
@@ -383,6 +436,33 @@ _HOSTILE_LLM_FORM = {
     "other_path": "/bin/sh", "other_args": "-c id", "pi_provider": "anthropic",
     "llm_allow_tools": "true", "summary_enabled": "true", "manual_text": "текст встречи", "export_formats": "txt",
 }
+
+
+def test_llm_prompts_endpoint_serves_the_shared_defaults(client):
+    from src.services import llm_prompts
+
+    response = client.get("/api/llm/prompts")
+    assert response.status_code == 200
+    assert response.json() == {"summary": llm_prompts.SUMMARY_PROMPT, "tasks": llm_prompts.TASKS_PROMPT}
+    # и значения полей формы по умолчанию — те же объекты, не копия
+    assert llm_routes.SUMMARY_PROMPT is llm_prompts.SUMMARY_PROMPT
+    assert llm_routes.TASKS_PROMPT is llm_prompts.TASKS_PROMPT
+
+
+def test_llm_prompts_endpoint_requires_login(anon_client):
+    assert anon_client.get("/api/llm/prompts").status_code == 401
+
+
+def test_llm_process_falls_back_to_the_shared_prompt(client, llm_env):
+    """Пустое поле формы — промпт по умолчанию из llm_prompts, как у PyQt и MCP."""
+    from src.services import llm_prompts
+
+    response = client.post("/api/llm/process", data={
+        "provider": "API", "summary_enabled": "true", "summary_prompt": "  ",
+        "manual_text": "текст встречи", "export_formats": "txt",
+    })
+    assert response.status_code == 200, response.text
+    assert llm_env["prompt"] == llm_prompts.SUMMARY_PROMPT
 
 
 def test_llm_process_ignores_client_cli_paths_args_and_tools(client, llm_env):

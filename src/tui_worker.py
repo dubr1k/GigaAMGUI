@@ -302,9 +302,10 @@ class TuiWorker:
             self.emit("error", message="Nothing is being processed")
             return
         self._cancel_requested.set()
-        # The shared processor has no safe mid-file cancellation mechanism.  This
-        # matches the GUI: finish the current file, then stop the remaining queue.
-        self.emit("cancelling", message="Остановка запрошена: закончим текущий файл и остановимся.")
+        # Процессор проверяет флаг между стадиями, на строках прогресса ffmpeg и
+        # перед каждым окном ASR: текущий файл прерывается, его результаты не
+        # сохраняются, остальная очередь не начинается.
+        self.emit("cancelling", message="Остановка запрошена: прерываем текущий файл, его результаты не сохранятся.")
 
     def _run_batch(
         self,
@@ -329,7 +330,7 @@ class TuiWorker:
             # when a batch actually starts.
             from src.config import STATS_FILE
             from src.core.model_loader import ModelLoader
-            from src.core.progress import ProgressEvent
+            from src.core.progress import coerce_progress
             from src.services.transcription_service import build_processor
             from src.utils.processing_stats import ProcessingStats
 
@@ -348,20 +349,9 @@ class TuiWorker:
             current: dict[str, Any] = {"index": 0, "file": files[0]}
 
             def progress(event_or_stage, value=None):
-                if isinstance(event_or_stage, ProgressEvent):
-                    event = event_or_stage
-                    payload = {
-                        "stage": event.stage,
-                        "stage_progress": event.stage_progress,
-                        "file_progress": event.file_progress,
-                        "processed_seconds": event.processed_seconds,
-                        "total_seconds": event.total_seconds,
-                        "message": event.message,
-                    }
-                elif isinstance(event_or_stage, dict):
-                    payload = dict(event_or_stage)
-                else:
-                    payload = {"stage": str(event_or_stage), "file_progress": float(value or 0.0)}
+                # Поля события в прежнем порядке: stage, stage_progress, file_progress,
+                # processed_seconds, total_seconds, message (их разбирают TUI и Liquid).
+                payload = coerce_progress(event_or_stage, value).as_dict()
                 self.emit("progress", file=current["file"], file_index=current["index"], total_files=len(files), **payload)
 
             processor = build_processor(loader, stats, logger=self._log, progress_callback=progress)
@@ -387,10 +377,16 @@ class TuiWorker:
                             max_line_count=subtitle_max_lines,
                             max_line_width=subtitle_max_width,
                         ),
+                        cancel_check=self._cancel_requested.is_set,
                     )
                 except Exception as exc:
                     self._log(f"Не удалось обработать {os.path.basename(filepath)}: {exc}")
                     result = {"file_path": filepath, "success": False, "error": str(exc), "saved_files": []}
+                if result.get("cancelled"):
+                    # Прерванный отменой файл — остановка, а не сбой: без file_completed
+                    # с «ошибкой» и без записи в results. Клиенты видят его как начатый,
+                    # но не завершённый (TUI: «Прервано»), `completed` несёт cancelled.
+                    break
                 results.append(result)
                 if result.get("success") and result.get("media_duration", 0) > 0:
                     stats.add_processing_record(

@@ -23,7 +23,7 @@ from src import __version__
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, SUPPORTED_FORMATS
 from src.services import cli_tools, file_policy, llm_service, llm_settings
 from src.services import health as health_service
-from src.services.llm_worker_service import PROMPTS
+from src.services.llm_prompts import PROMPTS
 
 # Ядро транскрибации — transcription_api; имена остаются доступны отсюда
 # (mcp_server.py, тесты и внешний код импортируют их из mcp_backend).
