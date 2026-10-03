@@ -3,18 +3,10 @@
 Строгий профессиональный дизайн без ярких цветов
 """
 
-import json
 import os
 import sys
-import time
-from pathlib import Path
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - non-POSIX fallback
-    fcntl = None
-
-from PyQt6.QtCore import QEvent, QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QFontDatabase,
     QIcon,
@@ -24,10 +16,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
 )
 
-from ..config import (
-    STATS_FILE,
-    user_config_dir,
-)
+from ..config import STATS_FILE
 from ..core import ModelLoader
 from ..utils import (
     AppLogger,
@@ -36,6 +25,7 @@ from ..utils import (
     TimeFormatter,
     UserSettings,
 )
+from .application import GigaApplication
 from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from .download_mixin import DownloadMixin
 from .files_mixin import FilesMixin
@@ -48,13 +38,17 @@ from .llm_ui_mixin import LlmUiMixin
 from .processing_mixin import ProcessingMixin
 from .processing_options_ui_mixin import ProcessingOptionsUiMixin
 from .settings_mixin import SettingsMixin
+from .single_instance import (
+    argv_open_paths,
+    install_open_request_poller,
+    qt_argv,
+    queue_open_request,
+    try_acquire_instance_lock,
+)
 from .style_mixin import StyleMixin
 from .support_surfaces_mixin import SupportSurfacesMixin
 from .theme_mixin import ThemeMixin
 from .ui_build_mixin import UiBuildMixin
-
-_INSTANCE_LOCK_NAME = "instance.lock"
-_OPEN_REQUESTS_NAME = "open_requests.jsonl"
 
 
 class WorkerSignals(QObject):
@@ -78,41 +72,6 @@ class WorkerSignals(QObject):
     live_stop_failed = pyqtSignal(str)
     live_backend_prepared = pyqtSignal(object, object)  # запрос старта, текст ошибки или None
     live_answer = pyqtSignal(str, str)
-
-
-class GigaApplication(QApplication):
-    """QApplication with macOS Finder/Dock open-file event support."""
-
-    file_open_requested = pyqtSignal(list)
-
-    def __init__(self, argv):
-        super().__init__(argv)
-        self._pending_open_paths = []
-
-    def event(self, event):
-        if event.type() == QEvent.Type.FileOpen:
-            path = ""
-            try:
-                url = event.url()
-                if url.isLocalFile():
-                    path = url.toLocalFile()
-            except Exception:
-                path = ""
-            if not path:
-                try:
-                    path = event.file()
-                except Exception:
-                    path = ""
-            if path:
-                self._pending_open_paths.append(path)
-                self.file_open_requested.emit([path])
-            return True
-        return super().event(event)
-
-    def take_pending_open_paths(self):
-        paths = self._pending_open_paths[:]
-        self._pending_open_paths.clear()
-        return paths
 
 
 class GigaTranscriberQtApp(
@@ -421,80 +380,6 @@ class GigaTranscriberQtApp(
         return bool(app) and app.platformName() in ("offscreen", "minimal")
 
 
-def _argv_open_paths(argv: list) -> list:
-    paths = []
-    for arg in argv[1:]:
-        if arg.startswith("-psn_"):
-            continue
-        path = os.path.abspath(os.path.expanduser(arg))
-        if os.path.exists(path):
-            paths.append(path)
-    return paths
-
-
-def _instance_lock_path() -> Path:
-    return user_config_dir() / _INSTANCE_LOCK_NAME
-
-
-def _open_requests_path() -> Path:
-    return user_config_dir() / _OPEN_REQUESTS_NAME
-
-
-def _try_acquire_instance_lock():
-    lock_path = _instance_lock_path()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_file = lock_path.open("w", encoding="utf-8")
-    if fcntl is None:
-        return lock_file
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock_file.close()
-        return None
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
-    return lock_file
-
-
-def _queue_open_request(paths: list) -> None:
-    queue_path = _open_requests_path()
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"paths": paths, "pid": os.getpid(), "time": time.time()}
-    with queue_path.open("a", encoding="utf-8") as queue:
-        queue.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def _install_open_request_poller(window: GigaTranscriberQtApp):
-    queue_path = _open_requests_path()
-    timer = QTimer(window)
-
-    def poll_requests():
-        if not queue_path.exists():
-            return
-        try:
-            lines = queue_path.read_text(encoding="utf-8").splitlines()
-            queue_path.write_text("", encoding="utf-8")
-        except OSError as exc:
-            window.log(f"Не удалось прочитать очередь open requests: {exc}")
-            return
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            paths = payload.get("paths") or []
-            if isinstance(paths, list):
-                window.open_paths_from_system(paths, append=True)
-
-    timer.timeout.connect(poll_requests)
-    timer.start(500)
-    window._open_request_poller = timer
-    QTimer.singleShot(0, poll_requests)
-    return timer
-
-
 def run_qt_app(app=None):
     """Запускает приложение на PyQt6.
 
@@ -507,13 +392,13 @@ def run_qt_app(app=None):
         except Exception:
             pass
 
-    app = app or QApplication.instance() or GigaApplication(sys.argv)
+    app = app or QApplication.instance() or GigaApplication(qt_argv(sys.argv))
     app.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
 
-    initial_open_paths = _argv_open_paths(sys.argv)
-    instance_lock = getattr(app, "_gigaam_instance_lock_file", None) or _try_acquire_instance_lock()
+    initial_open_paths = argv_open_paths(sys.argv)
+    instance_lock = getattr(app, "_gigaam_instance_lock_file", None) or try_acquire_instance_lock()
     if instance_lock is None:
-        _queue_open_request(initial_open_paths)
+        queue_open_request(initial_open_paths)
         sys.exit(0)
 
     # На macOS иконку приложения задаёт .app bundle через icon.icns. Если
@@ -529,7 +414,7 @@ def run_qt_app(app=None):
 
     window = GigaTranscriberQtApp()
     window._instance_lock_file = instance_lock
-    _install_open_request_poller(window)
+    install_open_request_poller(window)
     install_exception_hook(window)
     if isinstance(app, GigaApplication):
         app.file_open_requested.connect(lambda paths: window.open_paths_from_system(paths, append=True))
