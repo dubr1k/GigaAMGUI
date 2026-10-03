@@ -211,6 +211,8 @@ jobs:
           tests/test_cli_backend.py
           tests/test_tui_worker.py
           tests/test_web_app_persistence.py
+          tests/test_web_app_api.py
+          tests/test_web_frontend.py
           tests/test_data_paths.py
           tests/test_portable_data_interfaces.py
           tests/test_gui_data_directory.py
