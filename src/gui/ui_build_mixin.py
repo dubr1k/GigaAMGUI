@@ -574,8 +574,9 @@ class UiBuildMixin:
             )
         )
 
+    _PROGRESS_FONT_PT = "gigaam_progress_font_pt"
+
     def _make_progress_bar(self, height: int, font_pt: int) -> QProgressBar:
-        c = self._colors()
         bar = QProgressBar()
         scaled_height = self._px(height)
         # На macOS шкала скругляется в «пилюлю», только когда border-radius РОВНО
@@ -586,7 +587,22 @@ class UiBuildMixin:
         bar.setFixedHeight(scaled_height)
         bar.setTextVisible(True)
         bar.setRange(0, 100)
-        radius = scaled_height // 2
+        # По этому свойству _apply_theme находит шкалы и перекрашивает их тем же стилем.
+        bar.setProperty(self._PROGRESS_FONT_PT, font_pt)
+        self._style_progress_bar(bar)
+        return bar
+
+    def _style_progress_bar(self, bar: QProgressBar) -> None:
+        """Единственный стиль шкал: «пилюля» и вертикальный градиент.
+
+        Раньше _apply_theme перезаписывал стиль шкал своим — с радиусом _px(11)
+        вместо половины высоты (прямоугольник на macOS при масштабе ≠ 1) и
+        горизонтальным градиентом, который «плывёт» по мере заполнения; шкалу
+        LLM он не трогал вовсе, и та оставалась в цветах прежней темы.
+        """
+        c = self._colors()
+        radius = bar.height() // 2
+        font_pt = bar.property(self._PROGRESS_FONT_PT) or 10
         r, r2 = c["progress_chunk"], c["progress_chunk2"]
         bar.setStyleSheet(
             f"QProgressBar {{ border: none; border-radius: {radius}px;"
@@ -598,7 +614,6 @@ class UiBuildMixin:
             f"  background-color: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
             f"  stop:0 {r}, stop:1 {r2}); }}"
         )
-        return bar
 
     def _create_progress_section(self, parent_layout):
         c = self._colors()

@@ -10,6 +10,7 @@ Mixin: метод _apply_theme работает со `self` главного о�
 from __future__ import annotations
 
 from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtWidgets import QProgressBar
 
 
 class ThemeMixin:
@@ -30,7 +31,6 @@ class ThemeMixin:
         r = c["progress_chunk"]
         r2 = c["progress_chunk2"]
         rad_f = self._px(11)
-        rad_s = self._px(8)
         # Six tabs must fit the 940 pt minimum window: size them by the
         # longest label, not by the 1.6-era "Журнал обработки".
         tab_min_width = self._tab_min_width(("Обработка", "Настройки", "Processing"))
@@ -454,26 +454,12 @@ class ThemeMixin:
             }}
         """)
         self._style_drop_hint()
+        if hasattr(self, "_btn_theme"):
+            self._btn_theme.setText(c["theme_btn"])
 
-        # Обновляем динамические стили прогресс-баров файла (тонкий)
-        if hasattr(self, 'progress_bar_file'):
-            self.progress_bar_file.setStyleSheet(
-                f"QProgressBar {{ border: none; border-radius: {rad_s}px;"
-                f"  background-color: {c['progress_bg']}; text-align: center;"
-                f"  color: {c['text']}; font-size: {self._pt_css(8)}pt; font-weight: 600; }}"
-                f"QProgressBar::chunk {{ border-radius: {rad_s}px;"
-                f"  background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-                f"  stop:0 {r}, stop:1 {r2}); }}"
-            )
-        if hasattr(self, 'progress_bar_total'):
-            self.progress_bar_total.setStyleSheet(
-                f"QProgressBar {{ border: none; border-radius: {rad_f}px;"
-                f"  background-color: {c['progress_bg']}; text-align: center;"
-                f"  color: {c['text']}; font-size: {self._pt_css(10)}pt; font-weight: 600; }}"
-                f"QProgressBar::chunk {{ border-radius: {rad_f}px;"
-                f"  background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-                f"  stop:0 {r}, stop:1 {r2}); }}"
-            )
+        for bar in self.findChildren(QProgressBar):
+            if bar.property(self._PROGRESS_FONT_PT) is not None:
+                self._style_progress_bar(bar)
         if hasattr(self, 'progress_upload'):
             self.progress_upload.setStyleSheet(
                 f"QProgressBar {{ border: none; background-color: {c['progress_bg']};"
@@ -497,3 +483,9 @@ class ThemeMixin:
             )
         if hasattr(self, 'lbl_current_file'):
             self.lbl_current_file.setStyleSheet(self._transparent_label_style(c["text_mute2"], font_pt=9))
+        if hasattr(self, 'lbl_overall'):
+            # Стиль задаётся при построении: без этого после смены темы подпись
+            # оставалась цветом прежней (светлое на светлом).
+            self.lbl_overall.setStyleSheet(
+                self._transparent_label_style(c["text_sub"], font_pt=11, font_weight="bold")
+            )

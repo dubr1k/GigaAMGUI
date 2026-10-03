@@ -600,7 +600,6 @@ class SupportSurfacesMixin:
             self._theme = theme
             self.user_settings.set_value("theme", theme)
             self._apply_theme()
-            self._btn_theme.setText(self._colors()["theme_btn"])
 
     def _can_change_processing_settings(self) -> bool:
         if not self.is_processing:
