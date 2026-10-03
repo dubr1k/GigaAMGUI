@@ -134,7 +134,10 @@ class LlmToolsMixin:
                 statuses = cli_tools.scan(overrides, fresh=fresh)
             except Exception as exc:  # noqa: BLE001 — статус-строка, не падение UI
                 statuses = exc
-            signals.llm_tools_scanned.emit(statuses)
+            try:
+                signals.llm_tools_scanned.emit(statuses)
+            except RuntimeError:
+                pass  # окно закрыли, пока шёл скан (--version у каждого CLI)
 
         threading.Thread(target=work, name="llm-tools-scan", daemon=True).start()
 
@@ -161,7 +164,11 @@ class LlmToolsMixin:
         signals = self.signals
 
         def work():
-            signals.llm_tool_checked.emit(cli_tools.resolve_tool(spec, override))
+            status = cli_tools.resolve_tool(spec, override)
+            try:
+                signals.llm_tool_checked.emit(status)
+            except RuntimeError:
+                pass  # окно закрыли, пока шла проверка
 
         threading.Thread(target=work, name="llm-tool-check", daemon=True).start()
 
