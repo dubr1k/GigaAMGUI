@@ -80,6 +80,18 @@ partials, not one final, nothing journaled, and at stop the entire session
 went to the model as a single window — the backends have no long-form split,
 so that ran out of memory or took minutes, and a failure lost the transcript.
 """
+IDLE_FINAL_SECONDS = 5.0
+"""Wall time without any audio after which an open run is finalized.
+
+A run ends after 3 s of *audio* below the gate, but a WASAPI loopback goes
+quiet by sending nothing: the silence that would end the run never arrives,
+and the last phrase before a pause stayed a draft until the next sound."""
+OFFSET_JUMP_SAMPLES = 1_600
+"""A forward jump in a source's offsets larger than this (0.1 s) ends its run.
+
+The timeline jumps over time a source spent silent without delivering; the
+run before the jump is over, and joining audio across it would decode the
+two sides as one window with offsets that no longer match the audio."""
 CUT_SEARCH_SECONDS = 5
 """How far back from the limit a forced cut looks for the quietest frame.
 
@@ -157,12 +169,14 @@ class LiveAsrScheduler:
         partial_context_seconds: float = 12.0,
         partial_minimum_seconds: float = 1.5,
         final_silence_seconds: float = 3.0,
+        idle_final_seconds: float = IDLE_FINAL_SECONDS,
         on_partial: Callable[[TranscriptEvent], None] | None = None,
         on_final: Callable[[TranscriptEvent], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
     ) -> None:
         if min(
             partial_delay_seconds, partial_context_seconds, partial_minimum_seconds, final_silence_seconds,
+            idle_final_seconds,
         ) <= 0:
             raise ValueError("live ASR timing values must be positive")
         if partial_minimum_seconds > partial_context_seconds:
@@ -172,6 +186,9 @@ class LiveAsrScheduler:
         self._partial_context_seconds = partial_context_seconds
         self._partial_minimum_seconds = partial_minimum_seconds
         self._final_silence_seconds = final_silence_seconds
+        self._idle_final_seconds = idle_final_seconds
+        self._next_offsets: dict[CaptureSource, int] = {}
+        self._last_audio_at: dict[CaptureSource, float] = {}
         self._on_partial = on_partial
         self._on_final = on_final
         self._on_error = on_error
@@ -202,6 +219,14 @@ class LiveAsrScheduler:
         with self._condition:
             if self._closed:
                 raise RuntimeError("scheduler is closed")
+            expected = self._next_offsets.get(chunk.source)
+            if expected is not None and chunk.sample_offset - expected > OFFSET_JUMP_SAMPLES:
+                jumped = self._runs.get(chunk.source)
+                if jumped is not None:
+                    self._queue_final(chunk.source, jumped, paragraph_break_after=True)
+                self._pre_roll.pop(chunk.source, None)
+            self._next_offsets[chunk.source] = chunk.sample_offset + len(audio)
+            self._last_audio_at[chunk.source] = time.monotonic()
             run = self._runs.get(chunk.source)
             if voiced:
                 if run is None:
@@ -213,6 +238,9 @@ class LiveAsrScheduler:
                         voiced_parts=[0] if len(pre_roll) else [],
                     )
                     self._runs[chunk.source] = run
+                    # The worker sleeps without a timeout while no run is
+                    # open; it must start timing this one.
+                    self._condition.notify()
                 run.audio.append(audio.copy())
                 run.voiced_parts.append(voiced)
                 run.end = chunk.sample_offset + len(audio)
@@ -302,6 +330,12 @@ class LiveAsrScheduler:
         if self._runs.get(source) is run:
             del self._runs[source]
         self._condition.notify()
+
+    def _finalize_idle_runs(self) -> None:
+        now = time.monotonic()
+        for source, run in list(self._runs.items()):
+            if now - self._last_audio_at.get(source, now) >= self._idle_final_seconds:
+                self._queue_final(source, run, paragraph_break_after=True)
 
     def _cut_run(self, source: CaptureSource, run: _SpeechRun) -> _SpeechRun:
         """Finalize a run that reached the length limit; the rest starts a new run.
@@ -401,7 +435,14 @@ class LiveAsrScheduler:
         while True:
             with self._condition:
                 while not self._final_jobs and self._partial_job is None and not self._closed:
-                    self._condition.wait()
+                    self._finalize_idle_runs()
+                    if self._final_jobs:
+                        break
+                    # Open runs need the clock to end them; with none open
+                    # there is nothing to time and the worker just sleeps.
+                    self._condition.wait(
+                        timeout=min(0.5, max(0.05, self._idle_final_seconds / 4)) if self._runs else None
+                    )
                 if self._final_jobs:
                     job = self._final_jobs.popleft()
                 elif self._partial_job is not None:

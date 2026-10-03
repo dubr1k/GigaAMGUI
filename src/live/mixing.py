@@ -7,12 +7,10 @@ from dataclasses import replace
 from time import monotonic
 
 from .reporting import ReportOnce
-from .timeline import AlignedMixer
+from .timeline import AlignedMixer, SessionTimebase
 from .types import CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
 
 MAX_MIX_SKEW_NS = 1_000_000_000
-MAX_SOURCE_START_DELAY_NS = 5_000_000_000
-"""Largest start delay between sources that is taken from their clocks."""
 MAX_PENDING_MIX_CHUNKS = 100
 # How long a source that has already produced audio may stay quiet before the
 # mixer stops waiting for it, and how long to wait for a source that has never
@@ -40,6 +38,7 @@ class MixCoordinator:
         log: Callable[[str], None],
         translate: Callable[[str, str], str],
         clock: Callable[[], float] = monotonic,
+        timebase: SessionTimebase | None = None,
     ) -> None:
         self.enabled = enabled
         self.inputs: dict[CaptureSource, list[PcmChunk]] = {}
@@ -49,12 +48,10 @@ class MixCoordinator:
         self._log = log
         self._translate = translate
         self._clock = clock
-        self._offset_origins: dict[CaptureSource, int] = {}
-        self._source_origins_ns: dict[CaptureSource, int] = {}
+        self._timebase = timebase or SessionTimebase(clock)
         self._last_input_at: dict[CaptureSource, float] = {}
         self._reported_stalls = ReportOnce()
         self._started_at = float("inf")
-        self._session_origin_ns: int | None = None
         self._mixer = AlignedMixer(max_skew_seconds=MAX_MIX_SKEW_NS / 1_000_000_000)
 
     def start(self) -> None:
@@ -103,30 +100,13 @@ class MixCoordinator:
         even zero-mean jitter inflated the track (issue #50).
 
         Sample offsets come from ``SourceTimeline``, which has already filled
-        gaps and trimmed overlaps, so they advance exactly with the audio. The
-        one thing wall clock is still needed for — where each source starts —
-        stays where it was: both sources are rebased onto the session origin at
-        their first chunk.
+        gaps, trimmed overlaps and stepped over the time a source was silent
+        without delivering anything, so they advance with the audio. Where
+        each source starts on the session timeline is the timebase's call;
+        recognition places its chunks with the same timebase.
         """
-        if self._session_origin_ns is None:
-            self._session_origin_ns = chunk.timestamp_ns
-        if chunk.source not in self._offset_origins:
-            # Read the clock once per source, at its first chunk. Rebasing every
-            # source onto the session origin instead erased the start delay of
-            # a later source (SCStream starts ~0.5 s after the microphone), and
-            # the system track played that much early in mix.flac.
-            # Devices can also run on unrelated clocks (WASAPI endpoints have
-            # their own epochs); a delay outside a plausible start-up window
-            # says nothing about when the source started, so it starts at the
-            # session origin as before.
-            self._offset_origins[chunk.source] = chunk.sample_offset
-            delay_ns = chunk.timestamp_ns - self._session_origin_ns
-            self._source_origins_ns[chunk.source] = self._session_origin_ns + (
-                delay_ns if 0 < delay_ns <= MAX_SOURCE_START_DELAY_NS else 0
-            )
-        origin_offset = self._offset_origins[chunk.source]
-        elapsed_ns = round((chunk.sample_offset - origin_offset) * 1_000_000_000 / chunk.sample_rate)
-        return replace(chunk, timestamp_ns=self._source_origins_ns[chunk.source] + elapsed_ns)
+        position_ns = self._timebase.position_ns(chunk)
+        return replace(chunk, timestamp_ns=(self._timebase.origin_ns or 0) + position_ns)
 
     def _participants(self, active_sources: Collection[CaptureSource]) -> set[CaptureSource]:
         """Sources the mixer should still wait for before writing a block.

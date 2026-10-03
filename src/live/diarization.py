@@ -114,6 +114,7 @@ class SpeakerLabeler:
         events_for: Callable[[CaptureSource], list[TranscriptEvent]],
         publish: Callable[[TranscriptEvent], None],
         work_dir: Path,
+        to_recording_seconds: Callable[[CaptureSource, int], float] | None = None,
     ) -> None:
         diarizer = None
         for source, path in recordings.items():
@@ -129,7 +130,8 @@ class SpeakerLabeler:
                     joined = join_segments(parts, work_dir / f".{source.value}-diarize.flac")
                 segments = diarizer.diarize(str(joined or parts[0]))
                 events = events_for(source)
-                for revised in self.revised(events, self.segment_speakers(events, segments)):
+                speakers = self.segment_speakers(events, segments, to_recording_seconds)
+                for revised in self.revised(events, speakers):
                     publish(revised)
             except Exception as exc:
                 self._notify(CaptureEvent(
@@ -143,11 +145,26 @@ class SpeakerLabeler:
                 if joined is not None:
                     joined.unlink(missing_ok=True)
 
-    def segment_speakers(self, events, segments) -> dict[str, str]:
+    def segment_speakers(
+        self,
+        events,
+        segments,
+        to_recording_seconds: Callable[[CaptureSource, int], float] | None = None,
+    ) -> dict[str, str]:
+        """Speaker of each event: the segment that overlaps it most.
+
+        Segment times are in the recording; `to_recording_seconds` maps an
+        event's session-timeline samples there (start delay, silent gaps).
+        """
+        def seconds(source: CaptureSource, sample: int) -> float:
+            if to_recording_seconds is None:
+                return sample / self._asr_sample_rate
+            return to_recording_seconds(source, sample)
+
         speakers = {}
         for event in events:
-            start = event.sample_start / self._asr_sample_rate
-            end = event.sample_end / self._asr_sample_rate
+            start = seconds(event.source, event.sample_start)
+            end = seconds(event.source, event.sample_end)
             # Only segments that actually overlap: with all overlaps at zero,
             # max() fell back to comparing labels and named a speaker who was
             # not talking.

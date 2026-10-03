@@ -19,7 +19,7 @@ from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .mixing import MAX_MIX_SKEW_NS, MAX_PENDING_MIX_CHUNKS, MixCoordinator
 from .recorder import SessionRecorder
 from .recording_policy import MAX_RECORDING_FAILURES, RecordingGuard
-from .timeline import AsrFeed, SourceTimeline
+from .timeline import AsrFeed, SessionTimebase, SourceTimeline
 from .transcript import TranscriptState
 from .types import (
     CaptureEvent,
@@ -99,8 +99,11 @@ class LiveSession:
         diarization_factory: Callable[[str], object] | None = None,
         translate: Callable[[str, str], str] | None = None,
         log: Callable[[str], None] | None = None,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         self._settings = settings
+        self._clock = clock
+        self._timebase = SessionTimebase(clock)
         self._adapters = dict(adapters)
         self._scheduler_factory = scheduler_factory
         self._export_selection = replace(
@@ -139,6 +142,8 @@ class LiveSession:
             notify=self._notify,
             log=self.log,
             translate=self._translate,
+            clock=clock,
+            timebase=self._timebase,
         )
         self._schedulers: dict[CaptureSource, AsrScheduler] = {}
         self._subscribers: list[Callable[[TranscriptEvent | CaptureEvent | LiveStatus], None]] = []
@@ -225,6 +230,9 @@ class LiveSession:
                 raise RuntimeError("only a paused session can be resumed")
             for source in self._active_sources:
                 self._adapters[source].resume()
+            # Paused time is not silence: no source should jump over it.
+            for timeline in self._timelines.values():
+                timeline.resync()
             self._state = CaptureState.RECORDING
             self._notify_status()
 
@@ -274,6 +282,7 @@ class LiveSession:
                         recordings,
                         recording_files,
                         events_for=self._transcript.events_of,
+                        to_recording_seconds=self._recording_seconds,
                         publish=self._publish_revision,
                         work_dir=self._session_dir,
                     ))
@@ -393,14 +402,32 @@ class LiveSession:
                 self._recording.write(aligned)
                 self._mix.add(aligned, self._active_sources)
                 feed = self._asr_feeds.setdefault(aligned.source, AsrFeed(self._settings.asr_sample_rate))
-                derived = feed.derive(aligned)
+                # Recognition shares the mix's timeline: offsets of every source
+                # count from the session start, so exports sort across sources.
+                position = round(self._timebase.position_ns(aligned) * self._settings.asr_sample_rate / 1_000_000_000)
+                derived = feed.derive(aligned, position)
                 if derived is not None:
                     self._schedulers[aligned.source].submit(derived)
             self._write_checkpoint_if_due()
 
+    def _recording_seconds(self, source: CaptureSource, asr_sample: int) -> float:
+        """Session-timeline position (model rate) → time in the source's recording.
+
+        The recording holds only delivered audio, without the source's start
+        delay or the stretches it was silent without delivering anything.
+        """
+        timeline = self._timelines.get(source)
+        if timeline is None:
+            return asr_sample / self._settings.asr_sample_rate
+        position_ns = asr_sample * 1_000_000_000 / self._settings.asr_sample_rate
+        offset = self._timebase.offset_at(source, position_ns, timeline.sample_rate)
+        if offset is None:
+            return asr_sample / self._settings.asr_sample_rate
+        return timeline.recording_frame(offset) / timeline.sample_rate
+
     def _write_checkpoint_if_due(self) -> None:
         """Checkpointing every chunk meant ~50 disk writes/s per source."""
-        now = monotonic()
+        now = self._clock()
         if now - self._last_checkpoint_at < CHECKPOINT_INTERVAL_SECONDS:
             return
         self._last_checkpoint_at = now

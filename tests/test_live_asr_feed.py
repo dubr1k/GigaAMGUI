@@ -74,7 +74,7 @@ def test_speech_on_the_second_channel_reaches_recognition(tmp_path):
 def test_derived_chunk_is_mono_at_the_model_rate_on_the_same_position():
     aligned = PcmChunk(CaptureSource.SYSTEM, 48_000, 2, 96_000, np.full((4_800, 2), 0.5, np.float32), 7)
 
-    derived = AsrFeed(16_000).derive(aligned)
+    derived = AsrFeed(16_000).derive(aligned, 32_000)
 
     assert (derived.source, derived.sample_rate, derived.channels) == (CaptureSource.SYSTEM, 16_000, 1)
     assert derived.sample_offset == 32_000
