@@ -81,8 +81,8 @@ def test_liquid_release_bundle_contains_configured_icon():
 
 
 def test_pyqt_about_displays_release_version():
-    source = Path("src/gui/ui_build_mixin.py").read_text(encoding="utf-8")
-    about = source.split("def _show_about", 1)[1].split("def _make_progress_bar", 1)[0]
+    source = Path("src/gui/menu_mixin.py").read_text(encoding="utf-8")
+    about = source.split("def _show_about", 1)[1].split("\n    def ", 1)[0]
     assert "APP_VERSION" in about
     assert "Версия {APP_VERSION}" in about
     assert "Version {APP_VERSION}" in about

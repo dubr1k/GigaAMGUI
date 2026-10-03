@@ -26,7 +26,6 @@ from ..utils import (
     UserSettings,
 )
 from .application import GigaApplication
-from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from .download_mixin import DownloadMixin
 from .files_mixin import FilesMixin
 from .i18n_mixin import I18nMixin
@@ -36,6 +35,7 @@ from .live_mixin import LiveMixin
 from .live_ui_mixin import LiveUiMixin
 from .llm_mixin import LlmMixin
 from .llm_ui_mixin import LlmUiMixin
+from .menu_mixin import MenuActionsMixin
 from .processing_mixin import ProcessingMixin
 from .processing_options_ui_mixin import ProcessingOptionsUiMixin
 from .result_view_mixin import ResultViewMixin
@@ -81,7 +81,7 @@ class WorkerSignals(QObject):
 class GigaTranscriberQtApp(
     LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, ResultViewMixin, FilesMixin,
     I18nMixin, SettingsMixin, JournalMixin, SupportSurfacesMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
-    LiveMixin, LiveUiMixin, LifecycleMixin,
+    LiveMixin, LiveUiMixin, LifecycleMixin, MenuActionsMixin,
     UiBuildMixin, QMainWindow,
 ):
     """Главное окно приложения для транскрибации на PyQt6"""
@@ -211,76 +211,6 @@ class GigaTranscriberQtApp(
             self._update_llm_output_dir_label(self.llm_output_dir)
 
         self.app_logger.cleanup_old_logs()
-
-    def _select_asr_model(self):
-        if self._refuse_model_change_while_busy(self._t("Смена модели", "Model change")):
-            return
-        from PyQt6.QtWidgets import QInputDialog
-
-        from ..core.asr.models import ASR_MODELS
-
-        ids = list(ASR_MODELS)
-        labels = [f"{ASR_MODELS[key]} [{key}]" for key in ids]
-        current = ids.index(self.model_loader.requested_model) if self.model_loader.requested_model in ids else 0
-        selected, accepted = QInputDialog.getItem(self, self._t("Модель распознавания", "Recognition model"), self._t("Модель:", "Model:"), labels, current, False)
-        if accepted:
-            model = ids[labels.index(selected)]
-            self.model_loader.configure_model(model)
-            self.user_settings.set_value("asr_model", model)
-            self.log(f"ASR model selected: {model}")
-
-    def _select_asr_backend(self):
-        if self._refuse_model_change_while_busy(self._t("Смена backend", "Backend change")):
-            return
-
-        selected = ASRBackendDialog.pick_configuration(
-            self,
-            current_backend=self.model_loader.requested_backend,
-            current_provider=self.model_loader.requested_provider,
-            mlx_supported=is_mlx_supported(),
-        )
-
-        if not selected:
-            return
-
-        backend, provider = selected
-        if (
-            backend == self.model_loader.requested_backend
-            and provider == self.model_loader.requested_provider
-        ):
-            return
-        self.model_loader.configure_backend(backend)
-        self.model_loader.configure_onnx_runtime(provider=provider)
-        self.user_settings.set_value("asr_backend", backend)
-        self.user_settings.set_value("onnx_provider", provider)
-        self.log(
-            f"Выбран ASR backend: {backend}, ONNX provider: {provider}"
-            if self._lang == "ru"
-            else f"ASR backend selected: {backend}, ONNX provider: {provider}"
-        )
-
-    def _change_device(self):
-        """Смена вычислительного устройства (CPU / GPU / GPU 50xx) из меню."""
-        from .device_dialog import change_device_interactive
-
-        # Смена устройства выгружает модель и подменяет torch-runtime —
-        # из-под идущей Live-записи тоже, не только из-под пакетной обработки.
-        if self._refuse_model_change_while_busy(self._t("Устройство", "Device")):
-            return
-
-        chosen = change_device_interactive(self)
-        if chosen:
-            label = chosen
-            try:
-                from ..utils import runtime_manager as rm
-                label = rm.VARIANTS.get(chosen, {}).get("label", chosen)
-            except Exception:
-                pass
-            self.log(
-                f"Активировано устройство: {label}"
-                if self._lang == "ru" else
-                f"Active device: {label}"
-            )
 
     # ──────────────────────────────────────────────────────────────
     # UI

@@ -368,7 +368,7 @@ def test_speakers_spinbox_auto_value():
 def test_desktop_gui_selects_and_persists_onnx_coreml(monkeypatch):
     window = _new_window()
     monkeypatch.setattr(
-        "src.gui.app_qt.ASRBackendDialog.pick_configuration",
+        "src.gui.menu_mixin.ASRBackendDialog.pick_configuration",
         lambda *args, **kwargs: ("onnx", "coreml"),
     )
 
