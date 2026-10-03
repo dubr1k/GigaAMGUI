@@ -224,3 +224,13 @@ def test_exception_hook_logs_slot_errors_instead_of_aborting(window, monkeypatch
     assert "broken slot" in window.log_text.toPlainText()
     assert "Внутренняя ошибка" in window.statusBar().currentMessage()
 
+
+def test_live_estimate_diarization_is_shown_as_unavailable(window):
+    combo = window.combo_live_diarization
+    item = combo.model().item(combo.findData("live_estimate"))
+    assert item.isEnabled() is False
+
+    window._live_settings = {"diarization_mode": "live_estimate"}
+    window._restore_live_settings()
+
+    assert combo.currentData() == "off"

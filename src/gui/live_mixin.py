@@ -84,7 +84,10 @@ class LiveMixin:
     @staticmethod
     def _set_live_combo_value(combo, value) -> None:
         index = combo.findData(value)
-        if index >= 0:
+        model = combo.model()
+        item = model.item(index) if index >= 0 and hasattr(model, "item") else None
+        # Сохранённый, но теперь недоступный пункт (Live estimate) не восстанавливаем.
+        if index >= 0 and (item is None or item.isEnabled()):
             combo.setCurrentIndex(index)
 
     def _save_live_settings(self) -> None:

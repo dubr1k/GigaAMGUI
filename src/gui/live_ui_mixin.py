@@ -265,7 +265,17 @@ class LiveUiMixin:
         parameters_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.combo_live_diarization = QComboBox()
         self.combo_live_diarization.addItem(self._t("Выключено", "Off"), "off")
-        self.combo_live_diarization.addItem(self._t("Оценка в реальном времени", "Live estimate"), "live_estimate")
+        self.combo_live_diarization.addItem(
+            self._t("Оценка в реальном времени (недоступно)", "Live estimate (unavailable)"), "live_estimate",
+        )
+        # Ни один backend диаризации не умеет estimate_events: сессия грузила
+        # Sortformer и сообщала, что оценки нет. Пункт виден, но не выбирается.
+        estimate_item = self.combo_live_diarization.model().item(self.combo_live_diarization.findData("live_estimate"))
+        estimate_item.setEnabled(False)
+        estimate_item.setToolTip(self._t(
+            "Пока не поддерживается: используйте «После остановки».",
+            "Not supported yet: use After stop.",
+        ))
         self.combo_live_diarization.addItem(self._t("После остановки", "After stop"), "after_stop")
         self.combo_live_diarization.setToolTip(
             self._t(

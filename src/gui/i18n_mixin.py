@@ -272,7 +272,7 @@ class I18nMixin:
             source_labels = (("Микрофон", "Microphone"), ("Системный звук", "System audio"), ("Микрофон + системный звук", "Microphone + system audio"))
             for index, labels in enumerate(source_labels):
                 self.combo_live_source.setItemText(index, labels[0] if is_ru else labels[1])
-            diarization_labels = (("Выключено", "Off"), ("Оценка в реальном времени", "Live estimate"), ("После остановки", "After stop"))
+            diarization_labels = (("Выключено", "Off"), ("Оценка в реальном времени (недоступно)", "Live estimate (unavailable)"), ("После остановки", "After stop"))
             for index, labels in enumerate(diarization_labels):
                 self.combo_live_diarization.setItemText(index, labels[0] if is_ru else labels[1])
             self.combo_live_diarization.setToolTip(
