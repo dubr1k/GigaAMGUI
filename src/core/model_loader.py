@@ -19,6 +19,7 @@ from .asr.models import onnx_model_repo, validate_asr_model
 from .asr.pytorch_backend import PyTorchBackend
 from .asr.types import ProgressCallback
 from .devices import empty_accelerator_cache
+from .runtime_options import validate_onnx_provider
 
 
 class ModelLoader:
@@ -366,9 +367,7 @@ class ModelLoader:
 
     def configure_onnx_runtime(self, *, provider: str) -> None:
         """Выбрать ONNX Runtime provider для следующей загрузки модели."""
-        selected = (provider or "auto").strip().lower() or "auto"
-        if selected not in {"auto", "cpu", "cuda", "tensorrt", "coreml", "directml"}:
-            raise ValueError(f"Unsupported ONNX provider: {selected}")
+        selected = validate_onnx_provider(provider)
         if selected != self._onnx_provider:
             self._onnx_provider = selected
             self.unload()

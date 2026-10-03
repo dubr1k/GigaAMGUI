@@ -9,6 +9,8 @@ from typing import TypedDict
 import numpy as np
 from typing_extensions import NotRequired
 
+from ..runtime_options import parse_bool, validate_backend_name  # noqa: F401 — публичный реэкспорт
+
 
 class TranscriptionWord(TypedDict):
     """One recognized word with absolute audio timestamps."""
@@ -73,27 +75,5 @@ class BackendCapabilities:
     quantization: str | None = None
     provider_fallback_reason: str | None = None
 
-
-def validate_backend_name(value: str) -> str:
-    value = (value or "").strip().lower()
-    if value not in {"auto", "mlx", "onnx", "pytorch"}:
-        raise ValueError(f"Unsupported ASR backend: {value}")
-    return value
-
-
-def parse_bool(value: str | bool | None, default: bool = False) -> bool:
-    """Parse boolean-like env values used by config."""
-
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}:
-        return True
-    if normalized in {"0", "false", "f", "no", "n", "off", "disable", "disabled"}:
-        return False
-    return default
 
 ProgressCallback = Callable[[float, float | None, float | None], None]

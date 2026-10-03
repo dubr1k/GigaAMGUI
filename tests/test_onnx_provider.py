@@ -161,3 +161,12 @@ def test_provider_discovery_does_not_preload_cuda_when_it_cannot_be_used(
     )
 
     assert calls == []
+
+
+def test_provider_choices_match_the_runtime_options_list():
+    # Список provider-ов для config, ModelLoader, web и MCP один —
+    # src.core.runtime_options; ORT-имена здесь должны покрывать его целиком.
+    from src.core.asr import onnx_provider
+    from src.core.runtime_options import ONNX_PROVIDERS
+
+    assert ONNX_PROVIDERS == ("auto", *onnx_provider._PROVIDER_NAMES)

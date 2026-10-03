@@ -36,6 +36,7 @@ MODULES = (
     "src.core.export",
     "src.core.progress",
     "src.core.devices",
+    "src.core.runtime_options",
     "src.core.preprocessing_messages",
     "src.core.asr.longform",
     "src.core.asr.onnx_loading",
