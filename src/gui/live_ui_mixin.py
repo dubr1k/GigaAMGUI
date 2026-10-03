@@ -264,7 +264,8 @@ class LiveUiMixin:
         recorder_layout.addLayout(self.live_controls_layout)
         capture_layout.addWidget(recorder)
 
-        transcript_panel = QGroupBox(self._t("Live transcript", "Live transcript"))
+        transcript_panel = QGroupBox()
+        self._bilingual(transcript_panel.setTitle, "Live-расшифровка", "Live transcript")
         transcript_panel.setObjectName("live_transcript_card")
         transcript_layout = QVBoxLayout(transcript_panel)
         transcript_layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(8))

@@ -136,3 +136,15 @@ def test_dynamic_live_status_is_retranslated_only_when_it_is_known(window):
     window._lang = "ru"
     window._apply_language()
     assert window.lbl_live_status.text() == "Microphone permission denied"
+
+
+def test_live_transcript_card_title_follows_the_language(window):
+    # Заголовок карточки был «Live transcript» в обоих языках и не
+    # перерисовывался при смене языка.
+    card = window.findChild(QGroupBox, "live_transcript_card")
+    window._lang = "en"
+    window._apply_language()
+    assert card.title() == "Live transcript"
+    window._lang = "ru"
+    window._apply_language()
+    assert card.title() == "Live-расшифровка"
