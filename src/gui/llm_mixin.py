@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMessageBox
 
 from ..config import LLM_TEMPERATURE
 from ..services import cli_tools, llm_service
+from .llm_errors import FRIENDLY_LLM_ERRORS
 
 SUMMARY_PROMPT = (
     "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
@@ -122,93 +123,7 @@ class LlmMixin:
         raw_text = (error_text or "").strip()
         lowered = raw_text.lower()
 
-        # (подстроки ошибки, текст по-русски, текст по-английски)
-        friendly_rules = [
-            (("refresh token was revoked", "please log out and sign in again"),
-             "Codex: сессия истекла или токен отозван — нужно заново войти в Codex",
-             "Codex: the session expired or the token was revoked — sign in to Codex again"),
-            (("token_invalidated", "authentication token has been invalidated"),
-             "Codex: токен недействителен — перелогиньтесь",
-             "Codex: the token is invalid — sign in again"),
-            (("your session has ended", "refresh_token_invalidated"),
-             "Codex: сессия завершилась — выполните codex logout и codex login",
-             "Codex: the session has ended — run codex logout and codex login"),
-            (("connection refused", "127.0.0.1", "/v1/responses"),
-             "Codex: локальный backend недоступен — проверьте, запущен ли нужный сервер/провайдер",
-             "Codex: the local backend is unavailable — check that the server/provider is running"),
-            (("failed to refresh available models", "missing field `base_instructions`"),
-             "Codex: сервер моделей отдает несовместимый формат ответа — провайдер/прокси не полностью совместим с Codex",
-             "Codex: the model server returns an incompatible response — the provider/proxy is not fully Codex-compatible"),
-            (("failed to decode models response",),
-             "Codex: провайдер вернул неожиданный формат списка моделей",
-             "Codex: the provider returned an unexpected model list format"),
-            (("401", "anthropic"),
-             "Anthropic API: ошибка авторизации (401) — проверьте API key",
-             "Anthropic API: authorization error (401) — check the API key"),
-            (("401", "openai"),
-             "OpenAI-compatible API: ошибка авторизации (401) — проверьте API key",
-             "OpenAI-compatible API: authorization error (401) — check the API key"),
-            (("401", "unauthorized"),
-             "Ошибка авторизации (401) — проверьте ключ, токен или логин выбранного провайдера",
-             "Authorization error (401) — check the key, token or login of the selected provider"),
-            (("403", "forbidden"),
-             "Доступ запрещен (403) — у аккаунта или ключа не хватает прав",
-             "Access denied (403) — the account or key lacks permissions"),
-            (("404",),
-             "Endpoint не найден (404) — проверьте URL API и путь /v1/...",
-             "Endpoint not found (404) — check the API URL and the /v1/... path"),
-            (("429", "rate"),
-             "Превышен лимит запросов (429) — попробуйте позже или смените тариф/провайдера",
-             "Rate limit exceeded (429) — try later or change the plan/provider"),
-            (("insufficient_quota",),
-             "Закончилась квота API — проверьте биллинг или лимиты",
-             "API quota exhausted — check billing or limits"),
-            (("model_not_found",),
-             "Указанная модель не найдена — проверьте точное имя модели",
-             "Model not found — check the exact model name"),
-            (("does not exist", "model"),
-             "Указанная модель не существует у выбранного провайдера",
-             "The model does not exist at the selected provider"),
-            (("invalid x-api-key",), "Неверный Anthropic API key", "Invalid Anthropic API key"),
-            (("incorrect api key",), "Неверный API key", "Incorrect API key"),
-            (("could not resolve host",),
-             "Не удалось найти хост — проверьте URL и интернет-соединение",
-             "Could not resolve the host — check the URL and the internet connection"),
-            (("name or service not known",),
-             "Не удалось найти сервер — проверьте адрес API",
-             "Server not found — check the API address"),
-            (("max retries exceeded",),
-             "Не удалось подключиться к API после нескольких попыток",
-             "Could not connect to the API after several attempts"),
-            (("read timed out", "timeout"),
-             "Сервер слишком долго отвечает — попробуйте позже или увеличьте timeout",
-             "The server takes too long to answer — try later or increase the timeout"),
-            (("connection timed out",),
-             "Таймаут соединения — сервер недоступен или отвечает слишком долго",
-             "Connection timed out — the server is unavailable or too slow"),
-            (("ssl", "certificate"),
-             "Ошибка SSL-сертификата — проверьте HTTPS/сертификат сервера",
-             "SSL certificate error — check the server's HTTPS/certificate"),
-            (("command not found",),
-             "Не найдена команда CLI-провайдера — проверьте путь в настройках",
-             "The CLI provider command was not found — check the path in the settings"),
-            (("not found", "claude"),
-             "Claude Code не найден — проверьте путь к команде claude",
-             "Claude Code not found — check the path to the claude command"),
-            (("not found", "codex"),
-             "Codex не найден — проверьте путь к команде codex",
-             "Codex not found — check the path to the codex command"),
-            (("not found", "opencode"),
-             "OpenCode не найден — проверьте путь к команде opencode",
-             "OpenCode not found — check the path to the opencode command"),
-            (("not found", "omp"),
-             "oh-my-pi не найден — проверьте путь к команде omp",
-             "oh-my-pi not found — check the path to the omp command"),
-            (("not found", "pi"),
-             "Pi не найден — проверьте путь к команде pi",
-             "Pi not found — check the path to the pi command"),
-        ]
-        for needles, ru, en in friendly_rules:
+        for needles, ru, en in FRIENDLY_LLM_ERRORS:
             if all(needle in lowered for needle in needles):
                 return self._t(ru, en)
 
