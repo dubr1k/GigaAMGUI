@@ -40,7 +40,7 @@ from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from .download_mixin import DownloadMixin
 from .files_mixin import FilesMixin
 from .i18n_mixin import I18nMixin
-from .lifecycle_mixin import LifecycleMixin
+from .lifecycle_mixin import LifecycleMixin, install_exception_hook
 from .live_mixin import LiveMixin
 from .live_ui_mixin import LiveUiMixin
 from .llm_mixin import LlmMixin
@@ -76,6 +76,7 @@ class WorkerSignals(QObject):
     live_event = pyqtSignal(object)
     live_finished = pyqtSignal(object)
     live_stop_failed = pyqtSignal(str)
+    live_backend_prepared = pyqtSignal(object, object)  # запрос старта, текст ошибки или None
     live_answer = pyqtSignal(str, str)
 
 
@@ -209,6 +210,7 @@ class GigaTranscriberQtApp(
         self.signals.live_event.connect(self._update_live_event)
         self.signals.live_finished.connect(self._on_live_finished)
         self.signals.live_stop_failed.connect(self._on_live_stop_failed)
+        self.signals.live_backend_prepared.connect(self._on_live_backend_prepared)
         self.signals.live_answer.connect(self._update_live_answer)
 
         saved_output_dir = self.user_settings.get_last_output_dir()
@@ -526,6 +528,7 @@ def run_qt_app(app=None):
     window = GigaTranscriberQtApp()
     window._instance_lock_file = instance_lock
     _install_open_request_poller(window)
+    install_exception_hook(window)
     if isinstance(app, GigaApplication):
         app.file_open_requested.connect(lambda paths: window.open_paths_from_system(paths, append=True))
     window.show()

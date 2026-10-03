@@ -10,6 +10,9 @@ Mixin: методы работают со `self` главного окна.
 """
 from __future__ import annotations
 
+import sys
+import traceback
+
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
 
@@ -26,6 +29,28 @@ _LIVE_RUNNING_STATES = (
 )
 # Сколько ждать экспорта live-сессии при выходе, прежде чем закрыться всё равно.
 _LIVE_CLOSE_TIMEOUT_MS = 60_000
+
+
+def install_exception_hook(window) -> None:
+    """Не дать исключению из Qt-слота уронить приложение.
+
+    PyQt6 при стандартном sys.excepthook вызывает qFatal: любое исключение
+    в обработчике кнопки или сигнала молча убивает процесс вместе с идущей
+    записью. С собственным хуком PyQt только сообщает об исключении, а мы
+    пишем traceback в лог приложения и показываем ошибку в журнале.
+    """
+    previous = sys.excepthook
+
+    def hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            previous(exc_type, exc, tb)
+            return
+        try:
+            window._report_unhandled_exception(exc_type, exc, tb)
+        except Exception:  # noqa: BLE001 — хук не должен падать сам
+            previous(exc_type, exc, tb)
+
+    sys.excepthook = hook
 
 
 class LifecycleMixin:
@@ -152,3 +177,13 @@ class LifecycleMixin:
         ))
         self._close_forced = True
         self.close()
+
+    def _report_unhandled_exception(self, exc_type, exc, tb) -> None:
+        details = "".join(traceback.format_exception(exc_type, exc, tb))
+        self.app_logger.get_logger().error("Необработанное исключение:\n%s", details)
+        message = self._t(
+            f"Внутренняя ошибка: {exc_type.__name__}: {exc}. Подробности — в логе приложения.",
+            f"Internal error: {exc_type.__name__}: {exc}. See the application log for details.",
+        )
+        self.signals.log_message.emit(message)
+        self._set_status(message)

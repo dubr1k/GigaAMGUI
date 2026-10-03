@@ -48,6 +48,16 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+def _wait_for_live_start(window, timeout=30.0):
+    """Model load and warm-up run off the Qt thread; wait for the session."""
+    deadline = time.monotonic() + timeout
+    while window._live_starting and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    QApplication.processEvents()
+    assert not window._live_starting, "live session did not finish starting"
+
+
 def _wait_for_live_stop(window, timeout=5.0):
     """Stopping drains queued decodes off the Qt thread; wait it out."""
     deadline = time.monotonic() + timeout
@@ -98,6 +108,7 @@ def test_live_start_passes_exact_selected_audio_tracks_to_session(window, tmp_pa
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.live_session._settings.record_mic_audio is False
     assert window.live_session._settings.record_system_audio is True
@@ -129,6 +140,7 @@ def test_live_shows_the_session_folder_while_recording_and_after_stop(window, tm
     window.live_output_dir.setText(str(root))
 
     window._start_live_session()
+    _wait_for_live_start(window)
     session_dir = window.live_session.session_dir
 
     assert root.is_dir(), "the default folder is created on first use"
@@ -154,6 +166,7 @@ def test_late_llm_answer_after_stop_does_not_abort_the_app(window, tmp_path, mon
     )
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
     turn = window.live_session.begin_conversation("когда встреча?")
     window._live_conversation_id = turn.id
     window._stop_live_session()
@@ -176,6 +189,7 @@ def test_live_start_surfaces_missing_capture_runtime(window, tmp_path, monkeypat
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.live_session is None
     assert "PyAudioWPatch" in window.lbl_live_status.text()
@@ -219,6 +233,7 @@ def test_live_controls_drive_injected_capture_session_lifecycle(window, tmp_path
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
     assert window.live_session.status().state.value == "recording"
     assert window.btn_live_start.isEnabled() is False
     assert window.btn_live_start.text() == "НАЧАТЬ ЗАПИСЬ"
@@ -232,6 +247,7 @@ def test_live_controls_drive_injected_capture_session_lifecycle(window, tmp_path
     assert window.btn_live_pause.isEnabled() is False
 
     window._start_live_session()
+    _wait_for_live_start(window)
     assert window.live_session.status().state.value == "recording"
     assert window.btn_live_start.isEnabled() is False
     assert window.btn_live_start.text() == "НАЧАТЬ ЗАПИСЬ"
@@ -276,6 +292,7 @@ def test_live_overlay_reports_missing_llm_configuration_without_blocking(window,
     )
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
     window.live_session._on_final(TranscriptEvent(
         event_id="event-1",
         revision=0,
@@ -420,6 +437,7 @@ def test_cancelling_live_question_keeps_capture_running(window, tmp_path, monkey
     )
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
     window.live_session._on_final(TranscriptEvent(
         "event-1", 0, CaptureSource.MIC, 0, 16_000, 1_000_000_000, "Final line", "final",
     ))
@@ -502,6 +520,7 @@ def test_live_uses_actual_default_device_and_live_scheduler(window, tmp_path, mo
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.combo_live_mic_device.currentData() == "default-mic"
     assert window.combo_live_mic_device.findData("mic-default") == -1
@@ -513,6 +532,7 @@ def test_live_rejects_missing_output_folder_and_keeps_capture_events_out_of_tran
     window.live_output_dir.setText(str(missing))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.live_session is None
     assert any(
@@ -611,6 +631,7 @@ def test_clear_live_display_keeps_active_session_and_saved_transcript(window, tm
     )
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
     window._show_live_overlay()
     event = TranscriptEvent(
         "event-1", 0, CaptureSource.MIC, 0, 16_000, 1_000_000_000,

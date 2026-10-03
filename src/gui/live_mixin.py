@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QTextCursor
-from PyQt6.QtWidgets import QApplication, QFileDialog
+from PyQt6.QtWidgets import QFileDialog
 
 from ..live.asr import LiveAsrScheduler
 from ..live.asr_backend import LazyModelBackend
@@ -50,6 +50,7 @@ class LiveMixin:
         self._live_llm_cancel_event: threading.Event | None = None
         self._live_conversation_id: str | None = None
         self._live_stop_thread: threading.Thread | None = None
+        self._live_starting = False
 
     def _restore_live_settings(self) -> None:
         settings = self._live_settings
@@ -241,8 +242,18 @@ class LiveMixin:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def _start_live_session(self) -> None:
-        if self.live_session is not None and self.live_session.status().state is CaptureState.PAUSED:
-            self.live_session.resume()
+        if self._live_starting:
+            # Модель ещё грузится: повторный клик не должен готовить вторую сессию.
+            return
+        session = self.live_session
+        if session is not None and session.status().state is CaptureState.PAUSED:
+            try:
+                session.resume()
+            except Exception as exc:  # noqa: BLE001 — исключение из Qt-слота роняет приложение
+                self._report_live_problem(self._t(
+                    f"Не удалось продолжить запись: {exc}",
+                    f"Could not resume recording: {exc}",
+                ))
             return
         output_dir = self.live_output_dir.text().strip() or str(default_session_root())
         if output_dir == str(default_session_root()):
@@ -258,9 +269,27 @@ class LiveMixin:
             )
             return
         self._clear_live_problem()
-        if not self._preload_live_model():
-            return
         self._save_live_settings()
+        request = self._live_start_request(Path(output_dir))
+        if request is None:
+            return
+        self._live_starting = True
+        self._update_live_control_state()
+        self.lbl_live_status.setText(
+            self._t(
+                "Загрузка модели распознавания… Запись начнётся, когда она будет готова.",
+                "Loading the recognition model… Recording starts once it is ready.",
+            )
+        )
+        # Загрузка и прогрев модели — секунды (минуты при первом скачивании):
+        # в Qt-потоке они замораживали окно, а processEvents() внутри
+        # пропускал второй клик по «Начать запись».
+        threading.Thread(
+            target=self._prepare_live_backend, args=(request,), name="live-model-prepare", daemon=True,
+        ).start()
+
+    def _live_start_request(self, output_dir: Path) -> dict | None:
+        """Снимок настроек Live на момент нажатия и адаптеры захвата."""
         sources = self._selected_live_sources()
         settings = LiveSettings(
             mic_device_id=self.combo_live_mic_device.currentData(),
@@ -286,71 +315,126 @@ class LiveMixin:
         except CaptureUnavailable as exc:
             self.lbl_live_status.setText(str(exc))
             self._report_live_problem(str(exc))
-            return
+            return None
+        export_selection = ExportSelection(
+            txt=self.cb_live_export_txt.isChecked(),
+            txt_timecodes=self.cb_live_export_txt_timecodes.isChecked(),
+            txt_diarize=self.cb_live_export_txt_diarize.isChecked(),
+            txt_diarize_timecodes=self.cb_live_export_txt_diarize_timecodes.isChecked(),
+            md=self.cb_live_export_md.isChecked(),
+            srt=self.cb_live_export_srt.isChecked(),
+            vtt=self.cb_live_export_vtt.isChecked(),
+            sentence_split=self.cb_live_subtitle_sentence_split.isChecked(),
+            max_line_count=self.spin_live_subtitle_max_lines.value(),
+            max_line_width=self.spin_live_subtitle_max_width.value(),
+            sample_rate=settings.asr_sample_rate,
+        )
         # One backend for every source: it serializes decodes on the shared model.
         backend = LazyModelBackend(
             self.model_loader,
             self._t("Не удалось загрузить модель распознавания", "Could not load recognition model"),
         )
-        # Capture starts only once the model can recognise speech: the first
-        # decode compiles kernels (seconds with MLX/CoreML), and words spoken
-        # meanwhile waited for it. The status still says the model is loading.
-        backend.warm_up()
-        self.live_session = LiveSession(
-            Path(output_dir),
-            settings,
-            adapters,
-            scheduler_factory=lambda source, on_final, on_partial, on_error: LiveAsrScheduler(
-                backend,
-                on_final=on_final,
-                on_partial=on_partial,
-                on_error=on_error,
-            ),
-            export_selection=ExportSelection(
-                txt=self.cb_live_export_txt.isChecked(),
-                txt_timecodes=self.cb_live_export_txt_timecodes.isChecked(),
-                txt_diarize=self.cb_live_export_txt_diarize.isChecked(),
-                txt_diarize_timecodes=self.cb_live_export_txt_diarize_timecodes.isChecked(),
-                md=self.cb_live_export_md.isChecked(),
-                srt=self.cb_live_export_srt.isChecked(),
-                vtt=self.cb_live_export_vtt.isChecked(),
-                sentence_split=self.cb_live_subtitle_sentence_split.isChecked(),
-                max_line_count=self.spin_live_subtitle_max_lines.value(),
-                max_line_width=self.spin_live_subtitle_max_width.value(),
-                sample_rate=settings.asr_sample_rate,
-            ),
-            translate=self._t,
-            log=self._log_live,
-        )
-        self.live_session.subscribe(self._on_live_session_update)
-        self.live_session.start()
-        self._show_live_session_folder(self.live_session.session_dir)
+        return {
+            "output_dir": output_dir,
+            "settings": settings,
+            "adapters": adapters,
+            "export_selection": export_selection,
+            "backend": backend,
+        }
+
+    def _prepare_live_backend(self, request: dict) -> None:
+        """Фоновый поток: загрузить и прогреть модель, итог — сигналом в Qt-поток."""
+        error = None
+        try:
+            if self._preload_live_model():
+                # Capture starts only once the model can recognise speech: the
+                # first decode compiles kernels (seconds with MLX/CoreML), and
+                # words spoken meanwhile waited for it.
+                request["backend"].warm_up()
+            else:
+                detail = self.model_loader.diagnostics().get("error") or self._t("неизвестная ошибка", "unknown error")
+                error = self._t(
+                    f"Не удалось загрузить модель распознавания: {detail}",
+                    f"Could not load the recognition model: {detail}",
+                )
+        except Exception as exc:  # noqa: BLE001 — сообщаем в интерфейс, а не в stderr потока
+            error = self._t(
+                f"Не удалось загрузить модель распознавания: {exc}",
+                f"Could not load the recognition model: {exc}",
+            )
+        self.signals.live_backend_prepared.emit(request, error)
+
+    def _on_live_backend_prepared(self, request: dict, error) -> None:
+        self._live_starting = False
+        if error or self._close_pending:
+            self._release_live_adapters(request["adapters"])
+            self.lbl_live_status.setText(self._t("Готово к записи", "Ready for live capture"))
+            if error:
+                self._report_live_problem(error)
+            self._update_live_control_state()
+            self._continue_pending_close()
+            return
+        backend = request["backend"]
+        try:
+            session = LiveSession(
+                request["output_dir"],
+                request["settings"],
+                request["adapters"],
+                scheduler_factory=lambda source, on_final, on_partial, on_error: LiveAsrScheduler(
+                    backend,
+                    on_final=on_final,
+                    on_partial=on_partial,
+                    on_error=on_error,
+                ),
+                export_selection=request["export_selection"],
+                translate=self._t,
+                log=self._log_live,
+            )
+        except Exception as exc:  # noqa: BLE001 — например, папку сессии не удалось создать
+            self._release_live_adapters(request["adapters"])
+            self.lbl_live_status.setText(self._t("Готово к записи", "Ready for live capture"))
+            self._report_live_problem(self._t(
+                f"Не удалось создать live-сессию: {exc}",
+                f"Could not create the live session: {exc}",
+            ))
+            self._update_live_control_state()
+            return
+        self.live_session = session
+        session.subscribe(self._on_live_session_update)
+        try:
+            session.start()
+        except Exception as exc:  # noqa: BLE001 — захват не поднялся; Stop сохранит, что есть
+            self._report_live_problem(self._t(
+                f"Не удалось начать запись: {exc}",
+                f"Could not start recording: {exc}",
+            ))
+            self._update_live_control_state()
+            return
+        self._show_live_session_folder(session.session_dir)
+
+    @staticmethod
+    def _release_live_adapters(adapters: dict) -> None:
+        """Адаптеры, которые так и не попали в сессию, держат нативные хэндлы."""
+        for adapter in adapters.values():
+            release = getattr(adapter, "release", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _log_live(self, message: str) -> None:
         """Route live-path diagnostics into the shared processing log tab."""
         self.log(f"[live] {message}")
 
     def _preload_live_model(self) -> bool:
-        """Fail loudly before capture starts instead of decoding into a void."""
+        """Fail loudly before capture starts instead of decoding into a void.
+
+        Runs on the live-model-prepare thread: no widget access here.
+        """
         if self.model_loader.is_loaded():
             return True
-        self.lbl_live_status.setText(
-            self._t(
-                "Загрузка модели распознавания… Запись начнётся, когда она будет готова.",
-                "Loading the recognition model… Recording starts once it is ready.",
-            )
-        )
-        QApplication.processEvents()
-        if self.model_loader.load_model(logger=self.log):
-            return True
-        detail = self.model_loader.diagnostics().get("error") or self._t("неизвестная ошибка", "unknown error")
-        message = self._t(
-            f"Не удалось загрузить модель распознавания: {detail}",
-            f"Could not load the recognition model: {detail}",
-        )
-        self.lbl_live_status.setText(self._t("Готово к записи", "Ready for live capture"))
-        self._report_live_problem(message)
-        return False
+        return bool(self.model_loader.load_model(logger=self.log))
 
     def _report_live_problem(self, message: str) -> None:
         self.lbl_live_problem.setText(message)
@@ -362,14 +446,22 @@ class LiveMixin:
         self.lbl_live_problem.hide()
 
     def _pause_live_session(self) -> None:
-        if self.live_session is not None and self.live_session.status().state is CaptureState.RECORDING:
-            self.live_session.pause()
+        session = self.live_session
+        if session is None or session.status().state is not CaptureState.RECORDING:
+            return
+        try:
+            session.pause()
+        except Exception as exc:  # noqa: BLE001 — например, PortAudioError при остановке потока
+            self._report_live_problem(self._t(
+                f"Не удалось поставить запись на паузу: {exc}",
+                f"Could not pause recording: {exc}",
+            ))
 
     def _stop_live_session(self) -> None:
         session = self.live_session
         if session is None:
             return
-        if session.status().state not in {CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FAILED}:
+        if session.status().state not in (CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FAILED):
             return
         # Stopping now drains every queued decode, which can outlast a frame.
         # Run it off the Qt thread so the window stays responsive meanwhile.
@@ -490,8 +582,11 @@ class LiveMixin:
     def _clear_live_display(self) -> None:
         self.live_transcript.clear()
         self._live_transcript_presenter.clear()
-        if self.live_session is not None and self.live_session.status().state not in {CaptureState.STOPPED, CaptureState.IDLE}:
-            self.live_session.clear_conversation()
+        if self.live_session is not None and self.live_session.status().state not in (CaptureState.STOPPED, CaptureState.IDLE):
+            try:
+                self.live_session.clear_conversation()
+            except RuntimeError:
+                pass  # разговор уже заморожен остановкой — чистить нечего
         if self.live_overlay is not None:
             self.live_overlay.clear_transcript()
             self.live_overlay.set_conversation(
@@ -530,7 +625,19 @@ class LiveMixin:
                 self._t(f"LLM не настроена: {exc}", f"LLM is not configured: {exc}"),
             )
             return
-        turn = self.live_session.begin_conversation(question)
+        stopped = self._t(
+            "Live-сессия уже остановлена: вопросы ассистенту принимаются во время записи.",
+            "The live session has stopped: the assistant takes questions while recording.",
+        )
+        if self.live_session.status().state in (CaptureState.STOPPING, CaptureState.STOPPED):
+            self._update_live_answer("error", stopped)
+            return
+        try:
+            turn = self.live_session.begin_conversation(question)
+        except RuntimeError:
+            # stop() замораживает разговор; исключение из Qt-слота роняет приложение.
+            self._update_live_answer("error", stopped)
+            return
         self._live_conversation_id = turn.id
         self._sync_live_conversation()
         cancel_event = threading.Event()
@@ -650,6 +757,9 @@ class LiveMixin:
 
     def _update_live_control_state(self, state: CaptureState | None = None) -> None:
         state = state or (self.live_session.status().state if self.live_session else CaptureState.IDLE)
+        if self._live_starting:
+            # Модель для новой сессии ещё грузится: ни второго старта, ни стопа.
+            state = CaptureState.STARTING
         # Not FAILED: starting over a failed session abandoned it unstopped —
         # no exports, open FLAC writers, scheduler threads left running. Stop
         # (enabled in FAILED) saves what there is first.
