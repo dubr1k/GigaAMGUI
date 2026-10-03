@@ -17,11 +17,11 @@ from collections.abc import Callable, Hashable, Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from ..progress import ProgressCallback
 from .chunking import AudioChunk, normalize_chunk_words, stitch_chunk
 from .types import TranscriptionSegment, TranscriptionWord
 from .vad import VadSegmenter, VadUnavailableError
 
-ProgressCallback = Callable[[float, float | None, float | None], None]
 # Декодировать окно: (текст, слова с абсолютными временами или None).
 DecodeWindow = Callable[[AudioChunk], "tuple[str, list[TranscriptionWord] | None]"]
 

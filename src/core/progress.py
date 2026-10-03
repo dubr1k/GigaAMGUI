@@ -11,7 +11,9 @@ ProgressStage = Literal[
 ]
 
 
-ProgressCallback = Callable[[float, float | None, float | None], None]
+# Колбэк стадии backend-а: (доля 0..1 или None, обработано секунд, всего секунд).
+# Единственное определение: asr.types и asr.longform реэкспортируют его.
+ProgressCallback = Callable[[float | None, float | None, float | None], None]
 
 
 @dataclass(frozen=True)

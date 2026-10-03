@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
 import numpy as np
 from typing_extensions import NotRequired
 
+from ..progress import ProgressCallback  # noqa: F401 — публичный реэкспорт
 from ..runtime_options import parse_bool, validate_backend_name  # noqa: F401 — публичный реэкспорт
 
 
@@ -76,4 +76,3 @@ class BackendCapabilities:
     provider_fallback_reason: str | None = None
 
 
-ProgressCallback = Callable[[float, float | None, float | None], None]
