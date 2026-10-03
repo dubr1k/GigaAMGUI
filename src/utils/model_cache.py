@@ -76,16 +76,24 @@ def hf_repo_is_cached(
     """Есть ли snapshot хотя бы в одном доступном локальном кэше."""
     if resolve_bundled_snapshot(repo_id, bundled_root=bundled_root) is not None:
         return True
-    if user_root is not None:
-        user_hub = Path(user_root) / "hub"
-    else:
-        try:
-            from huggingface_hub.constants import HF_HUB_CACHE
-
-            user_hub = Path(HF_HUB_CACHE)
-        except ImportError:
-            user_hub = Path(os.environ.get("HF_HOME") or hf_cache_dir()) / "hub"
+    user_hub = Path(user_root) / "hub" if user_root is not None else hf_hub_cache_dir()
     return _resolve_snapshot_from_hub(repo_id, user_hub) is not None
+
+
+def hf_hub_cache_dir() -> Path:
+    """hub-кэш, в который на самом деле качает huggingface_hub.
+
+    Это ``HF_HUB_CACHE`` библиотеки (он учитывает HUGGINGFACE_HUB_CACHE и
+    HF_HUB_CACHE, а не только HF_HOME). Проверки «модель уже скачана» и
+    собственные загрузки приложения (Sortformer) должны смотреть туда же,
+    иначе одна и та же модель могла лежать в одном кэше, а искаться в другом.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        return Path(HF_HUB_CACHE)
+    except ImportError:
+        return hf_cache_dir() / "hub"
 
 
 # Те же значения, что huggingface_hub считает «истиной» для HF_HUB_OFFLINE.
