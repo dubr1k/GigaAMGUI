@@ -7,6 +7,8 @@ runtime, и это должен быть именно GigaApplication. С обы
 """
 from __future__ import annotations
 
+import os
+
 from PyQt6.QtCore import QEvent, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
@@ -37,6 +39,9 @@ class GigaApplication(QApplication):
                 except Exception:
                     path = ""
             if path:
+                # QUrl.toLocalFile() даёт «/» и на Windows; остальные источники
+                # путей (argv, диалоги) — платформенные разделители.
+                path = os.path.normpath(path)
                 self._pending_open_paths.append(path)
                 self.file_open_requested.emit([path])
             return True
