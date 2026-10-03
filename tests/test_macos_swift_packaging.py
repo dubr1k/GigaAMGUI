@@ -736,3 +736,20 @@ def test_swift_llm_tools_are_scanned_once_per_run() -> None:
     scan = _swift_block(main, "private func refreshLLMTools(fresh: Bool) {")
     assert "fresh || !llmToolsScanned" in scan and "self.llmToolsScanned = true" in scan
     assert "refreshLLMTools(fresh: true)" in _swift_block(main, "@objc private func rescanLLMTools(_ sender: Any?) {")
+
+
+def test_no_liquid_swift_source_is_git_ignored() -> None:
+    # `.gitignore` ignores `models/` (weights), and on a case-insensitive file
+    # system git applies it to a `Models/` source folder too: such a file builds
+    # locally and is missing from every checkout and from CI.
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("git") is None or not Path(".git").exists():
+        pytest.skip("not a git checkout")
+    sources = [str(path) for path in Path("macos/GigaAMLiquid").rglob("*.swift") if ".build" not in path.parts]
+    assert sources
+    result = subprocess.run(["git", "check-ignore", "--stdin"], input="\n".join(sources), capture_output=True, text=True)
+    assert result.stdout.split() == []
