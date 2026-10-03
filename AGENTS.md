@@ -3,6 +3,9 @@
 Guidance for AI coding agents working in this repository. Human contributors will
 find it useful too.
 
+The big picture — layering, the rules the October 2026 refactor followed and
+the roadmap of what is left — is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## What this project is
 
 **GigaAM v3 Transcriber** — a Russian speech-to-text application built on the
