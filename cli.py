@@ -64,6 +64,7 @@ from src.config import (
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.core.progress import coerce_progress, stage_label
+from src.core.runtime_options import ASR_BACKENDS, ONNX_PROVIDERS
 from src.core.subtitles import SubtitleOptions
 from src.services import transcription_service
 from src.utils.audio_converter import ffmpeg_available
@@ -285,7 +286,7 @@ def _interrupt_exit_code(func):
 )
 @click.option(
     '--backend',
-    type=click.Choice(["auto", "mlx", "onnx", "pytorch"]),
+    type=click.Choice(ASR_BACKENDS),
     default=None,
     help='Режим ASR backend: auto/mlx/onnx/pytorch (по умолчанию берется из ASR_BACKEND)',
 )
@@ -297,7 +298,7 @@ def _interrupt_exit_code(func):
 )
 @click.option(
     '--onnx-provider',
-    type=click.Choice(["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"]),
+    type=click.Choice(ONNX_PROVIDERS),
     default=None,
     help='ONNX Runtime execution provider (по умолчанию берется из ONNX_PROVIDER)',
 )

@@ -188,3 +188,10 @@ def test_cli_sortformer_rejects_fixed_speaker_count(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "определяет число спикеров автоматически" in result.output
+
+
+def test_cli_backend_and_provider_choices_follow_runtime_options():
+    from src.core.runtime_options import ASR_BACKENDS, ONNX_PROVIDERS
+
+    choices = {param.name: list(param.type.choices) for param in cli.main.params if param.name in ("backend", "onnx_provider")}
+    assert choices == {"backend": list(ASR_BACKENDS), "onnx_provider": list(ONNX_PROVIDERS)}
