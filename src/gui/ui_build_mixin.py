@@ -60,8 +60,78 @@ class UiBuildMixin:
         root_layout.setContentsMargins(self._px(16), self._px(12), self._px(16), self._px(12))
         root_layout.setSpacing(self._px(8))
         self.setCentralWidget(root)
+        root_layout.addLayout(self._create_header_row())
 
-        # Заголовок + кнопка темы
+        tabs = QTabWidget()
+        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
+        root_layout.addWidget(tabs, 1)
+
+        start_page = self._create_processing_start_page()
+        # Result state is part of the Processing tab, populated only from real output data.
+        result_page = self._create_processing_result_page()
+
+        # Default size policy: with the 2.0 "Ignored" policy the scroll area
+        # squeezed the page below its minimum and rows overlapped instead of
+        # showing a scroll bar.
+        self.processing_stack = _CurrentPageStack()
+        self._processing_start_page = start_page
+        self._processing_result_page = result_page
+        self.processing_stack.addWidget(start_page)
+        self.processing_stack.addWidget(result_page)
+        self.processing_stack.currentChanged.connect(self.processing_stack.updateGeometry)
+        proc_scroll = self._wrap_in_scroll(self.processing_stack)
+        tabs.addTab(proc_scroll, "Обработка")
+        live_scroll = self._wrap_in_scroll(self._create_live_tab())
+        tabs.addTab(live_scroll, "Live")
+        llm_scroll = self._wrap_in_scroll(self._create_llm_tab())
+        tabs.addTab(llm_scroll, "LLM")
+        api_tab = self._create_api_tab()
+        tabs.addTab(api_tab, "API")
+        log_tab = self._create_journal_tab()
+        tabs.addTab(log_tab, "Журнал")
+        settings_tab = self._create_settings_tab()
+        tabs.addTab(settings_tab, "Настройки")
+        self.tabs = tabs
+        # Вкладки ищутся по странице, а не по номеру: номер 1 когда-то был
+        # LLM, а после появления Live открывал не ту вкладку.
+        self._tab_pages = {
+            "processing": proc_scroll,
+            "live": live_scroll,
+            "llm": llm_scroll,
+            "api": api_tab,
+            "journal": log_tab,
+            "settings": settings_tab,
+        }
+
+        # Статус-бар: краткие подсказки и состояние
+        self.status_bar = self.statusBar()
+        self.status_bar.showMessage(self._t("Готов к работе", "Ready to work"))
+
+        # Диалог настроек LLM строится заранее: его поля читают настройки и
+        # обработка, даже если диалог ни разу не открывали.
+        self._ensure_llm_settings_dialog()
+        self._apply_language()
+
+        # Esc — отмена текущей обработки
+        esc = QAction(self)
+        esc.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        esc.triggered.connect(self._cancel_processing)
+        self.addAction(esc)
+
+        self._apply_theme()
+        self._restore_geometry()
+
+    def _wrap_in_scroll(self, page: QWidget) -> QScrollArea:
+        """Страница вкладки в прокрутке: при маленьком окне — полоса, а не наезд строк."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(page)
+        return scroll
+
+    def _create_header_row(self) -> QHBoxLayout:
+        """Заголовок по центру, справа — переключатели языка и темы."""
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
 
@@ -89,14 +159,10 @@ class UiBuildMixin:
         self._btn_theme.setToolTip("Переключить тему")
         self._btn_theme.clicked.connect(self._toggle_theme)
         header_row.addWidget(self._btn_theme)
+        return header_row
 
-        root_layout.addLayout(header_row)
-
-        tabs = QTabWidget()
-        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
-        root_layout.addWidget(tabs, 1)
-
-        # ── Вкладка «Обработка» ──
+    def _create_processing_start_page(self) -> QWidget:
+        """Вкладка «Обработка»: пять нумерованных секций, запуск, прогресс, сброс."""
         content_widget = QWidget()
         main_layout = QVBoxLayout(content_widget)
         main_layout.setContentsMargins(self._px(8), self._px(14), self._px(8), self._px(6))
@@ -129,77 +195,8 @@ class UiBuildMixin:
         main_layout.addWidget(self.btn_clear)
 
         main_layout.addStretch()
-
-        start_page = content_widget
-        start_page.setObjectName("processing_page")
-
-        # Result state is part of the Processing tab, populated only from real output data.
-        result_page = self._create_processing_result_page()
-
-        # Default size policy: with the 2.0 "Ignored" policy the scroll area
-        # squeezed the page below its minimum and rows overlapped instead of
-        # showing a scroll bar.
-        self.processing_stack = _CurrentPageStack()
-        self._processing_start_page = start_page
-        self._processing_result_page = result_page
-        self.processing_stack.addWidget(start_page)
-        self.processing_stack.addWidget(result_page)
-        self.processing_stack.currentChanged.connect(self.processing_stack.updateGeometry)
-        proc_scroll = QScrollArea()
-        proc_scroll.setWidgetResizable(True)
-        proc_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        proc_scroll.setWidget(self.processing_stack)
-        tabs.addTab(proc_scroll, "Обработка")
-
-        live_scroll = QScrollArea()
-        live_scroll.setWidgetResizable(True)
-        live_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        live_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        live_scroll.setWidget(self._create_live_tab())
-        tabs.addTab(live_scroll, "Live")
-
-        llm_scroll = QScrollArea()
-        llm_scroll.setWidgetResizable(True)
-        llm_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        llm_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        llm_scroll.setWidget(self._create_llm_tab())
-        tabs.addTab(llm_scroll, "LLM")
-        api_tab = self._create_api_tab()
-        tabs.addTab(api_tab, "API")
-
-        log_tab = self._create_journal_tab()
-        tabs.addTab(log_tab, "Журнал")
-        settings_tab = self._create_settings_tab()
-        tabs.addTab(settings_tab, "Настройки")
-        self.tabs = tabs
-        # Вкладки ищутся по странице, а не по номеру: номер 1 когда-то был
-        # LLM, а после появления Live открывал не ту вкладку.
-        self._tab_pages = {
-            "processing": proc_scroll,
-            "live": live_scroll,
-            "llm": llm_scroll,
-            "api": api_tab,
-            "journal": log_tab,
-            "settings": settings_tab,
-        }
-        self._apply_language()
-
-        # Статус-бар: краткие подсказки и состояние
-        self.status_bar = self.statusBar()
-        self.status_bar.showMessage(self._t("Готов к работе", "Ready to work"))
-
-        self._ensure_llm_settings_dialog()
-        self._apply_language()
-
-        # Esc — отмена текущей обработки
-        esc = QAction(self)
-        esc.setShortcut(QKeySequence(Qt.Key.Key_Escape))
-        esc.triggered.connect(self._cancel_processing)
-        self.addAction(esc)
-
-        self._apply_theme()
-        self._restore_geometry()
+        content_widget.setObjectName("processing_page")
+        return content_widget
 
     def _show_tab(self, name: str) -> None:
         page = getattr(self, "_tab_pages", {}).get(name)
