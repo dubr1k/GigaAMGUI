@@ -33,6 +33,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     var liveJob: LiveSessionJob?
     var liveState = "idle"
     var liveFinals: [(id: String, text: String, speaker: String?)] = []
+    /// Bumped when a shown final is replaced or the list is reset, so the
+    /// transcript view re-renders instead of appending.
+    var liveFinalsRevision = 0
+    let liveTranscriptRenderer = LiveTranscriptRenderer()
     var livePartials: [LiveSource: String] = [:]
     var liveStartedAt: Date?
     var liveTimer: Timer?

@@ -109,6 +109,7 @@ extension AppController {
         transcriptBody.spacing = 10
         let editor = stretchy(textEditor("", key: nil, height: nil, minHeight: 120))
         liveTranscriptView = editor.documentView as? NSTextView
+        liveTranscriptRenderer.reset()  // a new view: render everything once
         liveTranscriptView?.isEditable = false
         liveTranscriptView?.identifier = NSUserInterfaceItemIdentifier("live.transcript")
         liveTranscriptView?.setAccessibilityLabel(L10n.text("Live transcript"))
@@ -227,6 +228,7 @@ extension AppController {
         liveSessionDir = nil
         refreshLiveFolderLabel()
         liveFinals = []
+        liveFinalsRevision += 1
         livePartials = [:]
         liveAnswerText = ""
         liveAnswerView?.string = ""
@@ -346,8 +348,10 @@ extension AppController {
             // Only this source's draft is settled; the other source may still be talking.
             livePartials.removeValue(forKey: source)
             let firstFinal = liveFinals.isEmpty
-            if let index = liveFinals.firstIndex(where: { $0.id == id }) { liveFinals[index] = (id, text, speaker) }
-            else { liveFinals.append((id, text, speaker)) }
+            if let index = liveFinals.firstIndex(where: { $0.id == id }) {
+                liveFinals[index] = (id, text, speaker)
+                liveFinalsRevision += 1
+            } else { liveFinals.append((id, text, speaker)) }
             renderLiveTranscript()
             if firstFinal { refreshLiveControls() }  // the assistant needs at least one final
         case .level(_, let rms):
@@ -356,8 +360,10 @@ extension AppController {
             if kind != "status" { liveStatusLabel?.stringValue = detail }
             appendLogLine("[live/\(kind)] \(detail)")
         case .answerChunk(_, let text):
+            // The first chunk replaces "Ассистент отвечает…"; later ones are appended.
+            if liveAnswerText.isEmpty { liveAnswerView?.string = text } else { liveAnswerView?.appendStreamed(text) }
             liveAnswerText += text
-            liveAnswerView?.string = liveAnswerText
+            scrollToTail(liveAnswerView)
         case .answer(_, let status, let text):
             switch status {
             case "complete": liveAnswerText = text
@@ -412,10 +418,15 @@ extension AppController {
     }
 
     func renderLiveTranscript() {
-        var lines = liveFinals.map { ($0.speaker.map { "\($0): " } ?? "") + $0.text }
-        for (source, text) in livePartials.sorted(by: { $0.key.rawValue < $1.key.rawValue }) { lines.append("[\(source.rawValue) …] \(text)") }
-        liveTranscriptView?.string = lines.isEmpty ? L10n.text("Нет фрагментов. Начните запись.") : lines.joined(separator: "\n")
-        scrollToTail(liveTranscriptView)
+        guard let view = liveTranscriptView, let storage = view.textStorage else { return }
+        let finals = liveFinals.map { ($0.speaker.map { "\($0): " } ?? "") + $0.text }
+        let drafts = livePartials.sorted(by: { $0.key.rawValue < $1.key.rawValue }).map { "[\($0.key.rawValue) …] \($0.value)" }
+        // Appends new finals and swaps the drafts at the end; the whole text is
+        // laid out again only when a shown final changes.
+        liveTranscriptRenderer.render(finals: finals, revision: liveFinalsRevision, drafts: drafts,
+                                      placeholder: L10n.text("Нет фрагментов. Начните запись."),
+                                      into: storage, attributes: view.typingAttributes)
+        scrollToTail(view)
     }
 
     func refreshLiveClock() {

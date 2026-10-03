@@ -438,8 +438,9 @@ extension AppController {
         case .started:
             llmStatusLabel?.stringValue = L10n.text("Ожидание ответа провайдера…")
         case .chunk(_, let text):
+            // Append the chunk: re-setting the whole result per chunk re-laid it out.
+            if llmResultText.isEmpty { llmResultView?.string = text } else { llmResultView?.appendStreamed(text) }
             llmResultText += text
-            llmResultView?.string = llmResultText
             scrollToTail(llmResultView)
         case .completed(let results, let saved):
             llmResultText = results.map(\.text).joined(separator: "\n\n")
