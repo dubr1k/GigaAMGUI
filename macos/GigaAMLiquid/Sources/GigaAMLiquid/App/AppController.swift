@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// each page, the shared control factory, media import and persistence are
 /// extensions in their own files (Pages/, UI/, MediaImportFlow.swift,
 /// Persistence.swift). Members used across those files are internal.
-final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSearchFieldDelegate, NSTextViewDelegate {
+final class AppController: NSObject, NSApplicationDelegate {
     let defaults = UserDefaults.standard
     var window: NSWindow!
     var mainSurface: GlassView!
@@ -507,81 +507,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         return document
     }
 
-    func option(_ key: String, values: [String]) -> String {
-        let stored = defaults.string(forKey: key) ?? values[0]
-        return values.contains(stored) ? stored : values[0]
-    }
-
-    func enabledOption(_ key: String, defaultValue: Bool) -> Bool {
-        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
-    }
-
     func replyWhenJobsFinished() {
         if isTerminating && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil && liveJob == nil { NSApp.reply(toApplicationShouldTerminate: true) }
-    }
-
-    @objc func popupChanged(_ sender: NSPopUpButton) {
-        guard let key = sender.identifier?.rawValue, let value = sender.titleOfSelectedItem else { return }
-        if key == "live.microphone" {
-            // Titles are device names; persist the stable device id instead.
-            defaults.set(liveDeviceIDs.indices.contains(sender.indexOfSelectedItem) ? liveDeviceIDs[sender.indexOfSelectedItem] : "default", forKey: key)
-            return
-        }
-        defaults.set(value, forKey: key)
-        if key == "settings.theme" || key == "settings.language" { rebuildInterface() }
-        if key == "settings.diarizationEngine" { resetManualSpeakerCountIfUnavailable() }
-        if key == "llm.provider" { refreshLLMProviderStatus() }
-        refreshProcessingControls()
-    }
-
-    @objc func switchChanged(_ sender: NSButton) {
-        guard let key = sender.identifier?.rawValue else { return }
-        defaults.set(sender.state == .on, forKey: key)
-        if key == "settings.liquidGlass" { rebuildInterface() }
-        if key == "settings.diarization" { resetManualSpeakerCountIfUnavailable() }
-        refreshProcessingControls()
-    }
-
-    @objc func textChanged(_ sender: NSTextField) {
-        guard let key = sender.identifier?.rawValue else { return }
-        if key == "settings.hfToken" {
-            do {
-                try SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "hfToken")
-            } catch {
-                showNotice("Не удалось сохранить HF Token", error.localizedDescription)
-            }
-        } else if key == "llm.apiKey" {
-            do {
-                try SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "llmApiKey")
-            } catch {
-                showNotice("Не удалось сохранить API Key", error.localizedDescription)
-            }
-        } else {
-            defaults.set(sender.stringValue, forKey: key)
-        }
-        if key == "output.path" { refreshProcessingControls() }
-        if key == "live.sessionRoot", liveJob == nil {
-            liveSessionDir = nil
-            refreshLiveFolderLabel()
-        }
-        // An edited CLI path invalidates its badge: re-probe just that tool.
-        if key.hasPrefix("llm."), key.hasSuffix("Path"),
-           let tool = Self.llmCliProviders.first(where: { "llm.\($0.prefix)Path" == key }) {
-            checkLLMTool(tool.name)
-        }
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        isClosing = true
-        mediaImportAlert = nil
-        mediaDownloadJob?.cancel()
-        transcriptionJob?.cancel()
-        transcriptionJob?.terminate()
-        llmJob?.terminate()
-        liveJob?.terminate()
-        llmToolsQuery?.cancel()
-        llmToolChecks.values.forEach { $0.cancel() }
-        cleanupDownloadedMedia()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -594,11 +521,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         llmJob?.terminate()
         liveJob?.terminate()
         return .terminateLater
-    }
-
-    func textDidChange(_ notification: Notification) {
-        guard let editor = notification.object as? NSTextView, let key = editor.identifier?.rawValue else { return }
-        defaults.set(editor.string, forKey: key)
     }
 
     @objc func toggleLanguage(_ sender: Any?) {
@@ -643,15 +565,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         }
     }
 
-    /// No controlTextDidEndEditing: every edit is already persisted here. Saving
-    /// again on end-editing let a stale field win — show(page:) removes the old,
-    /// still-focused field only after the new page has read the stored value, and
-    /// AppKit ends its editing on removal, so a folder picked with «Изменить» was
-    /// overwritten by the old empty text while the new field still displayed it.
-    func controlTextDidChange(_ notification: Notification) {
-        guard let control = notification.object as? NSTextField else { return }
-        if control.identifier != nil { textChanged(control) }
-        guard let field = control as? NSSearchField, field === searchField else { return }
+    /// Shows the pages whose title matches the search field's text.
+    func updateSearchResults(for field: NSSearchField) {
         searchResults.removeFromSuperview()
         let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
@@ -694,5 +609,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         alert.informativeText = L10n.text(message)
         alert.addButton(withTitle: L10n.text("Понятно"))
         alert.beginSheetModal(for: window)
+    }
+}
+
+// Each delegate method lives in the extension that declares its conformance, so
+// the Objective-C runtime sees it as the protocol's witness.
+extension AppController: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        isClosing = true
+        mediaImportAlert = nil
+        mediaDownloadJob?.cancel()
+        transcriptionJob?.cancel()
+        transcriptionJob?.terminate()
+        llmJob?.terminate()
+        liveJob?.terminate()
+        llmToolsQuery?.cancel()
+        llmToolChecks.values.forEach { $0.cancel() }
+        cleanupDownloadedMedia()
     }
 }
