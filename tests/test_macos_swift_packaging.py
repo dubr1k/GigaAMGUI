@@ -456,6 +456,8 @@ def test_swift_processing_log_shows_worker_lines_and_keeps_stderr_in_diagnostics
     assert "onStderr: { self.recordDiagnostic($0) }" in job
     package = Path("macos/GigaAMLiquid/Package.swift").read_text(encoding="utf-8")
     assert '.testTarget(name: "GigaAMLiquidCoreTests"' in package
+    # Worker jobs run end to end against a scripted stand-in (JobLifetimeTests, …).
+    assert '.testTarget(name: "GigaAMLiquidTests", dependencies: ["GigaAMLiquid"])' in package
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "swift test --package-path macos/GigaAMLiquid" in ci
 

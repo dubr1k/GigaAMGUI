@@ -50,16 +50,21 @@ final class LLMToolsQuery {
     private var worker: WorkerProcess?
     private var finished = false
 
-    static func scan(overrides: [String: String], fresh: Bool, onResult: @escaping (Result) -> Void) -> LLMToolsQuery {
-        LLMToolsQuery(command: ["type": "llm_tools", "overrides": overrides, "fresh": fresh], onResult: onResult)
+    private let resolveRuntime: PythonRuntime.Provider
+
+    static func scan(overrides: [String: String], fresh: Bool, runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
+                     onResult: @escaping (Result) -> Void) -> LLMToolsQuery {
+        LLMToolsQuery(command: ["type": "llm_tools", "overrides": overrides, "fresh": fresh], runtime: runtime, onResult: onResult)
     }
 
-    static func check(provider: String, path: String, onResult: @escaping (Result) -> Void) -> LLMToolsQuery {
-        LLMToolsQuery(command: ["type": "llm_tool_check", "provider": provider, "path": path], onResult: onResult)
+    static func check(provider: String, path: String, runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
+                      onResult: @escaping (Result) -> Void) -> LLMToolsQuery {
+        LLMToolsQuery(command: ["type": "llm_tool_check", "provider": provider, "path": path], runtime: runtime, onResult: onResult)
     }
 
-    private init(command: [String: Any], onResult: @escaping (Result) -> Void) {
+    private init(command: [String: Any], runtime: @escaping PythonRuntime.Provider, onResult: @escaping (Result) -> Void) {
         self.command = command
+        self.resolveRuntime = runtime
         self.onResult = onResult
     }
 
@@ -80,14 +85,17 @@ final class LLMToolsQuery {
     }
 
     private func launch() throws {
-        let runtime = try PythonRuntime.resolve()
+        let runtime = try resolveRuntime()
         let worker = try WorkerProcess(
             runtime: runtime, arguments: runtime.transcriptionArguments, environment: runtime.environment, queue: queue,
             onLine: { self.consume($0) },
             onStderr: { _ in },
             onStdoutEnd: { self.finish(.failed("The worker closed its output before answering.")) },
             onError: { self.finish(.failed($0)) },
-            onExit: { status in self.finish(.failed("The worker exited without answering (status \(status)).")) }
+            onExit: { status in
+                self.finish(.failed("The worker exited without answering (status \(status))."))
+                self.releaseWorker()
+            }
         )
         self.worker = worker
         try worker.send(command)
@@ -121,5 +129,12 @@ final class LLMToolsQuery {
         worker?.closeInput()
         worker?.terminateGracefully(after: 1)
         DispatchQueue.main.async { self.onResult(result) }
+    }
+
+    /// The worker's line readers hold this query through their callbacks; once the
+    /// process is gone, drop them so the query is freed.
+    private func releaseWorker() {
+        worker?.close()
+        worker = nil
     }
 }

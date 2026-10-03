@@ -27,8 +27,12 @@ final class LLMJob {
     private var finished = false
     private var secrets: [String] = []
 
-    init(request: LLMRequest, onEvent: @escaping (LLMJobEvent) -> Void) {
+    private let resolveRuntime: PythonRuntime.Provider
+
+    init(request: LLMRequest, runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
+         onEvent: @escaping (LLMJobEvent) -> Void) {
         self.request = request
+        self.resolveRuntime = runtime
         self.onEvent = onEvent
     }
 
@@ -56,7 +60,7 @@ final class LLMJob {
     }
 
     private func launch() throws {
-        let runtime = try PythonRuntime.resolve()
+        let runtime = try resolveRuntime()
         if let key = request.settings["api_key"] as? String, key.count >= 6 { secrets.append(key) }
         secrets.append(contentsOf: WorkerRedaction.secrets(in: runtime.environment))
         var command: [String: Any] = [
@@ -70,7 +74,10 @@ final class LLMJob {
             onStderr: { self.emit(.log(self.safe($0))) },
             onStdoutEnd: { self.finish(.failed("The LLM worker closed its output without completing.")) },
             onError: { self.finish(.failed($0)) },
-            onExit: { status in self.finish(.failed("The LLM worker exited without completing (status \(status)).")) }
+            onExit: { status in
+                self.finish(.failed("The LLM worker exited without completing (status \(status))."))
+                self.releaseWorker()
+            }
         )
         self.worker = worker
         try worker.send(command)
@@ -122,5 +129,12 @@ final class LLMJob {
         worker?.closeInput()
         worker?.terminateGracefully(after: 2)
         DispatchQueue.main.async { self.onEvent(event) }
+    }
+
+    /// The worker's line readers hold this job through their callbacks; once the
+    /// process is gone, drop them so the job is freed.
+    private func releaseWorker() {
+        worker?.close()
+        worker = nil
     }
 }

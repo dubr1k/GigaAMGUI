@@ -3215,13 +3215,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         settings.model = option("settings.model", values: ["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"])
         settings.onnxProvider = option("settings.onnxProvider", values: ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"])
         settings.hfToken = SecureStore.string(for: "hfToken")
-        // Captures need the job to forward events and the job needs the captures: bind through a late reference.
-        var job: LiveSessionJob?
-        let forward: (LiveCaptureEvent) -> Void = { event in job?.handleCapture(event) }
-        var captures: [LiveCaptureSource] = [MicrophoneCapture(deviceID: settings.microphoneDeviceID, onEvent: forward)]
-        if withSystem { captures.append(SystemAudioCapture(onEvent: forward)) }
-        let created = LiveSessionJob(settings: settings, captures: captures) { [weak self] event in self?.receiveLiveEvent(event) }
-        job = created
+        // Captures forward audio to the job, which owns them: the job hands them a
+        // sink that holds it weakly, so a finished session (worker, AVAudioEngine) is freed.
+        let microphoneID = settings.microphoneDeviceID
+        let created = LiveSessionJob(settings: settings, makeCaptures: { forward in
+            var captures: [LiveCaptureSource] = [MicrophoneCapture(deviceID: microphoneID, onEvent: forward)]
+            if withSystem { captures.append(SystemAudioCapture(onEvent: forward)) }
+            return captures
+        }, onEvent: { [weak self] event in self?.receiveLiveEvent(event) })
         liveJob = created
         liveSessionDir = nil
         refreshLiveFolderLabel()

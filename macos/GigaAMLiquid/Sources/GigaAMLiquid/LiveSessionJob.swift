@@ -37,7 +37,9 @@ enum LiveSessionEvent {
 /// else is serialized on `queue`, and exactly one terminal event is delivered.
 final class LiveSessionJob {
     private let settings: LiveSessionSettings
-    private let captures: [LiveCaptureSource]
+    /// Built by the owner's factory with a weak back-reference: captures must not
+    /// keep the job (and its worker and audio engine) alive after the session.
+    private var captures: [LiveCaptureSource] = []
     private let onEvent: (LiveSessionEvent) -> Void
     private let queue = DispatchQueue(label: "GigaAMLiquid.live", qos: .userInitiated)
     private var worker: WorkerProcess?
@@ -53,10 +55,17 @@ final class LiveSessionJob {
     /// 50 chunks × 100 ms = 5 s per source; beyond that the worker is not keeping up.
     private let maxBufferedChunks = 50
 
-    init(settings: LiveSessionSettings, captures: [LiveCaptureSource], onEvent: @escaping (LiveSessionEvent) -> Void) {
+    /// `makeCaptures` receives the sink for captured audio; it holds the job weakly.
+    private let resolveRuntime: PythonRuntime.Provider
+
+    init(settings: LiveSessionSettings,
+         makeCaptures: (@escaping (LiveCaptureEvent) -> Void) -> [LiveCaptureSource],
+         runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
+         onEvent: @escaping (LiveSessionEvent) -> Void) {
         self.settings = settings
-        self.captures = captures
+        self.resolveRuntime = runtime
         self.onEvent = onEvent
+        captures = makeCaptures { [weak self] event in self?.handleCapture(event) }
     }
 
     func start() {
@@ -170,7 +179,7 @@ final class LiveSessionJob {
     // MARK: - Worker → UI
 
     private func launch() throws {
-        let runtime = try PythonRuntime.resolve()
+        let runtime = try resolveRuntime()
         var environment = runtime.environment
         if let token = settings.hfToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             environment["HF_TOKEN"] = token
@@ -182,7 +191,10 @@ final class LiveSessionJob {
             onStderr: { self.emit(.log(self.safe($0))) },
             onStdoutEnd: { self.finish(.failed("The live worker closed its output without stopping.")) },
             onError: { self.finish(.failed($0)) },
-            onExit: { status in self.finish(.failed("The live worker exited without stopping (status \(status)).")) }
+            onExit: { status in
+                self.finish(.failed("The live worker exited without stopping (status \(status))."))
+                self.releaseWorker()
+            }
         )
         self.worker = worker
         try worker.send([
@@ -277,5 +289,12 @@ final class LiveSessionJob {
         worker?.closeInput()
         worker?.terminateGracefully(after: 2)
         DispatchQueue.main.async { self.onEvent(event) }
+    }
+
+    /// The worker's line readers hold this job through their callbacks; once the
+    /// process is gone, drop them so the job, its captures and the audio engine go.
+    private func releaseWorker() {
+        worker?.close()
+        worker = nil
     }
 }

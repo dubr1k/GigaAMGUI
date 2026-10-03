@@ -57,11 +57,15 @@ final class NativeTranscriptionJob {
     private var diagnostics = ""
     private var secrets: [String] = []
 
+    private let resolveRuntime: PythonRuntime.Provider
+
     init(files: [URL], outputDirectory: URL?, settings: NativeTranscriptionSettings,
+         runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
          onEvent: @escaping (NativeTranscriptionEvent) -> Void) {
         self.files = files.map { $0.standardizedFileURL }
         self.outputDirectory = outputDirectory?.standardizedFileURL
         self.settings = settings
+        self.resolveRuntime = runtime
         self.onEvent = onEvent
     }
 
@@ -109,7 +113,7 @@ final class NativeTranscriptionJob {
             }
         }
         if let outputDirectory, !outputDirectory.isFileURL { throw WorkerFailure("Output directory must be a local folder.") }
-        let runtime = try PythonRuntime.resolve()
+        let runtime = try resolveRuntime()
         runtimeRoot = runtime.root
         // The frozen companion runs `--native-worker`; only the source-tree runtime needs src.tui_worker.
         guard runtime.frozenCompanion || manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path) else {
