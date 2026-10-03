@@ -355,6 +355,9 @@ class ModelLoader:
     def configure_model(self, model_revision: str) -> None:
         """Select an ASR model for the next load."""
         selected = validate_asr_model(model_revision)
+        # Фабрика передаёт MLX именно model_name: если обновить только
+        # revision, MLX грузил прежнюю модель, падал и молча уступал PyTorch.
+        self._model_name = selected
         if selected != self._model_revision:
             self._model_revision = selected
             self.unload()
