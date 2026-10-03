@@ -140,6 +140,7 @@ LOG_TRANSLATIONS: tuple[tuple[str, str], ...] = (
     (r"^(\d+) сек$", r"\1 s"),
     (r"^Не удалось обработать (.+?): (.+)$", r"Could not process \1: \2"),
     (r"^Остановка запрошена: закончим текущий файл и остановимся\.$", r"Stop requested: finishing the current file, then stopping."),
+    (r"^Остановка запрошена: прерываем текущий файл, его результаты не сохранятся\.$", r"Stop requested: interrupting the current file; its results will not be saved."),
     (r"^Обработка отменена пользователем$", r"Processing cancelled by the user"),
 )
 

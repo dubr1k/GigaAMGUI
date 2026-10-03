@@ -124,6 +124,7 @@ public enum LogTranslation {
         (#"^(\d+) сек$"#, "$1 s"),
         (#"^Не удалось обработать (.+?): (.+)$"#, "Could not process $1: $2"),
         (#"^Остановка запрошена: закончим текущий файл и остановимся\.$"#, "Stop requested: finishing the current file, then stopping."),
+        (#"^Остановка запрошена: прерываем текущий файл, его результаты не сохранятся\.$"#, "Stop requested: interrupting the current file; its results will not be saved."),
         (#"^Обработка отменена пользователем$"#, "Processing cancelled by the user"),
     ].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
 
