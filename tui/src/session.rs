@@ -11,10 +11,17 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::{Duration, Instant};
+
+/// How long a `resolve_inputs` request may stay unanswered. A worker that never
+/// replies (an exception in its resolver thread, an older build) used to keep
+/// "adding inputs" on screen and Start locked until the user found Esc.
+pub(crate) const INPUTS_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) struct PendingInput {
     pub id: u64,
     pub original: String,
+    pub sent_at: Instant,
 }
 
 #[derive(Deserialize)]
@@ -53,7 +60,11 @@ impl App {
         }
         self.next_input_id += 1;
         let id = self.next_input_id;
-        self.pending_inputs.push_back(PendingInput { id, original });
+        self.pending_inputs.push_back(PendingInput {
+            id,
+            original,
+            sent_at: Instant::now(),
+        });
         self.outbox
             .push(json!({"type":"resolve_inputs", "request_id":id, "paths":paths}));
         self.status = t(self.lang, "status.adding_inputs").into();
@@ -72,6 +83,30 @@ impl App {
             self.outbox
                 .push(json!({"type":"cancel_inputs","request_id":request.id}));
         }
+    }
+
+    /// Cancels the requests the worker left unanswered for [`INPUTS_TIMEOUT`]; the
+    /// input comes back to the editor (or the retry list) with a visible error.
+    pub(crate) fn check_pending_inputs(&mut self, now: Instant) {
+        let (expired, waiting): (Vec<_>, Vec<_>) = self
+            .pending_inputs
+            .drain(..)
+            .partition(|request| now.saturating_duration_since(request.sent_at) >= INPUTS_TIMEOUT);
+        self.pending_inputs = waiting.into();
+        if expired.is_empty() {
+            return;
+        }
+        for request in expired {
+            self.outbox
+                .push(json!({"type":"cancel_inputs","request_id":request.id}));
+            self.recover_input(request.original);
+        }
+        self.status = tf(
+            self.lang,
+            "status.inputs_timeout",
+            &[("seconds", &INPUTS_TIMEOUT.as_secs().to_string())],
+        );
+        self.log(self.status.clone());
     }
 
     fn recover_input(&mut self, original: String) {
@@ -124,14 +159,19 @@ impl App {
                 "unsupported" => "input.error_unsupported",
                 "empty_directory" => "input.error_empty",
                 "invalid_request" => "input.error_invalid",
+                "undecodable" => "input.error_undecodable",
+                "too_many_files" => "input.error_too_many",
+                "more_errors" => "input.error_more",
+                "internal" => "input.error_internal",
                 _ => "input.error_unknown",
             };
-            self.log(format!(
-                "{}: {} — {}",
-                error.path,
-                t(self.lang, key),
-                error.message
-            ));
+            let line = format!("{} — {}", t(self.lang, key), error.message);
+            // Request-wide errors (too many files, …) carry no path.
+            self.log(if error.path.is_empty() {
+                line
+            } else {
+                format!("{}: {line}", error.path)
+            });
         }
         self.status = tf(
             self.lang,
@@ -466,6 +506,69 @@ mod tests {
         assert!(app.failed_inputs.is_empty());
         assert_eq!(app.pending_inputs.front().unwrap().original, "/b.wav");
         assert_eq!(app.input.text(), "/a.wav");
+    }
+
+    #[test]
+    fn an_unanswered_input_request_times_out_and_unlocks_start() {
+        use std::time::{Duration, Instant};
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/queued.wav".into());
+        app.submit_paths("/dropped folder".into());
+        let id = app.pending_inputs.front().unwrap().id;
+        app.take_outbox();
+        let now = Instant::now();
+        app.check_pending_inputs(now + Duration::from_secs(5));
+        assert_eq!(
+            app.pending_inputs.len(),
+            1,
+            "a slow scan is not an error yet"
+        );
+        assert!(!app.can_start(RunSelection::Pending));
+
+        app.check_pending_inputs(now + super::INPUTS_TIMEOUT + Duration::from_secs(1));
+        assert!(app.pending_inputs.is_empty());
+        assert!(
+            app.can_start(RunSelection::Pending),
+            "Start is no longer locked"
+        );
+        assert_eq!(
+            app.take_outbox(),
+            vec![json!({"type":"cancel_inputs", "request_id":id})]
+        );
+        assert_eq!(
+            app.input.text(),
+            "/dropped folder",
+            "the input is recoverable"
+        );
+        assert!(app
+            .status
+            .contains(&super::INPUTS_TIMEOUT.as_secs().to_string()));
+        assert!(app.logs.contains(&app.status));
+    }
+
+    #[test]
+    fn new_resolver_error_codes_are_localized_and_pathless_errors_read_cleanly() {
+        let mut app = crate::test_support::ready_app();
+        app.lang = crate::i18n::Lang::En;
+        app.submit_paths("/folder".into());
+        let id = app.pending_inputs.front().unwrap().id;
+        app.handle_message(json!({"type":"inputs_resolved","request_id":id,"files":[],"duplicates":[],
+            "errors":[
+                {"path":"/folder/bad\u{fffd}.wav","code":"undecodable","message":"File name is not valid UTF-8"},
+                {"path":"","code":"too_many_files","message":"Too many files to add at once (90000)"}
+            ],"cancelled":false}));
+        assert!(
+            app.logs
+                .iter()
+                .any(|line| line.starts_with("/folder/bad\u{fffd}.wav: ")
+                    && !line.contains("Unknown"))
+        );
+        let summary = app
+            .logs
+            .iter()
+            .find(|line| line.contains("90000"))
+            .expect("too_many_files is logged");
+        assert!(!summary.starts_with(':'), "{summary}");
     }
 
     #[test]

@@ -63,6 +63,130 @@ def test_directory_symlink_is_not_followed_and_file_alias_is_deduplicated(tmp_pa
     assert result["errors"] == []
 
 
+class _FakeEntry:
+    """A directory entry with a name the OS returned as non-UTF-8 bytes (Linux).
+
+    Python hands such names over with surrogateescape (`\\udcff`), which no UTF-8
+    stream can write: macOS/Windows refuse to create these files, so the entry is
+    injected into a real directory listing instead."""
+
+    def __init__(self, directory, name, *, directory_entry=False):
+        self.name = name
+        self.path = os.path.join(directory, name)
+        self._directory = directory_entry
+
+    def is_dir(self, follow_symlinks=True):
+        return self._directory
+
+    def is_file(self, follow_symlinks=True):
+        return not self._directory
+
+
+class _Listing:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def __enter__(self):
+        return iter(self._entries)
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_non_utf8_names_in_a_folder_are_reported_and_the_reply_stays_encodable(tmp_path, monkeypatch):
+    """A dropped folder with one non-UTF-8 name used to put the surrogate path into
+    `errors`; writing that reply raised UnicodeEncodeError in the resolver thread,
+    the exception was swallowed and no `inputs_resolved` ever came — Start stayed
+    locked behind "adding inputs"."""
+    import src.services.tui_input_service as service
+
+    good = tmp_path / "good.wav"
+    good.touch()
+    real_scandir = os.scandir
+
+    undecodable_folder = os.path.join(str(tmp_path), "dir\udcfe")
+
+    def scandir(path):
+        if str(path) == undecodable_folder:  # its media inherit the undecodable path
+            return _Listing([_FakeEntry(undecodable_folder, "inside.wav"),
+                             _FakeEntry(undecodable_folder, "notes\udcfd.txt")])
+        entries = list(real_scandir(path))
+        if Path(path) == tmp_path:
+            entries.append(_FakeEntry(str(path), "bad\udcff.wav"))
+            entries.append(_FakeEntry(str(path), "dir\udcfe", directory_entry=True))
+        return _Listing(entries)
+
+    monkeypatch.setattr(service.os, "scandir", scandir)
+    result = resolve([tmp_path])
+
+    assert result["files"] == [str(good.resolve())]
+    paths = sorted(error["path"] for error in result["errors"])
+    assert [error["code"] for error in result["errors"]] == ["undecodable", "undecodable"]
+    assert paths == sorted([os.path.join(str(tmp_path), "bad�.wav"),
+                            os.path.join(str(tmp_path), "dir�", "inside.wav")])
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="only Linux file systems keep non-UTF-8 names")
+def test_real_non_utf8_file_name_is_reported_not_swallowed(tmp_path):
+    (tmp_path / "good.wav").touch()
+    open(os.path.join(os.fsencode(tmp_path), b"bad\xff.wav"), "wb").close()
+    result = resolve([tmp_path])
+    assert result["files"] == [str((tmp_path / "good.wav").resolve())]
+    assert [error["code"] for error in result["errors"]] == ["undecodable"]
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+def test_resolver_always_replies_even_if_the_result_cannot_be_written(tmp_path):
+    from src.services.tui_input_service import InputResolver
+
+    path = tmp_path / "a.wav"
+    path.touch()
+    messages = queue.Queue()
+    failures = []
+
+    def emit(kind, **payload):
+        if not failures:
+            failures.append(kind)
+            raise UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogates not allowed")
+        messages.put({"type": kind, **payload})
+
+    resolver = InputResolver(emit)
+    try:
+        resolver.start({"request_id": 3, "paths": [str(path)]})
+        message = messages.get(timeout=5)
+    finally:
+        resolver.close()
+    assert message["type"] == "inputs_resolved"
+    assert message["request_id"] == 3
+    assert message["files"] == []
+    assert message["errors"][0]["code"] == "internal"
+
+
+def test_a_reply_too_large_for_the_protocol_is_an_error_not_a_dead_worker(tmp_path, monkeypatch):
+    """Clients cap one protocol line at 8 MiB and kill a worker that exceeds it; a
+    drop of a huge folder tree produced exactly such an `inputs_resolved`."""
+    import src.services.tui_input_service as service
+
+    for index in range(30):
+        (tmp_path / f"{index:02}.wav").touch()
+    monkeypatch.setattr(service, "MAX_REPLY_BYTES", 1000)
+    result = resolve([tmp_path])
+    assert result["files"] == [] and result["duplicates"] == []
+    assert [error["code"] for error in result["errors"]] == ["too_many_files"]
+    assert "30" in result["errors"][0]["message"]
+
+
+def test_many_errors_are_summarized(tmp_path):
+    import src.services.tui_input_service as service
+
+    paths = [tmp_path / f"missing-{index}.wav" for index in range(250)]
+    result = resolve(paths)
+    assert len(result["errors"]) == service.MAX_REPORTED_ERRORS + 1
+    assert result["errors"][-1]["code"] == "more_errors"
+    assert str(250 - service.MAX_REPORTED_ERRORS) in result["errors"][-1]["message"]
+
+
 def test_unreadable_subfolder_does_not_discard_other_files(tmp_path, monkeypatch):
     import src.services.tui_input_service as service
 

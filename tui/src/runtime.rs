@@ -77,7 +77,9 @@ impl WorkerRuntime {
             }
             app.handle_worker_event(event);
         }
-        app.check_connection(Instant::now());
+        let now = Instant::now();
+        app.check_connection(now);
+        app.check_pending_inputs(now);
         if app.worker_stop_requested {
             if let Some(session) = &self.session {
                 session.stop();
