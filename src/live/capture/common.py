@@ -186,7 +186,7 @@ class QueuedCaptureAdapter:
                 set_error_handler(self._emit_native_error)
             api.start(self.source, self._device_id, self._capture)
         except Exception as exc:
-            self._emit_native_error(exc)
+            self._emit_start_failure(exc)
 
     def pause(self) -> None:
         self._paused.set()
@@ -253,10 +253,23 @@ class QueuedCaptureAdapter:
             self._api = self._api_loader()
         return self._api
 
+    def _emit_start_failure(self, exc: Exception) -> None:
+        """A source whose stream never opened has failed, whatever raised.
+
+        Only OSError used to count: PortAudioError derives from Exception and
+        CaptureUnavailable from RuntimeError, so a missing monitor source or a
+        busy device came out as STATUS, the source stayed active and the
+        session reported RECORDING while nothing was captured.
+        """
+        detail = str(exc) or type(exc).__name__
+        if isinstance(exc, PermissionError) or looks_like_permission_denial(detail):
+            self._emit(CaptureEventKind.PERMISSION_DENIED, detail)
+        else:
+            self._emit(CaptureEventKind.DEVICE_REMOVED, detail)
+
     def _emit_native_error(self, exc: Exception) -> None:
         detail = str(exc)
-        permission_words = ("permission", "screen recording", "tcc", "not authorized")
-        if isinstance(exc, PermissionError) or any(word in detail.casefold() for word in permission_words):
+        if isinstance(exc, PermissionError) or looks_like_permission_denial(detail):
             self._emit(CaptureEventKind.PERMISSION_DENIED, detail)
         elif isinstance(exc, OSError):
             self._emit(CaptureEventKind.DEVICE_REMOVED, detail)
@@ -317,3 +330,12 @@ class QueuedCaptureAdapter:
                 detail,
             )
         )
+
+
+PERMISSION_WORDS = ("permission", "screen recording", "tcc", "not authorized")
+
+
+def looks_like_permission_denial(detail: str) -> bool:
+    """Native APIs rarely raise PermissionError; their messages say it instead."""
+    text = detail.casefold()
+    return any(word in text for word in PERMISSION_WORDS)
