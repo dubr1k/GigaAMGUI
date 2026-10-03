@@ -6,7 +6,18 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
+from src.core.asr.types import normalize_window_audio
+
 from .types import CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
+
+
+def derive_asr_chunk(aligned: PcmChunk, asr_rate: int) -> PcmChunk:
+    """Recognition's copy of an aligned chunk: mono, at the model rate, same position."""
+    # All channels, downmixed: channel 0 alone missed a talker on input 2 of
+    # a stereo interface entirely.
+    audio = normalize_window_audio(aligned.frames, aligned.sample_rate, asr_rate)
+    offset = round(aligned.sample_offset * asr_rate / aligned.sample_rate)
+    return PcmChunk(aligned.source, asr_rate, 1, offset, audio[:, None].copy(), aligned.timestamp_ns)
 
 
 class SourceTimeline:

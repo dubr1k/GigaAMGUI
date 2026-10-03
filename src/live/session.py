@@ -10,8 +10,6 @@ from threading import RLock
 from time import monotonic
 from typing import Protocol
 
-from src.core.asr.types import normalize_window_audio
-
 from .capture.base import CaptureAdapter
 from .conversation import ConversationLog, ConversationTurn
 from .diagnostics import SessionLog
@@ -21,7 +19,7 @@ from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .mixing import MAX_MIX_SKEW_NS, MAX_PENDING_MIX_CHUNKS, MixCoordinator
 from .recorder import SessionRecorder
 from .recording_policy import MAX_RECORDING_FAILURES, RecordingGuard
-from .timeline import SourceTimeline
+from .timeline import SourceTimeline, derive_asr_chunk
 from .transcript import TranscriptState
 from .types import (
     CaptureEvent,
@@ -393,20 +391,7 @@ class LiveSession:
             for aligned in timeline.ingest(chunk):
                 self._recording.write(aligned)
                 self._mix.add(aligned, self._active_sources)
-                # All channels, downmixed: channel 0 alone missed a talker on
-                # input 2 of a stereo interface entirely.
-                audio = normalize_window_audio(aligned.frames, aligned.sample_rate, self._settings.asr_sample_rate)
-                offset = round(aligned.sample_offset * self._settings.asr_sample_rate / aligned.sample_rate)
-                self._schedulers[aligned.source].submit(
-                    PcmChunk(
-                        aligned.source,
-                        self._settings.asr_sample_rate,
-                        1,
-                        offset,
-                        audio[:, None].copy(),
-                        aligned.timestamp_ns,
-                    )
-                )
+                self._schedulers[aligned.source].submit(derive_asr_chunk(aligned, self._settings.asr_sample_rate))
             self._write_checkpoint_if_due()
 
     def _write_checkpoint_if_due(self) -> None:
