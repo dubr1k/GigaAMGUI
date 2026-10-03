@@ -1210,7 +1210,6 @@ pub(crate) fn toggle_pets(app: &mut App) {
         app.status = error;
     } else {
         app.pet_enabled = true;
-        app.pet_running = app.running();
         app.status = t(app.lang, "status.pets_on").into();
         save_app_settings(app);
     }
