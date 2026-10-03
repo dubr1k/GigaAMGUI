@@ -38,6 +38,7 @@ from .llm_mixin import LlmMixin
 from .llm_ui_mixin import LlmUiMixin
 from .processing_mixin import ProcessingMixin
 from .processing_options_ui_mixin import ProcessingOptionsUiMixin
+from .result_view_mixin import ResultViewMixin
 from .settings_mixin import SettingsMixin
 from .single_instance import (
     argv_open_paths,
@@ -78,7 +79,7 @@ class WorkerSignals(QObject):
 
 
 class GigaTranscriberQtApp(
-    LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, FilesMixin,
+    LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, ResultViewMixin, FilesMixin,
     I18nMixin, SettingsMixin, JournalMixin, SupportSurfacesMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
     LiveMixin, LiveUiMixin, LifecycleMixin,
     UiBuildMixin, QMainWindow,
