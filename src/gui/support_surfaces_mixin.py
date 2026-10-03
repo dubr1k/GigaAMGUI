@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
@@ -126,10 +127,8 @@ class SupportSurfacesMixin:
             editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
             editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            editor.setStyleSheet(
-                "background: #F7FAFD; color: #243B53; border: 1px solid #DBE5EF; "
-                f"border-radius: {self._px(10)}px;"
-            )
+            # Цвета — из темы (QPlainTextEdit#api_code_editor в общем QSS): прежний
+            # встроенный светлый стиль оставался белым пятном в тёмной теме.
             self.api_code_edits[language] = editor
             self.api_code_tabs.addTab(editor, language)
         layout.addWidget(self.api_code_tabs, 1)
@@ -272,18 +271,37 @@ class SupportSurfacesMixin:
             editor.setPlainText(self._api_examples()[language])
         self._refresh_api_status()
 
-    def _api_health_available(self) -> bool:
-        parsed = urlsplit(self._api_base_url())
+    @staticmethod
+    def _api_health_available(base_url: str) -> bool:
+        parsed = urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return False
         try:
-            with urlopen(f"{self._api_base_url()}/health", timeout=0.35) as response:
+            with urlopen(f"{base_url}/health", timeout=0.35) as response:
                 return response.status == 200
         except (OSError, URLError, ValueError):
             return False
 
     def _refresh_api_status(self) -> None:
-        available = self._api_health_available()
+        """Проверить /health в фоне: запрос к недоступному адресу — это таймаут,
+        и раньше он шёл в Qt-потоке при построении окна и каждой правке адреса."""
+        base_url = self._api_base_url()
+        self.api_status_label.setText(self._t("… Проверка", "… Checking"))
+        self.api_docs_button.setEnabled(getattr(self, "_api_available", False))
+        signals = self.signals
+
+        def probe():
+            available = self._api_health_available(base_url)
+            try:
+                signals.api_status_checked.emit(base_url, available)
+            except RuntimeError:
+                pass  # окно уже закрыто
+
+        threading.Thread(target=probe, name="api-health", daemon=True).start()
+
+    def _on_api_status_checked(self, base_url: str, available: bool) -> None:
+        if base_url != self._api_base_url():
+            return  # ответ на прежний адрес: уже идёт проверка нового
         self._api_available = available
         self.api_status_label.setText(
             self._t("● Запущен", "● Running") if available else self._t("○ Остановлен", "○ Stopped")

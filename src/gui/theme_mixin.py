@@ -403,6 +403,10 @@ class ThemeMixin:
             QPushButton#primary_button:hover, QPushButton#api_primary_action:hover, QPushButton#llm_primary_action:hover {{
                 background-color: {c["accent2"]};
             }}
+            QPushButton#primary_button:disabled, QPushButton#api_primary_action:disabled,
+            QPushButton#llm_primary_action:disabled {{
+                background-color: {c["accent_dis"]}; color: {c["text_mute"]};
+            }}
             QPushButton#live_record_button {{ background-color: #e05050; color: #ffffff; border: none; font-weight: bold; }}
             QPushButton#live_record_button:hover {{ background-color: #c43c3c; }}
             QPushButton#live_stop_button {{ color: {c["clear_hover_text"]}; border: 1px solid {c["clear_hover_border"]}; }}
