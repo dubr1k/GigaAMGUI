@@ -975,6 +975,14 @@ def _parse_transcribe_form(
     fmt_list = [f.strip() for f in output_formats.split(",") if f.strip()]
     if not fmt_list:
         fmt_list = ['txt', 'txt_timecodes']
+    unknown = [fmt for fmt in fmt_list if fmt not in OUTPUT_FORMATS]
+    if unknown:
+        # Иначе мусорный формат попадает в индекс, и /result и /download этой задачи
+        # навсегда отвечают 500 (output_filename бросает ValueError)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неизвестный формат вывода: {', '.join(unknown)}. Доступны: {', '.join(OUTPUT_FORMATS)}",
+        )
     try:
         diarization_backend = normalize_diarization_backend(diarization_backend)
         asr_selection = transcription_service.normalize_asr_selection(
@@ -1257,6 +1265,8 @@ async def get_task_result(task_id: str, user: str = Depends(require_auth)):
     if result_dir.exists():
         stem = Path(task['filename']).stem
         for fmt in task.get('output_formats', ['txt', 'txt_timecodes']):
+            if fmt not in OUTPUT_FORMATS:
+                continue  # задачи старых версий могли сохранить формат без проверки
             found = find_result_file(result_dir, stem, fmt)
             if found:
                 try:
@@ -1294,7 +1304,7 @@ async def download_result_file(
         raise HTTPException(status_code=404, detail="Результаты не найдены")
 
     stem = Path(task['filename']).stem
-    found = find_result_file(result_dir, stem, format)
+    found = find_result_file(result_dir, stem, format) if format in OUTPUT_FORMATS else None
     if not found:
         raise HTTPException(status_code=404, detail=f"Файл формата {format} не найден")
 

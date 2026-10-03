@@ -12,6 +12,8 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from fastapi.testclient import TestClient  # noqa: E402
+
 os.environ.setdefault("WEB_SECRET", "x" * 32)
 os.environ.setdefault("WEB_USERNAME", "test-user")
 os.environ.setdefault("WEB_PASSWORD", "test-password")
@@ -84,6 +86,39 @@ def fake_processor(monkeypatch):
     return _Processor
 
 
+def _login(client: TestClient) -> None:
+    response = client.post("/api/auth/login", json={"username": web_app.WEB_USERNAME, "password": web_app.WEB_PASSWORD})
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
+def anon_client(web_dirs):
+    # raise_server_exceptions=False: необработанное исключение должно выглядеть как в проде — HTTP 500
+    with TestClient(web_app.app, base_url="https://testserver", raise_server_exceptions=False) as client:
+        yield client
+
+
+@pytest.fixture
+def client(anon_client):
+    _login(anon_client)
+    return anon_client
+
+
+def _completed_task(results_dir, task_id: str, *, user: str | None = None, formats=("txt",)) -> dict:
+    """Завершённая задача с файлом результата `voice.txt`."""
+    task_dir = results_dir / task_id
+    task_dir.mkdir()
+    (task_dir / "voice.txt").write_text("привет", encoding="utf-8")
+    task = {
+        "task_id": task_id, "status": "completed", "created_at": "2026-01-01T00:00:00",
+        "progress": 100, "filename": "voice.mp3", "file_size": 10, "message": "ok", "stage": "Готово",
+        "output_formats": list(formats), "user": user or web_app.WEB_USERNAME,
+        "result_files": [{"name": "voice.txt", "path": str(task_dir / "voice.txt"), "size": 12, "format": "txt"}],
+    }
+    web_app.tasks_storage[task_id] = task
+    return task
+
+
 def _run_processing(task_id: str, file_path, filename: str):
     async def scenario():
         web_app.processing_semaphore = asyncio.Semaphore(1)
@@ -121,3 +156,42 @@ def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_process
     _run_processing("t2", source, "voice.wav")
 
     assert web_app.tasks_storage["t2"]["message"] == "Обработка не удалась"
+
+
+# ==================== форматы вывода ====================
+
+
+def test_upload_rejects_unknown_output_format_before_saving(client, web_dirs):
+    upload_dir, _ = web_dirs
+    response = client.post(
+        "/api/upload",
+        files={"files": ("voice.wav", b"RIFF", "audio/wav")},
+        data={"output_formats": "txt,docx"},
+    )
+    assert response.status_code == 400
+    assert "docx" in response.json()["detail"]
+    assert list(upload_dir.iterdir()) == []
+    assert web_app.tasks_storage == {}
+
+
+def test_download_url_rejects_unknown_output_format(client):
+    response = client.post("/api/download-url", data={"url": "https://example.com/v", "output_formats": "pdf"})
+    assert response.status_code == 400
+    assert web_app.tasks_storage == {}
+
+
+def test_unknown_format_download_is_404_not_500(client, web_dirs):
+    _, results_dir = web_dirs
+    _completed_task(results_dir, "done1")
+    response = client.get("/api/tasks/done1/download", params={"format": "bogus"})
+    assert response.status_code == 404
+    assert client.get("/api/tasks/done1/download", params={"format": "txt"}).status_code == 200
+
+
+def test_result_skips_unknown_formats_persisted_by_older_versions(client, web_dirs):
+    # До проверки форматов в индекс могла попасть задача с мусорным форматом — она не должна отдавать 500 навсегда
+    _, results_dir = web_dirs
+    _completed_task(results_dir, "done2", formats=("txt", "bogus"))
+    response = client.get("/api/tasks/done2/result")
+    assert response.status_code == 200
+    assert [item["format"] for item in response.json()["result_files"]] == ["txt"]
