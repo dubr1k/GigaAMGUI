@@ -102,6 +102,41 @@ def test_unresponsive_worker_diagnostics_and_owned_descendant_force_stop(tmp_pat
                 pass
 
 
+@pytest.mark.parametrize("signal_number", [signal.SIGTERM, signal.SIGHUP])
+def test_termination_signal_stops_the_owned_worker_tree(tmp_path, terminal_factory, signal_number):
+    """SIGTERM (kill, logout) or SIGHUP (closed terminal window) killed the TUI
+    without running any destructor: the worker lives in its own process group, so
+    the worker and its LLM CLI child were orphaned and kept running."""
+    import psutil
+
+    terminal = terminal_factory(GIGAAM_TEST_BLOCK_ON_LLM="1")
+    terminal.wait(lambda t: "● Готово" in t.text)
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("fixture", encoding="utf-8")
+    terminal.command(f"/llm-file {transcript}")
+    terminal.send("\x1bOQ\x1b[17~")  # F2, F6
+    terminal.wait(lambda t: (tmp_path / "cli-child.pid").exists() and "LLM…" in t.text)
+    owned = [psutil.Process(int((tmp_path / name).read_text()))
+             for name in ("worker.pid", "cli-child.pid")]
+
+    def gone(process):
+        return not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
+
+    try:
+        os.kill(terminal.process.pid, signal_number)
+        terminal.wait(lambda t: t.process.poll() is not None and all(gone(process) for process in owned))
+        # The terminal is restored on the way out, as on a normal exit, and the
+        # parent still sees the process end by that signal.
+        assert b"\x1b[?1049l" in terminal.output
+        assert terminal.process.returncode == -signal_number
+    finally:
+        for process in owned:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+
+
 def test_two_file_progress_and_saved_results_survive_clear(tmp_path, terminal_factory):
     terminal = terminal_factory(GIGAAM_TEST_PROGRESS_GATES="1")
     for index in range(2):

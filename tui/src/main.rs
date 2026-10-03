@@ -23,6 +23,7 @@ mod results;
 mod runtime;
 mod session;
 mod settings;
+mod signals;
 mod terminal_guard;
 #[cfg(test)]
 mod test_support;
@@ -69,6 +70,18 @@ fn main() -> io::Result<()> {
         }
         _ => {}
     }
+    signals::install();
+    // Everything that owns the terminal or the worker is dropped inside, before
+    // a termination signal is re-raised.
+    let result = run_interactive(lang_override, theme_override);
+    signals::reraise();
+    result
+}
+
+fn run_interactive(
+    lang_override: Option<i18n::Lang>,
+    theme_override: Option<theme::Theme>,
+) -> io::Result<()> {
     let mut app = App::default();
     apply_settings(&mut app, load_settings(), lang_override);
     if let Some(theme) = theme_override {
@@ -91,7 +104,7 @@ fn main() -> io::Result<()> {
     }
     let mut last_pet_frame = Instant::now();
     let mut input_changed_at: Option<Instant> = None;
-    while !app.exit_requested {
+    while !app.exit_requested && !signals::requested() {
         worker.tick(&mut app);
         // `/mouse on|off` flips the flag; capture follows it here so that the
         // command needs no handle to the terminal.
