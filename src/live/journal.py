@@ -56,31 +56,67 @@ class LiveSessionStore:
 
 
 class EventJournal:
+    """Append-only transcript revisions that survive a torn write.
+
+    A crash or a full disk can leave the last line half-written. Reading used
+    to parse every line strictly, so one torn line made every later read
+    raise — including the one stop() exports from — and the next append was
+    glued onto the fragment, losing that event too.
+    """
+
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
+        self._tail_checked = False
 
     def append(self, event: TranscriptEvent) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = asdict(event)
         payload.pop("source_label", None)
         payload["source"] = event.source.value
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        prefix = "" if self._tail_checked or self._ends_with_newline() else "\n"
+        self._tail_checked = False
         with self._path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-            file.write("\n")
+            file.write(prefix + line)
             file.flush()
+        # Only a write that completed leaves the file ending in a newline.
+        self._tail_checked = True
 
     def latest_events(self) -> list[TranscriptEvent]:
         latest: dict[str, TranscriptEvent] = {}
         if not self._path.exists():
             return []
-        for line in self._path.read_text(encoding="utf-8").splitlines():
-            data = json.loads(line)
-            data["source"] = CaptureSource(data["source"])
-            event = TranscriptEvent(**data)
+        for line in self._path.read_text(encoding="utf-8", errors="replace").splitlines():
+            event = _parse_event(line)
+            if event is None:
+                continue
             prior = latest.get(event.event_id)
             if prior is None or event.revision >= prior.revision:
                 latest[event.event_id] = event
         return list(latest.values())
+
+    def _ends_with_newline(self) -> bool:
+        try:
+            with self._path.open("rb") as file:
+                file.seek(0, 2)
+                if file.tell() == 0:
+                    return True
+                file.seek(-1, 2)
+                return file.read(1) == b"\n"
+        except FileNotFoundError:
+            return True
+
+
+def _parse_event(line: str) -> TranscriptEvent | None:
+    """A journal line as an event, or None when it is torn or not an event."""
+    if not line.strip():
+        return None
+    try:
+        data = json.loads(line)
+        data["source"] = CaptureSource(data["source"])
+        return TranscriptEvent(**data)
+    except (ValueError, TypeError, KeyError):
+        return None
 
 
 class ConversationJournal:

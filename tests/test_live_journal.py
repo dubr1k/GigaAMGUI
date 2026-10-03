@@ -63,3 +63,48 @@ def test_default_session_root_is_documents_gigaam_live(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
 
     assert default_session_root() == tmp_path / "Documents" / "GigaAM" / "live"
+
+
+def test_torn_last_line_does_not_hide_the_events_before_it(tmp_path):
+    """One torn line made every later read raise, and stop() failed at export."""
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="one"))
+    with path.open("a", encoding="utf-8") as file:
+        file.write('{"event_id":"e2","revision":0,"source":"mi')
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["one"]
+
+
+def test_append_after_a_torn_line_starts_a_new_line(tmp_path):
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="one"))
+    with path.open("a", encoding="utf-8") as file:
+        file.write('{"event_id":"e2","rev')
+
+    journal = EventJournal(path)
+    journal.append(event("e3", revision=0, text="three"))
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["one", "three"]
+
+
+def test_invalid_lines_are_skipped(tmp_path):
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="one"))
+    with path.open("a", encoding="utf-8") as file:
+        file.write("not json\n")
+        file.write('{"event_id":"e2","source":"radio"}\n')
+        file.write("[1, 2]\n")
+        file.write("\n")
+        file.write('{"event_id":"e3","unexpected":true}\n')
+    EventJournal(path).append(event("e4", revision=0, text="four"))
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["one", "four"]
+
+
+def test_torn_multibyte_character_does_not_break_the_read(tmp_path):
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="привет"))
+    with path.open("ab") as file:
+        file.write('{"event_id":"e2","text":"п'.encode()[:-1])
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["привет"]
