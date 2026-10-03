@@ -11,12 +11,11 @@ import numpy as np
 from ...config import ASR_SEGMENTATION_MODE
 from ...utils.model_cache import OnnxModelLocation, onnx_model_location
 from .chunking import (
-    normalize_chunk_words,
+    AudioChunk,
     plan_audio_chunks,
-    stitch_chunk,
     vad_regions_miss_active_audio,
 )
-from .longform import VadFailureMemo, call_logger
+from .longform import VadFailureMemo, absolute_words, assemble_segments, call_logger
 from .models import onnx_model_name, onnx_model_repo, validate_asr_model
 from .onnx_loading import load_asr_model
 from .onnx_provider import (
@@ -27,7 +26,12 @@ from .onnx_provider import (
 )
 from .onnx_vad import OnnxVadSegmenter
 from .token_timestamps import tokens_to_words
-from .types import BackendCapabilities, TranscriptionSegment, normalize_window_audio
+from .types import (
+    BackendCapabilities,
+    TranscriptionSegment,
+    TranscriptionWord,
+    normalize_window_audio,
+)
 from .vad import VadSegmenter
 
 
@@ -361,100 +365,30 @@ class OnnxBackend:
                 "по тихим точкам с перекрытием"
             )
 
-        results: list[TranscriptionSegment] = []
-        previous_result_index: int | None = None
-        previous_group: int | None = None
-        reported = 0.0
-
-        for chunk in chunks:
+        def decode(chunk: AudioChunk) -> tuple[str, list[TranscriptionWord] | None]:
             start = chunk.decode_start_sample
             end = chunk.decode_end_sample
-            if end - start < max(1, sample_rate // 10):
-                continue
-
             decoded = self.model.recognize(audio[start:end], sample_rate=sample_rate)
-            text = str(getattr(decoded, "text", decoded) or "").strip()
             relative_words = tokens_to_words(
                 getattr(decoded, "tokens", None),
                 getattr(decoded, "timestamps", None),
                 duration=float(end - start) / sample_rate,
             )
-            words = None
-            if relative_words is not None:
-                decode_start_sec = float(start) / sample_rate
-                words = [
-                    {
-                        "text": word["text"],
-                        "start": round(decode_start_sec + word["start"], 9),
-                        "end": round(decode_start_sec + word["end"], 9),
-                    }
-                    for word in relative_words
-                ]
+            # Времена токенов — float32-шаг энкодера: округляем, чтобы сдвиг на
+            # начало окна не давал хвостов вроде 10.100000000000001.
+            return (
+                str(getattr(decoded, "text", decoded) or ""),
+                absolute_words(relative_words, float(start) / sample_rate, digits=9),
+            )
 
-            if text:
-                overlap_words = 0
-                if (
-                    chunk.overlaps_previous
-                    and previous_result_index is not None
-                    and previous_group == chunk.group
-                ):
-                    previous = results[previous_result_index]
-                    stitched = stitch_chunk(
-                        previous["transcription"],
-                        previous.get("words"),
-                        text,
-                        words,
-                    )
-                    previous["transcription"] = stitched.previous_text
-                    if stitched.previous_words is not None:
-                        previous["words"] = stitched.previous_words
-                    text = stitched.text
-                    overlap_words = stitched.trim_words
-
-                start_time = max(0.0, float(chunk.start_sec))
-                end_time = min(total_seconds, float(chunk.end_sec))
-                if end_time < start_time:
-                    continue
-                if words is not None:
-                    words = normalize_chunk_words(
-                        words,
-                        start_sec=start_time,
-                        end_sec=end_time,
-                        trim_prefix_words=overlap_words,
-                    )
-                    if words is not None:
-                        text = " ".join(word["text"] for word in words).strip()
-                if not text and overlap_words and previous_result_index is not None:
-                    previous_start, _previous_end = results[previous_result_index][
-                        "boundaries"
-                    ]
-                    results[previous_result_index]["boundaries"] = (
-                        previous_start,
-                        end_time,
-                    )
-                if text and end_time >= start_time:
-                    segment: TranscriptionSegment = {
-                        "transcription": text,
-                        "boundaries": (start_time, end_time),
-                    }
-                    if words is not None:
-                        segment["words"] = words
-                    results.append(segment)
-                    previous_result_index = len(results) - 1
-                    previous_group = chunk.group
-            else:
-                previous_result_index = None
-                previous_group = None
-
-            processed_seconds = min(total_seconds, float(chunk.end_sec))
-            ratio = 1.0 if total_seconds <= 0 else min(processed_seconds / total_seconds, 1.0)
-            if progress_callback is not None and ratio >= reported:
-                progress_callback(ratio, processed_seconds, total_seconds)
-                reported = ratio
-
-        if progress_callback is not None and total_samples > 0 and reported < 1.0:
-            progress_callback(1.0, total_seconds, total_seconds)
-        return results
+        return assemble_segments(
+            chunks,
+            decode,
+            total_seconds=total_seconds,
+            # Окна короче 0.1 с не декодируем.
+            min_chunk_samples=max(1, sample_rate // 10),
+            progress_callback=progress_callback,
+        )
 
     def unload(self) -> None:
         with self._inference_lock:
