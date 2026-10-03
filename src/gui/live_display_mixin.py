@@ -9,6 +9,7 @@ Mixin: методы работают со `self` главного окна.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -193,17 +194,34 @@ class LiveDisplayMixin:
         self._update_live_overlay(event)
 
     def _show_live_capture_status(self, event: CaptureEvent) -> None:
+        if event.kind is CaptureEventKind.DISCONTINUITY:
+            # Разрыв потока («idle gap=…» у возобновлённого после тишины WASAPI
+            # loopback) — штатная диагностика выравнивания, а не проблема.
+            # В журнал его уже пишет сама сессия через log-sink (_log_live).
+            return
         key = (event.source, event.detail)
         now = time.monotonic()
         if now - self._live_capture_status_times.get(key, float("-inf")) < 5:
             return
         self._live_capture_status_times[key] = now
-        self.lbl_live_status.setText(event.detail)
+        text = self._live_overflow_text(event) if event.kind is CaptureEventKind.OVERFLOW else event.detail
+        self.lbl_live_status.setText(text)
         # State updates overwrite the status line, so problems get their own
         # banner that survives until the next session starts.
-        if event.kind is not CaptureEventKind.DISCONTINUITY:
-            self.lbl_live_problem.setText(event.detail)
-            self.lbl_live_problem.show()
+        self.lbl_live_problem.setText(text)
+        self.lbl_live_problem.show()
+
+    def _live_overflow_text(self, event: CaptureEvent) -> str:
+        """«capture queue full; dropped_frames=480» → коротко и на языке интерфейса."""
+        ru, en = (label.capitalize() for label in LIVE_TRACK_LABELS[event.source.value])
+        dropped = re.search(r"dropped_frames=(\d+)", event.detail)
+        if dropped is None:
+            return self._t(f"{ru}: очередь захвата переполнена", f"{en}: capture queue full")
+        count = dropped.group(1)
+        return self._t(
+            f"{ru}: очередь захвата переполнена, потеряно кадров: {count}",
+            f"{en}: capture queue full, {count} frames dropped",
+        )
 
     def _append_live_transcript(self, text: str) -> None:
         scrollbar = self.live_transcript.verticalScrollBar()
