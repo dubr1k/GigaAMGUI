@@ -4,7 +4,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use std::io::{self, Stdout, Write};
+use std::{
+    io::{self, Stdout, Write},
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+/// Set while the real terminal is in TUI mode. Whoever clears it restores the
+/// terminal: the panic hook (before the message is printed) or the guard's Drop.
+static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub(crate) struct TerminalGuard<
     W: Write = Stdout,
@@ -16,17 +23,62 @@ pub(crate) struct TerminalGuard<
     alternate: bool,
     paste: bool,
     mouse: bool,
+    /// The process terminal, shared with the panic hook through `TERMINAL_ACTIVE`.
+    process_terminal: bool,
 }
 
 impl TerminalGuard {
     pub(crate) fn enter(mouse: bool) -> io::Result<Self> {
-        Self::activate(
+        let mut guard = Self::activate(
             io::stdout(),
             mouse,
             enable_raw_mode,
             disable_raw_mode as fn() -> io::Result<()>,
-        )
+        )?;
+        guard.process_terminal = true;
+        TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
+        Ok(guard)
     }
+}
+
+/// Every capability the TUI may have turned on, each in its own call so that one
+/// failed write never skips the rest. Disabling one that is off is harmless.
+fn restore_all(writer: &mut impl Write, leave_raw: impl FnOnce() -> io::Result<()>) {
+    let _ = execute!(writer, Show);
+    let _ = execute!(writer, DisableMouseCapture);
+    let _ = execute!(writer, DisableBracketedPaste);
+    let _ = execute!(writer, LeaveAlternateScreen);
+    let _ = leave_raw();
+}
+
+/// The body of the panic hook. The default report goes to stderr, which during a
+/// session is the alternate screen in raw mode: the message was drawn over the UI
+/// and wiped by `LeaveAlternateScreen` in the guard's Drop, so a crash left no
+/// trace. On the UI thread the terminal is restored first; a panicking helper
+/// thread must not tear the terminal down under a UI that keeps running.
+fn report_panic(
+    active: &AtomicBool,
+    ui_thread: bool,
+    restore: impl FnOnce(),
+    report: impl FnOnce(),
+) {
+    if ui_thread && active.swap(false, Ordering::SeqCst) {
+        restore();
+    }
+    report();
+}
+
+/// Installed once before the terminal is entered; chains to the previous hook.
+pub(crate) fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        report_panic(
+            &TERMINAL_ACTIVE,
+            std::thread::current().name() == Some("main"),
+            || restore_all(&mut io::stdout(), disable_raw_mode),
+            || previous(info),
+        );
+    }));
 }
 
 impl<W: Write, R: FnMut() -> io::Result<()>> TerminalGuard<W, R> {
@@ -43,6 +95,7 @@ impl<W: Write, R: FnMut() -> io::Result<()>> TerminalGuard<W, R> {
             alternate: false,
             paste: false,
             mouse: false,
+            process_terminal: false,
         };
         enter_raw()?;
         guard.raw = true;
@@ -71,6 +124,12 @@ impl<W: Write, R: FnMut() -> io::Result<()>> TerminalGuard<W, R> {
 
 impl<W: Write, R: FnMut() -> io::Result<()>> Drop for TerminalGuard<W, R> {
     fn drop(&mut self) {
+        // The panic hook already restored the process terminal: a second
+        // LeaveAlternateScreen would restore the cursor saved on entry and let the
+        // shell prompt overwrite the panic report.
+        if self.process_terminal && !TERMINAL_ACTIVE.swap(false, Ordering::SeqCst) {
+            return;
+        }
         // Separate calls: a broken output capability must not skip later cleanup.
         let _ = execute!(self.writer, Show);
         if self.mouse {
@@ -174,6 +233,61 @@ mod tests {
         assert!(text.contains("\x1b[?1049l"));
         assert!(text.contains("\x1b[?2004l"));
         assert!(restored.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_ui_thread_panic_restores_the_terminal_before_the_report_once() {
+        let active = AtomicBool::new(true);
+        let events = Mutex::new(Vec::new());
+        report_panic(
+            &active,
+            true,
+            || events.lock().unwrap().push("restore"),
+            || events.lock().unwrap().push("report"),
+        );
+        assert_eq!(*events.lock().unwrap(), ["restore", "report"]);
+        assert!(
+            !active.load(Ordering::SeqCst),
+            "Drop must not restore again"
+        );
+        report_panic(
+            &active,
+            true,
+            || events.lock().unwrap().push("restore"),
+            || events.lock().unwrap().push("report"),
+        );
+        assert_eq!(*events.lock().unwrap(), ["restore", "report", "report"]);
+    }
+
+    #[test]
+    fn a_helper_thread_panic_leaves_the_running_ui_alone() {
+        let active = AtomicBool::new(true);
+        let restored = AtomicBool::new(false);
+        let reported = AtomicBool::new(false);
+        report_panic(
+            &active,
+            false,
+            || restored.store(true, Ordering::SeqCst),
+            || reported.store(true, Ordering::SeqCst),
+        );
+        assert!(!restored.load(Ordering::SeqCst));
+        assert!(reported.load(Ordering::SeqCst));
+        assert!(active.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn restore_all_disables_every_capability_and_leaves_raw_mode() {
+        let mut sink = Sink::default();
+        let raw = AtomicBool::new(false);
+        restore_all(&mut sink, || {
+            raw.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        let text = sink.text();
+        for escape in ["\x1b[?1049l", "\x1b[?2004l", "\x1b[?1006l", "\x1b[?25h"] {
+            assert!(text.contains(escape), "missing {escape:?}: {text:?}");
+        }
+        assert!(raw.load(Ordering::SeqCst));
     }
 
     #[test]

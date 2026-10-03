@@ -242,7 +242,9 @@ pub(crate) fn worker_command() -> Command {
     // the ANSI code page: Cyrillic paths arrive as bytes `from_slice` rejects, or
     // the worker dies on UnicodeEncodeError (cp1252). The worker also reconfigures
     // its streams itself, for frozen builds that ignore the environment.
-    command.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
+    command
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8");
     command
 }
 
@@ -307,7 +309,10 @@ mod tests {
         let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
         for (name, value) in [("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8")] {
             assert_eq!(
-                environment.get(std::ffi::OsStr::new(name)).copied().flatten(),
+                environment
+                    .get(std::ffi::OsStr::new(name))
+                    .copied()
+                    .flatten(),
                 Some(std::ffi::OsStr::new(value)),
                 "{name}"
             );

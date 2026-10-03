@@ -68,6 +68,7 @@ fn main() -> io::Result<()> {
         app.theme = theme; // this run only; a later save keeps it, like --lang
     }
     let mut worker = WorkerRuntime::new(&mut app);
+    terminal_guard::install_panic_hook();
     let mut terminal_guard = terminal_guard::TerminalGuard::enter(app.mouse_enabled)?;
     let mut mouse_captured = app.mouse_enabled;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
