@@ -61,7 +61,7 @@ class WorkerSignals(QObject):
     """Сигналы для потока обработки"""
     log_message = pyqtSignal(str)
     current_file_info = pyqtSignal(str)
-    processing_finished = pyqtSignal(bool, str)
+    processing_finished = pyqtSignal(bool, str, object)  # success, message, cancel-токен запуска
     stage_update = pyqtSignal(object)
     download_progress = pyqtSignal(int)
     download_finished = pyqtSignal(list)
@@ -130,6 +130,8 @@ class GigaTranscriberQtApp(
         self.is_processing = False
         self._last_generated_transcript_files = []
         self._cancel_requested = False
+        self._processing_cancel_event = None
+        self._processing_thread = None
         self.start_time = None
         self.files_processed = 0
         self.total_files = 0

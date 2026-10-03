@@ -44,7 +44,9 @@ class ProcessingMixin:
             )
             if reply == QMessageBox.StandardButton.No:
                 return
-            self._cancel_requested = True
+            # Отменяем именно текущий запуск и забываем его: воркер доделает
+            # текущий файл и выйдет, а его итог уже никого не интересует.
+            self._abandon_processing_run()
             self.is_processing = False
             self._set_processing_controls_enabled(True)
         self.files_to_process = []
@@ -90,6 +92,8 @@ class ProcessingMixin:
         if not self.is_processing or self._cancel_requested:
             return
         self._cancel_requested = True
+        if self._processing_cancel_event is not None:
+            self._processing_cancel_event.set()
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.setText(self._t("Отмена…", "Cancelling…"))
         self.lbl_stage.setText(self._t("●  Останавливаем после текущего файла…", "●  Stopping after the current file…"))
@@ -97,8 +101,37 @@ class ProcessingMixin:
         self._set_status(self._t("Отмена обработки…", "Cancelling processing…"))
         self.log(self._t("Запрошена отмена обработки — остановимся после текущего файла", "Cancellation requested — stopping after the current file"))
 
+    def _abandon_processing_run(self) -> None:
+        """Отменить текущий запуск и отвязать его от окна.
+
+        Флаг отмены — свой у каждого запуска (Event в snapshot). Общий флаг
+        окна следующий «Старт» опускал обратно, и сброшенный воркер
+        продолжал свою очередь параллельно новому на той же модели.
+        """
+        if self._processing_cancel_event is not None:
+            self._processing_cancel_event.set()
+        self._processing_cancel_event = None
+        self._cancel_requested = False
+
+    def _processing_worker_alive(self) -> bool:
+        """Жив ли поток последнего запуска — в том числе уже отменённого."""
+        is_alive = getattr(self._processing_thread, "is_alive", None)
+        return bool(is_alive and is_alive())
+
     def _start_processing_thread(self):
         if self.is_processing:
+            return
+        if self._processing_worker_alive():
+            # Отмена срабатывает только между файлами: второй воркер на той же
+            # модели, пока первый дорабатывает свой файл, конкурирует за неё.
+            QMessageBox.information(
+                self,
+                self._t("Информация", "Information"),
+                self._t(
+                    "Предыдущая обработка ещё завершает текущий файл. Повторите запуск через несколько секунд.",
+                    "The previous run is still finishing its current file. Start again in a few seconds.",
+                ),
+            )
             return
         if hasattr(self, "processing_stack"):
             self.processing_stack.setCurrentWidget(self._processing_start_page)
@@ -136,6 +169,8 @@ class ProcessingMixin:
         self._last_processing_results = []
         self.is_processing = True
         self._cancel_requested = False
+        cancel_event = threading.Event()
+        self._processing_cancel_event = cancel_event
         self.start_time = time.time()
         self.files_processed = 0
         self.total_files = len(self.files_to_process)
@@ -180,9 +215,11 @@ class ProcessingMixin:
             "files": list(self.files_to_process),
             "start_time": self.start_time,
             "hf_token": os.getenv("HF_TOKEN", "").strip() or None,
+            "cancel_event": cancel_event,
         }
         self._set_processing_controls_enabled(False)
-        threading.Thread(target=self._process_files, kwargs={"snapshot": snapshot}, daemon=True).start()
+        self._processing_thread = threading.Thread(target=self._process_files, kwargs={"snapshot": snapshot}, daemon=True)
+        self._processing_thread.start()
 
     def _set_processing_controls_enabled(self, enabled: bool):
         self.cb_diarization.setEnabled(enabled)
@@ -209,6 +246,19 @@ class ProcessingMixin:
         start_time = snapshot["start_time"]
         hf_token = snapshot.get("hf_token")
         total_files = len(files)
+        cancel_event = snapshot.get("cancel_event")
+        if cancel_event is None:
+            cancel_event = threading.Event()
+            self._processing_cancel_event = cancel_event
+
+        def run_active() -> bool:
+            # Запуск, сброшенный «Очистить всё», не трогает состояние окна.
+            return self._processing_cancel_event is cancel_event
+
+        def report_progress(*args, **kwargs):
+            if run_active():
+                self._on_file_progress(*args, **kwargs)
+
         try:
             self._preparation_log_progress = {}
             preparation = transcription_service.build_processing_preparation_plan(
@@ -220,11 +270,11 @@ class ProcessingMixin:
             )
             prepared = preparation.run(
                 self._on_preparation_event,
-                cancel_check=lambda: self._cancel_requested,
+                cancel_check=cancel_event.is_set,
             )
             processor = transcription_service.build_processor(
                 self.model_loader, self.stats, logger=self.log,
-                progress_callback=self._on_file_progress,
+                progress_callback=report_progress,
                 diarization_manager=prepared.get("diarization"),
                 diarization_backend=diarization_backend if enable_diarization else None,
             )
@@ -237,12 +287,13 @@ class ProcessingMixin:
             generated_transcript_files = []
             completed_results = []
             for i, filepath in enumerate(files):
-                if self._cancel_requested:
+                if cancel_event.is_set():
                     self.log(self._t("Обработка отменена пользователем", "Processing cancelled by user"))
                     break
                 try:
-                    self.current_file_start_time = time.time()
-                    self.signals.current_file_info.emit(os.path.basename(filepath))
+                    if run_active():
+                        self.current_file_start_time = time.time()
+                        self.signals.current_file_info.emit(os.path.basename(filepath))
                     file_output_dir = output_dir if output_dir else os.path.dirname(filepath)
                     result = processor.process_file(
                         filepath, file_output_dir, i, total_files,
@@ -283,13 +334,14 @@ class ProcessingMixin:
                     self.log(self._t(f"Ошибка при обработке файла {os.path.basename(filepath)}: {str(e)}", f"Error while processing file {os.path.basename(filepath)}: {str(e)}"))
                     continue
                 finally:
-                    self.files_processed = files_processed
-                    self.time_spent = time_spent
+                    if run_active():
+                        self.files_processed = files_processed
+                        self.time_spent = time_spent
             total_elapsed = time.time() - start_time
             self.log(self._t("=== ОБРАБОТКА ЗАВЕРШЕНА ===", "=== PROCESSING FINISHED ==="))
             self.log(self._t(f"Общее время обработки: {self.time_formatter.format_duration(total_elapsed)}", f"Total processing time: {self.time_formatter.format_duration(total_elapsed)}"))
             self.log(self._t(f"Успешно: {files_processed}/{total_files}" + (f", с ошибками: {files_failed}" if files_failed else ""), f"Successful: {files_processed}/{total_files}" + (f", with errors: {files_failed}" if files_failed else "")))
-            cancelled = self._cancel_requested
+            cancelled = cancel_event.is_set()
             duration_str = self.time_formatter.format_duration(total_elapsed)
             if cancelled:
                 message = self._t(f"Отменено. Обработано {files_processed}/{total_files} за {duration_str}", f"Cancelled. Processed {files_processed}/{total_files} in {duration_str}")
@@ -303,12 +355,13 @@ class ProcessingMixin:
                     shown += self._t(f" и ещё {len(failed_names) - 5}", f" and {len(failed_names) - 5} more")
                 message += self._t(f"\nНе удалось: {shown}\nПодробности — на вкладке «Журнал обработки».", f"\nFailed: {shown}\nSee details in the 'Processing log' tab.")
             success = (files_processed > 0) and (files_failed == 0) and not cancelled
-            self._last_generated_transcript_files = generated_transcript_files
-            self._last_processing_results = completed_results
-            self.signals.processing_finished.emit(success, message)
+            if run_active():
+                self._last_generated_transcript_files = generated_transcript_files
+                self._last_processing_results = completed_results
+            self.signals.processing_finished.emit(success, message, cancel_event)
         except PreparationCancelled:
             self.log(self._t("Подготовка моделей отменена пользователем", "Model preparation cancelled by user"))
-            self.signals.processing_finished.emit(False, self._t("Обработка отменена", "Processing cancelled"))
+            self.signals.processing_finished.emit(False, self._t("Обработка отменена", "Processing cancelled"), cancel_event)
         except PreparationError as e:
             self.signals.processing_finished.emit(
                 False,
@@ -316,10 +369,11 @@ class ProcessingMixin:
                     f"Не удалось подготовить компоненты: {e}",
                     f"Failed to prepare components: {e}",
                 ),
+                cancel_event,
             )
         except Exception as e:
             self.log(self._t(f"Критическая ошибка: {str(e)}", f"Critical error: {str(e)}"))
-            self.signals.processing_finished.emit(False, self._t(f"Ошибка: {str(e)}", f"Error: {str(e)}"))
+            self.signals.processing_finished.emit(False, self._t(f"Ошибка: {str(e)}", f"Error: {str(e)}"), cancel_event)
         finally:
             self._release_accelerator_caches()
 
@@ -518,7 +572,12 @@ class ProcessingMixin:
         self._current_filename = display
         self.lbl_current_file.setText(display)
 
-    def _on_processing_finished(self, success: bool, message: str):
+    def _on_processing_finished(self, success: bool, message: str, run=None):
+        if run is not None and run is not self._processing_cancel_event:
+            # Итог запуска, сброшенного «Очистить всё»: интерфейс уже другой.
+            return
+        self._processing_cancel_event = None
+        self._cancel_requested = False
         self.is_processing = False
         self.btn_start.setEnabled(True)
         self.btn_start.setText(self._t("ЗАПУСТИТЬ ОБРАБОТКУ", "START PROCESSING"))
@@ -844,7 +903,7 @@ class ProcessingMixin:
             if reply == QMessageBox.StandardButton.No:
                 event.ignore()
                 return
-            self._cancel_requested = True
+            self._abandon_processing_run()
             self.is_processing = False
         if self.output_dir:
             self.user_settings.set_last_output_dir(self.output_dir)
