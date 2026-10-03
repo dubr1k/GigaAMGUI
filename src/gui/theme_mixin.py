@@ -37,6 +37,8 @@ class ThemeMixin:
         self._style_drop_hint()
         if hasattr(self, "_btn_theme"):
             self._btn_theme.setText(c["theme_btn"])
+        # Тему меняют и кнопка в заголовке, и Ctrl+T, и вкладка «Настройки».
+        self._sync_support_surface_settings()
 
         for bar in self.findChildren(QProgressBar):
             if bar.property(self._PROGRESS_FONT_PT) is not None:

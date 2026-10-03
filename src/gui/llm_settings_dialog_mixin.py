@@ -263,6 +263,8 @@ class LlmSettingsDialogMixin:
     def _open_llm_settings_dialog(self):
         self._ensure_llm_settings_dialog()
         self._llm_settings_dialog.exec()
+        # Провайдер, модель, URL и temperature есть и на вкладке «Настройки».
+        self._sync_support_surface_settings()
 
     def _retranslate_llm_settings_dialog(self, is_ru: bool) -> None:
         """Диалог «Настройки LLM»."""

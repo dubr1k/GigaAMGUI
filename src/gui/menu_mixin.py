@@ -155,6 +155,7 @@ class MenuActionsMixin:
             model = ids[labels.index(selected)]
             self.model_loader.configure_model(model)
             self.user_settings.set_value("asr_model", model)
+            self._sync_support_surface_settings()
             self.log(f"ASR model selected: {model}")
 
     def _select_asr_backend(self):
@@ -181,6 +182,7 @@ class MenuActionsMixin:
         self.model_loader.configure_onnx_runtime(provider=provider)
         self.user_settings.set_value("asr_backend", backend)
         self.user_settings.set_value("onnx_provider", provider)
+        self._sync_support_surface_settings()
         self.log(
             f"Выбран ASR backend: {backend}, ONNX provider: {provider}"
             if self._lang == "ru"

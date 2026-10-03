@@ -89,6 +89,35 @@ def test_clearing_the_llm_api_key_removes_the_saved_key(window, monkeypatch, tmp
     assert "sk-old-key" not in user_env_path().read_text(encoding="utf-8")
 
 
+def test_settings_page_follows_changes_made_elsewhere(window, monkeypatch):
+    from PyQt6.QtWidgets import QInputDialog
+
+    # Тема из заголовка / Ctrl+T.
+    window._toggle_theme()
+    assert window.settings_theme.currentData() == window._theme
+
+    # Модель из меню «Настройки».
+    monkeypatch.setattr(
+        QInputDialog, "getItem",
+        lambda *a, **k: ("GigaAM Multilingual Large CTC (600M) [multilingual_large_ctc]", True),
+    )
+    window._select_asr_model()
+    assert window.settings_model_combo.currentData() == "multilingual_large_ctc"
+
+    # Параметры на вкладке «Обработка» — видны при переходе на «Настройки».
+    window.combo_audio_preprocessing.setCurrentIndex(window.combo_audio_preprocessing.findData("denoise"))
+    window.entry_num_speakers.setValue(3)
+    window._show_tab("processing")
+    window._show_tab("settings")
+    assert window.settings_audio_preprocessing.currentData() == "denoise"
+    assert window.settings_speakers.value() == 3
+
+    # Поля диалога LLM.
+    monkeypatch.setattr(window._llm_settings_dialog, "exec", lambda: window.entry_llm_temperature.setText("0.7"))
+    window._open_llm_settings_dialog()
+    assert window.settings_llm_temperature.text() == "0.7"
+
+
 def test_cancelled_hf_token_prompt_does_not_persist_diarization(window, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setattr(window, "_show_hf_token_dialog", lambda: False)

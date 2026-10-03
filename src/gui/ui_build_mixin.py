@@ -92,6 +92,9 @@ class UiBuildMixin:
         settings_tab = self._create_settings_tab()
         tabs.addTab(settings_tab, "Настройки")
         self.tabs = tabs
+        # «Настройки» — второе представление настроек вкладок «Обработка» и LLM:
+        # перечитываем их при каждом открытии, а не только при старте.
+        tabs.currentChanged.connect(lambda _index: self._sync_support_surface_settings())
         # Вкладки ищутся по странице, а не по номеру: номер 1 когда-то был
         # LLM, а после появления Live открывал не ту вкладку.
         self._tab_pages = {
