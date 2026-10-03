@@ -320,6 +320,24 @@ const scenarios = {
         };
     },
 
+    // Поля CLI, которые сервер игнорирует, отключены
+    async server_cli_policy() {
+        await boot();
+        routes['GET /api/llm/tools'] = { json: { providers: [], tools: [], client_cli: false } };
+        document.getElementById('btn-llm-rescan').dispatch('click');
+        await settle();
+        const locked = ['llm-claude-path', 'llm-other-path', 'llm-other-args', 'llm-allow-tools']
+            .map(id => document.getElementById(id).disabled);
+        routes['GET /api/llm/tools'] = { json: { providers: [], tools: [], client_cli: true } };
+        document.getElementById('btn-llm-rescan').dispatch('click');
+        await settle();
+        return {
+            locked,
+            unlocked: document.getElementById('llm-claude-path').disabled === false,
+            apiKeyEditable: document.getElementById('llm-api-key').disabled === false,
+        };
+    },
+
     // Текст сервера в списке инструментов — только экранированным
     async tools_escaped() {
         await boot();

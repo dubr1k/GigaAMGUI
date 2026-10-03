@@ -44,8 +44,9 @@ from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUT
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.core.subtitles import SubtitleOptions
-from src.services import file_policy, llm_service, mcp_backend, task_store, transcription_service
+from src.services import cli_tools, file_policy, llm_service, mcp_backend, task_store, transcription_service
 from src.services import health as health_service
+from src.services import llm_settings as llm_settings_service
 from src.services.api_keys import KeyStore
 from src.services.mcp_backend import LocalBackend
 from src.services.mcp_http import backend_options_from_env, mount_mcp
@@ -104,6 +105,9 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(2 * 1024 * 1024 * 1024)))
 # Транскрипты для LLM-вкладки — текст; лимит на всё тело запроса /api/llm/process
 MAX_LLM_BODY_SIZE = int(os.getenv("WEB_MAX_LLM_BODY_SIZE", str(50 * 1024 * 1024)))
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
+# 1 — пути/аргументы CLI и «инструменты агента» из LLM-формы принимаются как есть
+# (прежнее поведение: сессия = запуск любой команды на сервере). По умолчанию выкл.
+WEB_ALLOW_CLIENT_LLM_CLI = os.getenv("WEB_ALLOW_CLIENT_LLM_CLI", "").strip().lower() in ("1", "true", "yes")
 # Ключи для /mcp — тот же файл, что у api.py (в контейнере API_KEYS_FILE=/data/.api_keys, persist)
 API_KEYS_FILE = Path(__file__).parent.parent / os.getenv("API_KEYS_FILE", ".api_keys")
 
@@ -924,6 +928,39 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def _server_llm_settings(client: dict) -> dict:
+    """Настройки для llm_service: бинари CLI решает сервер, а не форма.
+
+    Клиент выбирает провайдера, поля API (url/ключ/модель/temperature) и
+    внутреннего провайдера pi/omp. Пути и аргументы CLI берутся из настроек
+    сервера (`llm_settings.resolve`: реестр cli_tools + файлы настроек), а
+    инструменты агента выключены — как у MCP в HTTP-режиме. Иначе укравший
+    cookie запускал в контейнере что угодно: `other_path=/bin/sh`,
+    `claude_args=...` или `llm_allow_tools`. Оператор может вернуть прежнее
+    поведение переменной WEB_ALLOW_CLIENT_LLM_CLI=1. Вызывать в потоке: первый
+    resolve() сканирует CLI (`--version`).
+    """
+    if WEB_ALLOW_CLIENT_LLM_CLI:
+        return dict(client)
+    server = llm_settings_service.resolve()
+    settings = {key: client[key] for key in ("provider", "api_url", "api_key", "model", "temperature")}
+    for spec in cli_tools.PROVIDERS:
+        if spec.id == "api":
+            continue
+        prefix = spec.settings_prefix
+        settings[f"{prefix}_path"] = server.get(f"{prefix}_path") or spec.binary or ""
+        settings[f"{prefix}_args"] = server.get(f"{prefix}_args") or ""
+        if spec.has_provider_field:
+            settings[f"{prefix}_provider"] = client.get(f"{prefix}_provider", "")
+    settings["llm_allow_tools"] = False
+    return settings
+
+
+def _server_tool_override(spec) -> str | None:
+    """Путь к CLI из настроек сервера (для проверки `--version`), а не из формы."""
+    return cli_tools.overrides_from_settings(llm_settings_service.resolve()).get(spec.id)
+
+
 def _run_llm_provider(llm_settings: dict, transcript_text: str, prompt: str) -> str:
     raw = llm_settings.get("provider", "API")
     # web исторически распознавал русский ключ "Другое" (англ. "Other" фронтенд не шлёт).
@@ -1403,12 +1440,12 @@ async def delete_task(task_id: str, user: str = Depends(require_auth)):
 @app.get("/api/llm/tools")
 async def llm_tools(fresh: bool = False, user: str = Depends(require_auth)):
     """Реестр LLM-провайдеров и статусы CLI-инструментов на сервере (скан — в пуле потоков)."""
-    from src.services import cli_tools
-
     statuses = await asyncio.to_thread(cli_tools.scan, None, fresh=fresh)
     return {
         "providers": cli_tools.canonical_provider_names(),
         "tools": [status.to_dict() for status in statuses],
+        # false — пути/аргументы CLI и инструменты агента из формы сервер игнорирует
+        "client_cli": WEB_ALLOW_CLIENT_LLM_CLI,
     }
 
 
@@ -1418,13 +1455,17 @@ async def llm_tool_check(
     path: str = Form(""),
     user: str = Depends(require_auth),
 ):
-    from src.services import cli_tools
-
     try:
         spec = cli_tools.provider_by_name(provider)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=f"Неизвестный провайдер: {provider}") from exc
-    status = await asyncio.to_thread(cli_tools.resolve_tool, spec, path.strip() or None)
+
+    def check():
+        # Присланный путь запускается (`<path> --version`) только с разрешения оператора
+        override = (path.strip() or None) if WEB_ALLOW_CLIENT_LLM_CLI else _server_tool_override(spec)
+        return cli_tools.resolve_tool(spec, override)
+
+    status = await asyncio.to_thread(check)
     return {"tool": status.to_dict()}
 
 
@@ -1467,7 +1508,7 @@ async def llm_process(
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Temperature должно быть числом") from e
 
-    llm_settings = {
+    client_settings = {
         "provider": provider,
         "api_url": api_url.strip(),
         "api_key": api_key.strip(),
@@ -1489,6 +1530,7 @@ async def llm_process(
         "other_args": other_args.strip(),
         "llm_allow_tools": bool(llm_allow_tools),
     }
+    llm_settings = await asyncio.to_thread(_server_llm_settings, client_settings)
 
     items = []
     manual_text = (manual_text or "").strip()

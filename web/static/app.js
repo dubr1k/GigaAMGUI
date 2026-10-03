@@ -76,6 +76,7 @@ const I18N = {
         piArgsPlaceholder: 'Доп. аргументы Pi',
         ompArgsPlaceholder: 'Доп. аргументы oh-my-pi',
         llmAllowTools: 'Разрешить инструменты и сессии агента',
+        llmServerCli: 'Задаётся на сервере (WEB_ALLOW_CLIENT_LLM_CLI выключен)',
         llmTools: 'Инструменты на сервере:',
         llmRescan: 'Пересканировать',
         toolFound: 'найден',
@@ -165,6 +166,7 @@ const I18N = {
         piArgsPlaceholder: 'Extra Pi arguments',
         ompArgsPlaceholder: 'Extra oh-my-pi arguments',
         llmAllowTools: 'Allow agent tools and sessions',
+        llmServerCli: 'Set on the server (WEB_ALLOW_CLIENT_LLM_CLI is off)',
         llmTools: 'Tools on the server:',
         llmRescan: 'Rescan',
         toolFound: 'found',
@@ -1182,12 +1184,30 @@ function renderLlmTools() {
     });
 }
 
+// Без WEB_ALLOW_CLIENT_LLM_CLI сервер сам выбирает бинари CLI и игнорирует пути,
+// аргументы и «инструменты агента» из формы — отключаем эти поля, чтобы не врать.
+const CLIENT_CLI_FIELDS = [
+    'llm-claude-path', 'llm-claude-args', 'llm-codex-path', 'llm-codex-args',
+    'llm-opencode-path', 'llm-opencode-args', 'llm-pi-path', 'llm-pi-args',
+    'llm-omp-path', 'llm-omp-args', 'llm-other-path', 'llm-other-args', 'llm-allow-tools',
+];
+
+function applyClientCliPolicy(allowed) {
+    CLIENT_CLI_FIELDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.disabled = !allowed;
+        el.title = allowed ? '' : t('llmServerCli');
+    });
+}
+
 async function loadLlmTools(fresh = false) {
     try {
         const res = await fetch(`${API}/llm/tools${fresh ? '?fresh=true' : ''}`);
         if (!res.ok) return;
         const data = await res.json();
         llmToolStatuses = data.tools || [];
+        applyClientCliPolicy(data.client_cli !== false);
         renderLlmTools();
     } catch (e) {
         console.warn('llm tools scan failed', e);

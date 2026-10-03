@@ -465,9 +465,12 @@ def test_llm_tools_endpoint_returns_registry_and_statuses(monkeypatch):
     assert captured["fresh"] is True
 
 
-def test_llm_tool_check_endpoint(monkeypatch):
+def test_llm_tool_check_endpoint(monkeypatch, tmp_path):
     from src.services import cli_tools
 
+    # Путь для проверки берётся из настроек сервера — изолируем их от настроек разработчика
+    monkeypatch.setenv("GIGAAM_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli_tools, "scan", lambda overrides=None, *, fresh=False: [])
     monkeypatch.setattr(
         cli_tools, "resolve_tool",
         lambda spec, override=None: cli_tools.ToolStatus(spec.id, spec.name, "missing", None, None, None, spec.install_hint),

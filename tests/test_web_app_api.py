@@ -230,6 +230,79 @@ def test_login_and_authenticated_upload_still_pass_the_guard(client, web_dirs, f
     assert response.json()["total"] == 1
 
 
+# ==================== LLM: что решает клиент, а что сервер ====================
+
+
+@pytest.fixture
+def llm_env(tmp_path, monkeypatch):
+    """Серверные настройки LLM в tmp; run_provider и скан CLI — подделки."""
+    from src.services import cli_tools, llm_service
+
+    config_dir = tmp_path / "cfg"
+    config_dir.mkdir()
+    (config_dir / "user_settings.json").write_text(
+        '{"llm_claude_path": "/opt/server/claude", "llm_claude_args": "--server-arg", "llm_allow_tools": true}',
+        encoding="utf-8")
+    monkeypatch.setenv("GIGAAM_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(cli_tools, "scan", lambda overrides=None, *, fresh=False: [])
+    captured = {}
+
+    def fake_run_provider(settings, text, prompt, *, provider, strict_empty_cli, **_):
+        captured["settings"] = dict(settings)
+        captured["provider"] = provider
+        return "ответ"
+
+    monkeypatch.setattr(llm_service, "run_provider", fake_run_provider)
+    return captured
+
+
+_HOSTILE_LLM_FORM = {
+    "provider": "Claude Code", "api_url": "https://llm.example/v1", "api_key": "sk-client", "model": "sonnet",
+    "temperature": "0.5", "claude_path": "/bin/sh", "claude_args": "-c 'touch /tmp/pwned'",
+    "other_path": "/bin/sh", "other_args": "-c id", "pi_provider": "anthropic",
+    "llm_allow_tools": "true", "summary_enabled": "true", "manual_text": "текст встречи", "export_formats": "txt",
+}
+
+
+def test_llm_process_ignores_client_cli_paths_args_and_tools(client, llm_env):
+    # Украденная cookie не должна превращаться в запуск произвольной команды в контейнере
+    response = client.post("/api/llm/process", data=_HOSTILE_LLM_FORM)
+    assert response.status_code == 200, response.text
+    settings = llm_env["settings"]
+    assert settings["claude_path"] == "/opt/server/claude"
+    assert settings["claude_args"] == "--server-arg"
+    assert settings["other_path"] != "/bin/sh" and settings["other_args"] != "-c id"
+    assert settings["llm_allow_tools"] is False
+    # Поля API-провайдера и модель остаются за клиентом
+    assert (settings["api_url"], settings["api_key"], settings["model"], settings["temperature"]) == (
+        "https://llm.example/v1", "sk-client", "sonnet", 0.5)
+    assert settings["pi_provider"] == "anthropic"
+
+
+def test_llm_process_honours_client_cli_when_operator_allows(client, llm_env, monkeypatch):
+    monkeypatch.setattr(web_app, "WEB_ALLOW_CLIENT_LLM_CLI", True)
+    response = client.post("/api/llm/process", data=_HOSTILE_LLM_FORM)
+    assert response.status_code == 200, response.text
+    settings = llm_env["settings"]
+    assert settings["claude_path"] == "/bin/sh" and settings["other_path"] == "/bin/sh"
+    assert settings["llm_allow_tools"] is True
+
+
+def test_llm_tool_check_does_not_run_client_path(client, llm_env, monkeypatch):
+    from src.services import cli_tools
+
+    probed = []
+
+    def fake_resolve(spec, override=None):
+        probed.append(override)
+        return cli_tools.ToolStatus(spec.id, spec.name, "missing", None, None, None, spec.install_hint)
+
+    monkeypatch.setattr(cli_tools, "resolve_tool", fake_resolve)
+    response = client.post("/api/llm/tools/check", data={"provider": "Claude Code", "path": "/bin/sh"})
+    assert response.status_code == 200
+    assert probed == ["/opt/server/claude"]  # настроенный на сервере путь, а не присланный
+
+
 # ==================== форматы вывода ====================
 
 

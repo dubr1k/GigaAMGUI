@@ -67,6 +67,13 @@ def test_progress_snapshot_is_a_baseline_and_results_reload_is_debounced():
     assert result["replayedLines"] == 0
 
 
+def test_cli_fields_follow_server_policy():
+    result = _scenario("server_cli_policy")
+    assert result["locked"] == [True, True, True, True]
+    assert result["unlocked"] is True
+    assert result["apiKeyEditable"] is True
+
+
 def test_tool_statuses_are_escaped():
     html = "".join(_scenario("tools_escaped")["html"])
     assert "<img" not in html and "<b>" not in html
