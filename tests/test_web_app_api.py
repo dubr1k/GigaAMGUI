@@ -54,6 +54,7 @@ def web_dirs(tmp_path, monkeypatch):
     results_dir.mkdir()
     monkeypatch.setattr(web_app, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(web_app, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(web_app, "LLM_RESULTS_DIR", results_dir / "llm")
     monkeypatch.setattr(web_app, "TASKS_INDEX_PATH", results_dir / ".tasks_index.json")
     monkeypatch.setattr(web_app, "DELETED_TASKS_PATH", results_dir / ".deleted_tasks.json")
     monkeypatch.setattr(web_app, "API_KEYS_FILE", tmp_path / ".api_keys")
@@ -421,6 +422,25 @@ def test_llm_transcript_over_the_limit_is_rejected_without_reading_it_all(client
     )
     assert response.status_code == 413
     assert "settings" not in llm_env  # до LLM дело не дошло
+
+
+def test_llm_result_does_not_expose_server_paths(client, llm_env, web_dirs):
+    response = client.post("/api/llm/process", data={
+        "provider": "API", "summary_enabled": "true", "manual_text": "текст", "export_formats": "txt,md"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [f["name"] for f in body["saved_files"]] == ["manual_transcript_llm_summary.txt",
+                                                        "manual_transcript_llm_summary.md"]
+    assert str(web_dirs[1]) not in response.text and "/llm/" not in response.text
+    download = client.get(f"/api/llm/download/{body['job_id']}/manual_transcript_llm_summary.txt")
+    assert download.status_code == 200 and download.text == "ответ"
+
+
+def test_llm_rejects_unknown_export_format(client, llm_env):
+    response = client.post("/api/llm/process", data={
+        "provider": "API", "summary_enabled": "true", "manual_text": "текст", "export_formats": "txt,pdf"})
+    assert response.status_code == 400
+    assert "settings" not in llm_env
 
 
 def test_llm_tool_check_does_not_run_client_path(client, llm_env, monkeypatch):

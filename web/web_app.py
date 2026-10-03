@@ -157,6 +157,7 @@ ACTIVE_TASK_STATUSES: Final[set[str]] = {'pending', 'downloading', 'processing'}
 ALL_TASK_STATUSES: Final[set[str]] = {'pending', 'downloading', 'processing', 'completed', 'failed'}
 deleted_task_ids: set[str] = set()
 LLM_RESULTS_DIR = RESULTS_DIR / "llm"
+LLM_EXPORT_FORMATS: Final[tuple[str, ...]] = ("txt", "md", "docx")
 LLM_RESULTS_DIR.mkdir(exist_ok=True)
 SUMMARY_PROMPT = (
     "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
@@ -1685,6 +1686,13 @@ async def llm_process(
     formats = [fmt.strip() for fmt in export_formats.split(",") if fmt.strip()]
     if not formats:
         raise HTTPException(status_code=400, detail="Выберите хотя бы один формат вывода")
+    unknown = [fmt for fmt in formats if fmt not in LLM_EXPORT_FORMATS]
+    if unknown:
+        # Формат идёт в имя файла: без проверки он попадал в saved_files как есть
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неизвестный формат вывода: {', '.join(unknown)}. Доступны: {', '.join(LLM_EXPORT_FORMATS)}",
+        )
 
     job_id = uuid.uuid4().hex
     job_dir = LLM_RESULTS_DIR / job_id
@@ -1706,7 +1714,8 @@ async def llm_process(
                     for part in answer.split("\n\n"):
                         doc.add_paragraph(part)
                     doc.save(save_path)
-                saved_files.append({"name": save_path.name, "path": str(save_path), "format": fmt})
+                # Без абсолютного пути на сервере: скачивание — /api/llm/download/{job_id}/{name}
+                saved_files.append({"name": save_path.name, "format": fmt})
         results.append("\n\n".join(blocks))
 
     result_text = "\n\n".join(results)
