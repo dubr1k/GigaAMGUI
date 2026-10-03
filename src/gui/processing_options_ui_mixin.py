@@ -107,3 +107,31 @@ class ProcessingOptionsUiMixin:
         layout.addWidget(self.lbl_diarization_info)
         group.setLayout(layout)
         return group
+
+    def _retranslate_processing_options(self, is_ru: bool) -> None:
+        """Секции «Подготовка аудио» и «Диаризация спикеров»."""
+        if not hasattr(self, "grp_diarization"):
+            return
+        self.cb_diarization.setText("Вкл. диаризацию" if is_ru else "Enable diarization")
+        self.cb_diarization.setToolTip("Определять, кто из спикеров говорит (нужен HF_TOKEN)" if is_ru else "Detect which speaker is talking (HF_TOKEN required)")
+        self.btn_hf_token.setText("HF")
+        self.btn_hf_token.setToolTip("Открыть настройку токена HuggingFace для диаризации" if is_ru else "Open the HuggingFace token setting for diarization")
+        self.lbl_audio_preprocessing_mode.setText("Режим:" if is_ru else "Mode:")
+        preprocessing_labels = (
+            ("Авто (рекомендуется)", "Auto (recommended)"),
+            ("Выключено", "Off"),
+            ("Лёгкая очистка", "Light cleanup"),
+            ("Шумоподавление", "Noise suppression"),
+        )
+        for index, labels in enumerate(preprocessing_labels):
+            self.combo_audio_preprocessing.setItemText(index, labels[0] if is_ru else labels[1])
+        self.combo_audio_preprocessing.setToolTip(
+            "Авто анализирует качество записи и применяет минимально необходимую обработку"
+            if is_ru else
+            "Auto analyzes recording quality and applies the minimum necessary processing"
+        )
+        self.lbl_diarization_backend.setText("Движок:" if is_ru else "Backend:")
+        self.lbl_num_speakers.setText("Спикеров:" if is_ru else "Speakers:")
+        self._update_diarization_backend_controls()
+        self.entry_num_speakers.setSpecialValueText("Авто" if is_ru else "Auto")
+        self.entry_num_speakers.setToolTip("0 = автоопределение количества спикеров" if is_ru else "0 = auto-detect speaker count")

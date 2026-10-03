@@ -300,3 +300,14 @@ class JournalMixin:
         layout.addWidget(label)
         layout.addStretch()
         return container
+
+    def _retranslate_journal(self, is_ru: bool) -> None:
+        """Вкладка «Журнал»."""
+        if not hasattr(self, "btn_log_copy"):
+            return
+        self.btn_log_copy.setText("Копировать" if is_ru else "Copy")
+        self.btn_log_copy.setToolTip("Скопировать весь журнал в буфер обмена" if is_ru else "Copy the entire log to the clipboard")
+        self.btn_log_save.setText("Сохранить…" if is_ru else "Save…")
+        self.btn_log_save.setToolTip("Сохранить журнал в текстовый файл" if is_ru else "Save the log to a text file")
+        self.btn_log_clear.setText("Очистить журнал" if is_ru else "Clear log")
+        self.btn_log_clear.setToolTip("Очистить только журнал, не сбрасывая настройки" if is_ru else "Clear only the log without resetting settings")

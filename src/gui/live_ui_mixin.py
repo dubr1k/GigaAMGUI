@@ -518,3 +518,55 @@ class LiveUiMixin:
             self.live_overlay.set_conversation(
                 self.live_session.conversation() if self.live_session is not None else []
             )
+
+    def _retranslate_live_tab(self, is_ru: bool) -> None:
+        """Вкладка Live."""
+        if not hasattr(self, "grp_live_source"):
+            return
+        self.grp_live_source.setTitle("1. Захват в реальном времени" if is_ru else "1. Live capture")
+        self.grp_live_output.setTitle("2. Папка сессий" if is_ru else "2. Session folder")
+        self.grp_live_exports.setTitle("3. Форматы вывода" if is_ru else "3. Output formats")
+        self.lbl_live_source.setText("Источник:" if is_ru else "Source:")
+        self.lbl_live_mic_device.setText("Микрофон:" if is_ru else "Microphone:")
+        self.lbl_live_system_device.setText("Системный звук:" if is_ru else "System audio:")
+        for combo in (self.combo_live_mic_device, self.combo_live_system_device):
+            combo.setPlaceholderText("Поиск устройств…" if is_ru else "Looking for devices…")
+        self.lbl_live_tracks.setText("Дорожки:" if is_ru else "Tracks:")
+        self.lbl_live_diarization.setText("Диаризация:" if is_ru else "Diarization:")
+        self.lbl_live_gain.setText("Усиление:" if is_ru else "Gain:")
+        self.btn_live_output_select.setText("Выбрать папку" if is_ru else "Choose folder")
+        self.btn_live_open_session.setText("Открыть" if is_ru else "Open")
+        self.cb_live_mic_audio.setText("Микрофон" if is_ru else "Microphone")
+        self.cb_live_system_audio.setText("Системный звук" if is_ru else "System audio")
+        self.cb_live_export_txt.setText("Текст" if is_ru else "Text")
+        self.cb_live_export_txt_timecodes.setText("Таймкоды" if is_ru else "Timecodes")
+        self.cb_live_export_txt_diarize.setText("Диар." if is_ru else "Diar.")
+        self.cb_live_export_txt_diarize_timecodes.setText("Диар. + время" if is_ru else "Diar. + time")
+        self.cb_live_export_md.setText("Markdown")
+        self.cb_live_export_srt.setText("SRT")
+        self.cb_live_export_vtt.setText("VTT")
+        self.cb_live_subtitle_sentence_split.setText("По предложениям" if is_ru else "By sentences")
+        self.lbl_live_subtitle_max_lines.setText("Строк:" if is_ru else "Lines:")
+        self.lbl_live_subtitle_max_width.setText("Символов:" if is_ru else "Characters:")
+        self.btn_live_pause.setText("Пауза" if is_ru else "Pause")
+        self.btn_live_stop.setText("Остановить" if is_ru else "Stop")
+        self.btn_live_clear.setText("Очистить" if is_ru else "Clear")
+        self.btn_live_overlay.setText("Оверлей" if is_ru else "Overlay")
+        source_labels = (("Микрофон", "Microphone"), ("Системный звук", "System audio"), ("Микрофон + системный звук", "Microphone + system audio"))
+        for index, labels in enumerate(source_labels):
+            self.combo_live_source.setItemText(index, labels[0] if is_ru else labels[1])
+        diarization_labels = (("Выключено", "Off"), ("Оценка в реальном времени (недоступно)", "Live estimate (unavailable)"), ("После остановки", "After stop"))
+        for index, labels in enumerate(diarization_labels):
+            self.combo_live_diarization.setItemText(index, labels[0] if is_ru else labels[1])
+        self.combo_live_diarization.setToolTip(
+            "Оценки анонимны и могут меняться в последние 10 секунд."
+            if is_ru else "Live estimates are anonymous and may change during the most recent 10 seconds."
+        )
+        self.live_transcript.setPlaceholderText(
+            "Расшифровка появится здесь"
+            if is_ru else
+            "Transcript appears here"
+        )
+        self._update_live_output_folder_label(self.live_output_dir.text())
+        self._update_live_export_controls()
+        self._update_live_control_state()

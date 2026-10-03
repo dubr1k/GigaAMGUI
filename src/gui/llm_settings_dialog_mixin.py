@@ -267,3 +267,53 @@ class LlmSettingsDialogMixin:
     def _open_llm_settings_dialog(self):
         self._ensure_llm_settings_dialog()
         self._llm_settings_dialog.exec()
+
+    def _retranslate_llm_settings_dialog(self, is_ru: bool) -> None:
+        """Диалог «Настройки LLM»."""
+        if not hasattr(self, "_llm_settings_dialog"):
+            return
+        self._llm_settings_dialog.setWindowTitle("Настройки LLM" if is_ru else "LLM settings")
+        self.grp_llm_api_settings.setTitle("LLM API")
+        self.llm_provider_labels["provider"].setText("Провайдер:" if is_ru else "Provider:")
+        self.llm_provider_labels["model"].setText("Модель:" if is_ru else "Model:")
+        other_index = self._llm_other_index
+        self.llm_provider_items[other_index] = "Другое" if is_ru else "Other"
+        current_provider = self._normalize_llm_provider(self.combo_llm_provider.currentText())
+        self.combo_llm_provider.blockSignals(True)
+        self.combo_llm_provider.setItemText(other_index, self.llm_provider_items[other_index])
+        self.combo_llm_provider.setCurrentText(self.llm_provider_items[other_index] if current_provider == "Other" else current_provider)
+        self.combo_llm_provider.blockSignals(False)
+        self.grp_llm_tools.setTitle("Инструменты" if is_ru else "Tools")
+        self.tbl_llm_tools.setHorizontalHeaderLabels(["", "Инструмент" if is_ru else "Tool", "Версия" if is_ru else "Version", "Путь" if is_ru else "Path", "", ""])
+        for browse, check in self._llm_tool_buttons.values():
+            browse.setText("Обзор…" if is_ru else "Browse…")
+            check.setText("Проверить" if is_ru else "Check")
+        self.btn_llm_tools_rescan.setText("Пересканировать" if is_ru else "Rescan")
+        self.lbl_llm_tools_note.setText(
+            "Пустой путь — автопоиск по PATH и типичным каталогам (homebrew, npm, bun, nvm)." if is_ru
+            else "Empty path — auto-detect via PATH and common install folders (homebrew, npm, bun, nvm)."
+        )
+        self.cb_llm_allow_tools.setText("Разрешить инструменты и сессии агента" if is_ru else "Allow agent tools and sessions")
+        for spec in cli_tools.cli_specs():
+            prefix = spec.settings_prefix
+            self.llm_provider_labels[f"{prefix}_args"].setText(f"{spec.name} доп. аргументы:" if is_ru else f"{spec.name} extra args:")
+            if spec.has_provider_field:
+                self.llm_provider_labels[f"{prefix}_provider"].setText(f"{spec.name} provider:")
+        self.entry_llm_claude_args.setPlaceholderText("например: --permission-mode bypassPermissions" if is_ru else "example: --permission-mode bypassPermissions")
+        self.entry_llm_codex_args.setPlaceholderText("например: --dangerously-bypass-approvals-and-sandbox" if is_ru else "example: --dangerously-bypass-approvals-and-sandbox")
+        self.entry_llm_opencode_args.setPlaceholderText("например: --agent build" if is_ru else "example: --agent build")
+        self.entry_llm_pi_args.setPlaceholderText("например: --thinking low" if is_ru else "example: --thinking low")
+        self.entry_llm_omp_args.setPlaceholderText("например: --thinking low --profile work" if is_ru else "example: --thinking low --profile work")
+        self.llm_provider_labels["other_path"].setText("Команда:" if is_ru else "Command:")
+        self.llm_provider_labels["other_args"].setText("Аргументы:" if is_ru else "Arguments:")
+        self.entry_llm_other_path.setPlaceholderText("путь к CLI, например my-llm" if is_ru else "CLI path, for example my-llm")
+        self.entry_llm_other_args.setPlaceholderText("аргументы; промпт — последним параметром, либо {stdin}" if is_ru else "arguments; the prompt goes last, or write {stdin}")
+        self._render_llm_tool_statuses()
+        self.prompts_group.setTitle("Готовые промпты" if is_ru else "Ready prompts")
+        self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
+        self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
+        self.lbl_llm_custom_prompt.setText("Свой промпт:" if is_ru else "Custom prompt:")
+        self.lbl_llm_settings_note.setText("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi / oh-my-pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env." if is_ru else "You can use an OpenAI-compatible API, Anthropic Messages API, or local Claude Code / Codex / OpenCode / Pi / oh-my-pi. In API mode, the app auto-detects the API type from the URL or endpoint. The selected provider, model, temperature, checkboxes, prompts, and files are saved between launches. It is best to store the API key in .env.")
+        self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить" if is_ru else "Save")
+        self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть" if is_ru else "Close")
+        self._update_llm_provider_fields(self.combo_llm_provider.currentText())

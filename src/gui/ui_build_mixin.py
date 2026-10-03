@@ -516,4 +516,86 @@ class UiBuildMixin:
         group.setLayout(layout)
         return group
 
-    # _show_hf_token_dialog вынесен в FilesMixin (рядом с _toggle_diarization).
+    def _retranslate_shell(self, is_ru: bool) -> None:
+        """Заголовок окна, переключатели, вкладки и строка статуса."""
+        self._btn_lang.setText("EN" if is_ru else "RU")  # shows the language it switches to
+        self._btn_theme.setToolTip("Переключить тему" if is_ru else "Toggle theme")
+        self.setWindowTitle(APP_TITLE if is_ru else "GigaAM v3 Transcriber")
+        if hasattr(self, "_title_label"):
+            self._title_label.setText("GigaAMGUI v3")
+        if hasattr(self, "_tab_pages"):
+            for name, text in (
+                ("processing", "Обработка" if is_ru else "Processing"),
+                ("live", "Live"),
+                ("llm", "LLM"),
+                ("api", "API"),
+                ("journal", "Журнал" if is_ru else "Log"),
+                ("settings", "Настройки" if is_ru else "Settings"),
+            ):
+                self.tabs.setTabText(self.tabs.indexOf(self._tab_pages[name]), text)
+        # Переводим только «пустые» состояния: статус идущей обработки или
+        # текст ошибки при смене языка затирался словами «Готов к работе».
+        ready = ("Готов к работе", "Ready to work")
+        if hasattr(self, "status_bar") and self.status_bar.currentMessage() in ("", *ready):
+            self.status_bar.showMessage(ready[0] if is_ru else ready[1])
+        if hasattr(self, "lbl_status") and self.lbl_status.text() in ready:
+            self.lbl_status.setText(ready[0] if is_ru else ready[1])
+
+    def _retranslate_processing_page(self, is_ru: bool) -> None:
+        """Вкладка «Обработка»: секции, кнопки, очередь, форматы."""
+        if not hasattr(self, "grp_files"):
+            return
+        if hasattr(self, "btn_start"):
+            self.btn_start.setText("ЗАПУСТИТЬ ОБРАБОТКУ" if is_ru else "START PROCESSING")
+        if hasattr(self, "btn_clear"):
+            self.btn_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+        self.grp_files.setTitle("1. Выбор файлов" if is_ru else "1. File selection")
+        self.grp_output.setTitle("2. Папка сохранения результатов" if is_ru else "2. Output folder")
+        self.grp_audio_preprocessing.setTitle("3. Подготовка аудио" if is_ru else "3. Audio preprocessing")
+        self.grp_diarization.setTitle("4. Диаризация спикеров" if is_ru else "4. Speaker diarization")
+        self.grp_formats.setTitle("5. Форматы вывода" if is_ru else "5. Output formats")
+        self.lbl_overall.setText("Общий прогресс" if is_ru else "Overall progress")
+        self.btn_select_files.setText("Выбрать файлы" if is_ru else "Choose files")
+        self.btn_select_files.setToolTip("Выбрать аудио/видео файлы для обработки  (Ctrl+O)" if is_ru else "Choose audio/video files for processing  (Ctrl+O)")
+        self.btn_select_folder.setText("Выбрать папку" if is_ru else "Choose folder")
+        self.btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок" if is_ru else "Add all media files from the folder and subfolders")
+        self.btn_upload.setText("Загрузить" if is_ru else "Download")
+        self.btn_upload.setToolTip("Скачать медиа по ссылке и добавить в очередь" if is_ru else "Download media by URL and add it to the queue")
+        self.btn_output_select.setText("Выбрать папку" if is_ru else "Choose folder")
+        self.btn_open_result.setText("Открыть папку с результатами" if is_ru else "Open results folder")
+        if hasattr(self, "lbl_output_folder") and (self.lbl_output_folder.text().startswith("Папка не выбрана") or self.lbl_output_folder.text().startswith("Folder not selected")):
+            self.lbl_output_folder.setText("Папка не выбрана (по умолчанию - рядом с файлом)" if is_ru else "Folder not selected (default: next to the file)")
+        self.btn_cancel.setText("Отменить" if is_ru else "Cancel")
+        self.input_path.setPlaceholderText("Ссылка на медиа (YouTube и др.)" if is_ru else "Media URL (YouTube, etc.)")
+        self.input_path.setToolTip("Вставьте ссылку и нажмите «Загрузить»" if is_ru else "Paste a link and press 'Download'")
+        if not self.files_to_process:
+            self.lbl_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
+        self.btn_remove_file.setText("Убрать выбранное" if is_ru else "Remove selected")
+        self.btn_remove_file.setToolTip("Убрать выделенные файлы из очереди  (Delete)" if is_ru else "Remove selected files from the queue  (Delete)")
+        self.btn_clear_files.setText("Очистить список" if is_ru else "Clear list")
+        self.btn_clear_files.setToolTip("Убрать все файлы из очереди (настройки сохранятся)" if is_ru else "Remove all files from the queue (settings will be kept)")
+        self.files_list.setToolTip("Очередь файлов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "File queue. Select items and press Delete to remove them.")
+        if self.lbl_input_folder.text().startswith("Папка не выбрана") or self.lbl_input_folder.text().startswith("Folder not selected"):
+            self.lbl_input_folder.setText("Папка не выбрана" if is_ru else "Folder not selected")
+        self.drop_hint.setText("Перетащите сюда файлы или папки  ·  либо нажмите «Выбрать файлы»" if is_ru else "Drop files or folders here  ·  or click 'Choose files'")
+        format_labels = {
+            "txt": ("Текст", "Text"),
+            "txt_timecodes": ("Таймкоды", "Timecodes"),
+            "txt_diarize": ("Диар.", "Diar."),
+            "txt_diarize_timecodes": ("Диар. + время", "Diar. + time"),
+            "md": ("Markdown", "Markdown"),
+            "srt": ("SRT", "SRT"),
+            "vtt": ("VTT", "VTT"),
+        }
+        for fmt, cb in self.format_checkboxes.items():
+            ru_label, en_label = format_labels.get(fmt, (cb.text(), cb.text()))
+            cb.setText(ru_label if is_ru else en_label)
+        self.cb_subtitle_sentence_split.setText(
+            "Разбивать по предложениям" if is_ru else "Split by sentences"
+        )
+        self.lbl_subtitle_max_lines.setText(
+            "Строк:" if is_ru else "Lines:"
+        )
+        self.lbl_subtitle_max_width.setText(
+            "Символов:" if is_ru else "Characters:"
+        )

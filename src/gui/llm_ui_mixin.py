@@ -357,3 +357,59 @@ class LlmUiMixin:
             return
         QApplication.clipboard().setText(result_text)
         self.lbl_llm_status.setText(self._t("Результат скопирован", "Result copied"))
+
+    def _retranslate_llm_page(self, is_ru: bool) -> None:
+        """Страница LLM: источник, шаблоны, результат, сохранение."""
+        if not hasattr(self, "grp_llm_source"):
+            return
+        if hasattr(self, "btn_llm_process"):
+            self.btn_llm_process.setText("ОБРАБОТАТЬ" if is_ru else "PROCESS")
+        if hasattr(self, "btn_llm_clear"):
+            self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+        self.grp_llm_source.setTitle("1. Источник транскрипта" if is_ru else "1. Transcript source")
+        self.grp_llm_output.setTitle("2. Куда сохранить" if is_ru else "2. Save location")
+        self.grp_llm_actions.setTitle("3. Что сделать" if is_ru else "3. What to do")
+        self.grp_llm_save.setTitle("4. Форматы вывода" if is_ru else "4. Output formats")
+        self.grp_llm_result.setTitle("5. Результат LLM" if is_ru else "5. LLM result")
+        self.btn_select_transcripts.setText("Выбрать транскрипты" if is_ru else "Choose transcripts")
+        self.btn_llm_output.setText("Выбрать папку" if is_ru else "Choose folder")
+        self.btn_llm_process.setToolTip("Запустить LLM-обработку выбранных транскриптов" if is_ru else "Run LLM processing for selected transcripts")
+        self.btn_llm_clear.setToolTip("Сбросить выбранные транскрипты, ручной текст и результат LLM" if is_ru else "Reset selected transcripts, manual text and LLM result")
+        if hasattr(self, "lbl_llm_summary_prompt"):
+            self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
+        if hasattr(self, "lbl_llm_tasks_prompt"):
+            self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
+        if hasattr(self, "lbl_llm_custom_prompt"):
+            self.lbl_llm_custom_prompt.setText("Свой промпт:" if is_ru else "Custom prompt:")
+        self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
+        llm_ready = ("Готово к LLM-обработке", "Ready for LLM processing")
+        if self.lbl_llm_status.text() in llm_ready:
+            self.lbl_llm_status.setText(llm_ready[0] if is_ru else llm_ready[1])
+        if hasattr(self, "llm_drop_hint"):
+            self.llm_drop_hint.setText("Перетащите или выберите" if is_ru else "Drop or choose")
+        if hasattr(self, "btn_remove_llm_file"):
+            self.btn_remove_llm_file.setText("Убрать" if is_ru else "Remove")
+        if hasattr(self, "btn_clear_llm_files"):
+            self.btn_clear_llm_files.setText("Очистить" if is_ru else "Clear")
+        if hasattr(self, "llm_files_list"):
+            self.llm_files_list.setToolTip("Список транскриптов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "Transcript list. Select items and press Delete to remove them.")
+        self.lbl_llm_files.setText("Файлы не выбраны" if is_ru and not self.transcript_files_for_llm else ("No files selected" if not is_ru and not self.transcript_files_for_llm else self.lbl_llm_files.text()))
+        if hasattr(self, "lbl_llm_files_count") and not self.transcript_files_for_llm:
+            self.lbl_llm_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
+        self.txt_llm_transcript.setPlaceholderText(
+            "Вставьте транскрипт" if is_ru else "Paste transcript"
+        )
+        if hasattr(self, "llm_action_checkboxes"):
+            self.llm_action_checkboxes["summary"].setText("Выжимка" if is_ru else "Summary")
+            self.llm_action_checkboxes["tasks"].setText("Задачи" if is_ru else "Tasks")
+            self.llm_action_checkboxes["custom"].setText("Свой промпт" if is_ru else "Custom prompt")
+        if hasattr(self, "lbl_llm_actions_note"):
+            self.lbl_llm_actions_note.setText("Отметьте один или несколько режимов обработки. Для «Свой промпт» текст задается в меню «Настройки → LLM API…»." if is_ru else "Select one or more processing modes. For 'Custom prompt', set the text in Settings → LLM API…")
+        if hasattr(self, "lbl_llm_output") and (self.lbl_llm_output.text().startswith("Папка не выбрана") or self.lbl_llm_output.text().startswith("Folder not selected")):
+            self.lbl_llm_output.setText("Папка не выбрана (по умолчанию - рядом с транскриптом)" if is_ru else "Folder not selected (default: next to the transcript)")
+        if hasattr(self, "lbl_llm_output_note"):
+            self.lbl_llm_output_note.setText("Если папка не выбрана, результат будет сохранен рядом с исходным транскриптом." if is_ru else "If no folder is selected, the result will be saved next to the source transcript.")
+        if hasattr(self, "llm_export_checkboxes"):
+            self.llm_export_checkboxes["txt"].setText("TXT (.txt)")
+            self.llm_export_checkboxes["md"].setText("Markdown (.md)")
+            self.llm_export_checkboxes["docx"].setText("DOCX (.docx)")
