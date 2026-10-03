@@ -195,3 +195,30 @@ def test_cli_backend_and_provider_choices_follow_runtime_options():
 
     choices = {param.name: list(param.type.choices) for param in cli.main.params if param.name in ("backend", "onnx_provider")}
     assert choices == {"backend": list(ASR_BACKENDS), "onnx_provider": list(ONNX_PROVIDERS)}
+
+
+def test_cli_names_the_reason_when_the_model_cannot_load(tmp_path, monkeypatch):
+    # Без -v причина (например, нет весов MLX в офлайн-кэше) терялась за
+    # общим «Не удалось загрузить модель!».
+    sample = tmp_path / "sample.mp3"
+    sample.write_bytes(b"audio")
+
+    class FailingLoader:
+        def __init__(self, *_, **__):
+            pass
+
+        def load_model(self, logger=None):
+            logger("Движок распознавания: mlx")
+            logger("Не удалось загрузить модель MLX (rnnt, repo): LocalEntryNotFoundError: no cached snapshot")
+            logger("Не удалось загрузить модель через движок mlx")
+            return False
+
+    monkeypatch.setattr(cli, "ModelLoader", FailingLoader)
+    monkeypatch.setattr(cli, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(cli, "setup_logger", lambda: None)
+
+    result = CliRunner().invoke(cli.main, ["--files", str(sample), "--no-interactive", "--no-diarize"])
+
+    assert result.exit_code == 1
+    # rich переносит длинные строки по ширине терминала
+    assert "LocalEntryNotFoundError: no cached snapshot" in " ".join(result.output.split())

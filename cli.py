@@ -465,9 +465,20 @@ def main(
             model_revision=model,
             onnx_provider=onnx_provider or ONNX_PROVIDER,
         )
-        success = model_loader.load_model(logger=lambda msg: logger.debug(msg))
+        load_messages: list[str] = []
+
+        def _loader_log(msg):
+            load_messages.append(str(msg))
+            logger.debug(msg)
+
+        success = model_loader.load_model(logger=_loader_log)
 
     if not success:
+        # Причина (нет весов в офлайн-кэше, недоступен провайдер…) раньше была
+        # видна только с -v: без него оставалась одна общая фраза.
+        reasons = [message for message in load_messages if message.startswith("Не удалось")]
+        for message in reasons or load_messages[-1:]:
+            logger.error(message)
         logger.error("Не удалось загрузить модель!")
         sys.exit(1)
 
