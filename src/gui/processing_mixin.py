@@ -722,12 +722,27 @@ class ProcessingMixin:
         self.result_topics.setText(self._t("Ключевые темы появятся после LLM-обработки результата.", "Key topics appear after LLM processing of this result."))
         self.result_summary_rail.setText(self._t("Не создавалось автоматически.", "Not generated automatically."))
 
-    def _populate_result_transcript(self, segments: list[dict], fallback_text: str):
-        layout = self.result_transcript_layout
+    @classmethod
+    def _clear_layout(cls, layout) -> None:
+        """Убрать из layout всё, включая вложенные layout'ы и их виджеты.
+
+        takeAt() возвращает вложенный layout без виджетов: сами виджеты
+        остаются детьми страницы, поэтому каждая строка сегмента после
+        повторного заполнения оставалась на экране вторым экземпляром.
+        """
         while layout.count():
             item = layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+            elif item.layout() is not None:
+                cls._clear_layout(item.layout())
+                item.layout().deleteLater()
+
+    def _populate_result_transcript(self, segments: list[dict], fallback_text: str):
+        layout = self.result_transcript_layout
+        self._clear_layout(layout)
         if not segments:
             label = QLabel(fallback_text)
             label.setWordWrap(True)
@@ -755,10 +770,7 @@ class ProcessingMixin:
 
     def _populate_result_actions(self, saved_files: list[str]):
         layout = self.result_actions_layout
-        while layout.count():
-            item = layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._clear_layout(layout)
         show_folder = QPushButton(self._t("Показать результаты", "Show results"))
         show_folder.setObjectName("text_button")
         show_folder.clicked.connect(self._open_results_folder)
