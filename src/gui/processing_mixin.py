@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+from ..core.log_i18n import translate_log, translate_log_line
 from ..core.model_preparation import (
     PreparationCancelled,
     PreparationError,
@@ -35,7 +36,7 @@ class ProcessingMixin:
             )
             if reply == QMessageBox.StandardButton.No:
                 return
-            # Отменяем именно текущий запуск и забываем его: воркер доделает
+            # Отменяем именно текущий запуск и забываем его: воркер прервёт
             # текущий файл и выйдет, а его итог уже никого не интересует.
             self._abandon_processing_run()
             self.is_processing = False
@@ -87,10 +88,10 @@ class ProcessingMixin:
             self._processing_cancel_event.set()
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.setText(self._t("Отмена…", "Cancelling…"))
-        self.lbl_stage.setText(self._t("●  Останавливаем после текущего файла…", "●  Stopping after the current file…"))
-        self.lbl_status.setText(self._t("Отмена: дождитесь завершения текущего файла…", "Cancellation: wait for the current file to finish…"))
+        self.lbl_stage.setText(self._t("●  Прерываем текущий файл…", "●  Interrupting the current file…"))
+        self.lbl_status.setText(self._t("Отмена: текущий файл прерывается, его результаты не сохранятся…", "Cancellation: the current file is being interrupted; its results will not be saved…"))
         self._set_status(self._t("Отмена обработки…", "Cancelling processing…"))
-        self.log(self._t("Запрошена отмена обработки — остановимся после текущего файла", "Cancellation requested — stopping after the current file"))
+        self.log(self._t("Запрошена отмена обработки — текущий файл прерывается", "Cancellation requested — interrupting the current file"))
 
     def _abandon_processing_run(self) -> None:
         """Отменить текущий запуск и отвязать его от окна.
@@ -113,14 +114,14 @@ class ProcessingMixin:
         if self.is_processing:
             return
         if self._processing_worker_alive():
-            # Отмена срабатывает только между файлами: второй воркер на той же
-            # модели, пока первый дорабатывает свой файл, конкурирует за неё.
+            # Отменённый воркер выходит не мгновенно (ближайшая проверка — строка
+            # ffmpeg или окно ASR); второй воркер на той же модели конкурировал бы за неё.
             QMessageBox.information(
                 self,
                 self._t("Информация", "Information"),
                 self._t(
-                    "Предыдущая обработка ещё завершает текущий файл. Повторите запуск через несколько секунд.",
-                    "The previous run is still finishing its current file. Start again in a few seconds.",
+                    "Предыдущая обработка ещё прерывает текущий файл. Повторите запуск через несколько секунд.",
+                    "The previous run is still interrupting its current file. Start again in a few seconds.",
                 ),
             )
             return
@@ -273,7 +274,7 @@ class ProcessingMixin:
                 self.log(self._t(f"Количество спикеров: {num_speakers if num_speakers else 'автоопределение'}", f"Speaker count: {num_speakers if num_speakers else 'auto-detect'}"))
             files_processed = 0
             files_failed = 0
-            failed_names = []
+            failures: list[tuple[str, str | None]] = []  # (имя файла, причина)
             time_spent = 0.0
             generated_transcript_files = []
             completed_results = []
@@ -294,7 +295,15 @@ class ProcessingMixin:
                         num_speakers=num_speakers,
                         output_formats=selected_formats,
                         subtitle_options=subtitle_options,
+                        # Токен своего запуска: «Отменить» и «Очистить всё» прерывают
+                        # текущий файл, а не ждут его конца.
+                        cancel_check=cancel_event.is_set,
                     )
+                    if result.get('cancelled'):
+                        # Прерванный файл — остановка, а не сбой: не в статистику и не
+                        # в список «Не удалось». Причину процессор уже записал в журнал.
+                        time_spent += result.get('total_time', 0)
+                        break
                     self.stats.add_processing_record(
                         file_path=result['file_path'],
                         file_size=result['file_size'],
@@ -317,12 +326,14 @@ class ProcessingMixin:
                                 generated_transcript_files.append(saved_file)
                     else:
                         files_failed += 1
-                        failed_names.append(os.path.basename(filepath))
+                        reason = result.get('error') or None
+                        failures.append((os.path.basename(filepath), reason))
+                        self._log_file_failure(os.path.basename(filepath), reason)
                     time_spent += result['total_time']
                 except Exception as e:
                     files_failed += 1
-                    failed_names.append(os.path.basename(filepath))
-                    self.log(self._t(f"Ошибка при обработке файла {os.path.basename(filepath)}: {str(e)}", f"Error while processing file {os.path.basename(filepath)}: {str(e)}"))
+                    failures.append((os.path.basename(filepath), str(e)))
+                    self._log_file_failure(os.path.basename(filepath), str(e))
                     continue
                 finally:
                     if run_active():
@@ -340,11 +351,8 @@ class ProcessingMixin:
                 message = self._t(f"Готово с ошибками: {files_processed}/{total_files} успешно за {duration_str}", f"Completed with errors: {files_processed}/{total_files} successful in {duration_str}")
             else:
                 message = self._t(f"Завершено за {duration_str}", f"Completed in {duration_str}")
-            if failed_names:
-                shown = ", ".join(failed_names[:5])
-                if len(failed_names) > 5:
-                    shown += self._t(f" и ещё {len(failed_names) - 5}", f" and {len(failed_names) - 5} more")
-                message += self._t(f"\nНе удалось: {shown}\nПодробности — на вкладке «Журнал обработки».", f"\nFailed: {shown}\nSee details in the 'Processing log' tab.")
+            if failures:
+                message += self._failures_summary(failures)
             success = (files_processed > 0) and (files_failed == 0) and not cancelled
             if run_active():
                 self._last_generated_transcript_files = generated_transcript_files
@@ -367,6 +375,35 @@ class ProcessingMixin:
             self.signals.processing_finished.emit(False, self._t(f"Ошибка: {str(e)}", f"Error: {str(e)}"), cancel_event)
         finally:
             self._release_accelerator_caches()
+
+    def _log_file_failure(self, name: str, reason: str | None) -> None:
+        """Строка журнала о провале файла с причиной от процессора (result['error']).
+
+        Её формат разбирает и вкладка «Журнал»: файл отмечается там как ошибка.
+        """
+        detail_ru = f": {reason}" if reason else ""
+        detail_en = f": {translate_log(reason)}" if reason else ""
+        self.log(self._t(
+            f"Ошибка при обработке файла {name}{detail_ru}",
+            f"Error while processing file {name}{detail_en}",
+        ))
+
+    def _failures_summary(self, failures: list[tuple[str, str | None]]) -> str:
+        """Хвост итогового сообщения: до пяти файлов, каждый с первой строкой причины."""
+        lines = []
+        for name, reason in failures[:5]:
+            first = reason.strip().splitlines()[0] if reason and reason.strip() else ""
+            if first:
+                lines.append(self._t(f"• {name}: {first}", f"• {name}: {translate_log_line(first)}"))
+            else:
+                lines.append(f"• {name}")
+        if len(failures) > 5:
+            lines.append(self._t(f"…и ещё {len(failures) - 5}", f"…and {len(failures) - 5} more"))
+        return (
+            self._t("\nНе удалось:\n", "\nFailed:\n")
+            + "\n".join(lines)
+            + self._t("\nПодробности — на вкладке «Журнал обработки».", "\nSee details in the 'Processing log' tab.")
+        )
 
     def _release_accelerator_caches(self) -> None:
         """Вернуть системе кэши ускорителя, не выгружая сами модели.
