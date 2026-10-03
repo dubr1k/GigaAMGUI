@@ -14,10 +14,10 @@ use crate::{
         AUDIO_MODES, DIARIZATION_BACKENDS, FORMAT_KEYS, LLM_MODES, MODEL_OPTIONS, ONNX_PROVIDERS,
         SPEAKER_CHOICES,
     },
+    providers::{provider, provider_prefix, PROVIDERS},
     results::canonical_path,
     settings::save_app_settings,
     theme::Theme,
-    worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
 };
 
 pub(crate) fn short_name(path: &str) -> String {
@@ -407,19 +407,45 @@ fn checkboxes<'a>(values: impl IntoIterator<Item = &'a str>, selected: &[String]
         .collect()
 }
 
-fn llm_model_options(provider: &str) -> Vec<String> {
-    let models: &[&str] = match provider {
-        "Claude Code" => &["default", "sonnet", "opus", "haiku"],
-        // Codex with a ChatGPT account rejects explicit `-m` values such as
-        // gpt-5-codex. Let the installed Codex client choose its supported model.
-        "Codex" => &["default"],
-        "OpenCode" => &["default"],
-        "Pi" => &["default"],
-        "oh-my-pi" => &["default"],
-        "Other" => &["default"],
-        _ => &["gpt-4.1-mini", "gpt-4.1", "gpt-5-mini", "gpt-5"],
+/// The provider menu: the worker's registry once it answered `llm_tools`, the
+/// built-in table before that, each with its install status.
+pub(crate) fn provider_menu_options(app: &App) -> Vec<String> {
+    let providers: Vec<String> = if app.llm_providers.is_empty() {
+        PROVIDERS
+            .iter()
+            .map(|provider| provider.name.to_owned())
+            .collect()
+    } else {
+        app.llm_providers.clone()
     };
-    models
+    providers
+        .into_iter()
+        .map(|provider| match app.llm_tool(&provider) {
+            Some(tool) if tool.status == "found" => format!(
+                "{provider} · {}",
+                tool.version
+                    .as_deref()
+                    .unwrap_or(t(app.lang, "value.found"))
+            ),
+            Some(tool) if tool.status == "broken" => {
+                format!("{provider} · {}", t(app.lang, "llm.broken"))
+            }
+            Some(tool) if tool.status == "missing" => {
+                format!("{provider} · {}", t(app.lang, "llm.not_installed"))
+            }
+            _ => provider,
+        })
+        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+        .collect()
+}
+
+pub(crate) fn provider_from_menu_option(option: &str) -> &str {
+    option.split(" · ").next().unwrap_or(option).trim()
+}
+
+fn llm_model_options(provider_name: &str) -> Vec<String> {
+    provider(provider_name)
+        .models
         .iter()
         .map(|model| (*model).to_owned())
         .chain([
@@ -840,7 +866,7 @@ pub(crate) fn run_command(app: &mut App) {
                 app.status = t(app.lang, "status.temperature_range").into();
             }
         },
-        "/llm-provider-name" if !matches!(provider_prefix(&app.llm_provider), "pi" | "omp") => {
+        "/llm-provider-name" if !provider(&app.llm_provider).internal_provider => {
             accepted = false;
             app.status = t(app.lang, "status.provider_name_pi_only").into();
         }
@@ -1261,9 +1287,9 @@ mod tests {
     use crate::{
         app::llm_can_run,
         i18n::Lang,
+        requests::{llm_settings_payload, start_payload},
         settings::{isolated_config_dir, load_settings, TuiSettings},
         theme::Theme,
-        worker::{llm_settings_payload, start_payload},
     };
 
     #[test]

@@ -15,8 +15,8 @@ use ratatui::{
 use crate::{
     app::App,
     i18n::t,
+    providers::provider_prefix,
     ui::{Action, AreaId},
-    worker::provider_prefix,
 };
 
 /// One row of the list: the label key, the value to show and what `Enter` does.

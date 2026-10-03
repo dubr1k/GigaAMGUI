@@ -17,6 +17,7 @@ use crate::{
         backend_is_supported, is_model, AUDIO_MODES, DIARIZATION_BACKENDS, FORMAT_KEYS,
         ONNX_PROVIDERS,
     },
+    providers::cli_providers,
     theme::{Theme, DEFAULT_THEME},
 };
 
@@ -139,15 +140,6 @@ fn main_app_installed() -> bool {
     main_app_settings_path().is_some_and(|path| path.is_file())
 }
 
-/// (settings-key prefix, bare binary name); a path equal to the bare name is not an override.
-const CLI_PREFIXES: [(&str, &str); 5] = [
-    ("claude", "claude"),
-    ("codex", "codex"),
-    ("opencode", "opencode"),
-    ("pi", "pi"),
-    ("omp", "omp"),
-];
-
 /// Copies the keys shared with the desktop app from its `user_settings.json` map.
 fn shared_settings_from_main_app(map: &serde_json::Map<String, Value>, settings: &mut TuiSettings) {
     let text = |key: &str| map.get(key).and_then(Value::as_str).map(str::to_owned);
@@ -215,7 +207,9 @@ fn shared_settings_from_main_app(map: &serde_json::Map<String, Value>, settings:
     if let Some(v) = map.get("llm_allow_tools").and_then(Value::as_bool) {
         settings.llm_allow_tools = v;
     }
-    for (prefix, binary) in CLI_PREFIXES {
+    // A configured path equal to the bare binary name is not an override.
+    for provider in cli_providers() {
+        let (prefix, binary) = (provider.prefix, provider.binary.unwrap_or_default());
         match text(&format!("llm_{prefix}_path")).map(|p| p.trim().to_owned()) {
             Some(p) if !p.is_empty() && p != binary => {
                 settings.llm_tool_paths.insert(prefix.into(), p);
@@ -234,7 +228,7 @@ fn shared_settings_from_main_app(map: &serde_json::Map<String, Value>, settings:
             }
             None => {}
         }
-        if matches!(prefix, "pi" | "omp") {
+        if provider.internal_provider {
             match text(&format!("llm_{prefix}_provider")) {
                 Some(p) if !p.trim().is_empty() => {
                     settings.llm_internal_providers.insert(prefix.into(), p);
@@ -314,7 +308,8 @@ fn shared_settings_into_main_app(settings: &TuiSettings, map: &mut serde_json::M
     let lookup =
         |table: &HashMap<String, String>, key: &str| table.get(key).cloned().unwrap_or_default();
     // Empty strings mean "cleared" so that a reset in the TUI reaches the desktop app.
-    for (prefix, _) in CLI_PREFIXES {
+    for provider in cli_providers() {
+        let prefix = provider.prefix;
         put(
             &format!("llm_{prefix}_path"),
             json!(lookup(&settings.llm_tool_paths, prefix)),
@@ -323,7 +318,7 @@ fn shared_settings_into_main_app(settings: &TuiSettings, map: &mut serde_json::M
             &format!("llm_{prefix}_args"),
             json!(lookup(&settings.llm_extra_args, prefix)),
         );
-        if matches!(prefix, "pi" | "omp") {
+        if provider.internal_provider {
             put(
                 &format!("llm_{prefix}_provider"),
                 json!(lookup(&settings.llm_internal_providers, prefix)),

@@ -7,7 +7,7 @@ use crate::{
     input::{input_candidates, InputMode},
     lifecycle::{Activity, ConnectionState, JobKind},
     queue::{FileState, RunSelection},
-    worker::start_payload,
+    requests::start_payload,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

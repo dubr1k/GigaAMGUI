@@ -23,11 +23,12 @@ use crate::{
     lifecycle::{Activity, Connection, ConnectionState, JobKind},
     options::LLM_MODES,
     queue::{QueueState, RunSelection},
+    requests::llm_start_payload,
     session::PendingInput,
     settings::save_app_settings,
     theme::{Palette, Theme},
     ui::{settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
-    worker::{llm_start_payload, LlmTool},
+    worker::LlmTool,
 };
 
 /// The tabs of the interface, in tab-bar order.
@@ -276,6 +277,11 @@ impl App {
 
     pub(crate) fn palette(&self) -> &Palette {
         &self.theme.palette
+    }
+
+    /// The worker's last word on a provider's CLI (`llm_tools`/`llm_tool_check`).
+    pub(crate) fn llm_tool(&self, provider: &str) -> Option<&LlmTool> {
+        self.llm_tools.iter().find(|tool| tool.provider == provider)
     }
 
     pub(crate) fn log(&mut self, line: impl Into<String>) {
@@ -959,11 +965,11 @@ mod tests {
 
     use super::*;
     use crate::{
+        commands::provider_from_menu_option,
         commands::{command_menu_options, BACK_MENU_OPTION},
         options::selectable_backends,
         settings::isolated_config_dir,
         ui::{Action, ButtonId},
-        worker::provider_from_menu_option,
     };
 
     #[test]
