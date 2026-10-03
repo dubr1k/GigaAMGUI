@@ -727,3 +727,12 @@ def test_swift_quitting_during_live_asks_and_saves_the_session() -> None:
     assert "job.stop()" in stop and "Self.liveExitGrace" in stop
     finish = _swift_block(main, "private func finishLive(status: String) {")
     assert "defer { exitHandler?() }" in finish
+
+
+def test_swift_llm_tools_are_scanned_once_per_run() -> None:
+    # Each visit to the LLM page or Settings > LLM spawned a whole Python worker
+    # to rescan the CLI providers.
+    main = _liquid_sources()
+    scan = _swift_block(main, "private func refreshLLMTools(fresh: Bool) {")
+    assert "fresh || !llmToolsScanned" in scan and "self.llmToolsScanned = true" in scan
+    assert "refreshLLMTools(fresh: true)" in _swift_block(main, "@objc private func rescanLLMTools(_ sender: Any?) {")

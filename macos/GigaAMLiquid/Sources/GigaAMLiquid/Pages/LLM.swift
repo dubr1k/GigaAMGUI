@@ -221,8 +221,11 @@ extension AppController {
         return overrides
     }
 
+    /// Scans the CLI providers through the worker. Every visit to the LLM page or
+    /// Settings > LLM used to spawn a worker for this; the result now lasts for the
+    /// run — Rescan (`fresh`) and path edits re-probe.
     func refreshLLMTools(fresh: Bool) {
-        guard llmToolsQuery == nil, !isClosing else { return }
+        guard llmToolsQuery == nil, !isClosing, fresh || !llmToolsScanned else { return }
         llmRescanButton?.isEnabled = false
         let query = LLMToolsQuery.scan(overrides: llmToolOverrides(), fresh: fresh) { [weak self] result in
             guard let self else { return }
@@ -232,6 +235,7 @@ extension AppController {
             case .tools(_, let tools):
                 for tool in tools { self.llmToolStatuses[tool.provider] = tool }
                 self.saveLLMToolsCache()
+                self.llmToolsScanned = true
             case .tool(let tool):
                 self.llmToolStatuses[tool.provider] = tool
             case .failed(let message):

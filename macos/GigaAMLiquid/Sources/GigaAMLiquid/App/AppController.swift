@@ -70,6 +70,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Last discovery result per provider name; persisted so the page renders
     /// badges immediately while a fresh scan runs in the worker.
     var llmToolStatuses: [String: LLMToolStatus] = [:]
+    /// A scan has answered in this run; page visits reuse it (Rescan forces one).
+    var llmToolsScanned = false
     weak var llmProviderStatusLabel: NSTextField?
     var llmToolRows: [String: (dot: NSTextField, version: NSTextField, path: NSTextField, check: NSButton)] = [:]
     weak var llmRescanButton: NSButton?
