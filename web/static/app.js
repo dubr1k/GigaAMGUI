@@ -269,8 +269,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         if (res.ok) {
             showMainScreen(username);
         } else {
-            const data = await res.json();
-            errEl.textContent = data.detail || (currentLang === 'ru' ? 'Ошибка входа' : 'Login error');
+            errEl.textContent = (await readErrorDetail(res)) || (currentLang === 'ru' ? 'Ошибка входа' : 'Login error');
         }
     } catch (err) {
         errEl.textContent = currentLang === 'ru' ? 'Ошибка соединения' : 'Connection error';
@@ -642,8 +641,7 @@ function setupUrlDownload() {
                 addLog(currentLang === 'ru' ? `Загрузка началась (task: ${data.task_id.substring(0, 8)}...)` : `Download started (task: ${data.task_id.substring(0, 8)}...)`);
                 document.getElementById('url-input').value = '';
             } else {
-                const err = await res.json();
-                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${err.detail}`, 'error');
+                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${await readErrorDetail(res)}`, 'error');
             }
         } catch (e) {
             addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${e}`, 'error');
@@ -703,8 +701,8 @@ function setupStartButton() {
                 document.getElementById('folder-label').textContent = t('folderNone');
                 document.getElementById('folder-label').style.color = 'var(--text-muted)';
             } else {
-                const err = await res.json();
-                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${err.detail}`, 'error');
+                // 413 от nginx приходит HTML-страницей: res.json() здесь бросал SyntaxError
+                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${await readErrorDetail(res)}`, 'error');
             }
         } catch (e) {
             addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${e}`, 'error');
@@ -792,17 +790,23 @@ function setupDeleteAllUserDataButton() {
     };
 }
 
+// Текст ошибки ответа: `detail` FastAPI или, если тело не JSON (413/502 от nginx —
+// HTML-страница), код и начало текста без тегов. Тело читается один раз: после
+// неудачного res.json() его уже не прочитать как текст.
 async function readErrorDetail(res) {
+    let text = '';
     try {
-        const data = await res.json();
-        return data.detail || JSON.stringify(data);
+        text = await res.text();
     } catch (e) {
-        try {
-            const text = await res.text();
-            return text || `HTTP ${res.status}`;
-        } catch (inner) {
-            return `HTTP ${res.status}`;
-        }
+        return `HTTP ${res.status}`;
+    }
+    try {
+        const data = JSON.parse(text);
+        if (typeof data.detail === 'string') return data.detail;
+        return JSON.stringify(data.detail !== undefined ? data.detail : data);
+    } catch (e) {
+        const plain = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        return plain ? `HTTP ${res.status}: ${plain.slice(0, 200)}` : `HTTP ${res.status}`;
     }
 }
 
@@ -1038,7 +1042,7 @@ window.viewResult = async function(taskId) {
     preview.innerHTML = `<p class="label-muted">${t('loading')}</p>`;
 
     try {
-        const res = await fetch(`${API}/tasks/${taskId}/result`);
+        const res = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}/result`);
         if (res.ok) {
             const data = await res.json();
             if (data.result_files && data.result_files.length > 0) {
@@ -1060,6 +1064,9 @@ window.viewResult = async function(taskId) {
             } else {
                 preview.innerHTML = `<p class="label-muted">${t('noData')}</p>`;
             }
+        } else {
+            const detail = await readErrorDetail(res);
+            preview.innerHTML = `<p class="label-muted">${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${escapeHtml(detail)}</p>`;
         }
     } catch (e) {
         preview.innerHTML = `<p class="label-muted">${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${escapeHtml(String(e))}</p>`;
@@ -1069,7 +1076,14 @@ window.viewResult = async function(taskId) {
 window.deleteTask = async function(taskId) {
     if (!confirm(currentLang === 'ru' ? 'Удалить задачу и результаты?' : 'Delete task and results?')) return;
     try {
-        await fetch(`${API}/tasks/${taskId}`, { method: 'DELETE' });
+        const res = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+        if (!res.ok) {
+            // Например, 400 для задачи в обработке: раньше UI всё равно писал «Задача удалена»
+            const detail = await readErrorDetail(res);
+            addLog(`${currentLang === 'ru' ? 'Ошибка удаления' : 'Delete error'}: ${detail}`, 'error');
+            alert((currentLang === 'ru' ? 'Ошибка удаления: ' : 'Delete error: ') + detail);
+            return;
+        }
         loadResults();
         addLog(currentLang === 'ru' ? 'Задача удалена' : 'Task deleted');
     } catch (e) {
@@ -1265,8 +1279,8 @@ async function processLlm() {
     document.getElementById('btn-llm-process').disabled = true;
     try {
         const res = await fetch(`${API}/llm/process`, { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(friendlyError(await readErrorDetail(res)));
         const data = await res.json();
-        if (!res.ok) throw new Error(friendlyError(data.detail || 'LLM error'));
         document.getElementById('llm-result').textContent = data.result_text || '';
         document.getElementById('llm-status').textContent = currentLang === 'ru' ? 'LLM-обработка завершена' : 'LLM processing completed';
         const links = (data.saved_files || []).map(file => `<a class="result-file-btn" href="${API}/llm/download/${data.job_id}/${encodeURIComponent(file.name)}" download>${escapeHtml(file.name)}</a>`).join('');

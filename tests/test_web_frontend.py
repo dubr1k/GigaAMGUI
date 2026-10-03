@@ -39,6 +39,18 @@ def test_relogin_does_not_duplicate_handlers_and_logout_closes_stream():
     assert result["openStreamsAfterLogin"] == 1
 
 
+def test_provider_options_keep_canonical_values():
+    result = _scenario("provider_values")
+    canonical = cli_tools.canonical_provider_names()
+    assert [o["value"] for o in result["ru"]] == canonical
+    assert [o["value"] for o in result["en"]] == canonical
+    # Подпись «Другое»/«Other» — только у последнего пункта; oh-my-pi остаётся собой
+    assert result["ru"][-1]["text"] == "Другое"
+    assert result["en"][-1]["text"] == "Other"
+    assert "oh-my-pi" in result["ru"][5]["text"] and "18.2" in result["ru"][5]["text"]
+    assert result["sentProvider"] == "oh-my-pi"
+
+
 def test_progress_snapshot_is_a_baseline_and_results_reload_is_debounced():
     result = _scenario("sse_baseline")
     # История при подключении не превращается в «Готово»/«Ошибка» и не дёргает /api/tasks
@@ -55,19 +67,16 @@ def test_progress_snapshot_is_a_baseline_and_results_reload_is_debounced():
     assert result["replayedLines"] == 0
 
 
-def test_provider_options_keep_canonical_values():
-    result = _scenario("provider_values")
-    canonical = cli_tools.canonical_provider_names()
-    assert [o["value"] for o in result["ru"]] == canonical
-    assert [o["value"] for o in result["en"]] == canonical
-    # Подпись «Другое»/«Other» — только у последнего пункта; oh-my-pi остаётся собой
-    assert result["ru"][-1]["text"] == "Другое"
-    assert result["en"][-1]["text"] == "Other"
-    assert "oh-my-pi" in result["ru"][5]["text"] and "18.2" in result["ru"][5]["text"]
-    assert result["sentProvider"] == "oh-my-pi"
-
-
 def test_tool_statuses_are_escaped():
     html = "".join(_scenario("tools_escaped")["html"])
     assert "<img" not in html and "<b>" not in html
     assert "&lt;img" in html
+
+
+def test_http_errors_are_reported():
+    result = _scenario("error_paths")
+    assert "Задача не найдена" in result["preview"]
+    assert any("Нельзя удалить" in message for message in result["deleteAlerts"])
+    assert not any("Задача удалена" in line for line in result["deleteLines"])
+    assert "502" in result["llmStatus"]
+    assert "JSON" not in result["llmStatus"]
