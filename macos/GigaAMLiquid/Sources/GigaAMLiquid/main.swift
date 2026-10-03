@@ -298,21 +298,6 @@ private final class EditorScrollView: NSScrollView {
     }
 }
 
-private final class EmptyTimelineView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        let frame = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 12, yRadius: 12)
-        NSColor.white.withAlphaComponent(Palette.isDark ? 0.025 : 0.22).setFill()
-        frame.fill()
-        Palette.line.withAlphaComponent(0.65).setStroke()
-        frame.stroke()
-        let baseline = NSBezierPath()
-        baseline.move(to: NSPoint(x: 18, y: bounds.midY))
-        baseline.line(to: NSPoint(x: bounds.width - 18, y: bounds.midY))
-        baseline.lineWidth = 1
-        baseline.stroke()
-    }
-}
-
 private final class DropZoneView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
@@ -856,6 +841,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         } else {
             defaults.removeObject(forKey: "settings.hfToken")
         }
+        // «Анимации» was a switch nothing read; the one animation (the search field)
+        // follows the system's Reduce Motion setting.
+        defaults.removeObject(forKey: "settings.animations")
         cleanupDownloadedMedia()
         loadLLMToolsCache()
         installMainMenu()
@@ -1934,7 +1922,6 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(divider())
             body.addArrangedSubview(settingsField("Папка результатов", control: editableText(outputPathText, key: "output.path", placeholder: "Рядом с исходным файлом")))
             body.addArrangedSubview(toggleRow("Liquid Glass", key: "settings.liquidGlass", defaultValue: true))
-            body.addArrangedSubview(toggleRow("Анимации", key: "settings.animations", defaultValue: true))
         case "О приложении":
             body.spacing = 18
             let releaseVersion = (Bundle.main.object(forInfoDictionaryKey: "GigaAMReleaseVersion") as? String)
@@ -2128,23 +2115,6 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         image.contentTintColor = Palette.blue
         self.size(image, width: size, height: size)
         return image
-    }
-
-    private func unavailableButton(_ title: String, primary: Bool = false, reason: String = "Нет данных: рабочий сервис не подключён.", height: CGFloat = 38) -> NSButton {
-        let control = button(title, primary: primary, height: height)
-        control.isEnabled = false
-        control.toolTip = L10n.text(reason)
-        if primary {
-            control.layer?.backgroundColor = (Palette.isDark ? NSColor.white : NSColor.black).cgColor
-            control.contentTintColor = Palette.isDark ? .black : .white
-        }
-        return control
-    }
-
-    private func unavailableIcon(_ name: String, hint: String) -> NSButton {
-        let control = iconButton(name, hint: hint)
-        control.isEnabled = false
-        return control
     }
 
     /// `minHeight` instead of `height` makes the editor the stretchy part of its card.
