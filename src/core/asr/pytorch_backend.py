@@ -21,7 +21,7 @@ from .chunking import (
     AudioChunk,
     normalize_chunk_words,
     plan_audio_chunks,
-    stitch_overlapping_text,
+    stitch_chunk,
     vad_regions_miss_active_audio,
 )
 from .types import BackendCapabilities, TranscriptionSegment, TranscriptionWord, normalize_window_audio
@@ -451,12 +451,18 @@ class PyTorchBackend:
                             and previous_result_index is not None
                             and previous_group == chunk.group
                         ):
-                            previous_text = results[previous_result_index]["transcription"]
-                            previous_text, text, overlap_words = stitch_overlapping_text(
-                                previous_text,
+                            previous = results[previous_result_index]
+                            stitched = stitch_chunk(
+                                previous["transcription"],
+                                previous.get("words"),
                                 text,
+                                words,
                             )
-                            results[previous_result_index]["transcription"] = previous_text
+                            previous["transcription"] = stitched.previous_text
+                            if stitched.previous_words is not None:
+                                previous["words"] = stitched.previous_words
+                            text = stitched.text
+                            overlap_words = stitched.trim_words
 
                         start_time = max(0.0, float(chunk.start_sec))
                         end_time = min(total_seconds, float(chunk.end_sec))
