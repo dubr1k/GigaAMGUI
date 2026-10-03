@@ -179,3 +179,29 @@ def collect_onnx_runtime_deps():
         binaries += b
         hiddenimports += h
     return datas, binaries, hiddenimports
+
+
+def windows_conda_extra_binaries(dll_names=("_lzma.pyd", "_bz2.pyd", "_sqlite3.pyd")):
+    """DLL стандартной библиотеки conda-окружения, которые PyInstaller не видит сам.
+
+    Раньше пути были прописаны под одну машину (C:\\Users\\<имя>\\miniconda3\\…),
+    и на любой другой спеки собирались без них, а project_root рядом указывал на
+    чужой диск. Берём активное окружение сборки (sys.prefix) и корень conda
+    (на два уровня выше envs/<имя>): на исходной машине это те же самые пути.
+    """
+    prefix = Path(sys.prefix)
+    found = [
+        (str(prefix / "DLLs" / name), ".")
+        for name in dll_names
+        if (prefix / "DLLs" / name).exists()
+    ]
+    # liblzma.dll нужна _lzma.pyd, но обычно лежит только в корне conda.
+    roots = [prefix]
+    if prefix.parent.name.lower() == "envs":
+        roots.append(prefix.parent.parent)
+    for root in roots:
+        liblzma = root / "Library" / "bin" / "liblzma.dll"
+        if liblzma.exists():
+            found.append((str(liblzma), "."))
+            break
+    return found
