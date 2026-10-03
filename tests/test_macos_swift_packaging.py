@@ -456,6 +456,23 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     assert "guard sessionReported else { return .fatal }" in policy
 
 
+def test_swift_live_status_line_keeps_capture_noise_in_the_log() -> None:
+    # Every capture event goes to the log; the status line, which shows the
+    # recording state, takes only what the user should see. A silent loopback's
+    # "idle gap=…" DISCONTINUITY replaced it on every resume.
+    receive = _swift_block(_liquid_sources(), "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
+    capture = _swift_case(receive, "case .captureEvent(")
+    assert "LiveCaptureNotice.classify(kind: kind, detail: detail)" in capture
+    assert 'appendLogLine("[live/\\(kind)] \\(detail)")' in capture
+    notice = (LIQUID_CORE / "LiveCaptureNotice.swift").read_text(encoding="utf-8")
+    assert 'case "status", "discontinuity":' in notice
+    # The overflow detail Liquid shortens to seconds is the worker's wording.
+    assert '"dropped_frames="' in notice
+    for path in ("src/live/capture/common.py", "src/live/capture/queue.py"):
+        assert "dropped_frames=" in Path(path).read_text(encoding="utf-8"), path
+    assert "CaptureEventKind.DISCONTINUITY" in Path("src/live/timeline.py").read_text(encoding="utf-8")
+
+
 def test_swift_live_error_commands_match_the_worker() -> None:
     # A current worker names the command an `error` answers; LiveErrorPolicy
     # decides by that name. A renamed command in Python would silently turn a

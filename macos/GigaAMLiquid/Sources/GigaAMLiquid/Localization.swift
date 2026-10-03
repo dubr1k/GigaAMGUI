@@ -179,6 +179,7 @@ enum L10n {
         "Выбрать": "Choose",
         "Live-сессия прервана.": "Live session interrupted.",
         "Worker не успевает обрабатывать звук; фрагмент пропущен.": "The worker cannot keep up with the audio; a chunk was dropped.",
+        "Worker не успевает обрабатывать звук (%@): пропущено %@ с.": "The worker cannot keep up with the audio (%@): %@ s dropped.",
         "Микрофон недоступен.": "The microphone is unavailable.",
         "Микрофон отключён.": "The microphone was disconnected.",
         "Нет доступного дисплея для захвата системного звука.": "No display is available for system audio capture.",

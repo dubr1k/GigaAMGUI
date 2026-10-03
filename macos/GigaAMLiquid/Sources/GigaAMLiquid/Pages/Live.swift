@@ -356,8 +356,16 @@ extension AppController {
             if firstFinal { refreshLiveControls() }  // the assistant needs at least one final
         case .level(_, let rms):
             liveLevelView?.fraction = Double(min(1, rms * 4))
-        case .captureEvent(_, let kind, let detail):
-            if kind != "status" { liveStatusLabel?.stringValue = detail }
+        case .captureEvent(let source, let kind, let detail):
+            // The status line holds the recording state; an idle gap of a silent
+            // system-audio loopback replaced it with "idle gap=3.512s" every time.
+            switch LiveCaptureNotice.classify(kind: kind, detail: detail) {
+            case .logOnly: break
+            case .detail: liveStatusLabel?.stringValue = detail
+            case .droppedAudio(let seconds):
+                liveStatusLabel?.stringValue = L10n.format("Worker не успевает обрабатывать звук (%@): пропущено %@ с.",
+                                                           source.rawValue, String(format: "%.1f", seconds))
+            }
             appendLogLine("[live/\(kind)] \(detail)")
         case .answerChunk(_, let text):
             // The first chunk replaces "Ассистент отвечает…"; later ones are appended.
