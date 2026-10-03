@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.services.mcp_backend import BackendError
+from src.services.transcription_api import BackendError
 
 
 class OpenAIError(Exception):

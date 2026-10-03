@@ -16,7 +16,7 @@ from pathlib import Path
 
 from src.config import AUDIO_PREPROCESSING_MODE, OUTPUT_FORMATS
 from src.core.subtitles import SubtitleOptions
-from src.services import file_policy, mcp_backend, transcription_service
+from src.services import file_policy, transcription_api, transcription_service
 from src.utils.atomic_json import save_json_atomic
 from src.utils.media_downloader import MediaDownloader
 from src.utils.output_naming import output_filename
@@ -176,7 +176,7 @@ async def process_transcription(
 
             if not result['success']:
                 # Причину провала процессор кладёт в result['error']; старые версии её не дают
-                raise Exception(mcp_backend.failure_reason(result) or "Обработка не удалась")
+                raise Exception(transcription_api.failure_reason(result) or "Обработка не удалась")
 
             if task_id not in registry.tasks:
                 if task_id in registry.deleted:

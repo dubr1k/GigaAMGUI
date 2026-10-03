@@ -12,8 +12,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from src.services import transcript_formats
-from src.services.mcp_backend import BackendError
 from src.services.openai_errors import openai_error, type_for_status
+from src.services.transcription_api import BackendError
 
 
 def queue_progress(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, event_or_stage, progress=None) -> None:

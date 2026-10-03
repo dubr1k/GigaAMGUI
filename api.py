@@ -34,17 +34,18 @@ from src.config import HF_TOKEN, SUPPORTED_FORMATS
 from src.core.model_loader import ModelLoader
 from src.services import (  # noqa: I001
     file_policy,
-    mcp_backend,
     openai_errors,
     openai_stream,
     transcript_formats,
+    transcription_api,
     transcription_service,  # noqa: F401  (тесты подменяют api.transcription_service.build_processor)
 )
 from src.services import health as health_service
 from src.services.api_keys import KeyStore, hash_key, key_from_headers
-from src.services.mcp_backend import BackendError, LocalBackend
+from src.services.mcp_backend import LocalBackend
 from src.services.mcp_http import backend_options_from_env, mount_mcp
 from src.services.openai_errors import OpenAIError, openai_error
+from src.services.transcription_api import BackendError
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
 from src.utils.media_downloader import MediaDownloader
@@ -180,15 +181,15 @@ def safe_filename(filename: str | None) -> str:
 
 # ==================== МОДЕЛИ ====================
 
-# Реестр моделей и алиасов живёт в mcp_backend (общий с MCP); здесь — реэкспорт.
-DEFAULT_MODEL = mcp_backend.DEFAULT_MODEL
-MODEL_ALIASES = mcp_backend.MODEL_ALIASES
-resolve_model = mcp_backend.resolve_model
-_model_object = mcp_backend.model_object
+# Реестр моделей и алиасов живёт в transcription_api (общий с MCP); здесь — реэкспорт.
+DEFAULT_MODEL = transcription_api.DEFAULT_MODEL
+MODEL_ALIASES = transcription_api.MODEL_ALIASES
+resolve_model = transcription_api.resolve_model
+_model_object = transcription_api.model_object
 
 
 def models_payload() -> dict[str, Any]:
-    return mcp_backend.models_payload(model_loader)
+    return transcription_api.models_payload(model_loader)
 
 
 # ==================== LIFESPAN ====================
@@ -456,8 +457,8 @@ async def create_transcription(
         raise openai_error(400, f"Unknown timestamp granularity: {', '.join(sorted(bad))}.",
                            param="timestamp_granularities", code="unsupported_parameter")
     # Проверка и нормализация параметров — общий с MCP код; BackendError → конверт OpenAI в обработчике
-    opts = mcp_backend.prepare_options(
-        mcp_backend.TranscribeOptions(
+    opts = transcription_api.prepare_options(
+        transcription_api.TranscribeOptions(
             model=model, language=language, format=_BACKEND_FORMATS[response_format],
             word_timestamps="word" in granularities, diarize=_parse_bool(diarize),
             diarization_backend=diarization_backend, num_speakers=num_speakers,
@@ -470,7 +471,7 @@ async def create_transcription(
     progress_queue: asyncio.Queue[str] = asyncio.Queue()
 
     def blocking() -> dict[str, Any]:
-        return mcp_backend.run_transcription(
+        return transcription_api.run_transcription(
             file_path, work_dir, opts, model_loader=model_loader, stats_manager=stats_manager,
             loader_factory=ModelLoader, logger=logger,
             progress=lambda stage, fraction: openai_stream.queue_progress(loop, progress_queue, stage, fraction))
