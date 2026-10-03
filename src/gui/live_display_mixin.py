@@ -27,6 +27,17 @@ def _display_path(path: str | Path) -> str:
         return str(path)
 
 
+def _session_file_names(paths, session_dir: Path) -> str:
+    """Файлы сессии через запятую: имена внутри папки сессии, иначе полный путь."""
+    names = []
+    for path in paths:
+        try:
+            names.append(str(Path(path).relative_to(session_dir)))
+        except ValueError:
+            names.append(str(path))
+    return ", ".join(names)
+
+
 # Подписи, которые меняются по ходу сессии. При смене языка их переводит
 # _retranslate_live_tab — только если сейчас показан один из этих текстов.
 LIVE_READY_TEXT = ("Готово к записи", "Ready for live capture")
@@ -52,6 +63,9 @@ LIVE_STATUS_TEXTS = (
     ("Папка ещё не создана", "The folder does not exist yet"),
 )
 LIVE_SAVED_PREFIX = ("Сохранено: ", "Saved: ")
+# stop() доводит сессию до конца и при сбое этапа, а ошибки отдаёт в
+# SessionResult.errors: такая сессия сохранена, но не полностью.
+LIVE_SAVED_WITH_ERRORS_PREFIX = ("Сохранено с ошибками: ", "Saved with errors: ")
 LIVE_WAVEFORM_TEXTS = {
     "idle": ("Аудиосигнал появится во время записи", "Audio signal appears during capture"),
     "recording": ("Захват аудио", "Capturing audio"),
@@ -130,6 +144,25 @@ class LiveDisplayMixin:
     def _show_live_session_folder(self, session_dir: Path) -> None:
         self._live_shown_session_dir = Path(session_dir)
         self._update_live_output_folder_label(self.live_output_dir.text().strip())
+
+    def _report_live_result(self, result) -> None:
+        """Итог Stop: статус, ошибки этапов остановки и сохранённые файлы в журнале."""
+        session_dir = Path(result.session_dir)
+        prefix = LIVE_SAVED_WITH_ERRORS_PREFIX if result.errors else LIVE_SAVED_PREFIX
+        self.lbl_live_status.setText(self._t(*prefix) + session_dir.name)
+        self.lbl_live_status.setToolTip(str(session_dir))
+        if result.errors:
+            # Баннер, а не только статус: статус перепишет следующая сессия.
+            details = "; ".join(result.errors)
+            self._report_live_problem(self._t(
+                f"Ошибки при остановке: {details}",
+                f"Errors while stopping: {details}",
+            ))
+        self._log_live(self._t("Сессия сохранена: ", "Session saved: ") + str(session_dir))
+        if result.exports:
+            self._log_live(
+                self._t("Расшифровка: ", "Transcript: ") + _session_file_names(result.exports, session_dir)
+            )
 
     def _update_live_event(self, event) -> None:
         if isinstance(event, TranscriptEvent):
@@ -241,9 +274,10 @@ class LiveDisplayMixin:
         self._update_live_control_state()
         self._retranslate_known(self.lbl_live_status.setText, self.lbl_live_status.text(), LIVE_STATUS_TEXTS)
         status = self.lbl_live_status.text()
-        for prefix in LIVE_SAVED_PREFIX:
-            if status.startswith(prefix):
-                self.lbl_live_status.setText(self._t(*LIVE_SAVED_PREFIX) + status[len(prefix):])
+        for pair in (LIVE_SAVED_PREFIX, LIVE_SAVED_WITH_ERRORS_PREFIX):
+            prefix = next((prefix for prefix in pair if status.startswith(prefix)), None)
+            if prefix is not None:
+                self.lbl_live_status.setText(self._t(*pair) + status[len(prefix):])
                 break
         self._retranslate_known(
             self.lbl_live_waveform.setText, self.lbl_live_waveform.text(), LIVE_WAVEFORM_TEXTS.values(),

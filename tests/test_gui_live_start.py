@@ -211,6 +211,55 @@ def test_pause_and_resume_failures_are_reported(window):
     window.live_session = None
 
 
+def test_stop_errors_are_shown_next_to_what_was_saved(window, monkeypatch):
+    """stop() больше не бросает при сбое этапа: ошибки приходят в SessionResult.errors.
+
+    Окно показывало на них обычное «Сохранено», будто всё записалось.
+    """
+    class BrokenScheduler(_Scheduler):
+        def close(self):
+            raise RuntimeError("decoder crashed")
+
+    monkeypatch.setattr("src.gui.live_mixin.LiveAsrScheduler", BrokenScheduler)
+    window.model_loader = _ReadyLoader()
+    window._start_live_session()
+    assert _pump_until(lambda: window.live_session is not None)
+    session_dir = window.live_session.session_dir
+
+    window._stop_live_session()
+    assert _pump_until(lambda: not window._live_stopping)
+
+    assert window.live_session.status().state is CaptureState.STOPPED
+    assert window.lbl_live_status.text() == "Сохранено с ошибками: " + session_dir.name
+    assert window.lbl_live_problem.isHidden() is False
+    assert "decoder crashed" in window.lbl_live_problem.text()
+    log = window.log_text.toPlainText()
+    assert "decoder crashed" in log
+    # Сохранённое всё равно перечислено: экспорт прошёл, несмотря на сбой распознавания.
+    assert "transcript.txt" in log and "transcript_timecodes.txt" in log
+    assert window.btn_live_start.isEnabled() is True
+
+    window._lang = "en"
+    window._apply_language()
+    assert window.lbl_live_status.text() == "Saved with errors: " + session_dir.name
+
+
+def test_a_clean_stop_lists_the_saved_files(window):
+    window.model_loader = _ReadyLoader()
+    window._start_live_session()
+    assert _pump_until(lambda: window.live_session is not None)
+    session_dir = window.live_session.session_dir
+
+    window._stop_live_session()
+    assert _pump_until(lambda: not window._live_stopping)
+
+    assert window.lbl_live_status.text() == "Сохранено: " + session_dir.name
+    assert window.lbl_live_problem.isHidden() is True
+    log = window.log_text.toPlainText()
+    assert str(session_dir) in log
+    assert "transcript.txt" in log and "transcript_timecodes.txt" in log
+
+
 @pytest.mark.parametrize(
     ("source", "record_mic", "record_system"),
     [("mic", True, True), ("system", True, False), ("both", False, True), ("both", True, True)],

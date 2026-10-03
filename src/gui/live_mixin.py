@@ -22,7 +22,7 @@ from ..live.types import (
     DiarizationMode,
     LiveSettings,
 )
-from .live_display_mixin import LIVE_SAVED_PREFIX, LIVE_STATE_LABELS
+from .live_display_mixin import LIVE_STATE_LABELS
 from .live_transcript import LiveTranscriptPresenter
 
 # Состояния, в которых Stop сохраняет сессию.
@@ -533,10 +533,7 @@ class LiveMixin:
             self._live_llm_cancel_event.set()
         self._live_conversation_id = None
         self._show_live_session_folder(result.session_dir)
-        self.lbl_live_status.setText(
-            self._t(*LIVE_SAVED_PREFIX) + Path(result.session_dir).name
-        )
-        self.lbl_live_status.setToolTip(str(result.session_dir))
+        self._report_live_result(result)
         self._update_live_control_state(CaptureState.STOPPED)
         self._sync_live_conversation()
         self._continue_pending_close()
