@@ -256,12 +256,17 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             ));
             save_app_settings(app);
         }
+        // SRT subtitles on/off. It used to replace the whole selection with txt or
+        // txt+srt and save that, wiping a choice made in `/formats` or the desktop app.
         KeyCode::Char('f') | KeyCode::F(8) if idle && no_input => {
-            app.formats = if app.formats.len() == 1 {
-                vec!["txt".into(), "srt".into()]
+            if let Some(index) = app.formats.iter().position(|format| format == "srt") {
+                app.formats.remove(index);
+                if app.formats.is_empty() {
+                    app.formats.push("txt".into());
+                }
             } else {
-                vec!["txt".into()]
-            };
+                app.formats.push("srt".into());
+            }
             app.log(tf(
                 app.lang,
                 "status.formats",
@@ -885,6 +890,25 @@ mod tests {
             app.exit_requested,
             "the second Ctrl+C quits even with the help open"
         );
+    }
+
+    #[test]
+    fn f_toggles_subtitles_without_dropping_the_other_formats() {
+        let _config = isolated_config_dir();
+        let mut app = crate::test_support::ready_app();
+        app.formats = vec!["txt".into(), "md".into(), "vtt".into()];
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.formats, ["txt", "md", "vtt", "srt"]);
+        assert_eq!(crate::settings::load_settings().formats, app.formats);
+        press(&mut app, KeyCode::F(8));
+        assert_eq!(
+            app.formats,
+            ["txt", "md", "vtt"],
+            "a multi-format choice survives"
+        );
+        app.formats = vec!["srt".into()];
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.formats, ["txt"], "never an empty selection");
     }
 
     #[test]

@@ -336,7 +336,7 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     ("help.key_r", "список результатов; ответ LLM — F2", "saved results; LLM answer — F2"),
     ("help.key_d", "диаризация вкл/выкл", "diarization on/off"),
-    ("help.key_f", "форматы txt / txt+srt", "formats txt / txt+srt"),
+    ("help.key_f", "субтитры SRT вкл/выкл, прочие форматы сохраняются", "SRT subtitles on/off, other formats kept"),
     ("help.key_help", "эта справка", "this help"),
     (
         "help.key_esc",
