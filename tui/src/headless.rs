@@ -22,6 +22,21 @@ use crate::{
     worker::{llm_settings_from, send, spawn_worker_with},
 };
 
+/// The arguments after the program name as UTF-8. `std::env::args()` panics on
+/// the first one that is not (a file name from a non-UTF-8 directory on Linux);
+/// that is a usage error with a readable message instead.
+pub(crate) fn utf8_args(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<Vec<String>, String> {
+    args.into_iter()
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|arg| format!("argument is not valid UTF-8: {}", arg.to_string_lossy()))
+        })
+        .collect()
+}
+
+/// `args` excludes the program name.
 fn data_dir_from_args<I, S>(args: I) -> Result<Option<String>, String>
 where
     I: IntoIterator<Item = S>,
@@ -31,7 +46,7 @@ where
         .into_iter()
         .map(|value| value.as_ref().to_string())
         .collect();
-    for (index, value) in values.iter().enumerate().skip(1) {
+    for (index, value) in values.iter().enumerate() {
         if let Some(path) = value.strip_prefix("--data-dir=") {
             if path.is_empty() {
                 return Err("--data-dir requires a path".into());
@@ -50,8 +65,8 @@ where
     Ok(None)
 }
 
-pub(crate) fn apply_data_dir_argument() -> io::Result<()> {
-    let Some(root) = data_dir_from_args(std::env::args())
+pub(crate) fn apply_data_dir_argument(args: &[String]) -> io::Result<()> {
+    let Some(root) = data_dir_from_args(args)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
     else {
         return Ok(());
@@ -659,15 +674,31 @@ mod tests {
     #[test]
     fn data_directory_argument_accepts_separate_and_equals_forms() {
         assert_eq!(
-            data_dir_from_args(["gigaam", "--data-dir", "/mnt/models"]),
+            data_dir_from_args(["--data-dir", "/mnt/models"]),
             Ok(Some("/mnt/models".into()))
         );
         assert_eq!(
-            data_dir_from_args(["gigaam", "--data-dir=/srv/gigaam"]),
+            data_dir_from_args(["--data-dir=/srv/gigaam"]),
             Ok(Some("/srv/gigaam".into()))
         );
-        assert!(data_dir_from_args(["gigaam", "--data-dir"]).is_err());
-        assert!(data_dir_from_args(["gigaam", "--data-dir", "--help"]).is_err());
+        assert!(data_dir_from_args(["--data-dir"]).is_err());
+        assert!(data_dir_from_args(["--data-dir", "--help"]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_argument_is_a_usage_error_not_a_panic() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let args = vec![
+            OsString::from("transcribe"),
+            OsString::from_vec(b"/tmp/\xff.wav".to_vec()),
+        ];
+        let error = utf8_args(args).unwrap_err();
+        assert!(error.contains("/tmp/\u{fffd}.wav"), "{error}");
+        assert_eq!(
+            utf8_args(vec![OsString::from("llm"), OsString::from("a.txt")]).unwrap(),
+            ["llm", "a.txt"]
+        );
     }
 
     #[test]

@@ -33,7 +33,7 @@ mod worker;
 mod worker_session;
 
 use app::{dispatch, App};
-use headless::{apply_data_dir_argument, run_headless, strip_data_dir, HEADLESS_USAGE};
+use headless::{apply_data_dir_argument, run_headless, strip_data_dir, utf8_args, HEADLESS_USAGE};
 use i18n::strip_lang;
 use keys::handle_key;
 use runtime::WorkerRuntime;
@@ -42,8 +42,15 @@ use theme::strip_theme;
 use ui::{draw, Action};
 
 fn main() -> io::Result<()> {
-    apply_data_dir_argument()?;
-    let (argv, lang_override) = strip_lang(strip_data_dir(std::env::args().skip(1).collect()))
+    let args = match utf8_args(std::env::args_os().skip(1)) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("gigaam: {message}");
+            std::process::exit(2);
+        }
+    };
+    apply_data_dir_argument(&args)?;
+    let (argv, lang_override) = strip_lang(strip_data_dir(args))
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let (argv, theme_override) =
         strip_theme(argv).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
