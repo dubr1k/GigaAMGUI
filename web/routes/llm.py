@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 
 from src.services import cli_tools, llm_service
 from src.services import llm_settings as llm_settings_service
+from src.services.llm_prompts import SUMMARY_PROMPT, TASKS_PROMPT
 from src.utils.atomic_json import load_json, save_json_atomic
 from web import auth
 from web.state import state
@@ -24,22 +25,6 @@ router = APIRouter()
 
 
 LLM_EXPORT_FORMATS: Final[tuple[str, ...]] = ("txt", "md", "docx")
-
-
-SUMMARY_PROMPT = (
-    "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
-    "Убери повторы, слова-паразиты и шум распознавания. Сохрани только смысл.\n\n"
-    "Структура ответа:\n1. Краткое резюме в 3-6 пунктах.\n2. Ключевые договоренности и решения.\n3. Важные факты, цифры, сроки, имена и роли — если они есть.\n4. Риски, спорные места или открытые вопросы — если они есть.\n\n"
-    "Пиши четко, по делу, без воды."
-)
-
-
-TASKS_PROMPT = (
-    "Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде на русском языке. "
-    "Игнорируй рассуждения, повторы и фоновые фразы. Не выдумывай задачи, которых нет в тексте.\n\n"
-    "Для каждой задачи укажи: что нужно сделать; кто ответственный, если можно понять; срок; важный контекст; приоритет. "
-    "Если задач нет — напиши: «Явных задач не найдено»."
-)
 
 
 def _server_llm_settings(client: dict) -> dict:
@@ -98,6 +83,13 @@ async def llm_tools(fresh: bool = False, user: str = Depends(auth.require_auth))
         # false — пути/аргументы CLI и инструменты агента из формы сервер игнорирует
         "client_cli": state.allow_client_llm_cli,
     }
+
+
+@router.get("/api/llm/prompts")
+async def llm_prompts(user: str = Depends(auth.require_auth)):
+    """Промпты режимов по умолчанию: форма веб-панели показывает тот же текст,
+    что у PyQt, воркера и MCP (src/services/llm_prompts.py), а не свою копию."""
+    return {"summary": SUMMARY_PROMPT, "tasks": TASKS_PROMPT}
 
 
 @router.post("/api/llm/tools/check")

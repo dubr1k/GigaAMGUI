@@ -218,6 +218,7 @@ function defaultRoutes() {
     routes['GET /api/tasks'] = { json: { total: 0, tasks: [] } };
     routes['GET /api/asr-options'] = { json: { backends: ['auto'], defaults: { asr_backend: 'auto', asr_model: 'v3_e2e_rnnt', onnx_provider: 'auto' } } };
     routes['GET /api/llm/tools'] = { json: { providers: [], tools: [] } };
+    routes['GET /api/llm/prompts'] = { json: { summary: 'SERVER summary prompt', tasks: 'SERVER tasks prompt' } };
     routes['POST /api/upload'] = { json: { tasks: [], total: 1 } };
 }
 
@@ -347,6 +348,37 @@ const scenarios = {
         document.getElementById('btn-llm-rescan').dispatch('click');
         await settle();
         return { html: document.getElementById('llm-tools-list').children.map(li => li.innerHTML) };
+    },
+
+    // Промпты формы LLM — с сервера (GET /api/llm/prompts), и уходят в /api/llm/process
+    async llm_prompts() {
+        await boot();
+        const filled = {
+            summary: document.getElementById('llm-summary-prompt').value,
+            tasks: document.getElementById('llm-tasks-prompt').value,
+        };
+        document.getElementById('llm-manual-text').value = 'текст';
+        document.getElementById('llm-summary').checked = true;
+        const txt = new El('input'); txt.dataset.fmt = 'txt';
+        queryAll['.llm-fmt-cb:checked'] = [txt];
+        routes['POST /api/llm/process'] = { json: { job_id: 'j', provider: 'API', result_text: 'ok', saved_files: [] } };
+        document.getElementById('btn-llm-process').dispatch('click');
+        await settle();
+        const sent = fetchCalls.find(c => c.url === '/api/llm/process');
+        return { filled, sentSummary: sent ? sent.body.get('summary_prompt') : null };
+    },
+
+    // Сервер не отдал промпты: поля пустые (сервер подставит свои), приложение живо
+    async llm_prompts_unavailable() {
+        defaultRoutes();
+        delete routes['GET /api/llm/prompts'];
+        vm.runInContext(APP_JS, sandbox, { filename: 'app.js' });
+        await settle();
+        return {
+            summary: document.getElementById('llm-summary-prompt').value,
+            tasks: document.getElementById('llm-tasks-prompt').value,
+            llmListeners: document.getElementById('btn-llm-process').listenerCount('click'),
+        };
     },
 
     // Ошибки HTTP показываются, а не теряются

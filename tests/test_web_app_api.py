@@ -423,6 +423,7 @@ def llm_env(tmp_path, monkeypatch):
     def fake_run_provider(settings, text, prompt, *, provider, strict_empty_cli, **_):
         captured["settings"] = dict(settings)
         captured["provider"] = provider
+        captured["prompt"] = prompt
         return "ответ"
 
     monkeypatch.setattr(llm_service, "run_provider", fake_run_provider)
@@ -435,6 +436,33 @@ _HOSTILE_LLM_FORM = {
     "other_path": "/bin/sh", "other_args": "-c id", "pi_provider": "anthropic",
     "llm_allow_tools": "true", "summary_enabled": "true", "manual_text": "текст встречи", "export_formats": "txt",
 }
+
+
+def test_llm_prompts_endpoint_serves_the_shared_defaults(client):
+    from src.services import llm_prompts
+
+    response = client.get("/api/llm/prompts")
+    assert response.status_code == 200
+    assert response.json() == {"summary": llm_prompts.SUMMARY_PROMPT, "tasks": llm_prompts.TASKS_PROMPT}
+    # и значения полей формы по умолчанию — те же объекты, не копия
+    assert llm_routes.SUMMARY_PROMPT is llm_prompts.SUMMARY_PROMPT
+    assert llm_routes.TASKS_PROMPT is llm_prompts.TASKS_PROMPT
+
+
+def test_llm_prompts_endpoint_requires_login(anon_client):
+    assert anon_client.get("/api/llm/prompts").status_code == 401
+
+
+def test_llm_process_falls_back_to_the_shared_prompt(client, llm_env):
+    """Пустое поле формы — промпт по умолчанию из llm_prompts, как у PyQt и MCP."""
+    from src.services import llm_prompts
+
+    response = client.post("/api/llm/process", data={
+        "provider": "API", "summary_enabled": "true", "summary_prompt": "  ",
+        "manual_text": "текст встречи", "export_formats": "txt",
+    })
+    assert response.status_code == 200, response.text
+    assert llm_env["prompt"] == llm_prompts.SUMMARY_PROMPT
 
 
 def test_llm_process_ignores_client_cli_paths_args_and_tools(client, llm_env):

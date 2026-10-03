@@ -80,6 +80,19 @@ def test_tool_statuses_are_escaped():
     assert "&lt;img" in html
 
 
+def test_llm_prompts_come_from_the_server():
+    """app.js затирал промпты сервера своими урезанными строками, и форма слала их."""
+    result = _scenario("llm_prompts")
+    assert result["filled"] == {"summary": "SERVER summary prompt", "tasks": "SERVER tasks prompt"}
+    assert result["sentSummary"] == "SERVER summary prompt"
+    assert "Ты аналитик" not in (STATIC / "app.js").read_text(encoding="utf-8")
+
+
+def test_llm_prompts_unavailable_leaves_fields_for_the_server_default():
+    result = _scenario("llm_prompts_unavailable")
+    assert result == {"summary": "", "tasks": "", "llmListeners": 1}
+
+
 def test_http_errors_are_reported():
     result = _scenario("error_paths")
     assert "Задача не найдена" in result["preview"]

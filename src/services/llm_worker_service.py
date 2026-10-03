@@ -8,12 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from src.services import llm_service
-
-PROMPTS = {
-    "summary": "Сделай плотную выжимку: ключевые факты, решения, риски и открытые вопросы.",
-    "tasks": "Выдели конкретные задачи, ответственных, сроки и открытые вопросы.",
-    "terms": "Выдели основные термины, имена, организации, сокращения и их контекст.",
-}
+from src.services.llm_prompts import PROMPTS  # noqa: F401 — имя импортируют и отсюда (тесты, внешний код)
 
 
 class _Cancelled(Exception):
