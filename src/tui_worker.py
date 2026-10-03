@@ -96,6 +96,14 @@ def _use_utf8_stdio() -> None:
             reconfigure(encoding="utf-8", errors="strict" if stream is sys.stdout else "backslashreplace")
 
 
+def _features(command: dict[str, Any]) -> set[str]:
+    """`hello.features`: необязательный список строк; всё прочее — пустой набор."""
+    features = command.get("features")
+    if not isinstance(features, list):
+        return set()
+    return {item for item in features if isinstance(item, str)}
+
+
 class TuiWorker:
     """Runs one transcription batch at a time and exposes it over JSONL."""
 
@@ -104,7 +112,10 @@ class TuiWorker:
         self._write_lock = threading.Lock()
         self._task: threading.Thread | None = None
         self._cancel_requested = threading.Event()
-        self._compact_events = False
+        # `file_completed` и `completed` в TUI: только пути/статусы.
+        self._compact_file_events = False
+        # Только `completed`: клиентам, которые берут полные результаты из `file_completed`.
+        self._compact_completed = False
         self._llm = LLMWorkerService(self.emit)
         self._live = LiveWorkerService(self.emit)
         self._inputs = InputResolver(self.emit)
@@ -115,11 +126,10 @@ class TuiWorker:
     def emit(self, message_type: str, **payload: Any) -> None:
         # В TUI нужны пути/статусы, а не полный массив слов многочасовой записи.
         # Остальные клиенты (включая headless) сохраняют прежний полный контракт.
-        if self._compact_events:
-            if message_type == "file_completed" and isinstance(payload.get("result"), dict):
-                payload["result"] = self._result_metadata(payload["result"])
-            elif message_type == "completed" and isinstance(payload.get("results"), list):
-                payload["results"] = [self._result_metadata(result) for result in payload["results"]]
+        if self._compact_file_events and message_type == "file_completed" and isinstance(payload.get("result"), dict):
+            payload["result"] = self._result_metadata(payload["result"])
+        elif self._compact_completed and message_type == "completed" and isinstance(payload.get("results"), list):
+            payload["results"] = [self._result_metadata(result) for result in payload["results"]]
         line = protocol_line({"type": message_type, **payload})
         with self._write_lock:
             self._output.write(line + "\n")
@@ -135,7 +145,12 @@ class TuiWorker:
     def handle(self, command: dict[str, Any]) -> None:
         command_type = command.get("type")
         if command_type == "hello":
-            self._compact_events = command.get("client") == "tui"
+            tui = command.get("client") == "tui"
+            self._compact_file_events = tui
+            # Liquid (`features: ["compact_completed"]`) берёт полные результаты из
+            # `file_completed`; `completed` повторял их все со словами и на большой
+            # пачке перерастал лимит строки клиента в 8 MiB.
+            self._compact_completed = tui or "compact_completed" in _features(command)
             self.emit("ready", protocol_version=1, capabilities=["resolve_inputs", "asr", "llm"])
         elif command_type == "ping":
             self.emit("pong")

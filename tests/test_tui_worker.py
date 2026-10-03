@@ -73,6 +73,38 @@ def test_only_interactive_tui_negotiates_compact_asr_completion(interactive):
         worker.close()
 
 
+@pytest.mark.parametrize(("hello", "compact_file", "compact_completed"), [
+    (None, False, False),  # headless and old clients: the full contract
+    ({"type": "hello", "client": "tui"}, True, True),
+    # Liquid takes full results from file_completed; only `completed` repeated
+    # every result with its word timings and outgrew the 8 MiB line limit.
+    ({"type": "hello", "client": "liquid", "features": ["compact_completed"]}, False, True),
+    ({"type": "hello", "client": "liquid"}, False, False),
+    ({"type": "hello", "client": "liquid", "features": "compact_completed"}, False, False),
+    ({"type": "hello", "client": "liquid", "features": [None, 7, "compact_completed"]}, False, True),
+])
+def test_hello_negotiates_which_asr_events_are_compact(hello, compact_file, compact_completed):
+    output = io.StringIO()
+    worker = TuiWorker(output)
+    try:
+        if hello is not None:
+            worker.handle(hello)
+            assert _messages(output)[-1] == {
+                "type": "ready", "protocol_version": 1, "capabilities": ["resolve_inputs", "asr", "llm"],
+            }
+        result = {"file_path": "/long.wav", "success": True, "saved_files": ["/long.txt"],
+                  "utterances": [{"text": "длинная запись"}]}
+        worker.emit("file_completed", file="/long.wav", result=result)
+        worker.emit("completed", success=True, results=[result])
+        file_completed, completed = _messages(output)[-2:]
+        assert ("utterances" in file_completed["result"]) is not compact_file
+        assert ("utterances" in completed["results"][0]) is not compact_completed
+        assert completed["results"][0]["saved_files"] == ["/long.txt"]
+        assert "utterances" in result, "emit must not mutate the processor result"
+    finally:
+        worker.close()
+
+
 @posix_pipes_only
 def test_worker_survives_a_child_that_makes_stdin_non_blocking(tmp_path):
     """`pi --version` (probed by llm_tools) sets O_NONBLOCK on its inherited stdin —
