@@ -1154,7 +1154,8 @@ mod tests {
     /// other file under `src/` is scanned, including modules added later.
     const NOT_INTERACTIVE_SOURCES: &[&str] = &[
         // Agent-facing output stays English.
-        "headless.rs",
+        "cli/args.rs",
+        "cli/headless.rs",
         // Its file errors carry OS text and reach the status line only through
         // `err.settings_save`.
         "settings/store.rs",
