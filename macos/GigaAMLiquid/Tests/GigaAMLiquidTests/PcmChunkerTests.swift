@@ -45,7 +45,7 @@ import Testing
         #expect(sink.chunks.isEmpty)
     }
 
-    @Test func pauseIsSafeFromAnotherThread() throws {
+    @Test func pauseIsSafeFromAnotherThread() async throws {
         let sink = Sink()
         let chunker = PcmChunker(source: .mic) { sink.add($0) }
         let feeding = DispatchQueue(label: "feed")
@@ -54,8 +54,20 @@ import Testing
             feeding.async(group: group) { try? chunker.append(buffer: self.buffer(frames: 1600), hostTime: mach_absolute_time()) }
             DispatchQueue.global().async(group: group) { chunker.isPaused.toggle() }
         }
-        #expect(group.wait(timeout: .now() + 10) == .success)
+        // Ждём без блокировки потока: синхронный group.wait занимал поток пула
+        // тестов, и на 3-ядерном раннере CI весь прогон стоял 10 с — остальные
+        // тесты не получали событий и падали по таймауту.
+        let done = Flag()
+        group.notify(queue: .global()) { done.set() }
+        #expect(try await eventually { done.isSet })
         let offsets = sink.chunks.map(\.sampleOffset)
         #expect(offsets == offsets.sorted())
     }
+}
+
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
