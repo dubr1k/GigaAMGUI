@@ -16,7 +16,6 @@ from platform import machine
 from platform import platform as runtime_platform
 from typing import Final
 
-import aiofiles
 from fastapi import (
     Depends,
     FastAPI,
@@ -33,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from src import __version__
-from src.config import HF_TOKEN, OUTPUT_FORMATS
+from src.config import HF_TOKEN
 from src.services import cli_tools, llm_service
 from src.services import health as health_service
 from src.services import llm_settings as llm_settings_service
@@ -43,13 +42,13 @@ from src.services.mcp_http import backend_options_from_env, mount_mcp
 from src.utils.atomic_json import load_json, save_json_atomic
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.media_downloader import MediaDownloader
-from src.utils.output_naming import find_result_file
 from src.utils.processing_stats import ProcessingStats
 from web import auth
 from web.routes import auth as auth_routes
+from web.routes import tasks as tasks_routes
 from web.routes import transcribe as transcribe_routes
 from web.state import STATIC_DIR, state
-from web.task_registry import ALL_TASK_STATUSES, registry
+from web.task_registry import registry
 
 # Third-party ML libraries emit noisy deprecation/reproducibility warnings on
 # supported pinned versions. Keep runtime logs focused on actionable failures.
@@ -91,13 +90,6 @@ def _runtime_info() -> dict[str, object]:
 
 
 # ==================== УТИЛИТЫ ====================
-
-
-def _user_task_or_404(task_id: str, user: str) -> dict:
-    task = registry.user_task(task_id, user)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-    return task
 
 
 
@@ -187,6 +179,7 @@ if STATIC_DIR.exists():
 
 app.include_router(auth_routes.router)
 app.include_router(transcribe_routes.router)
+app.include_router(tasks_routes.router)
 
 mount_mcp(app, "/mcp", _mcp_backend, lambda: state.key_store)
 
@@ -245,100 +238,6 @@ def _run_llm_provider(llm_settings: dict, transcript_text: str, prompt: str) -> 
 
 
 # ==================== ЭНДПОИНТЫ ЗАДАЧ ====================
-
-@app.get("/api/tasks")
-async def list_tasks(user: str = Depends(auth.require_auth)):
-    tasks = [registry.visible_copy(task) for task in registry.tasks.values() if task.get('user') == user]
-    tasks.sort(key=lambda x: x.get('created_at') or '', reverse=True)
-    return {"total": len(tasks), "tasks": tasks}
-
-
-@app.get("/api/tasks/{task_id}")
-async def get_task(task_id: str, user: str = Depends(auth.require_auth)):
-    # Без result_files: там абсолютные пути сервера; файлы отдают /result и /download
-    return registry.visible_copy(_user_task_or_404(task_id, user))
-
-
-@app.get("/api/tasks/{task_id}/logs")
-async def get_task_logs(task_id: str, user: str = Depends(auth.require_auth)):
-    _user_task_or_404(task_id, user)
-    return {"logs": registry.logs.get(task_id, [])}
-
-
-@app.get("/api/tasks/{task_id}/result")
-async def get_task_result(task_id: str, user: str = Depends(auth.require_auth)):
-    task = _user_task_or_404(task_id, user)
-    if task['status'] != 'completed':
-        raise HTTPException(status_code=400, detail=f"Задача не завершена (статус: {task['status']})")
-
-    result_dir = registry.result_dir(task_id)
-    result_files = []
-    if result_dir.exists():
-        stem = Path(task['filename']).stem
-        for fmt in task.get('output_formats', ['txt', 'txt_timecodes']):
-            if fmt not in OUTPUT_FORMATS:
-                continue  # задачи старых версий могли сохранить формат без проверки
-            found = find_result_file(result_dir, stem, fmt)
-            if found:
-                try:
-                    async with aiofiles.open(found, encoding='utf-8') as f:
-                        content = await f.read()
-                    result_files.append({
-                        'format': fmt,
-                        'name': found.name,
-                        'content': content,
-                    })
-                except Exception:
-                    pass
-
-    return {
-        'task_id': task_id,
-        'filename': task['filename'],
-        'result_files': result_files,
-        'processing_time': task.get('processing_time'),
-        'media_duration': task.get('media_duration'),
-    }
-
-
-@app.get("/api/tasks/{task_id}/download")
-async def download_result_file(
-    task_id: str,
-    format: str = "txt",
-    user: str = Depends(auth.require_auth),
-):
-    task = _user_task_or_404(task_id, user)
-    if task['status'] != 'completed':
-        raise HTTPException(status_code=400, detail="Задача не завершена")
-
-    result_dir = registry.result_dir(task_id)
-    if not result_dir.exists():
-        raise HTTPException(status_code=404, detail="Результаты не найдены")
-
-    stem = Path(task['filename']).stem
-    found = find_result_file(result_dir, stem, format) if format in OUTPUT_FORMATS else None
-    if not found:
-        raise HTTPException(status_code=404, detail=f"Файл формата {format} не найден")
-
-    return FileResponse(
-        path=str(found),
-        filename=found.name,
-        media_type="application/octet-stream",
-    )
-
-
-@app.delete("/api/tasks/{task_id}")
-async def delete_task(task_id: str, user: str = Depends(auth.require_auth)):
-    task = _user_task_or_404(task_id, user)
-    if task['status'] == 'processing':
-        raise HTTPException(status_code=400, detail="Нельзя удалить задачу в процессе обработки")
-
-    registry.delete_data(task_id, task)
-
-    registry.tasks.pop(task_id, None)
-    registry.logs.pop(task_id, None)
-    registry.persist()
-
-    return {"ok": True, "message": "Задача удалена"}
 
 
 @app.get("/api/llm/tools")
@@ -536,30 +435,6 @@ async def llm_download(job_id: str, filename: str, user: str = Depends(auth.requ
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден")
     return FileResponse(path=str(path), filename=path.name, media_type="application/octet-stream")
-
-@app.delete("/api/tasks")
-async def delete_all_tasks(
-    status_filter: str = "completed,failed",
-    user: str = Depends(auth.require_auth),
-):
-    statuses = {status.strip() for status in status_filter.split(",") if status.strip()}
-    if "all" in statuses:
-        statuses = set(ALL_TASK_STATUSES)
-
-    removed = 0
-    for tid in list(registry.tasks.keys()):
-        task = registry.tasks[tid]
-        if task.get('user') != user:
-            continue
-        if task['status'] in statuses:
-            registry.delete_data(tid, task)
-            registry.tasks.pop(tid, None)
-            registry.logs.pop(tid, None)
-            removed += 1
-
-    registry.persist()
-
-    return {"ok": True, "removed": removed}
 
 
 # ==================== SSE ПРОГРЕСС ====================

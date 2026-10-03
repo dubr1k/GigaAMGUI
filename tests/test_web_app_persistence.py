@@ -19,6 +19,7 @@ web_app = importlib.import_module("web.web_app")
 from src.services import transcription_service  # noqa: E402
 from src.utils.atomic_json import load_json, save_json_atomic  # noqa: E402
 from web import jobs  # noqa: E402
+from web.routes import tasks as tasks_routes  # noqa: E402
 from web.routes import transcribe as transcribe_routes  # noqa: E402
 from web.state import STATIC_DIR, state  # noqa: E402
 from web.task_registry import TASK_RECOVERY_MESSAGE, registry  # noqa: E402
@@ -331,7 +332,7 @@ def test_user_cannot_access_other_users_task(web_state):
 
     # When / Then: прямой доступ текущего пользователя маскируется под 404.
     with pytest.raises(HTTPException) as exc:
-        web_app._user_task_or_404("task-bob", "alice")
+        tasks_routes._user_task_or_404("task-bob", "alice")
     assert exc.value.status_code == 404
 
 
@@ -348,7 +349,7 @@ def test_delete_all_removes_only_current_user_data(web_state):
     (results_dir / "task-bob").mkdir()
 
     # When: пользователь очищает все свои данные.
-    response = asyncio.run(web_app.delete_all_tasks(status_filter="all", user="alice"))
+    response = asyncio.run(tasks_routes.delete_all_tasks(status_filter="all", user="alice"))
 
     # Then: удалены только его задачи, файлы и логи; чужая история сохранена.
     assert response == {"ok": True, "removed": 1}
@@ -369,7 +370,7 @@ def test_active_delete_all_leaves_persistent_tombstone_until_worker_cleanup(web_
     (results_dir / "task-alice").mkdir()
 
     # When: пользователь удаляет все данные, пока задача ещё может выполняться в executor.
-    response = asyncio.run(web_app.delete_all_tasks(status_filter="all", user="alice"))
+    response = asyncio.run(tasks_routes.delete_all_tasks(status_filter="all", user="alice"))
 
     # Then: задача удалена из видимой истории, а tombstone сохранён до выхода фонового worker.
     assert response == {"ok": True, "removed": 1}
