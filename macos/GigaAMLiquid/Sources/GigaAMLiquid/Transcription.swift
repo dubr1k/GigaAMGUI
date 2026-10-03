@@ -30,6 +30,7 @@ enum NativeTranscriptionEvent {
     case log(String)
     /// The file index is zero-based, matching src.tui_worker.
     case fileStarted(URL, Int, Int)
+    /// Overall fraction for the bar, or nil to leave it as it is; plus a status line.
     case progress(Double?, String)
     case fileCompleted(NativeTranscriptionResult)
     case completed(success: Bool, cancelled: Bool)
@@ -201,12 +202,15 @@ final class NativeTranscriptionJob {
                 // Без `message` воркер шлёт только id стадии — показываем его название,
                 // как PyQt (_STAGE_NAMES), а не «preprocessing».
                 let text = safeText(message["message"] as? String ?? StageLabel.text(stage, english: L10n.isEnglish))
+                // `stage_progress: null` (conversion without a duration, diarization)
+                // only means the stage itself is indeterminate: the worker still sends
+                // the file's monotonic `file_progress`. nil leaves the bar where it is.
                 let fraction: Double?
-                if message["stage_progress"] is NSNull || message["file_progress"] is NSNull {
-                    fraction = nil
-                } else if let value = message["file_progress"] as? NSNumber,
-                          CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite {
+                if let value = message["file_progress"] as? NSNumber,
+                   CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite {
                     fraction = (Double(index) + min(1, max(0, value.doubleValue))) / Double(files.count)
+                } else if message["file_progress"] == nil || message["file_progress"] is NSNull {
+                    fraction = nil
                 } else { throw WorkerFailure("Invalid worker progress value.") }
                 emit(.progress(fraction, text))
             case "file_completed":

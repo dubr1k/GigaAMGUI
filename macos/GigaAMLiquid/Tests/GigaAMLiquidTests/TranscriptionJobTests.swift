@@ -127,4 +127,27 @@ import Testing
         #expect(logs(log).contains { $0.contains("'loaded': True") })
         #expect(logs(log).contains { $0.contains("inputs_resolved") })
     }
+
+    /// Conversion and diarization report `stage_progress: null` while the file's
+    /// own progress is still known; the bar dropped to "—" mid-batch.
+    @Test func nullStageProgressKeepsTheFileProgress() async throws {
+        let worker = try FakeWorker(replies: [:])
+        let batch = try Batch(in: worker)
+        var reply = batch.startReply
+        reply.insert(batch.progress(stage: "conversion", stageProgress: "0.5", fileProgress: "0.06"), at: 3)
+        reply.insert(batch.progress(stage: "diarization", stageProgress: "null", fileProgress: "0.8"), at: 4)
+        try (Self.ready + "\n").write(to: worker.directory.appendingPathComponent("reply-hello.jsonl"), atomically: true, encoding: .utf8)
+        try (reply.joined(separator: "\n") + "\n").write(to: worker.directory.appendingPathComponent("reply-start.jsonl"), atomically: true, encoding: .utf8)
+        let log = try await run(worker, batch)
+        let fractions = log.events.compactMap { event -> Double?? in
+            if case .progress(let value, let text) = event, text.hasPrefix(StageLabelPrefix.diarization) { return value }
+            return nil
+        }
+        #expect(fractions == [0.8])
+    }
+}
+
+/// The Russian stage label the job shows when a progress event has no message.
+enum StageLabelPrefix {
+    static let diarization = "Диаризация"
 }

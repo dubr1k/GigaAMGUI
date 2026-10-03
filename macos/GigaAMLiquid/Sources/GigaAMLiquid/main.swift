@@ -2782,7 +2782,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             refreshSelectedFiles()
             refreshProgress()
         case .progress(let value, let message):
-            transcriptionProgress = value
+            // nil means "unchanged": an indeterminate stage must not drop the bar to "—".
+            if let value { transcriptionProgress = value }
             if !message.isEmpty { transcriptionStatus = message }
             refreshProgress()
         case .fileCompleted(let result):
