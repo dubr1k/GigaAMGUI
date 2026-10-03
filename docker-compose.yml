@@ -10,6 +10,9 @@ services:
         INSTALL_SORTFORMER: ${INSTALL_SORTFORMER:-0}
     container_name: gigaam-web
     restart: unless-stopped
+    # PID 1 — tini: дочерние ffmpeg/yt-dlp, осиротевшие после отмены задачи,
+    # иначе остаются зомби до перезапуска контейнера.
+    init: true
     ports:
       - "127.0.0.1:8001:8000"
     environment:
