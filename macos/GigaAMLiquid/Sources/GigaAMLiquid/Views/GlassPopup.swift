@@ -1,4 +1,5 @@
 import AppKit
+import GigaAMLiquidCore
 
 final class GlassChooserPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -41,19 +42,41 @@ final class GlassPopupButton: NSPopUpButton, NSWindowDelegate {
         guard isEnabled, !itemArray.isEmpty, let parent = window else { return }
         if chooser != nil { closeChooser(); return }
         let width = bounds.width
-        let height = CGFloat(numberOfItems) * 32 + 12
+        // 28 pt rows, 4 pt apart, 8 pt inset: as tall as the items, but the panel is
+        // capped to the screen (ChooserPlacement) and the rows scroll inside it.
+        let contentHeight = CGFloat(numberOfItems) * 32 + 12
+        let anchor = parent.convertToScreen(convert(bounds, to: nil))
+        let frame = ChooserPlacement.frame(anchor: anchor, visible: parent.screen?.visibleFrame ?? anchor,
+                                           width: width, contentHeight: contentHeight)
         let root = GlassView(radius: 24, overlay: true)
-        root.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        root.frame = NSRect(origin: .zero, size: frame.size)
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
-        root.contentView.addSubview(stack)
+        let document = AutoLayoutDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.contentView.drawsBackground = false
+        scroll.hasVerticalScroller = contentHeight > frame.height
+        scroll.autohidesScrollers = true
+        scroll.documentView = document
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.contentView.addSubview(scroll)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.contentView.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: root.contentView.trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: root.contentView.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: root.contentView.bottomAnchor, constant: -8)
+            scroll.leadingAnchor.constraint(equalTo: root.contentView.leadingAnchor, constant: 8),
+            scroll.trailingAnchor.constraint(equalTo: root.contentView.trailingAnchor, constant: -8),
+            scroll.topAnchor.constraint(equalTo: root.contentView.topAnchor, constant: 8),
+            scroll.bottomAnchor.constraint(equalTo: root.contentView.bottomAnchor, constant: -8),
+            document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: document.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor)
         ])
         chooserRows.removeAll()
         for (index, item) in itemArray.enumerated() {
@@ -75,11 +98,7 @@ final class GlassPopupButton: NSPopUpButton, NSWindowDelegate {
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             row.heightAnchor.constraint(equalToConstant: 28).isActive = true
         }
-        let anchor = parent.convertToScreen(convert(bounds, to: nil))
-        let visible = parent.screen?.visibleFrame ?? anchor
-        let x = min(max(anchor.minX, visible.minX), visible.maxX - width)
-        let y = anchor.minY - height - 6 >= visible.minY ? anchor.minY - height - 6 : anchor.maxY + 6
-        let panel = GlassChooserPanel(contentRect: NSRect(x: x, y: y, width: width, height: height),
+        let panel = GlassChooserPanel(contentRect: frame,
                                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
@@ -110,7 +129,10 @@ final class GlassPopupButton: NSPopUpButton, NSWindowDelegate {
             forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main
         ) { [weak self] _ in self?.closeChooser() }
         if stack.arrangedSubviews.indices.contains(indexOfSelectedItem) {
-            panel.makeFirstResponder(stack.arrangedSubviews[indexOfSelectedItem])
+            let selected = stack.arrangedSubviews[indexOfSelectedItem]
+            root.layoutSubtreeIfNeeded()
+            selected.scrollToVisible(selected.bounds)
+            panel.makeFirstResponder(selected)
         }
     }
 
@@ -155,6 +177,7 @@ final class GlassPopupButton: NSPopUpButton, NSWindowDelegate {
         let current = enabled.firstIndex { $0 === focused } ?? 0
         let next = (current + (event.keyCode == 125 ? 1 : enabled.count - 1)) % enabled.count
         chooserWindow.makeFirstResponder(enabled[next])
+        enabled[next].scrollToVisible(enabled[next].bounds)
         for row in chooserRows {
             row.layer?.backgroundColor = (row === enabled[next] ? Palette.blue.withAlphaComponent(0.18) : NSColor.clear).cgColor
         }
