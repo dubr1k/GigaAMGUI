@@ -52,6 +52,14 @@ if [ -z "$PYTHON" ]; then
 fi
 
 $PYTHON --version
+
+# Конфликтные копии Syncthing в site-packages тихо подменяют пакеты и их
+# метаданные (пустой namespace gigaam, dist-info без METADATA) — бандл
+# собирается «зелёным», но без кода модели. Проверяем до сборки.
+if ! $PYTHON scripts/check_site_packages.py; then
+    echo "[ERROR] Окружение сборки повреждено (см. выше)."
+    exit 1
+fi
 echo ""
 
 # ── Проверить gigaam ──────────────────────────────────────────────────────────

@@ -101,3 +101,37 @@ def test_ci_checks_worker_archive_and_mac_preflight_imports_load_model():
     assert 'verify_macos_bundle.py --modules-only --profile arm64-mlx "$WORKER"' in workflow
     script = (ROOT / "packaging" / "build_exe_mac.sh").read_text(encoding="utf-8")
     assert "from gigaam import load_model" in script
+
+
+def _check_site_packages():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import check_site_packages
+    finally:
+        sys.path.remove(str(ROOT / "scripts"))
+    return check_site_packages
+
+
+def test_site_packages_check_flags_conflict_shadows_and_ghost_metadata(tmp_path):
+    checker = _check_site_packages()
+    (tmp_path / "gigaam").mkdir()
+    (tmp_path / "gigaam" / "model.sync-conflict-20260906-162521-3LI4UIX.py").write_text("")
+    (tmp_path / "packaging-25.0.dist-info").mkdir()
+    (tmp_path / "packaging-25.0.dist-info" / "RECORD.sync-conflict-20260906-162525-3LI4UIX").write_text("")
+    (tmp_path / "packaging-24.2.dist-info").mkdir()
+    (tmp_path / "packaging-24.2.dist-info" / "METADATA").write_text("Name: packaging\n")
+    (tmp_path / "numpy").mkdir()
+    (tmp_path / "numpy" / "__init__.py").write_text("")
+    (tmp_path / "numpy" / "core.sync-conflict-1-X.py").write_text("")
+
+    problems = checker.find_problems(tmp_path)
+
+    assert len(problems) == 2
+    assert any("gigaam" in problem for problem in problems)
+    assert any("packaging-25.0.dist-info" in problem for problem in problems)
+
+
+def test_mac_build_scripts_check_site_packages_before_building():
+    for script in ("build_exe_mac.sh", "build_exe_mac_x86_64.sh"):
+        text = (ROOT / "packaging" / script).read_text(encoding="utf-8")
+        assert "scripts/check_site_packages.py" in text, script
