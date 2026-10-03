@@ -19,6 +19,7 @@ web_app = importlib.import_module("web.web_app")
 from src.services import transcription_service  # noqa: E402
 from src.utils.atomic_json import load_json, save_json_atomic  # noqa: E402
 from web import jobs  # noqa: E402
+from web.routes import llm as llm_routes  # noqa: E402
 from web.routes import tasks as tasks_routes  # noqa: E402
 from web.routes import transcribe as transcribe_routes  # noqa: E402
 from web.state import STATIC_DIR, state  # noqa: E402
@@ -462,7 +463,7 @@ def test_llm_tools_endpoint_returns_registry_and_statuses(monkeypatch):
 
     monkeypatch.setattr(cli_tools, "scan", fake_scan)
 
-    payload = asyncio.run(web_app.llm_tools(fresh=True, user="test-user"))
+    payload = asyncio.run(llm_routes.llm_tools(fresh=True, user="test-user"))
 
     assert payload["providers"] == cli_tools.canonical_provider_names()
     assert "oh-my-pi" in payload["providers"]
@@ -480,9 +481,9 @@ def test_llm_tool_check_endpoint(monkeypatch, tmp_path):
         cli_tools, "resolve_tool",
         lambda spec, override=None: cli_tools.ToolStatus(spec.id, spec.name, "missing", None, None, None, spec.install_hint),
     )
-    payload = asyncio.run(web_app.llm_tool_check(provider="Pi", path="", user="test-user"))
+    payload = asyncio.run(llm_routes.llm_tool_check(provider="Pi", path="", user="test-user"))
     assert payload["tool"]["status"] == "missing"
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(web_app.llm_tool_check(provider="Nope", path="", user="test-user"))
+        asyncio.run(llm_routes.llm_tool_check(provider="Nope", path="", user="test-user"))
     assert exc.value.status_code == 400

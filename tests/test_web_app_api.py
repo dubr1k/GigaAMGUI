@@ -25,6 +25,7 @@ web_app = importlib.import_module("web.web_app")
 from src.core.subtitles import SubtitleOptions  # noqa: E402
 from src.services import transcription_service  # noqa: E402
 from web import auth, jobs  # noqa: E402
+from web.routes import llm as llm_routes  # noqa: E402
 from web.routes import transcribe as transcribe_routes  # noqa: E402
 from web.state import state, validated_login_rate_limit  # noqa: E402
 from web.task_registry import registry  # noqa: E402
@@ -430,7 +431,7 @@ def test_llm_calls_are_bounded_by_their_own_semaphore(monkeypatch):
 
     async def scenario():
         state.llm_semaphore = asyncio.Semaphore(1)
-        return await asyncio.gather(*(web_app._llm_answer({"provider": "API"}, "t", "p") for _ in range(3)))
+        return await asyncio.gather(*(llm_routes._llm_answer({"provider": "API"}, "t", "p") for _ in range(3)))
 
     assert asyncio.run(scenario()) == ["ok", "ok", "ok"]
     assert inflight["max"] == 1
