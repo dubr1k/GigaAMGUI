@@ -1,4 +1,5 @@
 import AppKit
+import GigaAMLiquidCore
 
 /// The Live page: capture sources, the live session job, its transcript and
 /// the assistant's questions.
@@ -20,7 +21,7 @@ extension AppController {
         sourceBody.addArrangedSubview(toggleRow("Записывать микрофон", key: "live.recordMic", defaultValue: true))
         sourceBody.addArrangedSubview(toggleRow("Записывать системный звук", key: "live.recordSystem", defaultValue: false))
         sourceBody.addArrangedSubview(compactField("Диаризация", control: popup(Self.liveDiarizationModes, key: "live.diarizationMode")))
-        sourceBody.addArrangedSubview(compactField("Движок", control: popup(["pyannote", "onnx", "sortformer"], key: "live.diarizationEngine")))
+        sourceBody.addArrangedSubview(compactField("Движок", control: popup(SettingsSchema.diarizationEngines, key: "live.diarizationEngine")))
         source.heightAnchor.constraint(equalToConstant: 306).isActive = true
 
         let recorder = card("Запись")
@@ -85,8 +86,8 @@ extension AppController {
         parametersBody.addArrangedSubview(checkbox("Диаризация (.txt)", key: "live.diarize", defaultValue: false))
         parametersBody.addArrangedSubview(checkbox("Диар. + таймкоды", key: "live.diarizeTimestamps", defaultValue: false))
         parametersBody.addArrangedSubview(equalColumns([
-            compactField("Строк в блоке", control: popup(["2", "1", "3", "4"], key: "live.lines")),
-            compactField("Символов", control: popup(["64", "42", "80"], key: "live.characters"))
+            compactField("Строк в блоке", control: popup(SettingsSchema.subtitleLines, key: "live.lines")),
+            compactField("Символов", control: popup(SettingsSchema.subtitleCharacters, key: "live.characters"))
         ], spacing: 8))
         parametersBody.addArrangedSubview(toggleRow("Разбивать по предложениям", key: "live.sentences", defaultValue: true))
         let folder = editableText(liveSessionRootText, key: "live.sessionRoot", placeholder: "Папка сессий")
@@ -149,8 +150,8 @@ extension AppController {
             "srt": enabledOption("live.srt", defaultValue: true),
             "vtt": enabledOption("live.vtt", defaultValue: false),
             "sentence_split": enabledOption("live.sentences", defaultValue: true),
-            "max_line_count": Int(option("live.lines", values: ["2", "1", "3", "4"])) ?? 2,
-            "max_line_width": Int(option("live.characters", values: ["64", "42", "80"])) ?? 64
+            "max_line_count": Int(option("live.lines", values: SettingsSchema.subtitleLines)) ?? 2,
+            "max_line_width": Int(option("live.characters", values: SettingsSchema.subtitleCharacters)) ?? 64
         ]
     }
 
@@ -200,13 +201,13 @@ extension AppController {
         settings.microphoneDeviceID = device == "default" ? nil : device
         let modeIndex = Self.liveDiarizationModes.firstIndex(of: option("live.diarizationMode", values: Self.liveDiarizationModes)) ?? 0
         settings.diarizationMode = Self.liveDiarizationModeValues[modeIndex]
-        settings.diarizationBackend = option("live.diarizationEngine", values: ["pyannote", "onnx", "sortformer"])
+        settings.diarizationBackend = option("live.diarizationEngine", values: SettingsSchema.diarizationEngines)
         settings.recordMic = enabledOption("live.recordMic", defaultValue: true)
         settings.recordSystem = enabledOption("live.recordSystem", defaultValue: false)
         settings.exports = liveExports
-        settings.backend = option("settings.backend", values: ["auto", "mlx", "onnx", "pytorch"])
-        settings.model = option("settings.model", values: ["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"])
-        settings.onnxProvider = option("settings.onnxProvider", values: ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"])
+        settings.backend = option("settings.backend", values: SettingsSchema.backends)
+        settings.model = option("settings.model", values: SettingsSchema.models)
+        settings.onnxProvider = option("settings.onnxProvider", values: SettingsSchema.onnxProviders)
         settings.hfToken = SecureStore.string(for: "hfToken")
         // Captures forward audio to the job, which owns them: the job hands them a
         // sink that holds it weakly, so a finished session (worker, AVAudioEngine) is freed.

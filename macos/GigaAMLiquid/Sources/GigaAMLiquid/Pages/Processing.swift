@@ -36,8 +36,8 @@ extension AppController {
         let processing = card("Настройки обработки", dense: true)
         let settings = contentStack(processing)
         settings.spacing = 12
-        settings.addArrangedSubview(compactField("Подготовка аудио", control: popup(["auto", "off", "light", "denoise"], key: "processing.preprocessing")))
-        settings.addArrangedSubview(compactField("Модель", control: popup(["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"], key: "settings.model")))
+        settings.addArrangedSubview(compactField("Подготовка аудио", control: popup(SettingsSchema.audioPreprocessing, key: "processing.preprocessing")))
+        settings.addArrangedSubview(compactField("Модель", control: popup(SettingsSchema.models, key: "settings.model")))
         settings.addArrangedSubview(toggleRow("Диаризация", key: "settings.diarization", defaultValue: false))
         settings.addArrangedSubview(compactField("Кол-во спикеров", control: speakerCountPopup()))
         settings.bottomAnchor.constraint(equalTo: processing.bottomAnchor, constant: -16).isActive = true
@@ -99,8 +99,8 @@ extension AppController {
         formats.addArrangedSubview(divider())
         formats.addArrangedSubview(label("Настройки субтитров", size: 15, weight: .medium, color: Palette.ink))
         formats.addArrangedSubview(equalColumns([
-            compactField("Строк в блоке", control: popup(["2", "1", "3", "4"], key: "subtitle.lines")),
-            compactField("Символов", control: popup(["64", "42", "80"], key: "subtitle.characters"))
+            compactField("Строк в блоке", control: popup(SettingsSchema.subtitleLines, key: "subtitle.lines")),
+            compactField("Символов", control: popup(SettingsSchema.subtitleCharacters, key: "subtitle.characters"))
         ], spacing: 8))
         formats.addArrangedSubview(toggleRow("Разбивать по предложениям", key: "subtitle.sentences", defaultValue: true))
         // No bottom pin: the card stretches to end level with the left column.
@@ -171,7 +171,7 @@ extension AppController {
     /// meaningful for pyannote and ONNX clustering.
     var manualSpeakerCountAvailable: Bool {
         enabledOption("settings.diarization", defaultValue: false)
-            && option("settings.diarizationEngine", values: ["pyannote", "onnx", "sortformer"]) != "sortformer"
+            && option("settings.diarizationEngine", values: SettingsSchema.diarizationEngines) != "sortformer"
     }
 
     /// Mirrors the PyQt client: a count hidden behind a disabled control must not
@@ -195,16 +195,16 @@ extension AppController {
     func transcriptionSettings() -> NativeTranscriptionSettings {
         var settings = NativeTranscriptionSettings()
         settings.formats = outputFormats
-        settings.backend = option("settings.backend", values: ["auto", "mlx", "onnx", "pytorch"])
-        settings.model = option("settings.model", values: ["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"])
-        settings.onnxProvider = option("settings.onnxProvider", values: ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"])
+        settings.backend = option("settings.backend", values: SettingsSchema.backends)
+        settings.model = option("settings.model", values: SettingsSchema.models)
+        settings.onnxProvider = option("settings.onnxProvider", values: SettingsSchema.onnxProviders)
         settings.diarization = enabledOption("settings.diarization", defaultValue: false)
-        settings.diarizationBackend = option("settings.diarizationEngine", values: ["pyannote", "onnx", "sortformer"])
+        settings.diarizationBackend = option("settings.diarizationEngine", values: SettingsSchema.diarizationEngines)
         settings.numSpeakers = manualSpeakerCountAvailable ? Int(option("processing.speakers", values: Self.speakerCountValues)) : nil
-        settings.audioPreprocessingMode = option("processing.preprocessing", values: ["auto", "off", "light", "denoise"])
+        settings.audioPreprocessingMode = option("processing.preprocessing", values: SettingsSchema.audioPreprocessing)
         settings.subtitleSentenceSplit = enabledOption("subtitle.sentences", defaultValue: true)
-        settings.subtitleMaxLines = Int(option("subtitle.lines", values: ["2", "1", "3", "4"])) ?? 2
-        settings.subtitleMaxWidth = Int(option("subtitle.characters", values: ["64", "42", "80"])) ?? 64
+        settings.subtitleMaxLines = Int(option("subtitle.lines", values: SettingsSchema.subtitleLines)) ?? 2
+        settings.subtitleMaxWidth = Int(option("subtitle.characters", values: SettingsSchema.subtitleCharacters)) ?? 64
         let token = (SecureStore.string(for: "hfToken") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         settings.hfToken = token.isEmpty ? nil : token
         return settings

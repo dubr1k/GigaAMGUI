@@ -396,7 +396,7 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     assert "#selector(startLive(_:))" in page and "#selector(pauseLive(_:))" in page and "#selector(stopLive(_:))" in page
     assert "#selector(askLive(_:))" in page
     assert "MicrophoneCapture.devices()" in page
-    assert 'popup(["pyannote", "onnx", "sortformer"], key: "live.diarizationEngine")' in page
+    assert 'popup(SettingsSchema.diarizationEngines, key: "live.diarizationEngine")' in page
     assert '"live.speakers"' not in main  # live diarization never takes a manual speaker count
     # Diarization titles are too long for a half-width column of the 270 pt
     # parameters card ("Диар. + таймкоды" rendered as "Диар. +"): full rows only.
@@ -550,3 +550,32 @@ def test_swift_output_names_mirror_python_naming() -> None:
     transcription = (LIQUID_APP / "Transcription.swift").read_text(encoding="utf-8")
     assert "OutputNaming.format(ofOutputNamed:" in transcription
     assert '"_timecodes.txt"' not in transcription
+
+
+def test_swift_settings_choices_match_the_worker() -> None:
+    # One table of choices for every page; the worker rejects anything else.
+    # src.config imports dotenv, which the lightweight CI job does not install,
+    # so its validators are read as text.
+    schema = (LIQUID_CORE / "SettingsSchema.swift").read_text(encoding="utf-8")
+
+    def swift_list(name: str) -> list[str]:
+        literal = schema.split(f"public static let {name} = [", 1)[1].split("]", 1)[0]
+        return re.findall(r'"([^"]+)"', literal)
+
+    config = Path("src/config.py").read_text(encoding="utf-8")
+
+    def python_set(anchor: str) -> set[str]:
+        literal = config.split(anchor, 1)[1].split("{", 1)[1].split("}", 1)[0]
+        return set(re.findall(r'"([^"]+)"', literal))
+
+    assert set(swift_list("backends")) == python_set("def _validate_backend_name")
+    assert set(swift_list("onnxProviders")) == python_set("def _validate_onnx_provider")
+    assert set(swift_list("audioPreprocessing")) == python_set("AUDIO_PREPROCESSING_MODE not in")
+    worker = Path("src/tui_worker.py").read_text(encoding="utf-8")
+    assert '{"auto", "off", "light", "denoise"}' in worker
+    assert swift_list("backends")[0] == "auto" and swift_list("audioPreprocessing")[0] == "auto"
+    # No page repeats a list by hand any more.
+    sources = _liquid_sources()
+    for name in ("backends", "models", "onnxProviders", "diarizationEngines", "audioPreprocessing"):
+        literal = "[" + ", ".join(f'"{value}"' for value in swift_list(name)) + "]"
+        assert literal not in sources, name

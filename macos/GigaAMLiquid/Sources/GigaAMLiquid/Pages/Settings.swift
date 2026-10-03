@@ -1,4 +1,5 @@
 import AppKit
+import GigaAMLiquidCore
 
 /// The Настройки page: the category rail and each category's panel.
 extension AppController {
@@ -33,9 +34,9 @@ extension AppController {
             body.addArrangedSubview(wrappedLabel("Модель распознавания и устройство вычислений.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
             body.spacing = 16
-            body.addArrangedSubview(settingsField("ASR backend", control: popup(["auto", "mlx", "onnx", "pytorch"], key: "settings.backend")))
-            body.addArrangedSubview(settingsField("Модель", control: popup(["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"], key: "settings.model")))
-            body.addArrangedSubview(settingsField("ONNX provider", control: popup(["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"], key: "settings.onnxProvider")))
+            body.addArrangedSubview(settingsField("ASR backend", control: popup(SettingsSchema.backends, key: "settings.backend")))
+            body.addArrangedSubview(settingsField("Модель", control: popup(SettingsSchema.models, key: "settings.model")))
+            body.addArrangedSubview(settingsField("ONNX provider", control: popup(SettingsSchema.onnxProviders, key: "settings.onnxProvider")))
             body.addArrangedSubview(settingsField("Устройство", control: inactive(popup(["Auto / GPU", "CPU", "GPU"], key: "settings.device"))))
             body.addArrangedSubview(inactive(toggleRow("Fallback на CPU", key: "settings.cpuFallback", defaultValue: false)))
             body.addArrangedSubview(wrappedLabel("Устройство и fallback выбирает backend. ONNX provider применяется только к ONNX. Язык определяется моделью.", size: 12, color: Palette.muted))
@@ -44,8 +45,8 @@ extension AppController {
             body.addArrangedSubview(divider())
             body.addArrangedSubview(toggleRow("Разбивать по предложениям", key: "subtitle.sentences", defaultValue: true))
             body.addArrangedSubview(equalColumns([
-                settingsField("Строк в блоке", control: popup(["2", "1", "3", "4"], key: "subtitle.lines")),
-                settingsField("Символов в строке", control: popup(["64", "42", "80"], key: "subtitle.characters"))
+                settingsField("Строк в блоке", control: popup(SettingsSchema.subtitleLines, key: "subtitle.lines")),
+                settingsField("Символов в строке", control: popup(SettingsSchema.subtitleCharacters, key: "subtitle.characters"))
             ], spacing: 20))
             body.addArrangedSubview(inactive(toggleRow("Показывать спикера", key: "settings.showSpeaker", defaultValue: true)))
             body.addArrangedSubview(wrappedLabel("Метки спикеров добавляются автоматически при включённой диаризации.", size: 12, color: Palette.muted))
@@ -53,7 +54,7 @@ extension AppController {
             body.addArrangedSubview(wrappedLabel("Разделение речи по спикерам и доступ к моделям Hugging Face.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
             body.addArrangedSubview(toggleRow("Диаризация", key: "settings.diarization", defaultValue: false))
-            body.addArrangedSubview(settingsField("Движок диаризации", control: popup(["pyannote", "onnx", "sortformer"], key: "settings.diarizationEngine")))
+            body.addArrangedSubview(settingsField("Движок диаризации", control: popup(SettingsSchema.diarizationEngines, key: "settings.diarizationEngine")))
             body.addArrangedSubview(settingsField("Кол-во спикеров", control: speakerCountPopup()))
             body.addArrangedSubview(wrappedLabel("Sortformer определяет спикеров автоматически (до 4). Pyannote и ONNX принимают известное число спикеров.", size: 12, color: Palette.muted))
             let value = SecureStore.string(for: "hfToken") ?? ""
@@ -76,7 +77,7 @@ extension AppController {
         case "Аудио":
             body.addArrangedSubview(wrappedLabel("Параметры аудиосигнала для обработки.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
-            body.addArrangedSubview(settingsField("Подготовка аудио", control: popup(["auto", "off", "light", "denoise"], key: "processing.preprocessing")))
+            body.addArrangedSubview(settingsField("Подготовка аудио", control: popup(SettingsSchema.audioPreprocessing, key: "processing.preprocessing")))
             body.addArrangedSubview(settingsField("Частота дискретизации", control: inactive(popup(["16000 Hz"], key: "settings.sampleRate"))))
             body.addArrangedSubview(wrappedLabel("Частоту 16000 Hz задаёт конвертер. auto — автоматическая подготовка, off — без неё, light — лёгкая обработка, denoise — шумоподавление.", size: 12, color: Palette.muted))
         case "LLM":

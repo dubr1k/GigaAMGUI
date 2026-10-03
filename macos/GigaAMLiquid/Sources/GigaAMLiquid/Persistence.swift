@@ -1,11 +1,11 @@
 import AppKit
+import GigaAMLiquidCore
 
 /// Settings persistence: every control writes its value to UserDefaults under
 /// its identifier (secrets go to the Keychain through SecureStore).
 extension AppController {
     func option(_ key: String, values: [String]) -> String {
-        let stored = defaults.string(forKey: key) ?? values[0]
-        return values.contains(stored) ? stored : values[0]
+        SettingsSchema.choice(defaults.string(forKey: key), in: values)
     }
 
     func enabledOption(_ key: String, defaultValue: Bool) -> Bool {
