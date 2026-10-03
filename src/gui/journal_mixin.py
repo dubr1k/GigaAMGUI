@@ -222,36 +222,50 @@ class JournalMixin:
     def _ingest_journal_log(self, message: str) -> None:
         if not hasattr(self, "journal_table"):
             return
-        text = message.strip()
+        # Таблица перестраивается целиком (со своими виджетами статуса в каждой
+        # строке), поэтому — только когда строка лога действительно изменила
+        # записи. Раньше это происходило на каждое сообщение, а их сотни за файл.
+        if self._apply_journal_log_line(message.strip()):
+            self._filter_journal_rows()
+
+    def _apply_journal_log_line(self, text: str) -> bool:
+        """Учесть строку лога в записях журнала; True — если записи изменились."""
         started = re.match(r"^--- (?:Обработка файла|Processing file) \d+/\d+: (.+) ---$", text)
-        duration = re.match(r"^(?:Длительность|Duration): (.+)$", text)
-        skipped = re.match(r"^(?:Пропуск файла|Skipping file) (.+)$", text)
-        failed = re.match(
-            r"^(?:Ошибка при обработке(?: файла)?|Error (?:while )?processing(?: file)?)\s+(.+?)(?::\s|$)",
-            text,
-        )
         if started:
             self._journal_entries.append({
                 "file": started.group(1), "duration": "—", "status": "processing",
                 "date": datetime.now().strftime("%d.%m"),
             })
-        elif duration:
+            return True
+        duration = re.match(r"^(?:Длительность|Duration): (.+)$", text)
+        if duration:
             entry = self._journal_active_entry()
-            if entry is not None:
-                entry["duration"] = duration.group(1)
-        elif skipped:
+            if entry is None:
+                return False
+            entry["duration"] = duration.group(1)
+            return True
+        skipped = re.match(r"^(?:Пропуск файла|Skipping file) (.+)$", text)
+        if skipped:
             self._journal_record_error(skipped.group(1))
-        elif failed:
+            return True
+        failed = re.match(
+            r"^(?:Ошибка при обработке(?: файла)?|Error (?:while )?processing(?: file)?)\s+(.+?)(?::\s|$)",
+            text,
+        )
+        if failed:
             self._journal_record_error(failed.group(1))
-        elif text.startswith(("ОШИБКА", "ERROR", "Критическая ошибка", "Critical error")):
-            entry = self._journal_active_entry()
-            if entry is not None:
-                entry["status"] = "error"
+            return True
+        if text.startswith(("ОШИБКА", "ERROR", "Критическая ошибка", "Critical error")):
+            status = "error"
         elif text.startswith(("Время обработки:", "Processing time:")):
-            entry = self._journal_active_entry()
-            if entry is not None:
-                entry["status"] = "ready"
-        self._filter_journal_rows()
+            status = "ready"
+        else:
+            return False
+        entry = self._journal_active_entry()
+        if entry is None:
+            return False
+        entry["status"] = status
+        return True
 
     def _filter_journal_rows(self):
         if not hasattr(self, "journal_table"):

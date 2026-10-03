@@ -196,3 +196,23 @@ def test_model_backend_and_device_changes_wait_for_live_and_processing(window, t
     assert len(shown) == 3
     expected = "live" if busy == "live" else "обработка"
     assert all(expected in message.lower() for message in shown)
+
+
+def test_journal_table_is_rebuilt_only_when_a_log_line_changes_it(window, monkeypatch):
+    rebuilds = []
+    original = window._filter_journal_rows
+    monkeypatch.setattr(window, "_filter_journal_rows", lambda *a: rebuilds.append(1) or original())
+
+    for number in range(50):
+        window._append_log(f"Распознавание: чанк {number}")
+    assert rebuilds == []
+
+    window._append_log("--- Обработка файла 1/1: talk.wav ---")
+    window._append_log("Длительность: 00:01:00")
+    window._append_log("Время обработки: 12 с")
+    assert len(rebuilds) == 3
+    assert window._journal_entries[-1] == {
+        "file": "talk.wav", "duration": "00:01:00", "status": "ready",
+        "date": window._journal_entries[-1]["date"],
+    }
+    assert window.journal_table.rowCount() == 1
