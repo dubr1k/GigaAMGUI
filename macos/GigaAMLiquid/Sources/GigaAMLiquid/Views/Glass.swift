@@ -1,6 +1,14 @@
 import AppKit
 
 final class ApplicationWindow: NSWindow {
+    override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
+        // AppController owns the window and still uses it after the close button
+        // (applicationShouldTerminate ends editing on it). AppKit's release on close
+        // would leave that reference pointing at a freed window.
+        isReleasedWhenClosed = false
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
