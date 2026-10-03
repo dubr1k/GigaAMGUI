@@ -16,6 +16,7 @@ from .chunking import (
     stitch_chunk,
     vad_regions_miss_active_audio,
 )
+from .longform import call_logger
 from .models import onnx_model_name, onnx_model_repo, validate_asr_model
 from .onnx_loading import load_asr_model
 from .onnx_provider import (
@@ -140,8 +141,9 @@ class OnnxBackend:
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+        logger: Callable[[str], None] | None = None,
     ) -> list[TranscriptionSegment]:
-        with self._inference_lock:
+        with self._inference_lock, call_logger(self, logger):
             observed_total: float | None = None
 
             tracked_callback = progress_callback

@@ -252,19 +252,24 @@ class ModelLoader:
         self,
         audio_path: str,
         progress_callback: ProgressCallback | None = None,
+        logger=None,
     ):
-        """Транскрибирует длинное аудио через выбранную стратегию сегментации."""
+        """Транскрибирует длинное аудио через выбранную стратегию сегментации.
+
+        ``logger`` — журнал текущего файла: модель загружается один раз, и
+        logger из load_model принадлежит той задаче, которая её загрузила.
+        """
         if self._backend is None:
             raise RuntimeError("Модель не загружена")
 
         if not self._backend.is_loaded():
             raise RuntimeError("Модель не загружена")
 
+        kwargs = {"progress_callback": progress_callback}
+        if logger is not None:
+            kwargs["logger"] = logger
         try:
-            return self._backend.transcribe_longform(
-                audio_path,
-                progress_callback=progress_callback,
-            )
+            return self._backend.transcribe_longform(audio_path, **kwargs)
         finally:
             # ONNX backend может подменить сессию на CPU прямо во время
             # inference. Без ресинка loader держал бы ссылку на упавшую

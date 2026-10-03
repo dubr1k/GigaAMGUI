@@ -17,6 +17,7 @@ from .chunking import (
     stitch_chunk,
     vad_regions_miss_active_audio,
 )
+from .longform import call_logger
 from .token_timestamps import tokens_to_words
 from .types import BackendCapabilities, TranscriptionSegment, normalize_window_audio
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
@@ -96,11 +97,12 @@ class MLXBackend:
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+        logger: Callable[[str], None] | None = None,
     ) -> list[TranscriptionSegment]:
         if self.model is None:
             raise RuntimeError("MLX модель не загружена")
 
-        with self._lock:
+        with self._lock, call_logger(self, logger):
             try:
                 if self._gigaam_mlx is None:
                     raise RuntimeError("MLX backend is not initialized")

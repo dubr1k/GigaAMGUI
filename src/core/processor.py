@@ -123,6 +123,16 @@ def _accepts_event_argument(callback: Callable) -> bool:
     return True
 
 
+def _accepts_keyword(function: Callable, name: str) -> bool:
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+
+
 def _preprocessing_reason_ru(reason: str) -> str:
     if reason in _PREPROCESSING_REASONS_RU:
         return _PREPROCESSING_REASONS_RU[reason]
@@ -461,8 +471,14 @@ class TranscriptionProcessor:
         try:
             self.logger("Распознаём речь…")
             # Транскрибация (обновляем прогресс постепенно)
+            transcribe = self.model_loader.transcribe_longform
+            transcribe_kwargs = {}
+            if _accepts_keyword(transcribe, "logger"):
+                # Предупреждения распознавания — в журнал этого файла, а не той
+                # задачи, что когда-то загрузила модель.
+                transcribe_kwargs["logger"] = self.logger
             try:
-                utterances = self.model_loader.transcribe_longform(
+                utterances = transcribe(
                     asr_audio,
                     progress_callback=lambda stage_progress, processed, total: self._update_progress(
                         "transcription",
@@ -470,6 +486,7 @@ class TranscriptionProcessor:
                         processed_seconds=processed,
                         total_seconds=total,
                     ),
+                    **transcribe_kwargs,
                 )
             except Exception as e:
                 # Сбой VAD backend-ы обрабатывают сами (резервное разбиение),
