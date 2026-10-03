@@ -49,10 +49,17 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
+      - name: Lint
+        working-directory: tui
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
       # The minimal import set of src.tui_worker and the stub worker; no torch.
       - name: Install test tools
         run: python -m pip install "pytest==9.0.1" psutil numpy python-dotenv typing_extensions soundfile requests
@@ -70,6 +77,28 @@ jobs:
           tests/test_tui_worker.py tests/test_tui_input_service.py
           tests/test_tui_terminal_screen.py tests/test_tui_terminal_paste.py
           tests/test_install_tui_launcher.py
+
+  tui-windows:
+    name: TUI (Windows build)
+    # The npm launcher builds the TUI from source on Windows, but its
+    # Windows-only code (Job objects, explorer opener) was never compiled in CI.
+    # Tests are compiled, not run: they have never been triaged on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Clippy
+        working-directory: tui
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build and compile tests
+        working-directory: tui
+        run: |
+          cargo build --locked
+          cargo test --locked --no-run
 
   tauri-locks:
     name: Tauri dependency and JavaScript checks
