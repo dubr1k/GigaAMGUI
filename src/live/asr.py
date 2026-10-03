@@ -6,7 +6,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -34,6 +34,8 @@ class _SpeechRun:
     silence_samples: int = 0
     last_partial_end: int | None = None
     voiced_samples: int = 0
+    voiced_parts: list[int] = field(default_factory=list)
+    """Voiced samples of each `audio` part, so a forced cut can split the count."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,20 @@ MIN_SPEECH_SAMPLES = 3_200
 It used to be a full second of voiced 100 ms chunks plus at least two words,
 which silently dropped every short phrase: «Привет! Как у тебя дела?» from a
 quiet microphone measured 0.4 s and was decoded correctly, then discarded."""
+MAX_UTTERANCE_SECONDS = 25
+"""Longest run that is decoded as one window.
+
+A run used to end only after 3 s below the gate, so continuous audio (a
+lecture, music, a TV) kept one run open for the whole session: hundreds of
+partials, not one final, nothing journaled, and at stop the entire session
+went to the model as a single window — the backends have no long-form split,
+so that ran out of memory or took minutes, and a failure lost the transcript.
+"""
+CUT_SEARCH_SECONDS = 5
+"""How far back from the limit a forced cut looks for the quietest frame.
+
+Cutting exactly at the limit splits a word; within the last few seconds there
+is almost always a pause between words to cut at instead."""
 
 
 class _EnergyGate:
@@ -83,24 +99,47 @@ class _EnergyGate:
     # Per-frame smoothing that keeps the ~2 s floor time constant the gate had
     # with 100 ms chunks (0.95 per chunk ≈ 0.99 per 20 ms frame).
     _FLOOR_ALPHA = 0.01
+    # While open the floor follows the quietest frame of the last two seconds
+    # with a ~30 s time constant. Adapting only while closed meant steady
+    # noise above the release threshold (a fan, music) held the gate open for
+    # the whole session. The minimum, not the level, is what it follows:
+    # speech always has quiet frames between words, so a talker is never
+    # learned as the room — only sound that never dips is.
+    _OPEN_FLOOR_ALPHA = 0.02 / 30
+    _FLOOR_WINDOW_FRAMES = 100
 
     def __init__(self) -> None:
         self._noise_floor = 0.001
         self._active = False
+        self._frame_index = 0
+        self._window: deque[tuple[int, float]] = deque()
 
     def voiced_samples(self, audio: np.ndarray) -> int:
         voiced = 0
         for start in range(0, len(audio), FRAME_SAMPLES):
             frame = audio[start:start + FRAME_SAMPLES]
             rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64))))
+            quietest = self._remember(rms)
             attack = max(0.015, self._noise_floor * 4)
             release = max(0.010, self._noise_floor * 2.5)
             self._active = rms >= (release if self._active else attack)
             if self._active:
                 voiced += len(frame)
+                self._noise_floor += (quietest - self._noise_floor) * self._OPEN_FLOOR_ALPHA
             else:
                 self._noise_floor += (rms - self._noise_floor) * self._FLOOR_ALPHA
         return voiced
+
+    def _remember(self, rms: float) -> float:
+        """Sliding minimum of frame RMS over the last `_FLOOR_WINDOW_FRAMES`."""
+        index = self._frame_index
+        self._frame_index += 1
+        while self._window and self._window[-1][1] >= rms:
+            self._window.pop()
+        self._window.append((index, rms))
+        while self._window[0][0] <= index - self._FLOOR_WINDOW_FRAMES:
+            self._window.popleft()
+        return self._window[0][1]
 
 
 def _normalize_word(word: str) -> str:
@@ -176,23 +215,30 @@ class LiveAsrScheduler:
                         chunk.sample_offset - len(pre_roll),
                         chunk.sample_offset,
                         [pre_roll] if len(pre_roll) else [],
+                        voiced_parts=[0] if len(pre_roll) else [],
                     )
                     self._runs[chunk.source] = run
                 run.audio.append(audio.copy())
+                run.voiced_parts.append(voiced)
                 run.end = chunk.sample_offset + len(audio)
                 run.voiced_samples += voiced
                 run.silence_start = None
                 run.silence_samples = 0
+                if run.end - run.start >= MAX_UTTERANCE_SECONDS * chunk.sample_rate:
+                    run = self._cut_run(chunk.source, run)
                 if self._should_refresh_partial(run, chunk.sample_rate):
                     self._schedule_partial(chunk.source, run)
             elif run is not None:
                 run.audio.append(audio.copy())
+                run.voiced_parts.append(0)
                 run.end = chunk.sample_offset + len(audio)
                 if run.silence_start is None:
                     run.silence_start = chunk.sample_offset
                 run.silence_samples += len(audio)
                 if run.silence_samples >= self._final_silence_seconds * chunk.sample_rate:
                     self._queue_final(chunk.source, run, paragraph_break_after=True)
+                elif run.end - run.start >= MAX_UTTERANCE_SECONDS * chunk.sample_rate:
+                    self._cut_run(chunk.source, run)
                 elif (
                     run.silence_samples >= PAUSE_PARTIAL_SECONDS * chunk.sample_rate
                     and (run.last_partial_end is None or run.last_partial_end <= run.silence_start)
@@ -266,6 +312,48 @@ class LiveAsrScheduler:
         if self._runs.get(source) is run:
             del self._runs[source]
         self._condition.notify()
+
+    def _cut_run(self, source: CaptureSource, run: _SpeechRun) -> _SpeechRun:
+        """Finalize a run that reached the length limit; the rest starts a new run.
+
+        The cut goes to the quietest 20 ms frame of the last
+        `CUT_SEARCH_SECONDS` before the limit (the latest one on a tie), which
+        in speech is a pause between words.
+        """
+        audio = np.concatenate(run.audio)
+        limit = min(len(audio), MAX_UTTERANCE_SECONDS * 16_000)
+        search_from = max(FRAME_SAMPLES, limit - CUT_SEARCH_SECONDS * 16_000)
+        frame_count = (limit - search_from) // FRAME_SAMPLES
+        if frame_count > 0:
+            window = audio[search_from:search_from + frame_count * FRAME_SAMPLES].astype(np.float64)
+            levels = np.sqrt(np.mean(np.square(window.reshape(frame_count, -1)), axis=1))
+            quietest = frame_count - 1 - int(np.argmin(levels[::-1]))
+            cut = search_from + quietest * FRAME_SAMPLES
+        else:
+            cut = limit
+        head_voiced = 0
+        consumed = 0
+        for part, part_voiced in zip(run.audio, run.voiced_parts, strict=False):
+            if consumed + len(part) <= cut:
+                head_voiced += part_voiced
+            elif consumed < cut and len(part):
+                head_voiced += round(part_voiced * (cut - consumed) / len(part))
+            consumed += len(part)
+        head = _SpeechRun(run.start, run.start + cut, [audio[:cut]], voiced_samples=head_voiced)
+        self._queue_final(source, head)
+        tail_voiced = max(0, run.voiced_samples - head_voiced)
+        rest = _SpeechRun(
+            run.start + cut,
+            run.end,
+            [audio[cut:]],
+            voiced_samples=tail_voiced,
+            voiced_parts=[tail_voiced],
+        )
+        if run.silence_start is not None:
+            rest.silence_start = max(run.silence_start, rest.start)
+            rest.silence_samples = min(run.silence_samples, rest.end - rest.start)
+        self._runs[source] = rest
+        return rest
 
     def _schedule_partial(self, source: CaptureSource, run: _SpeechRun) -> None:
         self._partial_job = self._job(source, run, is_final=False)
