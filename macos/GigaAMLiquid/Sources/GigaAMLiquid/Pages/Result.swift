@@ -88,15 +88,15 @@ extension AppController {
         content.addArrangedSubview(stretchy(fillRow([result, useful], spacing: 16)))
     }
 
-    var currentResult: NativeTranscriptionResult? {
+    private var currentResult: NativeTranscriptionResult? {
         transcriptionResults.first { $0.inputURL == selectedResultURL } ?? transcriptionResults.first
     }
 
-    var existingOutputs: [String: URL] {
+    private var existingOutputs: [String: URL] {
         (currentResult?.outputFiles ?? [:]).filter { FileManager.default.isReadableFile(atPath: $0.value.path) }
     }
 
-    @objc func resultTabChanged(_ sender: PillSelector) {
+    @objc private func resultTabChanged(_ sender: PillSelector) {
         guard resultPages.indices.contains(sender.selectedSegment) else { return }
         let page = resultPages[sender.selectedSegment]
         selectedResultTab = page.key
@@ -104,29 +104,29 @@ extension AppController {
         resultTranscript?.scrollToBeginningOfDocument(nil)
     }
 
-    @objc func resultFileChanged(_ sender: NSPopUpButton) {
+    @objc private func resultFileChanged(_ sender: NSPopUpButton) {
         guard transcriptionResults.indices.contains(sender.indexOfSelectedItem) else { return }
         selectedResultURL = transcriptionResults[sender.indexOfSelectedItem].inputURL
         show(page: .result)
     }
 
-    @objc func resultOutputChanged(_ sender: NSPopUpButton) {
+    @objc private func resultOutputChanged(_ sender: NSPopUpButton) {
         selectedOutputFormat = sender.titleOfSelectedItem
     }
 
-    @objc func copyResult(_ sender: Any?) {
+    @objc private func copyResult(_ sender: Any?) {
         guard let result = currentResult, !result.transcript.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result.transcript, forType: .string)
     }
 
-    @objc func useResultForLLM(_ sender: Any?) {
+    @objc private func useResultForLLM(_ sender: Any?) {
         guard let result = currentResult, !result.transcript.isEmpty else { return }
         defaults.set(result.transcript, forKey: "llm.source")
         show(page: .llm)
     }
 
-    @objc func openResultOutput(_ sender: Any?) {
+    @objc private func openResultOutput(_ sender: Any?) {
         guard let key = selectedOutputFormat, let url = existingOutputs[key] else {
             showNotice("Не удалось открыть файл", "Файл результата больше недоступен.")
             return
@@ -134,7 +134,7 @@ extension AppController {
         if !NSWorkspace.shared.open(url) { showNotice("Не удалось открыть файл", url.path) }
     }
 
-    @objc func revealResultOutputs(_ sender: Any?) {
+    @objc private func revealResultOutputs(_ sender: Any?) {
         guard let key = selectedOutputFormat, let url = existingOutputs[key] else {
             showNotice("Не удалось открыть файл", "Файл результата больше недоступен.")
             return

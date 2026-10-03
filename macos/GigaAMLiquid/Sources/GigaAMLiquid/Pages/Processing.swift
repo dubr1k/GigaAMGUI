@@ -126,7 +126,7 @@ extension AppController {
         content.addArrangedSubview(progressCard())
     }
 
-    func progressCard() -> GlassView {
+    private func progressCard() -> GlassView {
         let view = GlassView(radius: 16)
         let progress = ProgressTrackView()
         progress.heightAnchor.constraint(equalToConstant: 8).isActive = true
@@ -159,7 +159,7 @@ extension AppController {
         return view
     }
 
-    static let speakerCountValues = ["Авто", "1", "2", "3", "4", "5", "6"]
+    private static let speakerCountValues = ["Авто", "1", "2", "3", "4", "5", "6"]
 
     func speakerCountPopup() -> NSPopUpButton {
         let control = popup(Self.speakerCountValues, key: "processing.speakers")
@@ -169,7 +169,7 @@ extension AppController {
 
     /// Sortformer infers the speaker set itself (up to 4); a manual count is only
     /// meaningful for pyannote and ONNX clustering.
-    var manualSpeakerCountAvailable: Bool {
+    private var manualSpeakerCountAvailable: Bool {
         enabledOption("settings.diarization", defaultValue: false)
             && option("settings.diarizationEngine", values: SettingsSchema.diarizationEngines) != "sortformer"
     }
@@ -181,7 +181,7 @@ extension AppController {
         defaults.removeObject(forKey: "processing.speakers")
     }
 
-    var outputFormats: [String] {
+    private var outputFormats: [String] {
         let diarization = enabledOption("settings.diarization", defaultValue: false)
         let choices: [(String, String, Bool)] = [
             ("output.txt", "txt", true), ("output.timestamps", "txt_timecodes", true),
@@ -192,7 +192,7 @@ extension AppController {
         }
     }
 
-    func transcriptionSettings() -> NativeTranscriptionSettings {
+    private func transcriptionSettings() -> NativeTranscriptionSettings {
         var settings = NativeTranscriptionSettings()
         settings.formats = outputFormats
         settings.backend = option("settings.backend", values: SettingsSchema.backends)
@@ -227,7 +227,7 @@ extension AppController {
 
     /// Where results go: `.besideSource` for an empty field, `.folder` for a usable
     /// path, `nil` for a path that is not absolute or not writable.
-    enum OutputDestination {
+    private enum OutputDestination {
         case besideSource
         case folder(URL)
 
@@ -237,7 +237,7 @@ extension AppController {
         }
     }
 
-    var outputDestination: OutputDestination? {
+    private var outputDestination: OutputDestination? {
         outputPathText.isEmpty ? .besideSource : outputDirectory.map(OutputDestination.folder)
     }
 
@@ -291,7 +291,7 @@ extension AppController {
         refreshLiveControls()
     }
 
-    func refreshProgress() {
+    private func refreshProgress() {
         progressTrack?.fraction = transcriptionProgress ?? 0
         progressPercentage?.stringValue = transcriptionProgress.map { "\(Int($0 * 100))%" } ?? "—"
         let status = cancellationRequested && transcriptionJob != nil ? L10n.text("Остановка после текущего файла.") + " " + L10n.text(transcriptionStatus) : L10n.text(transcriptionStatus)
@@ -300,7 +300,7 @@ extension AppController {
         progressStatus?.invalidateIntrinsicContentSize()
     }
 
-    @objc func startProcessing(_ sender: Any?) {
+    @objc private func startProcessing(_ sender: Any?) {
         window.makeFirstResponder(nil)
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         var settings = transcriptionSettings()
@@ -348,7 +348,7 @@ extension AppController {
         job.start()
     }
 
-    @objc func cancelProcessing(_ sender: Any?) {
+    @objc private func cancelProcessing(_ sender: Any?) {
         guard let job = transcriptionJob, !cancellationRequested else { return }
         cancellationRequested = true
         job.cancel()
@@ -370,7 +370,7 @@ extension AppController {
         processingLog.append(line)
     }
 
-    func receiveTranscriptionEvent(_ event: NativeTranscriptionEvent) {
+    private func receiveTranscriptionEvent(_ event: NativeTranscriptionEvent) {
         switch event {
         case .log(let message):
             appendProcessingLog(message)
@@ -402,7 +402,7 @@ extension AppController {
         }
     }
 
-    func finishTranscription(status: String, pendingState: String) {
+    private func finishTranscription(status: String, pendingState: String) {
         transcriptionJob = nil
         transcriptionStatus = status
         for file in transcriptionFiles where fileStates[file] == "В очереди" || fileStates[file] == "В обработке" { fileStates[file] = pendingState }
@@ -412,7 +412,7 @@ extension AppController {
         refreshProgress()
     }
 
-    @objc func showProcessingLog(_ sender: Any?) {
+    @objc private func showProcessingLog(_ sender: Any?) {
         let alert = NSAlert()
         alert.messageText = L10n.text("Журнал обработки")
         alert.addButton(withTitle: L10n.text("Понятно"))
@@ -448,7 +448,7 @@ extension AppController {
     }
 
     /// Shared by the open panel and drag & drop: normalises paths and skips duplicates.
-    func appendSelectedFiles(_ urls: [URL]) {
+    private func appendSelectedFiles(_ urls: [URL]) {
         var known = Set(selectedFileURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
         selectedFileURLs.append(contentsOf: urls.map { $0.standardizedFileURL.resolvingSymlinksInPath() }.filter { known.insert($0).inserted })
         refreshSelectedFiles()
@@ -465,14 +465,14 @@ extension AppController {
         return true
     }
 
-    @objc func clearFiles(_ sender: Any?) {
+    @objc private func clearFiles(_ sender: Any?) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         selectedFileURLs.removeAll()
         cleanupDownloadedMedia()
         refreshSelectedFiles()
     }
 
-    @objc func removeSelectedFile(_ sender: NSButton) {
+    @objc private func removeSelectedFile(_ sender: NSButton) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil, liveJob == nil,
               selectedFileURLs.indices.contains(sender.tag) else { return }
         selectedFileURLs.remove(at: sender.tag)
@@ -480,7 +480,7 @@ extension AppController {
         refreshSelectedFiles()
     }
 
-    @objc func chooseOutputFolder(_ sender: Any?) {
+    @objc private func chooseOutputFolder(_ sender: Any?) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -496,11 +496,11 @@ extension AppController {
     /// Колонки списка выбранных файлов: номер, имя, состояние. Оставляем место
     /// справа для кнопки удаления, не смещая состояние относительно заголовка.
     /// The name column takes whatever width the card has.
-    var selectedFileColumns: [(String, CGFloat?)] { [("№", 28), ("Файл", nil), ("Состояние", 200)] }
+    private var selectedFileColumns: [(String, CGFloat?)] { [("№", 28), ("Файл", nil), ("Состояние", 200)] }
 
-    static let selectedFileRemoveWidth: CGFloat = 22
+    private static let selectedFileRemoveWidth: CGFloat = 22
 
-    func selectedFileRow(index: Int, url: URL) -> NSView {
+    private func selectedFileRow(index: Int, url: URL) -> NSView {
         let number = label("\(index + 1).", size: 14, color: Palette.muted)
         number.alignment = .right
         number.widthAnchor.constraint(equalToConstant: selectedFileColumns[0].1 ?? 0).isActive = true

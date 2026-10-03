@@ -9,11 +9,11 @@ import UniformTypeIdentifiers
 final class AppController: NSObject, NSApplicationDelegate {
     let defaults = UserDefaults.standard
     var window: NSWindow!
-    var mainSurface: GlassView!
-    var pageTitle: NSTextField!
-    var pageSubtitle: NSTextField!
-    var pageScroll: NSScrollView!
-    var navigationButtons: [Page: NSButton] = [:]
+    private var mainSurface: GlassView!
+    private var pageTitle: NSTextField!
+    private var pageSubtitle: NSTextField!
+    private var pageScroll: NSScrollView!
+    private var navigationButtons: [Page: NSButton] = [:]
     var selectedFilesLabel: NSTextField?
     var selectedFilesRows: NSStackView?
     var selectedFilesCountLabel: NSTextField?
@@ -60,7 +60,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     var liveAsking = false
     /// Quitting with a Live session: the user agreed to stop it, the work to do
     /// once it has ended, and the deadline after which the worker is killed.
-    var liveExitConfirmed = false
+    private var liveExitConfirmed = false
     var liveExitHandler: (() -> Void)?
     var liveExitDeadline: Timer?
     weak var liveAnswerView: NSTextView?
@@ -103,12 +103,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     var isClosing = false
     var isTerminating = false
     var searchField: NSSearchField?
-    var searchResults = NSView()
+    private var searchResults = NSView()
     var searchCapsule: GlassView?
-    var searchWidth: NSLayoutConstraint?
-    var appearanceObservation: NSKeyValueObservation?
+    private var searchWidth: NSLayoutConstraint?
+    private var appearanceObservation: NSKeyValueObservation?
     /// Whether the views on screen were built with the dark palette.
-    var appliedDarkLook = false
+    private var appliedDarkLook = false
     /// Secrets typed but not yet written to the Keychain, by control identifier.
     var pendingSecrets: [String: String] = [:]
     /// A tool re-check waiting for the user to stop typing its path, by provider.
@@ -155,7 +155,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// A SwiftPM executable ships no MainMenu.nib, so without this the menu bar shows only the
     /// app name and ⌘Q/⌘W/⌘C/⌘V have no key equivalents. Standard selectors with a nil target
     /// travel the responder chain (text fields, window, NSApp); own actions target self.
-    func installMainMenu() {
+    private func installMainMenu() {
         let appName = "GigaAM v3"
         func item(_ title: String, _ action: Selector?, keyEquivalent: String = "", modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil) -> NSMenuItem {
             let item = NSMenuItem(title: L10n.text(title), action: action, keyEquivalent: keyEquivalent)
@@ -212,16 +212,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         NSApp.helpMenu = helpMenu.submenu
     }
 
-    @objc func openProjectPage(_ sender: Any?) {
+    @objc private func openProjectPage(_ sender: Any?) {
         NSWorkspace.shared.open(URL(string: "https://github.com/dubr1k/GigaAMGUI")!)
     }
 
     /// The smallest window in which every page fits without scrolling; the tallest
     /// page, «Обработка», needs ~870 pt of window height. Pages stretch beyond it.
-    static let minimumWindowSize = NSSize(width: 1100, height: 880)
-    static let defaultWindowSize = NSSize(width: 1240, height: 940)
+    private static let minimumWindowSize = NSSize(width: 1100, height: 880)
+    private static let defaultWindowSize = NSSize(width: 1240, height: 940)
 
-    func buildWindow() {
+    private func buildWindow() {
         // Clamp to the screen: on a display shorter than the minimum the page falls
         // back to scrolling rather than the window hanging off the screen.
         let screen = NSScreen.main?.visibleFrame.size ?? Self.defaultWindowSize
@@ -241,7 +241,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         buildWindowContent()
     }
 
-    func buildWindowContent() {
+    private func buildWindowContent() {
         navigationButtons.removeAll()
         selectedFilesLabel = nil
         selectedFilesRows = nil
@@ -278,7 +278,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         buildMainSurface()
     }
 
-    func buildSidebar() -> NSView {
+    private func buildSidebar() -> NSView {
         let surface = GlassView(drawsBorder: false, drawsSurface: false)
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -333,7 +333,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         return surface
     }
 
-    func brandMark() -> NSView {
+    private func brandMark() -> NSView {
         let view = NSView()
         view.wantsLayer = true
         let colors = [Palette.blue, NSColor.black, Palette.ink]
@@ -355,7 +355,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         return view
     }
 
-    func navigationButton(for page: Page) -> NSButton {
+    private func navigationButton(for page: Page) -> NSButton {
         let button = NavigationRowButton(title: L10n.text(page.navigationTitle), target: self, action: #selector(navigate(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(page.rawValue)
         button.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: L10n.text(page.navigationTitle))
@@ -374,7 +374,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         return button
     }
 
-    func buildMainSurface() {
+    private func buildMainSurface() {
         let header = NSStackView()
         header.orientation = .horizontal
         header.alignment = .centerY
@@ -472,7 +472,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         ])
     }
 
-    @objc func navigate(_ sender: NSButton) {
+    @objc private func navigate(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue, let page = Page(rawValue: id) else { return }
         show(page: page)
     }
@@ -517,7 +517,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         refreshProcessingControls()
     }
 
-    func scrollDocument(for page: Page) -> NSView {
+    private func scrollDocument(for page: Page) -> NSView {
         let document = AutoLayoutDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         let content = vertical([], spacing: 16)
@@ -567,10 +567,10 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Longest wait for a Live session to stop and export when the app quits;
     /// after-stop diarization can take a while. Past it the worker is killed.
-    static let liveExitGrace: TimeInterval = 30
+    private static let liveExitGrace: TimeInterval = 30
 
     /// Whether to stop the running Live session so the app can quit.
-    func confirmStoppingLive() -> Bool {
+    private func confirmStoppingLive() -> Bool {
         let alert = NSAlert()
         alert.messageText = L10n.text("Идёт Live-запись")
         alert.informativeText = L10n.text("Остановить запись и сохранить сессию перед выходом?")
@@ -582,7 +582,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Stops the Live session the normal way (live_stop → exports → live_stopped)
     /// and runs `done` when it has ended. Killing the worker at once lost the
     /// session's exports; the kill is now only the fallback after the grace period.
-    func stopLiveForExit(then done: @escaping () -> Void) {
+    private func stopLiveForExit(then done: @escaping () -> Void) {
         guard let job = liveJob else { done(); return }
         liveExitHandler = done
         liveStatusLabel?.stringValue = L10n.text("Сохраняем сессию перед выходом…")
@@ -593,13 +593,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func toggleLanguage(_ sender: Any?) {
+    @objc private func toggleLanguage(_ sender: Any?) {
         let current = defaults.string(forKey: "settings.language") ?? "Русский"
         defaults.set(current == "Русский" ? "English" : "Русский", forKey: "settings.language")
         rebuildInterface()
     }
 
-    @objc func toggleDarkTheme(_ sender: Any?) {
+    @objc private func toggleDarkTheme(_ sender: Any?) {
         defaults.set(Palette.isDark ? "Светлая" : "Тёмная", forKey: "settings.theme")
         rebuildInterface()
     }
@@ -618,7 +618,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func toggleSearch(_ sender: NSButton) {
+    @objc private func toggleSearch(_ sender: NSButton) {
         guard let searchField, let searchWidth else { return }
         let opening = searchField.isHidden
         searchField.isHidden = !opening
@@ -670,7 +670,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         searchResults = surface
     }
 
-    @objc func selectSearchResult(_ sender: NSButton) {
+    @objc private func selectSearchResult(_ sender: NSButton) {
         searchResults.removeFromSuperview()
         navigate(sender)
     }

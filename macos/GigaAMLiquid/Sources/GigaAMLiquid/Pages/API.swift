@@ -40,7 +40,7 @@ extension AppController {
         content.addArrangedSubview(stretchy(fillRow([examples, docs], spacing: 16)))
     }
 
-    func apiExample(_ language: Int) -> String {
+    private func apiExample(_ language: Int) -> String {
         switch language {
         case 1:
             return """
@@ -85,7 +85,7 @@ extension AppController {
         }
     }
 
-    func documentationRow(_ title: String) -> NSButton {
+    private func documentationRow(_ title: String) -> NSButton {
         let button = button(title, action: #selector(openDocumentation(_:)), height: 46)
         button.identifier = NSUserInterfaceItemIdentifier(title)
         button.alignment = .left
@@ -118,12 +118,12 @@ extension AppController {
         NSPasteboard.general.setString("http://127.0.0.1:8000", forType: .string)
     }
 
-    @objc func copyCode(_ sender: Any?) {
+    @objc private func copyCode(_ sender: Any?) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(apiCodeText?.string ?? "", forType: .string)
     }
 
-    @objc func apiLanguageChanged(_ sender: PillSelector) {
+    @objc private func apiLanguageChanged(_ sender: PillSelector) {
         let names = ["Python", "cURL", "JavaScript"]
         defaults.set(names[sender.selectedSegment], forKey: "api.exampleLanguage")
         apiCodeText?.string = apiExample(sender.selectedSegment)

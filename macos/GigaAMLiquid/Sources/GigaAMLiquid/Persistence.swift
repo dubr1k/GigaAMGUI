@@ -35,7 +35,7 @@ extension AppController {
     }
 
     /// Fields whose value lives in the Keychain: control identifier → (account, failure title).
-    static let secretFields: [String: (account: String, failure: String)] = [
+    private static let secretFields: [String: (account: String, failure: String)] = [
         "settings.hfToken": ("hfToken", "Не удалось сохранить HF Token"),
         "llm.apiKey": ("llmApiKey", "Не удалось сохранить API Key"),
     ]
@@ -49,7 +49,7 @@ extension AppController {
     /// Every keystroke. Plain settings go to UserDefaults at once; a secret only
     /// waits for the end of editing — a Keychain write per keystroke meant a
     /// SecItemUpdate per character and, if the Keychain refused, an alert per key.
-    func recordText(_ sender: NSTextField) {
+    private func recordText(_ sender: NSTextField) {
         guard let key = sender.identifier?.rawValue else { return }
         if Self.secretFields[key] != nil {
             pendingSecrets[key] = sender.stringValue
@@ -71,7 +71,7 @@ extension AppController {
     /// Writes a secret the user typed in this field, once. Only an edit made in
     /// the field is written: ending the editing of an untouched field (it is
     /// removed when a page is rebuilt) never writes its possibly stale text.
-    func commitSecret(_ sender: NSTextField) {
+    private func commitSecret(_ sender: NSTextField) {
         guard let key = sender.identifier?.rawValue, let secret = Self.secretFields[key],
               let value = pendingSecrets.removeValue(forKey: key) else { return }
         do {

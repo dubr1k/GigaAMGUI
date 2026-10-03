@@ -8,7 +8,7 @@ extension AppController {
         presentMediaURLSheet()
     }
 
-    func presentMediaURLSheet(value: String = "", error: String? = nil) {
+    private func presentMediaURLSheet(value: String = "", error: String? = nil) {
         guard !isClosing else { return }
         let alert = NSAlert()
         alert.messageText = L10n.text("Ссылка на медиа")
@@ -61,7 +61,7 @@ extension AppController {
         alert.window.makeFirstResponder(input)
     }
 
-    func downloadMedia(_ url: URL) {
+    private func downloadMedia(_ url: URL) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let alert = NSAlert()
         alert.messageText = L10n.text("Загрузка медиа")
@@ -105,13 +105,13 @@ extension AppController {
         job.start()
     }
 
-    func mediaCacheRoot() -> URL? {
+    private func mediaCacheRoot() -> URL? {
         try? FileManager.default.url(
             for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         ).appendingPathComponent("GigaAMLiquid/Media", isDirectory: true).standardizedFileURL
     }
 
-    func rememberDownloadedMedia(_ files: [URL]) {
+    private func rememberDownloadedMedia(_ files: [URL]) {
         guard let cache = mediaCacheRoot() else { return }
         let prefix = cache.path + "/"
         for file in files {

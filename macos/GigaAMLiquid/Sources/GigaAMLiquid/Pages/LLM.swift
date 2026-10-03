@@ -131,7 +131,7 @@ extension AppController {
         return button
     }
 
-    @objc func chooseTranscript(_ sender: Any?) {
+    @objc private func chooseTranscript(_ sender: Any?) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.plainText]
@@ -147,7 +147,7 @@ extension AppController {
         }
     }
 
-    @objc func selectTemplate(_ sender: NSButton) {
+    @objc private func selectTemplate(_ sender: NSButton) {
         let prompt: String
         switch sender.identifier?.rawValue {
         case "Краткое содержание": prompt = "Сделай краткое содержание транскрипции и выдели основные решения."
@@ -198,7 +198,7 @@ extension AppController {
 
     // MARK: - CLI tools (the registry lives in the Python worker)
 
-    static let llmToolsCacheKey = "llm.toolsCache"
+    private static let llmToolsCacheKey = "llm.toolsCache"
 
     func loadLLMToolsCache() {
         guard let data = defaults.data(forKey: Self.llmToolsCacheKey),
@@ -206,13 +206,13 @@ extension AppController {
         for status in objects.compactMap(LLMToolStatus.init) { llmToolStatuses[status.provider] = status }
     }
 
-    func saveLLMToolsCache() {
+    private func saveLLMToolsCache() {
         let objects = llmToolStatuses.values.map(\.dictionary)
         if let data = try? JSONSerialization.data(withJSONObject: objects) { defaults.set(data, forKey: Self.llmToolsCacheKey) }
     }
 
     /// User-entered paths, keyed by registry id, for the worker's `overrides`.
-    func llmToolOverrides() -> [String: String] {
+    private func llmToolOverrides() -> [String: String] {
         var overrides: [String: String] = [:]
         for tool in Self.llmCliProviders {
             let value = (defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -268,7 +268,7 @@ extension AppController {
     /// Probes the tool at its current path. A check still running for an older
     /// path is cancelled and replaced: the badge must describe the latest path,
     /// and the old "one check at a time" guard dropped the later edits instead.
-    func checkLLMTool(_ provider: String) {
+    private func checkLLMTool(_ provider: String) {
         guard !isClosing, let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
         llmToolChecks.removeValue(forKey: provider)?.cancel()
         let path = (defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -295,12 +295,12 @@ extension AppController {
         query.start()
     }
 
-    @objc func checkLLMToolButton(_ sender: NSButton) {
+    @objc private func checkLLMToolButton(_ sender: NSButton) {
         guard let provider = sender.identifier?.rawValue.replacingOccurrences(of: "llm.check.", with: "") else { return }
         checkLLMTool(provider)
     }
 
-    @objc func browseLLMTool(_ sender: NSButton) {
+    @objc private func browseLLMTool(_ sender: NSButton) {
         guard let provider = sender.identifier?.rawValue.replacingOccurrences(of: "llm.browse.", with: ""),
               let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
         let panel = NSOpenPanel()
@@ -317,9 +317,9 @@ extension AppController {
         }
     }
 
-    static let llmStatusGlyph: [String: String] = ["found": "●", "missing": "○", "broken": "⚠"]
+    private static let llmStatusGlyph: [String: String] = ["found": "●", "missing": "○", "broken": "⚠"]
 
-    func llmStatusColor(_ status: String) -> NSColor {
+    private func llmStatusColor(_ status: String) -> NSColor {
         switch status {
         case "found": return NSColor.systemGreen
         case "broken": return NSColor.systemOrange
@@ -327,7 +327,7 @@ extension AppController {
         }
     }
 
-    func llmStatusText(_ status: LLMToolStatus?) -> String {
+    private func llmStatusText(_ status: LLMToolStatus?) -> String {
         guard let status else { return L10n.text("проверка…") }
         switch status.status {
         case "found": return status.version ?? L10n.text("найден")
@@ -409,7 +409,7 @@ extension AppController {
         }
     }
 
-    @objc func runLLM(_ sender: Any?) {
+    @objc private func runLLM(_ sender: Any?) {
         window.makeFirstResponder(nil)
         guard llmJob == nil, !isClosing else { return }
         let source = (transcriptEditor?.string ?? defaults.string(forKey: "llm.source") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -435,9 +435,9 @@ extension AppController {
         job.start()
     }
 
-    @objc func cancelLLM(_ sender: Any?) { llmJob?.cancel() }
+    @objc private func cancelLLM(_ sender: Any?) { llmJob?.cancel() }
 
-    func receiveLLMEvent(_ event: LLMJobEvent) {
+    private func receiveLLMEvent(_ event: LLMJobEvent) {
         switch event {
         case .started:
             llmStatusLabel?.stringValue = L10n.text("Ожидание ответа провайдера…")
@@ -464,14 +464,14 @@ extension AppController {
         }
     }
 
-    func finishLLM() {
+    private func finishLLM() {
         llmJob = nil
         if isTerminating { replyWhenJobsFinished(); return }
         refreshLLMControls()
         refreshLiveControls()  // Live recording waits for the LLM request
     }
 
-    func refreshLLMControls() {
+    private func refreshLLMControls() {
         let running = llmJob != nil
         llmRunButton?.isEnabled = !running && !isClosing
         llmCancelButton?.isEnabled = running
@@ -479,12 +479,12 @@ extension AppController {
         llmSaveButton?.isEnabled = !llmResultText.isEmpty
     }
 
-    @objc func copyLLMResult(_ sender: Any?) {
+    @objc private func copyLLMResult(_ sender: Any?) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(llmResultText, forType: .string)
     }
 
-    @objc func saveLLMResult(_ sender: Any?) {
+    @objc private func saveLLMResult(_ sender: Any?) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "llm_result.md"
         panel.beginSheetModal(for: window) { [weak self] response in

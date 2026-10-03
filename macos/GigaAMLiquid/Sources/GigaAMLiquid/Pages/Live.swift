@@ -4,9 +4,9 @@ import GigaAMLiquidCore
 /// The Live page: capture sources, the live session job, its transcript and
 /// the assistant's questions.
 extension AppController {
-    static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
+    private static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
 
-    static let liveDiarizationModeValues = ["off", "live_estimate", "after_stop"]
+    private static let liveDiarizationModeValues = ["off", "live_estimate", "after_stop"]
 
     func buildLive(into content: NSStackView) {
         let source = card("Источник аудио", dense: true)
@@ -143,7 +143,7 @@ extension AppController {
 
     // MARK: - Session
 
-    var liveExports: [String: Any] {
+    private var liveExports: [String: Any] {
         [
             "txt": enabledOption("live.txt", defaultValue: true),
             "txt_timecodes": enabledOption("live.timestamps", defaultValue: false),
@@ -159,18 +159,18 @@ extension AppController {
     }
 
     /// Like `outputPathText`: an empty field means the default folder.
-    var liveSessionRootText: String {
+    private var liveSessionRootText: String {
         let stored = (defaults.string(forKey: "live.sessionRoot") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return stored.isEmpty ? "~/Documents/GigaAM/live" : stored
     }
 
-    var liveSessionRoot: URL? {
+    private var liveSessionRoot: URL? {
         let path = (liveSessionRootText as NSString).expandingTildeInPath
         guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
         return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 
-    @objc func startLive(_ sender: Any?) {
+    @objc private func startLive(_ sender: Any?) {
         window.makeFirstResponder(nil)
         if liveState == "paused" { liveJob?.resume(); return }
         guard liveJob == nil, transcriptionJob == nil, mediaDownloadJob == nil, llmJob == nil, !isClosing else {
@@ -198,7 +198,7 @@ extension AppController {
         }
     }
 
-    func launchLive(root: URL, withSystem: Bool) {
+    private func launchLive(root: URL, withSystem: Bool) {
         var settings = LiveSessionSettings(sessionRoot: root, sources: withSystem ? [.mic, .system] : [.mic])
         let device = defaults.string(forKey: "live.microphone") ?? "default"
         settings.microphoneDeviceID = device == "default" ? nil : device
@@ -261,7 +261,7 @@ extension AppController {
         liveFolderLabel?.toolTip = [(liveSessionDir ?? liveSessionRoot)?.path, hint].compactMap { $0 }.joined(separator: "\n")
     }
 
-    @objc func revealLiveSession(_ sender: Any?) {
+    @objc private func revealLiveSession(_ sender: Any?) {
         if let directory = liveSessionDir, FileManager.default.fileExists(atPath: directory.path) {
             NSWorkspace.shared.open(directory)
             return
@@ -275,7 +275,7 @@ extension AppController {
         NSWorkspace.shared.open(root)
     }
 
-    @objc func chooseLiveSessionRoot(_ sender: Any?) {
+    @objc private func chooseLiveSessionRoot(_ sender: Any?) {
         guard liveJob == nil, !isClosing else { return }
         // A focused root field would write its old text back over the pick when
         // it ends editing.
@@ -295,14 +295,14 @@ extension AppController {
         }
     }
 
-    @objc func pauseLive(_ sender: Any?) { liveJob?.pause() }
+    @objc private func pauseLive(_ sender: Any?) { liveJob?.pause() }
 
-    @objc func stopLive(_ sender: Any?) {
+    @objc private func stopLive(_ sender: Any?) {
         liveStatusLabel?.stringValue = L10n.text("Остановка…")
         liveJob?.stop()
     }
 
-    @objc func askLive(_ sender: Any?) {
+    @objc private func askLive(_ sender: Any?) {
         guard let job = liveJob else { return }
         let question = (liveQuestionField?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
@@ -316,9 +316,9 @@ extension AppController {
         job.ask(question, settings: settings)
     }
 
-    @objc func cancelAskLive(_ sender: Any?) { liveJob?.cancelAsk() }
+    @objc private func cancelAskLive(_ sender: Any?) { liveJob?.cancelAsk() }
 
-    func receiveLiveEvent(_ event: LiveSessionEvent) {
+    private func receiveLiveEvent(_ event: LiveSessionEvent) {
         switch event {
         case .loading:
             liveStatusLabel?.stringValue = L10n.text("Загрузка модели распознавания… Запись начнётся, когда она будет готова.")
@@ -391,7 +391,7 @@ extension AppController {
         }
     }
 
-    func finishLive(status: String) {
+    private func finishLive(status: String) {
         liveJob = nil
         liveAsking = false
         liveState = "idle"
@@ -417,7 +417,7 @@ extension AppController {
         refreshProcessingControls()
     }
 
-    func renderLiveTranscript() {
+    private func renderLiveTranscript() {
         guard let view = liveTranscriptView, let storage = view.textStorage else { return }
         let finals = liveFinals.map { ($0.speaker.map { "\($0): " } ?? "") + $0.text }
         let drafts = livePartials.sorted(by: { $0.key.rawValue < $1.key.rawValue }).map { "[\($0.key.rawValue) …] \($0.value)" }
@@ -429,7 +429,7 @@ extension AppController {
         scrollToTail(view)
     }
 
-    func refreshLiveClock() {
+    private func refreshLiveClock() {
         guard let started = liveStartedAt else { liveClockLabel?.stringValue = "00:00:00"; return }
         let seconds = Int(Date().timeIntervalSince(started))
         liveClockLabel?.stringValue = String(format: "%02d:%02d:%02d", seconds / 3600, seconds % 3600 / 60, seconds % 60)

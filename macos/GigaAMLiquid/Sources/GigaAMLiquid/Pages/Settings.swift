@@ -21,7 +21,7 @@ extension AppController {
         applySettingsCategorySelection(selected)
     }
 
-    func settingsPage(_ category: String) -> NSView {
+    private func settingsPage(_ category: String) -> NSView {
         let surface = GlassView(radius: 28)
         let body = vertical([label(category, size: 24, weight: .medium, color: Palette.ink)], spacing: 24)
         switch category {
@@ -153,7 +153,7 @@ extension AppController {
         return surface
     }
 
-    func settingsCategoryButton(_ title: String, selected: Bool) -> NSButton {
+    private func settingsCategoryButton(_ title: String, selected: Bool) -> NSButton {
         let button = NavigationRowButton(title: L10n.text(title), target: self, action: #selector(selectSettingsCategory(_:)))
         button.identifier = NSUserInterfaceItemIdentifier("settings.category.\(title)")
         button.isBordered = false
@@ -170,7 +170,7 @@ extension AppController {
         return button
     }
 
-    func applySettingsCategorySelection(_ selectedTitle: String) {
+    private func applySettingsCategorySelection(_ selectedTitle: String) {
         guard let settingsDetail, settingsCategoryButtons[selectedTitle] != nil else { return }
         window.makeFirstResponder(nil)
         defaults.set(selectedTitle, forKey: "settings.category")
@@ -183,19 +183,19 @@ extension AppController {
         embed(settingsPage(selectedTitle), in: settingsDetail, inset: 0, fillHeight: true)
     }
 
-    @objc func openProject(_ sender: Any?) {
+    @objc private func openProject(_ sender: Any?) {
         guard let url = URL(string: "https://github.com/dubr1k/GigaAMGUI") else { return }
         NSWorkspace.shared.open(url)
     }
 
-    @objc func openDeveloper(_ sender: NSButton) {
+    @objc private func openDeveloper(_ sender: NSButton) {
         guard let name = sender.identifier?.rawValue,
               ["Baggrisha", "dubr1k"].contains(name),
               let url = URL(string: "https://github.com/\(name)") else { return }
         NSWorkspace.shared.open(url)
     }
 
-    @objc func selectSettingsCategory(_ sender: NSButton) {
+    @objc private func selectSettingsCategory(_ sender: NSButton) {
         guard let rawValue = sender.identifier?.rawValue,
               rawValue.hasPrefix("settings.category.") else { return }
         applySettingsCategorySelection(String(rawValue.dropFirst("settings.category.".count)))
