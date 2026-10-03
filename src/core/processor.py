@@ -7,6 +7,8 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import shutil
+import tempfile
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -60,6 +62,43 @@ _QUALITY_GATE_RU = {
     "loudness moved away from target": "громкость ушла от нужного уровня",
     "no measurable cleanup benefit": "очистка не дала заметного улучшения",
 }
+
+
+class _TempFiles:
+    """Временные файлы одной обработки: личный каталог и удаление на выходе.
+
+    WAV пишутся в системный temp (TMPDIR/TEMP), а не в папку результатов: она
+    может не существовать (новая папка в CLI), синхронизироваться облаком или
+    лежать на медленном сетевом диске, а недоделанный WAV там остаётся мусором.
+    Объём — ~115 МБ на час записи (16 кГц mono), плюс копия после очистки звука.
+    Контекст покрывает и конвертацию, и подготовку: исключение между ними
+    (например, из progress-колбэка) раньше оставляло WAV на диске.
+    """
+
+    def __init__(self, *, protected: str):
+        self._protected = os.path.abspath(protected)
+        self._paths: list[str] = []
+        self.directory = ""
+
+    def __enter__(self) -> _TempFiles:
+        self.directory = tempfile.mkdtemp(prefix="gigaam-")
+        return self
+
+    def add(self, *paths: str | None) -> None:
+        self._paths.extend(path for path in paths if path)
+
+    def __exit__(self, *_exc) -> None:
+        # Внешний конвертер может вернуть путь вне нашего каталога, а то и сам
+        # исходный файл: удаляем только своё и никогда — исходник.
+        for path in self._paths:
+            if os.path.abspath(path) == self._protected:
+                continue
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except OSError:
+                pass
+        shutil.rmtree(self.directory, ignore_errors=True)
 
 
 class DiarizationSetupError(RuntimeError):
@@ -255,12 +294,45 @@ class TranscriptionProcessor:
         Returns:
             dict: результаты обработки с ключами:
                 - success: bool
+                - error: str | None — причина неуспеха для клиента
                 - file_path: str
                 - file_size: int
                 - total_time: float
                 - conversion_time: float
                 - transcription_time: float
         """
+        with _TempFiles(protected=filepath) as temp_files:
+            return self._process_file(
+                filepath,
+                output_dir,
+                file_index,
+                total_files,
+                temp_files,
+                original_filename=original_filename,
+                enable_diarization=enable_diarization,
+                num_speakers=num_speakers,
+                output_formats=output_formats,
+                diarization_backend=diarization_backend,
+                audio_preprocessing_mode=audio_preprocessing_mode,
+                subtitle_options=subtitle_options,
+            )
+
+    def _process_file(
+        self,
+        filepath: str,
+        output_dir: str,
+        file_index: int,
+        total_files: int,
+        temp_files: _TempFiles,
+        *,
+        original_filename: str | None,
+        enable_diarization: bool,
+        num_speakers: int | None,
+        output_formats: list | None,
+        diarization_backend: str,
+        audio_preprocessing_mode: str,
+        subtitle_options: SubtitleOptions | None,
+    ) -> dict:
         file_start_time = time.time()
         # Используем оригинальное имя если передано, иначе берем из пути
         filename = original_filename if original_filename else os.path.basename(filepath)
@@ -297,6 +369,16 @@ class TranscriptionProcessor:
         self.logger(f"Файл {file_index+1} из {total_files}: {filename}")
         self.logger(f"Длительность записи: {duration_str}")
 
+        # Папку результатов создаём до долгой обработки: иначе (новая папка в
+        # CLI) распознавание шло впустую и падало только на сохранении.
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as exc:
+            result['error'] = f"Не удалось создать папку для результатов {output_dir}: {exc}"
+            self.logger(result['error'])
+            result['total_time'] = time.time() - file_start_time
+            return result
+
         from ..utils.diarization import normalize_diarization_backend
 
         self._active_diarization_backend = normalize_diarization_backend(diarization_backend)
@@ -307,7 +389,7 @@ class TranscriptionProcessor:
         conversion_start = time.time()
         temp_audio = self.audio_converter.convert_to_wav(
             filepath,
-            output_dir,
+            temp_files.directory,
             media_duration=media_duration,
             progress_callback=lambda value: self._update_progress(
                 "conversion",
@@ -316,6 +398,7 @@ class TranscriptionProcessor:
                 processed_seconds=value * media_duration if value is not None and media_duration > 0 else None,
             ) if value is not None else self._update_progress("conversion", None, total_seconds=media_duration, processed_seconds=None),
         )
+        temp_files.add(temp_audio)
         result['conversion_time'] = time.time() - conversion_start
         # Если конвертер вернул путь, считаем стадию завершенной даже при indeterminate-сценарии.
         # Для известных длительностей FFmpeg уже присылает 1.0 в своем колбэке.
@@ -335,18 +418,17 @@ class TranscriptionProcessor:
         # получает canonical WAV, чтобы не терять тембр и границы реплик.
         asr_audio = temp_audio
         diarization_audio = temp_audio
-        preprocessing_temp_paths: tuple[str, ...] = ()
         preprocessing_start = time.time()
         self._update_progress("preprocessing", 0.0, total_seconds=media_duration, processed_seconds=0.0)
         try:
             prepared_audio = self.audio_preprocessor.prepare(
                 temp_audio,
-                output_dir,
+                temp_files.directory,
                 mode=audio_preprocessing_mode,
             )
+            temp_files.add(*prepared_audio.temporary_paths)
             asr_audio = prepared_audio.asr_path
             diarization_audio = prepared_audio.diarization_path
-            preprocessing_temp_paths = prepared_audio.temporary_paths
             result['audio_preprocessing'] = prepared_audio.report.to_dict()
             decision = prepared_audio.report.decision
             action_ru = _PREPROCESSING_ACTIONS_RU.get(decision.action, decision.action)
@@ -665,20 +747,6 @@ class TranscriptionProcessor:
 
             self.logger(result['error'])
             _module_logger.error("Processing failed for %s", filepath, exc_info=True)
-
-        finally:
-            # Удаляем только временные файлы текущего запуска; исходный файл
-            # не трогаем даже если внешний converter вернул тот же путь.
-            owned_temp_paths = {temp_audio, *preprocessing_temp_paths}
-            for temp_path in owned_temp_paths:
-                if not temp_path or os.path.abspath(temp_path) == os.path.abspath(filepath):
-                    continue
-                if not os.path.exists(temp_path):
-                    continue
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
 
         return result
 

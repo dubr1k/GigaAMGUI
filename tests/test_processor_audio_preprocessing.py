@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.core.processor import TranscriptionProcessor
 from src.utils.audio_preprocessing import (
     AudioPreprocessingReport,
@@ -120,7 +122,9 @@ def test_processor_routes_enhanced_audio_to_asr_and_canonical_to_diarization(mon
     assert result["success"] is True
     assert model.paths == [str(enhanced)]
     assert diarization_paths == [str(canonical)]
-    assert fake_preprocessor.calls == [(str(canonical), str(tmp_path), "auto")]
+    # Кандидат очистки пишется в личный temp-каталог обработки, не в папку результатов.
+    assert [(path, mode) for path, _dir, mode in fake_preprocessor.calls] == [(str(canonical), "auto")]
+    assert Path(fake_preprocessor.calls[0][1]).name.startswith("gigaam-")
     assert result["audio_preprocessing"]["decision"]["action"] == "light_cleanup"
     assert not canonical.exists()
     assert not enhanced.exists()
@@ -157,6 +161,8 @@ def test_processor_default_mode_remains_off_and_backward_compatible(monkeypatch,
 
     assert result["success"] is True
     assert model.paths == [str(canonical)]
-    assert fake_preprocessor.calls == [(str(canonical), str(tmp_path), "off")]
+    # Кандидат очистки пишется в личный temp-каталог обработки, не в папку результатов.
+    assert [(path, mode) for path, _dir, mode in fake_preprocessor.calls] == [(str(canonical), "off")]
+    assert Path(fake_preprocessor.calls[0][1]).name.startswith("gigaam-")
     assert result["audio_preprocessing"]["mode"] == "off"
     assert not canonical.exists()
