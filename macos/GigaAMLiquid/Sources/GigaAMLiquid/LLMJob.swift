@@ -85,36 +85,29 @@ final class LLMJob {
     }
 
     private func consume(_ line: Data) {
-        guard !finished, !line.isEmpty else { return }
-        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let type = object["type"] as? String else {
-            let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { emit(.log(safe(text))) }
+        guard !finished else { return }
+        switch LLMEventDecoder.decode(line) {
+        case nil:
             return
-        }
-        switch type {
-        case "llm_started":
-            emit(.started(mode: object["mode"] as? String ?? "", index: object["index"] as? Int ?? 0, total: object["total"] as? Int ?? 0))
-        case "llm_chunk":
-            emit(.chunk(mode: object["mode"] as? String ?? "", text: object["text"] as? String ?? ""))
-        case "llm_completed":
-            if object["cancelled"] as? Bool == true { finish(.cancelled); return }
-            guard object["success"] as? Bool == true else {
-                finish(.failed(safe(object["message"] as? String ?? "LLM request failed.")))
-                return
-            }
-            let results = (object["results"] as? [[String: Any]] ?? []).map {
-                (mode: $0["mode"] as? String ?? "", text: $0["text"] as? String ?? "")
-            }
-            let saved = (object["saved_files"] as? [String] ?? []).map { URL(fileURLWithPath: $0) }
-            finish(.completed(results: results, saved: saved))
-        case "error":
-            finish(.failed(safe(object["message"] as? String ?? "LLM worker error.")))
-        case "log":
-            emit(.log(safe(object["message"] as? String ?? "")))
-        default:
+        case .text(let text):
+            emit(.log(safe(text)))
+        case .unknown(let type), .invalid(let type):
             // The worker is shared with the TUI and gains events over time.
             emit(.log(L10n.format("Пропущено неизвестное событие воркера: %@", type)))
+        case .event(.started(let mode, let index, let total)):
+            emit(.started(mode: mode, index: index, total: total))
+        case .event(.chunk(let mode, let text)):
+            emit(.chunk(mode: mode, text: text))
+        case .event(.completed(let results, let saved)):
+            finish(.completed(results: results, saved: saved.map { URL(fileURLWithPath: $0) }))
+        case .event(.cancelled):
+            finish(.cancelled)
+        case .event(.failed(let message)):
+            finish(.failed(safe(message ?? "LLM request failed.")))
+        case .event(.error(let message)):
+            finish(.failed(safe(message ?? "LLM worker error.")))
+        case .event(.log(let text)):
+            emit(.log(safe(text)))
         }
     }
 

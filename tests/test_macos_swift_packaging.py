@@ -300,14 +300,16 @@ def test_swift_batch_negotiates_compact_completion_and_tolerates_new_events() ->
     launch = _swift_block(job, "private func launch() throws {")
     assert launch.index("try send(Self.hello)") < launch.index("try send(command)")
     assert "malformed JSON" not in job and "Unexpected transcription worker event" not in job
-    assert 'case "ready":' in job
+    assert 'case .ready:' in job
 
 
 def test_swift_llm_job_uses_worker_protocol_and_redacts_api_key() -> None:
     job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LLMJob.swift").read_text(encoding="utf-8")
     assert '"type": "llm_start"' in job and '"type": "llm_cancel"' in job
+    assert "LLMEventDecoder.decode(line)" in job
+    decoders = (LIQUID_CORE / "WorkerEvents.swift").read_text(encoding="utf-8")
     for event in ('"llm_started"', '"llm_chunk"', '"llm_completed"'):
-        assert event in job
+        assert event in decoders
     assert "WorkerProcess(" in job
     assert 'settings["api_key"]' in job  # secret collected for redaction
     assert "WorkerRedaction.safeText" in job
@@ -345,7 +347,9 @@ def test_swift_llm_providers_mirror_python_registry() -> None:
 def test_swift_llm_tools_query_uses_worker_protocol() -> None:
     query = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LLMToolsQuery.swift").read_text(encoding="utf-8")
     assert '"type": "llm_tools"' in query and '"type": "llm_tool_check"' in query
-    assert 'case "llm_tools":' in query and 'case "llm_tool_check":' in query
+    assert "LLMToolsDecoder.decode(line)" in query
+    decoders = (LIQUID_CORE / "WorkerEvents.swift").read_text(encoding="utf-8")
+    assert 'case "llm_tools":' in decoders and 'case "llm_tool_check":' in decoders
     assert "WorkerProcess(" in query
     main = _liquid_sources()
     settings_llm = _swift_case(_swift_block(main, "private func settingsPage(_ category: String) -> NSView {"), 'case "LLM":')
@@ -381,8 +385,10 @@ def test_swift_live_session_job_streams_pcm_and_handles_events() -> None:
     job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LiveSessionJob.swift").read_text(encoding="utf-8")
     for command in ('"live_start"', '"live_audio"', '"live_pause"', '"live_resume"', '"live_stop"', '"live_ask"', '"live_ask_cancel"', '"live_capture_event"'):
         assert command in job
+    assert "LiveEventDecoder.decode(line)" in job
+    decoders = (LIQUID_CORE / "WorkerEvents.swift").read_text(encoding="utf-8")
     for event in ('"live_status"', '"live_partial"', '"live_final"', '"live_stopped"', '"live_answer_chunk"', '"live_answer"'):
-        assert event in job
+        assert event in decoders
     assert "base64EncodedString()" in job
     assert "maxBufferedChunks" in job  # 5 s backlog guard → overflow
     assert "WorkerProcess(" in job
@@ -579,3 +585,17 @@ def test_swift_settings_choices_match_the_worker() -> None:
     for name in ("backends", "models", "onnxProviders", "diarizationEngines", "audioPreprocessing"):
         literal = "[" + ", ".join(f'"{value}"' for value in swift_list(name)) + "]"
         assert literal not in sources, name
+
+
+def test_swift_decoder_fixtures_are_events_the_worker_emits() -> None:
+    # WorkerFixtures.swift holds lines captured from a real worker run; if the
+    # worker drops or renames an event, the fixtures (and the decoders) are stale.
+    fixtures = (Path("macos/GigaAMLiquid/Tests/GigaAMLiquidCoreTests") / "WorkerFixtures.swift").read_text(encoding="utf-8")
+    types = set(re.findall(r'"type": "([a-z_]+)"', fixtures))
+    assert {"ready", "file_completed", "completed", "live_status", "live_stopped", "llm_tools"} <= types
+    python = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in ("src/tui_worker.py", "src/services/live_worker_service.py", "src/services/llm_worker_service.py")
+    )
+    for kind in sorted(types):
+        assert f'"{kind}"' in python, kind

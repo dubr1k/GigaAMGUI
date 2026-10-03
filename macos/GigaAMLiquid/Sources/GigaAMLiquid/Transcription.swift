@@ -1,6 +1,4 @@
 import Foundation
-import CoreFoundation
-import Darwin
 import GigaAMLiquidCore
 
 struct NativeTranscriptionSettings {
@@ -171,110 +169,103 @@ final class NativeTranscriptionJob {
     }
 
     private func consume(_ line: Data) {
-        guard !finished, pendingTerminal == nil, !line.isEmpty else { return }
-        // Some Python dependencies print to stdout: plain text, a Python repr such as
-        // "{'loaded': True}", a bare JSON value. That is log material, not a protocol
-        // violation; the batch goes on and its results decide the outcome.
-        guard let message = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
-              let type = message["type"] as? String else {
-            recordLog(String(decoding: line, as: UTF8.self))
-            return
-        }
+        guard !finished, pendingTerminal == nil else { return }
         // The worker answers commands in order, so the first event replies to hello.
-        let helloReply = awaitingHelloReply
-        awaitingHelloReply = false
-        do {
-            switch type {
-            case "ready":
-                break  // compact_completed acknowledged; nothing here depends on it
-            case "started":
-                guard integer(message["total_files"]) == files.count else { throw WorkerFailure("Invalid worker batch size.") }
-            case "log", "cancelling":
-                guard let text = message["message"] as? String else { throw WorkerFailure("Invalid worker log event.") }
-                recordLog(text)
-            case "file_started":
-                let index = try fileIndex(message)
-                emit(.fileStarted(files[index], index, files.count))
-                emit(.progress(Double(index) / Double(files.count), files[index].lastPathComponent))
-            case "progress":
-                let index = try fileIndex(message)
-                guard let stage = message["stage"] as? String else { throw WorkerFailure("Invalid worker progress stage.") }
-                // Без `message` воркер шлёт только id стадии — показываем его название,
-                // как PyQt (_STAGE_NAMES), а не «preprocessing».
-                let text = safeText(message["message"] as? String ?? StageLabel.text(stage, english: L10n.isEnglish))
-                // `stage_progress: null` (conversion without a duration, diarization)
-                // only means the stage itself is indeterminate: the worker still sends
-                // the file's monotonic `file_progress`. nil leaves the bar where it is.
-                let fraction: Double?
-                if let value = message["file_progress"] as? NSNumber,
-                   CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite {
-                    fraction = (Double(index) + min(1, max(0, value.doubleValue))) / Double(files.count)
-                } else if message["file_progress"] == nil || message["file_progress"] is NSNull {
-                    fraction = nil
-                } else { throw WorkerFailure("Invalid worker progress value.") }
-                emit(.progress(fraction, text))
-            case "file_completed":
-                let index = try fileIndex(message, requireTotal: false)
-                guard let raw = message["result"] as? [String: Any] else { throw WorkerFailure("Invalid worker file result.") }
-                try acceptResult(raw, index: index)
-            case "completed":
-                guard let success = boolean(message["success"]), let cancelled = boolean(message["cancelled"]),
-                      let results = message["results"] as? [[String: Any]], results.count <= files.count else {
-                    throw WorkerFailure("Invalid worker completion event.")
-                }
-                for (index, raw) in results.enumerated() { try acceptResult(raw, index: index) }
-                if let text = message["message"] as? String { recordLog(text) }
-                if success && completedIndices.count != files.count { throw WorkerFailure("The worker completed without results for every file.") }
-                if !success && !cancelled && completedIndices.isEmpty {
-                    requestTerminal(.failed(failureDetails(message["message"] as? String ?? "Transcription failed before processing any files.")))
-                } else {
-                    requestTerminal(.completed(success: success && !hadFileError, cancelled: cancelled))
-                }
-            case "error":
-                guard let text = message["message"] as? String else { throw WorkerFailure("Invalid worker error event.") }
-                if helloReply {
-                    // A worker older than the handshake rejects `hello`; `start` follows.
-                    recordDiagnostic(text)
-                    return
-                }
-                recordLog(text)
-                if let traceback = message["traceback"] as? String { recordLog(traceback) }
-                requestTerminal(.failed(safeText(text)))
-            default:
-                // The worker is shared with the TUI and gains events over time.
-                recordLog(L10n.format("Пропущено неизвестное событие воркера: %@", type))
-            }
-        } catch { requestTerminal(.failed(safeText(error.localizedDescription))) }
+        let helloReply: Bool
+        switch BatchEventDecoder.decode(line) {
+        case nil:
+            return
+        case .text(let text):
+            // Some Python dependencies print to stdout: plain text, a Python repr such as
+            // "{'loaded': True}", a bare JSON value. That is log material, not a protocol
+            // violation; the batch goes on and its results decide the outcome.
+            recordLog(text)
+            return
+        case .unknown(let type):
+            // The worker is shared with the TUI and gains events over time.
+            awaitingHelloReply = false
+            recordLog(L10n.format("Пропущено неизвестное событие воркера: %@", type))
+            return
+        case .invalid(let type):
+            requestTerminal(.failed(safeText("The transcription worker sent an invalid \(type) event.")))
+            return
+        case .event(let event):
+            helloReply = awaitingHelloReply
+            awaitingHelloReply = false
+            do { try handle(event, helloReply: helloReply) }
+            catch { requestTerminal(.failed(safeText(error.localizedDescription))) }
+        }
     }
 
-    private func fileIndex(_ message: [String: Any], requireTotal: Bool = true) throws -> Int {
-        guard let index = integer(message["file_index"]), files.indices.contains(index),
-              let path = message["file"] as? String,
-              URL(fileURLWithPath: path).standardizedFileURL == files[index],
-              !requireTotal || integer(message["total_files"]) == files.count else {
+    private func handle(_ event: BatchEvent, helloReply: Bool) throws {
+        switch event {
+        case .ready:
+            break  // compact_completed acknowledged; nothing here depends on it
+        case .started(let total):
+            guard total == files.count else { throw WorkerFailure("Invalid worker batch size.") }
+        case .log(let text):
+            recordLog(text)
+        case .fileStarted(let index, let file, let total):
+            let index = try fileIndex(index, file: file, total: total)
+            emit(.fileStarted(files[index], index, files.count))
+            emit(.progress(Double(index) / Double(files.count), files[index].lastPathComponent))
+        case .progress(let index, let file, let total, let stage, let message, let fileProgress):
+            let index = try fileIndex(index, file: file, total: total)
+            // Без `message` воркер шлёт только id стадии — показываем его название,
+            // как PyQt (_STAGE_NAMES), а не «preprocessing».
+            let text = safeText(message ?? StageLabel.text(stage, english: L10n.isEnglish))
+            // `stage_progress: null` (conversion without a duration, diarization) only
+            // means the stage is indeterminate; nil leaves the bar where it is.
+            let fraction = fileProgress.map { (Double(index) + min(1, max(0, $0))) / Double(files.count) }
+            emit(.progress(fraction, text))
+        case .fileCompleted(let index, let file, let result):
+            try acceptResult(result, index: fileIndex(index, file: file, total: nil, requireTotal: false))
+        case .completed(let success, let cancelled, let results, let message):
+            guard results.count <= files.count else { throw WorkerFailure("Invalid worker completion event.") }
+            // With compact_completed these are metadata only; every file already came
+            // in full through file_completed and is skipped here.
+            for (index, result) in results.enumerated() { try acceptResult(result, index: index) }
+            if let message { recordLog(message) }
+            if success && completedIndices.count != files.count { throw WorkerFailure("The worker completed without results for every file.") }
+            if !success && !cancelled && completedIndices.isEmpty {
+                requestTerminal(.failed(failureDetails(message ?? "Transcription failed before processing any files.")))
+            } else {
+                requestTerminal(.completed(success: success && !hadFileError, cancelled: cancelled))
+            }
+        case .error(let message, let traceback):
+            guard let text = message else { throw WorkerFailure("Invalid worker error event.") }
+            if helloReply {
+                // A worker older than the handshake rejects `hello`; `start` follows.
+                recordDiagnostic(text)
+                return
+            }
+            recordLog(text)
+            if let traceback { recordLog(traceback) }
+            requestTerminal(.failed(safeText(text)))
+        }
+    }
+
+    private func fileIndex(_ index: Int, file: String, total: Int?, requireTotal: Bool = true) throws -> Int {
+        guard files.indices.contains(index), URL(fileURLWithPath: file).standardizedFileURL == files[index],
+              !requireTotal || total == files.count else {
             throw WorkerFailure("The transcription worker returned an invalid file reference.")
         }
         return index
     }
 
-    private func acceptResult(_ raw: [String: Any], index: Int) throws {
-        guard files.indices.contains(index), let success = boolean(raw["success"]),
-              let path = raw["file_path"] as? String,
-              URL(fileURLWithPath: path).standardizedFileURL == files[index],
-              let saved = raw["saved_files"] as? [String] else { throw WorkerFailure("The transcription worker returned an invalid result payload.") }
-        // `completed` repeats the same result objects; do not re-read files or re-emit them.
+    private func acceptResult(_ result: BatchFileResult, index: Int) throws {
+        guard files.indices.contains(index), URL(fileURLWithPath: result.filePath).standardizedFileURL == files[index] else {
+            throw WorkerFailure("The transcription worker returned an invalid result payload.")
+        }
+        // `completed` repeats the same results; do not re-read files or re-emit them.
         guard !completedIndices.contains(index) else { return }
         // Pull the traceback in before the failure is reported. Only stderr: this
         // runs inside the stdout callback, which must not be re-entered.
-        if !success { worker?.drainDiagnostics() }
-        let metadata = try JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys])
+        if !result.success { worker?.drainDiagnostics() }
         let stem = files[index].deletingPathExtension().lastPathComponent
         var outputFiles: [String: URL] = [:]
-        var errors: [String] = []
-        if let error = raw["error"] as? String, !error.isEmpty { errors.append(error) }
-        if let diarization = raw["diarization"] as? [String: Any],
-           let error = diarization["error"] as? String, !error.isEmpty { errors.append(error) }
-        for savedPath in saved {
+        var errors = [result.error, result.diarizationError].compactMap { $0 }
+        for savedPath in result.savedFiles {
             guard let root = runtimeRoot else { throw WorkerFailure("Missing Python runtime context.") }
             let directory = resolvedOutputDirectory ?? files[index].deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
             let reported = URL(fileURLWithPath: savedPath, relativeTo: root).standardizedFileURL
@@ -304,26 +295,14 @@ final class NativeTranscriptionJob {
                 break
             } catch { errors.append(error.localizedDescription) }
         }
-        if !success && errors.isEmpty { errors.append(failureDetails("The Python processor could not transcribe this file.")) }
-        if success && outputFiles.isEmpty { errors.append("The Python processor did not produce any readable output files.") }
+        if !result.success && errors.isEmpty { errors.append(failureDetails("The Python processor could not transcribe this file.")) }
+        if result.success && outputFiles.isEmpty { errors.append("The Python processor did not produce any readable output files.") }
         let error = errors.isEmpty ? nil : safeText(errors.joined(separator: "\n"))
-        hadFileError = hadFileError || !success || error != nil
+        hadFileError = hadFileError || !result.success || error != nil
         completedIndices.insert(index)
         emit(.fileCompleted(NativeTranscriptionResult(inputURL: files[index], transcript: transcript,
                                                      outputFiles: outputFiles, error: error,
-                                                     metadataJSON: String(decoding: metadata, as: UTF8.self))))
-    }
-
-    private func boolean(_ value: Any?) -> Bool? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
-        return number.boolValue
-    }
-
-    private func integer(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-              number.doubleValue.isFinite, number.doubleValue >= 0,
-              number.doubleValue < Double(Int.max), number.doubleValue.rounded(.down) == number.doubleValue else { return nil }
-        return number.intValue
+                                                     metadataJSON: result.metadataJSON)))
     }
 
     private func emit(_ event: NativeTranscriptionEvent) {

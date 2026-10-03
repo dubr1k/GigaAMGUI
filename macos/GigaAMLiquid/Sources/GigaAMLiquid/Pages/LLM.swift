@@ -1,4 +1,5 @@
 import AppKit
+import GigaAMLiquidCore
 import UniformTypeIdentifiers
 
 /// The LLM page: source text, templates, the LLM job, and the CLI provider

@@ -220,55 +220,54 @@ final class LiveSessionJob {
     }
 
     private func consume(_ line: Data) {
-        guard !finished, !line.isEmpty else { return }
-        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let type = object["type"] as? String else {
-            let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { emit(.log(safe(text))) }
+        guard !finished else { return }
+        switch LiveEventDecoder.decode(line) {
+        case nil:
             return
+        case .text(let text):
+            emit(.log(safe(text)))
+        case .unknown(let type), .invalid(let type):
+            // The worker is shared with the TUI and gains events over time.
+            emit(.log(L10n.format("Пропущено неизвестное событие воркера: %@", type)))
+        case .event(let event):
+            handle(event)
         }
-        let source = LiveSource(rawValue: object["source"] as? String ?? "") ?? .mic
-        switch type {
-        case "live_status":
+    }
+
+    private func handle(_ event: LiveWorkerEvent) {
+        func source(_ name: String) -> LiveSource { LiveSource(rawValue: name) ?? .mic }
+        switch event {
+        case .status(let state, let active, let failed, let sessionDir):
             sessionReported = true
-            let active = (object["active_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
-            let failed = (object["failed_sources"] as? [String] ?? []).compactMap(LiveSource.init(rawValue:))
-            let directory = (object["session_dir"] as? String).map { URL(fileURLWithPath: $0, isDirectory: true) }
-            emit(.status(state: object["state"] as? String ?? "", active: active, failed: failed, sessionDir: directory))
-            if object["state"] as? String == "recording" { startCaptures() }
-        case "live_loading":
+            emit(.status(state: state, active: active.compactMap(LiveSource.init(rawValue:)),
+                         failed: failed.compactMap(LiveSource.init(rawValue:)),
+                         sessionDir: sessionDir.map { URL(fileURLWithPath: $0, isDirectory: true) }))
+            if state == "recording" { startCaptures() }
+        case .loading:
             emit(.loading)
-        case "live_partial":
-            emit(.partial(id: object["event_id"] as? String ?? "", source: source,
-                          sampleStart: object["sample_start"] as? Int ?? 0, text: object["text"] as? String ?? ""))
-        case "live_final":
-            emit(.final(id: object["event_id"] as? String ?? "", source: source,
-                        sampleStart: object["sample_start"] as? Int ?? 0, sampleEnd: object["sample_end"] as? Int ?? 0,
-                        text: object["text"] as? String ?? "", speaker: object["speaker"] as? String))
-        case "live_capture_event":
-            emit(.captureEvent(source: source, kind: object["kind"] as? String ?? "", detail: safe(object["detail"] as? String ?? "")))
-        case "live_answer_chunk":
-            emit(.answerChunk(turnID: object["turn_id"] as? String ?? "", text: object["text"] as? String ?? ""))
-        case "live_answer":
+        case .partial(let id, let name, let sampleStart, let text):
+            emit(.partial(id: id, source: source(name), sampleStart: sampleStart, text: text))
+        case .final(let id, let name, let sampleStart, let sampleEnd, let text, let speaker):
+            emit(.final(id: id, source: source(name), sampleStart: sampleStart, sampleEnd: sampleEnd, text: text, speaker: speaker))
+        case .captureEvent(let name, let kind, let detail):
+            emit(.captureEvent(source: source(name), kind: kind, detail: safe(detail)))
+        case .answerChunk(let turnID, let text):
+            emit(.answerChunk(turnID: turnID, text: text))
+        case .answer(let turnID, let status, let text):
             // A completed answer is the user's content and replaces the streamed text:
             // the log redaction would cut it to its last 8 KiB and rewrite prose such
             // as "Bearer token". Only an error message is a diagnostic.
-            let status = object["status"] as? String ?? ""
-            let text = object["text"] as? String ?? ""
-            emit(.answer(turnID: object["turn_id"] as? String ?? "", status: status,
-                         text: status == "error" ? safe(text) : text))
-        case "live_stopped":
-            let exports = object["saved_files"] as? [String] ?? []
-            let recordings = (object["recordings"] as? [String: String] ?? [:]).sorted { $0.key < $1.key }.map(\.value)
+            emit(.answer(turnID: turnID, status: status, text: status == "error" ? safe(text) : text))
+        case .stopped(let sessionDir, let exports, let recordings, let failure):
             let saved = (exports + recordings).map { URL(fileURLWithPath: $0) }
-            let directory = URL(fileURLWithPath: object["session_dir"] as? String ?? settings.sessionRoot.path)
+            let directory = URL(fileURLWithPath: sessionDir ?? settings.sessionRoot.path)
             // The worker reports a failed stop as live_stopped plus a message; showing
             // it only in the log left the status claiming the session was saved.
-            let message = (object["message"] as? String).map(safe).flatMap { $0.isEmpty ? nil : $0 }
+            let message = failure.map(safe)
             if let message { emit(.log(message)) }
             finish(.stopped(sessionDir: directory, saved: saved, error: message))
-        case "error":
-            let raw = object["message"] as? String ?? "Live worker error."
+        case .error(let text):
+            let raw = text ?? "Live worker error."
             let message = safe(raw)
             // Before the first live_status the only thing we sent was live_start, so an error
             // (rejected settings, an old companion without live support, …) is terminal.
@@ -281,11 +280,8 @@ final class LiveSessionJob {
             case .ignorable: break
             case .logged: emit(.log(message))
             }
-        case "log":
-            emit(.log(safe(object["message"] as? String ?? "")))
-        default:
-            // The worker is shared with the TUI and gains events over time.
-            emit(.log(L10n.format("Пропущено неизвестное событие воркера: %@", type)))
+        case .log(let text):
+            emit(.log(safe(text)))
         }
     }
 
