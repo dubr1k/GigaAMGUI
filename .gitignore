@@ -8,6 +8,7 @@ scripts/
 !scripts/
 scripts/*
 !scripts/verify_macos_bundle.py
+!scripts/check_torch_triple.py
 !scripts/install_tui.sh
 !scripts/tui/
 !scripts/tui/gigaam-launcher.sh
