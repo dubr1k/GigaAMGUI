@@ -572,7 +572,9 @@ async def create_transcription(
     if not streaming:
         try:
             result = await run()
-        except OpenAIError:
+        except (OpenAIError, BackendError):
+            # BackendError несёт код и причину (processing_failed: «Transcription failed: …») —
+            # её конверт строит свой обработчик; общий ответ ниже — только для непредвиденного
             _cleanup(work_dir)
             raise
         except Exception as exc:
@@ -630,9 +632,13 @@ async def create_transcription(
             from_task = task.done() and not task.cancelled() and exc is task.exception()
             if logger and not from_task:
                 logger.error(f"[api] streamed transcription failed: {exc}", exc_info=True)
-            # Клиенту — SSE-событие без внутренностей
-            err = openai_error(500, "Transcription failed on the server. See the server log.",
-                               type_="server_error", code="processing_failed")
+            # Клиенту — SSE-событие без внутренностей; у BackendError причина уже клиентская
+            if isinstance(exc, BackendError):
+                err = openai_error(exc.status, exc.message, type_=_type_for_status(exc.status),
+                                   param=exc.param, code=exc.code)
+            else:
+                err = openai_error(500, "Transcription failed on the server. See the server log.",
+                                   type_="server_error", code="processing_failed")
             yield _sse({"type": "error", "error": err.payload()["error"]})
         finally:
             getter.cancel()  # и при обрыве соединения клиентом (GeneratorExit)

@@ -358,6 +358,29 @@ def test_stream_error_event(client, fake_processor, monkeypatch):
     assert events[-1]["type"] == "error" and events[-1]["error"]["type"] == "server_error"
 
 
+def test_processing_failure_reason_reaches_the_client(client, fake_processor, monkeypatch):
+    # run_transcription кладёт причину провала в BackendError; раньше api.py ловил его
+    # общим `except Exception` и отдавал «See the server log.» без причины
+    monkeypatch.setattr(_FakeProcessor, "process_file",
+                        lambda self, *a, **kw: {"success": False, "error": "ffmpeg could not decode the file"})
+    r = _post(client)
+    assert r.status_code == 500
+    err = _error(r)
+    assert err["code"] == "processing_failed" and err["type"] == "server_error"
+    assert "ffmpeg could not decode the file" in err["message"]
+    events = _sse_events(_post(client, {"stream": "true"}).text)
+    assert events[-1]["type"] == "error" and events[-1]["error"]["code"] == "processing_failed"
+    assert "ffmpeg could not decode the file" in events[-1]["error"]["message"]
+
+
+def test_unexpected_processing_exception_stays_generic(client, fake_processor, monkeypatch):
+    monkeypatch.setattr(_FakeProcessor, "process_file",
+                        lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("/srv/secret/path exploded")))
+    r = _post(client)
+    assert r.status_code == 500 and "/srv/secret" not in r.text
+    assert _error(r)["code"] == "processing_failed"
+
+
 # ---------- fix round 1: owned loader release, stream cleanup, partial uploads ----------
 
 
