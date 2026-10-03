@@ -137,9 +137,27 @@ class SettingsMixin:
             preprocessing_index if preprocessing_index >= 0 else 0
         )
 
+        self._restore_llm_ui_settings()
+
+        tab_index = int(self.user_settings.get_value("active_tab_index", 0) or 0)
+        if 0 <= tab_index < self.tabs.count():
+            self.tabs.setCurrentIndex(tab_index)
+
+        self._rebuild_pending_audio_files()
+        if self.files_to_process:
+            self._refresh_files_list()
+
+        self._restore_asr_settings()
+
+        self._rebuild_pending_llm_transcripts()
+        self._refresh_llm_files_list()
+        if hasattr(self, "_restore_support_surface_settings"):
+            self._restore_support_surface_settings()
+
+    def _restore_llm_ui_settings(self) -> None:
+        """Провайдер, поля API/CLI, промпты, режимы и форматы LLM."""
         provider = self._normalize_llm_provider(self.user_settings.get_value("llm_provider", "API"))
-        display_provider = ("Другое" if self._lang == "ru" else "Other") if provider == "Other" else provider
-        index = self.combo_llm_provider.findText(display_provider)
+        index = self.combo_llm_provider.findData(provider)
         self.combo_llm_provider.setCurrentIndex(index if index >= 0 else 0)
         self.entry_llm_api_url.setText(self.user_settings.get_value("llm_api_url", LLM_API_URL))
         self.entry_llm_api_key.setText(LLM_API_KEY)
@@ -170,14 +188,6 @@ class SettingsMixin:
         self.txt_llm_custom_prompt.setPlainText(self.user_settings.get_value("llm_custom_prompt", ""))
         self.txt_llm_transcript.setPlainText(self.user_settings.get_value("llm_manual_transcript", ""))
 
-        tab_index = int(self.user_settings.get_value("active_tab_index", 0) or 0)
-        if 0 <= tab_index < self.tabs.count():
-            self.tabs.setCurrentIndex(tab_index)
-
-        self._rebuild_pending_audio_files()
-        if self.files_to_process:
-            self._refresh_files_list()
-
         saved_llm_actions = self.user_settings.get_value("llm_actions", {}) or {}
         for key, cb in self.llm_action_checkboxes.items():
             cb.setChecked(bool(saved_llm_actions.get(key, cb.isChecked())))
@@ -186,6 +196,8 @@ class SettingsMixin:
         for key, cb in self.llm_export_checkboxes.items():
             cb.setChecked(bool(saved_llm_exports.get(key, cb.isChecked())))
 
+    def _restore_asr_settings(self) -> None:
+        """Модель, движок и ONNX provider — в ModelLoader до первой обработки."""
         saved_asr_model = self.user_settings.get_value("asr_model", "")
         if isinstance(saved_asr_model, str) and saved_asr_model:
             try:
@@ -206,11 +218,6 @@ class SettingsMixin:
                 self.model_loader.configure_onnx_runtime(provider=saved_onnx_provider)
             except ValueError:
                 self.model_loader.configure_onnx_runtime(provider="auto")
-
-        self._rebuild_pending_llm_transcripts()
-        self._refresh_llm_files_list()
-        if hasattr(self, "_restore_support_surface_settings"):
-            self._restore_support_surface_settings()
 
     def _save_ui_settings(self):
         self.user_settings.set_value("output_formats", self.output_formats)
