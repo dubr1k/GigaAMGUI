@@ -101,7 +101,10 @@ class TranscriptionProcessor:
         self.time_formatter = TimeFormatter()
         self._diarization_manager = diarization_manager
         self._active_diarization_backend = diarization_backend or DIARIZATION_BACKEND
-        self._diarization_provider = None
+        # Готовый менеджер (GUI подготавливает его заранее) создан под свой
+        # provider. Без этого None != provider сбрасывал его при первом же
+        # обращении, и ONNX-модели диаризации грузились второй раз.
+        self._diarization_provider = getattr(diarization_manager, "provider", None)
         self._progress_plan = None
 
     def _emit_progress(self, event: ProgressEvent) -> None:
