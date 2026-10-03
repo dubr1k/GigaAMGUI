@@ -6,7 +6,8 @@ let selectedFiles = [];
 let selectedLlmFiles = [];
 let progressSource = null;
 let currentLogs = [];
-let completedTaskNotified = new Set();
+// tid -> последний учтённый статус задачи: «Готово»/«Ошибка» пишутся один раз на переход
+const notifiedTaskStatus = new Map();
 let currentLang = localStorage.getItem('gigaam_lang') || 'ru';
 
 const I18N = {
@@ -816,13 +817,15 @@ function clearVisibleTaskState() {
     document.getElementById('current-file').textContent = '';
     document.getElementById('status-label').textContent = t('ready');
     document.getElementById('log-panel').innerHTML = '';
-    completedTaskNotified = new Set();
+    notifiedTaskStatus.clear();
     currentLogs = [];
 }
 
 // ===== PROGRESS STREAM (SSE) =====
 
 let progressReconnectTimer = null;
+let loadResultsTimer = null;
+const ACTIVE_TASK_STATUSES = ['pending', 'downloading', 'processing'];
 
 function closeProgressStream() {
     if (progressReconnectTimer) {
@@ -842,21 +845,7 @@ function startProgressStream() {
 
     source.onmessage = (event) => {
         if (source !== progressSource) return;  // сообщение уже закрытого потока
-        const data = JSON.parse(event.data);
-
-        // Обновить задачи
-        if (data.tasks) {
-            for (const [tid, task] of Object.entries(data.tasks)) {
-                updateTaskProgress(tid, task);
-            }
-        }
-
-        // Добавить логи
-        if (data.logs) {
-            for (const [tid, logs] of Object.entries(data.logs)) {
-                logs.forEach(line => addLog(line));
-            }
-        }
+        handleProgressMessage(JSON.parse(event.data));
     };
 
     source.onerror = () => {
@@ -869,6 +858,44 @@ function startProgressStream() {
             if (sessionActive) startProgressStream();
         }, 3000);
     };
+}
+
+function scheduleLoadResults() {
+    // Несколько задач, завершившихся рядом, — один запрос списка
+    if (loadResultsTimer) return;
+    loadResultsTimer = setTimeout(() => {
+        loadResultsTimer = null;
+        loadResults();
+    }, 500);
+}
+
+function handleProgressMessage(data) {
+    if (data.snapshot) {
+        // Первое сообщение каждого подключения — состояние всех задач, а не события.
+        // История не превращается в «Готово»/«Ошибка» в журнале и не дёргает /api/tasks;
+        // событием считаем только задачу, которая на нашей памяти была активной
+        // и завершилась, пока поток был разорван.
+        for (const [tid, task] of Object.entries(data.tasks || {})) {
+            const previous = notifiedTaskStatus.get(tid);
+            if (ACTIVE_TASK_STATUSES.includes(task.status) || ACTIVE_TASK_STATUSES.includes(previous)) {
+                updateTaskProgress(tid, task);
+            } else {
+                notifiedTaskStatus.set(tid, task.status);
+            }
+        }
+        return;
+    }
+
+    if (data.tasks) {
+        for (const [tid, task] of Object.entries(data.tasks)) {
+            updateTaskProgress(tid, task);
+        }
+    }
+    if (data.logs) {
+        for (const logs of Object.values(data.logs)) {
+            logs.forEach(line => addLog(line));
+        }
+    }
 }
 
 function updateTaskProgress(tid, task) {
@@ -906,16 +933,19 @@ function updateTaskProgress(tid, task) {
         fileBar.style.width = '100%';
         stage.textContent = currentLang === 'ru' ? '✓ Готово' : '✓ Done';
         status.textContent = task.message;
-        if (!completedTaskNotified.has(tid)) {
-            completedTaskNotified.add(tid);
+        if (notifiedTaskStatus.get(tid) !== 'completed') {
             addLog(currentLang === 'ru' ? `Готово: ${task.filename}` : `Done: ${task.filename}`, 'success');
-            loadResults();
+            scheduleLoadResults();
         }
     } else if (task.status === 'failed') {
         stage.textContent = currentLang === 'ru' ? '✕ Ошибка' : '✕ Error';
         status.textContent = task.message;
-        addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${task.filename} — ${task.message}`, 'error');
+        if (notifiedTaskStatus.get(tid) !== 'failed') {
+            addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${task.filename} — ${task.message}`, 'error');
+            scheduleLoadResults();
+        }
     }
+    notifiedTaskStatus.set(tid, task.status);
 }
 
 // ===== LOG =====

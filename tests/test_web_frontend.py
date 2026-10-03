@@ -39,6 +39,22 @@ def test_relogin_does_not_duplicate_handlers_and_logout_closes_stream():
     assert result["openStreamsAfterLogin"] == 1
 
 
+def test_progress_snapshot_is_a_baseline_and_results_reload_is_debounced():
+    result = _scenario("sse_baseline")
+    # История при подключении не превращается в «Готово»/«Ошибка» и не дёргает /api/tasks
+    assert result["afterSnapshot"] == {"logs": 0, "taskFetches": 0}
+    lines = "\n".join(result["afterDelta"]["lines"])
+    assert "Готово: new1.wav" in lines and "Готово: new2.wav" in lines
+    assert "new3.wav — oops" in lines
+    assert "line" in lines
+    assert "old.wav" not in lines and "bad.wav" not in lines
+    # Два завершения в одном окне — один запрос списка результатов
+    assert result["afterDelta"]["taskFetches"] == 1
+    # Переподключение начинается со снимка и ничего не повторяет в журнале
+    assert result["newStreamOnReconnect"] is True
+    assert result["replayedLines"] == 0
+
+
 def test_provider_options_keep_canonical_values():
     result = _scenario("provider_values")
     canonical = cli_tools.canonical_provider_names()

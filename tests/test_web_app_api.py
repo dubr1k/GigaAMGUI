@@ -257,6 +257,45 @@ def test_result_skips_unknown_formats_persisted_by_older_versions(client, web_di
     assert [item["format"] for item in response.json()["result_files"]] == ["txt"]
 
 
+# ==================== SSE прогресса ====================
+
+
+def test_progress_feed_starts_with_snapshot_without_history(web_dirs):
+    web_app.tasks_storage["mine"] = {"task_id": "mine", "status": "completed", "progress": 100,
+                                     "filename": "a.wav", "message": "ok", "user": "alice"}
+    web_app.tasks_storage["theirs"] = {"task_id": "theirs", "status": "processing", "progress": 10,
+                                       "filename": "b.wav", "message": "", "user": "bob"}
+    web_app.log_queues["mine"] = ["старая строка 1", "старая строка 2"]
+    web_app.log_queues["theirs"] = ["чужая"]
+    feed = web_app.ProgressFeed("alice")
+
+    first = feed.next_payload()
+    # Снимок: состояние своих задач, без журнала — клиент не повторяет историю на каждом подключении
+    assert first["snapshot"] is True
+    assert set(first["tasks"]) == {"mine"}
+    assert first["logs"] == {}
+
+    assert feed.next_payload() is None  # ничего не изменилось
+
+    web_app.log_queues["mine"].append("новая строка")
+    web_app.tasks_storage["mine"]["message"] = "перезапуск"
+    delta = feed.next_payload()
+    assert "snapshot" not in delta
+    assert set(delta["tasks"]) == {"mine"}
+    assert delta["logs"] == {"mine": ["новая строка"]}
+
+
+def test_progress_feed_sends_snapshot_even_without_tasks(web_dirs):
+    # Без задач первое сообщение всё равно уходит: иначе клиент счёл бы снимком первое настоящее событие
+    feed = web_app.ProgressFeed("alice")
+    assert feed.next_payload() == {"snapshot": True, "tasks": {}, "logs": {}}
+    web_app._register_task("fresh", "c.wav", 1, "alice")
+    web_app._task_log("fresh", "первая строка")
+    delta = feed.next_payload()
+    assert set(delta["tasks"]) == {"fresh"}
+    assert delta["logs"] == {"fresh": ["первая строка"]}
+
+
 # ==================== видимость задач ====================
 
 
