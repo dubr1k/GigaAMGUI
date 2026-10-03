@@ -1,4 +1,6 @@
-//! Interactive JSONL transport. No pipe I/O or process waits on the UI thread.
+//! JSONL transport to the worker, for the interactive UI and headless mode alike:
+//! its own process group/Job, bounded lines, reaping. No pipe I/O or process
+//! waits on the caller's thread.
 use std::{
     collections::VecDeque,
     io::{self, BufRead, BufReader, Read},
@@ -21,6 +23,33 @@ const TICK: Duration = Duration::from_millis(20);
 const MAX_LINE: usize = 64 * 1024;
 const MAX_PROTOCOL_LINE: usize = 8 * 1024 * 1024;
 const DIAGNOSTIC_TAIL: usize = 128;
+
+/// What happens to the worker's stderr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stderr {
+    /// Read, sanitized and delivered as [`WorkerEventKind::Diagnostic`] (the UI).
+    Diagnostics,
+    /// Passed straight to our own stderr (headless human output).
+    Inherit,
+    /// Discarded (headless `--json` / `--quiet`).
+    Discard,
+}
+
+/// Per-client transport policy.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Transport {
+    pub stderr: Stderr,
+    /// Longest protocol line accepted; a longer one is a protocol failure.
+    pub max_protocol_line: usize,
+}
+
+impl Transport {
+    /// The UI negotiates compact ASR events (`hello`), so 8 MiB is plenty.
+    pub(crate) const INTERACTIVE: Self = Self {
+        stderr: Stderr::Diagnostics,
+        max_protocol_line: MAX_PROTOCOL_LINE,
+    };
+}
 // Larger legitimate JSON events must not multiply into hundreds of queued copies.
 pub(crate) const EVENT_CAPACITY: usize = 8;
 
@@ -53,9 +82,20 @@ impl WorkerSession {
         command: Command,
         events: SyncSender<WorkerEvent>,
     ) -> Self {
+        Self::spawn_with(generation, command, Transport::INTERACTIVE, events)
+    }
+
+    pub fn spawn_with(
+        generation: u64,
+        command: Command,
+        transport: Transport,
+        events: SyncSender<WorkerEvent>,
+    ) -> Self {
         let (commands, incoming) = mpsc::sync_channel(64);
         let (control, requests) = mpsc::sync_channel(1);
-        thread::spawn(move || controller(command, generation, incoming, requests, events));
+        thread::spawn(move || {
+            controller(command, transport, generation, incoming, requests, events)
+        });
         Self { commands, control }
     }
 
@@ -82,6 +122,7 @@ impl WorkerSession {
 // Dropping the session disconnects control; the controller still owns cleanup.
 fn controller(
     mut command: Command,
+    transport: Transport,
     generation: u64,
     commands: Receiver<Value>,
     control: Receiver<()>,
@@ -90,7 +131,11 @@ fn controller(
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(match transport.stderr {
+            Stderr::Diagnostics => Stdio::piped(),
+            Stderr::Inherit => Stdio::inherit(),
+            Stderr::Discard => Stdio::null(),
+        });
     let (mut child, tree) = match ProcessTree::spawn(&mut command) {
         Ok(pair) => pair,
         Err(error) => {
@@ -114,27 +159,26 @@ fn controller(
     let (data_tx, data_rx) = mpsc::sync_channel(EVENT_CAPACITY);
     // Each producer can report at most one fault; diagnostics never use this path.
     let (fault_tx, faults) = mpsc::channel();
-    let readers = vec![
+    let mut readers = vec![
         reader(
             child.stdout.take().expect("piped stdout"),
-            true,
+            Some(transport.max_protocol_line),
             data_tx.clone(),
-            fault_tx.clone(),
-        ),
-        reader(
-            child.stderr.take().expect("piped stderr"),
-            false,
-            data_tx,
             fault_tx.clone(),
         ),
         writer(
             child.stdin.take().expect("piped stdin"),
             commands,
-            fault_tx,
+            fault_tx.clone(),
             shutdown.clone(),
         ),
     ];
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(reader(stderr, None, data_tx, fault_tx));
+    }
     let mut pending = None;
+    // The event that followed a folded chunk; it goes out next, keeping the order.
+    let mut held = None;
     let failure = loop {
         match control.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break None,
@@ -149,15 +193,20 @@ fn controller(
             Ok(None) => {}
         }
         if pending.is_none() {
-            pending = data_rx.recv_timeout(TICK).ok();
+            pending = held.take().or_else(|| data_rx.recv_timeout(TICK).ok());
         }
         if let Some(kind) = pending.take() {
             match events.try_send(WorkerEvent { generation, kind }) {
                 Ok(()) => {}
                 Err(TrySendError::Disconnected(_)) => break None,
                 Err(TrySendError::Full(event)) => {
-                    pending = Some(event.kind);
-                    thread::sleep(TICK);
+                    let mut kind = event.kind;
+                    if held.is_none() {
+                        fold_chunks(&mut kind, &data_rx, &mut held);
+                    } else {
+                        thread::sleep(TICK);
+                    }
+                    pending = Some(kind);
                 }
             }
         }
@@ -178,9 +227,12 @@ fn controller(
             }
             diagnostics.push_back(message);
         }
-        other => publish(&events, &control, generation, other),
+        other => {
+            // Already stopping: a stop request seen here asks for nothing new.
+            publish(&events, &control, generation, other);
+        }
     };
-    if let Some(kind) = pending {
+    for kind in [pending, held].into_iter().flatten() {
         collect(kind);
     }
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -196,15 +248,7 @@ fn controller(
     }
     // On a failed cleanup, unblock any reader waiting to deliver data as well.
     drop(data_rx);
-    for reader in readers {
-        if reader.is_finished() {
-            if reader.join().is_err() {
-                result = Err("worker transport thread panicked".into());
-            }
-        } else {
-            result = Err("worker pipes did not close after termination".into());
-        }
-    }
+    result = join_finished(&mut readers, result);
     if omitted > 0 {
         publish(
             &events,
@@ -231,28 +275,132 @@ fn controller(
             WorkerEventKind::Failed(error),
         );
     }
-    publish(
-        &events,
-        &control,
-        generation,
-        WorkerEventKind::Stopped(result),
-    );
+    // An unconfirmed stop (a descendant escaped the group/Job, or a pipe is still
+    // held open) used to end this thread: the next `stop()` from Ctrl+R reached
+    // nobody and the TUI waited for a confirmation forever. The controller stays
+    // reachable instead and retries on every further stop request, so reconnect
+    // and the final shutdown can still confirm once the tree is really gone.
+    loop {
+        let retry_requested = publish(
+            &events,
+            &control,
+            generation,
+            WorkerEventKind::Stopped(result.clone()),
+        );
+        if result.is_ok() {
+            return;
+        }
+        if !retry_requested && control.recv().is_err() {
+            return; // The session was dropped: nobody waits for an answer.
+        }
+        result = tree
+            .terminate(&mut child)
+            .map_err(|error| error.to_string());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while readers.iter().any(|reader| !reader.is_finished()) && Instant::now() < deadline {
+            thread::sleep(TICK);
+        }
+        result = join_finished(&mut readers, result);
+    }
 }
 
+/// Text one folded `llm_chunk` may grow to before it waits like any other event.
+const MAX_FOLDED_TEXT: usize = 64 * 1024;
+
+/// The text of an `llm_chunk` message and its mode.
+fn chunk(kind: &mut WorkerEventKind) -> Option<(&mut String, Value)> {
+    let WorkerEventKind::Message(Value::Object(message)) = kind else {
+        return None;
+    };
+    if message.get("type").and_then(Value::as_str) != Some("llm_chunk") {
+        return None;
+    }
+    let mode = message.get("mode").cloned().unwrap_or(Value::Null);
+    match message.get_mut("text") {
+        Some(Value::String(text)) => Some((text, mode)),
+        _ => None,
+    }
+}
+
+/// While the consumer has no room, the token-stream chunks that arrive join the
+/// one waiting for it (same mode, bounded size), for up to one tick. One queue
+/// slot per token used to back the stream up into the pipe until the worker
+/// blocked in `emit`, holding its write lock, which delayed every other
+/// message. The first event that is not such a chunk is `held` and goes out
+/// right after the folded one, so the order never changes.
+fn fold_chunks(
+    kind: &mut WorkerEventKind,
+    data: &Receiver<WorkerEventKind>,
+    held: &mut Option<WorkerEventKind>,
+) {
+    let deadline = Instant::now() + TICK;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        let Some((text, mode)) = chunk(kind) else {
+            thread::sleep(deadline - now);
+            return;
+        };
+        if text.len() >= MAX_FOLDED_TEXT {
+            thread::sleep(deadline - now);
+            return;
+        }
+        match data.recv_timeout(deadline - now) {
+            Ok(mut next) => match chunk(&mut next) {
+                Some((more, next_mode)) if next_mode == mode => text.push_str(more),
+                _ => {
+                    *held = Some(next);
+                    thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                    return;
+                }
+            },
+            Err(_) => return,
+        }
+    }
+}
+
+/// Joins the transport threads that have ended and keeps the rest for a retry;
+/// a thread still blocked on a pipe means the stop is not confirmed.
+fn join_finished(
+    readers: &mut Vec<JoinHandle<()>>,
+    mut result: Result<(), String>,
+) -> Result<(), String> {
+    let mut pending = Vec::new();
+    for reader in readers.drain(..) {
+        if !reader.is_finished() {
+            pending.push(reader);
+        } else if reader.join().is_err() {
+            result = Err("worker transport thread panicked".into());
+        }
+    }
+    if !pending.is_empty() {
+        result = Err("worker pipes did not close after termination".into());
+    }
+    *readers = pending;
+    result
+}
+
+/// Delivers one event, waiting while the queue is full. Returns whether a stop
+/// request arrived meanwhile, so that the caller does not lose it.
 fn publish(
     events: &SyncSender<WorkerEvent>,
     control: &Receiver<()>,
     generation: u64,
     kind: WorkerEventKind,
-) {
+) -> bool {
     let mut event = WorkerEvent { generation, kind };
+    let mut stop_requested = false;
     loop {
         match events.try_send(event) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => return,
+            Ok(()) | Err(TrySendError::Disconnected(_)) => return stop_requested,
             Err(TrySendError::Full(returned)) => event = returned,
         }
-        if matches!(control.try_recv(), Err(TryRecvError::Disconnected)) {
-            return;
+        match control.try_recv() {
+            Ok(()) => stop_requested = true,
+            Err(TryRecvError::Disconnected) => return stop_requested,
+            Err(TryRecvError::Empty) => {}
         }
         thread::sleep(TICK);
     }
@@ -280,22 +428,24 @@ fn writer(
     })
 }
 
+/// `protocol_line`: `Some(limit)` for stdout (the protocol), `None` for stderr.
 fn reader(
     stream: impl Read + Send + 'static,
-    stdout: bool,
+    protocol_line: Option<usize>,
     data: SyncSender<WorkerEventKind>,
     faults: Sender<String>,
 ) -> JoinHandle<()> {
+    let stdout = protocol_line.is_some();
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         loop {
-            match bounded_line(
-                &mut reader,
-                if stdout { MAX_PROTOCOL_LINE } else { MAX_LINE },
-            ) {
+            match bounded_line(&mut reader, protocol_line.unwrap_or(MAX_LINE)) {
                 Ok(Some((line, truncated))) => {
                     if stdout && truncated {
-                        let _ = faults.send("worker protocol exceeds the 8 MiB message limit; reduce the batch/answer size or update TUI and worker together".into());
+                        let _ = faults.send(format!(
+                            "worker protocol exceeds the {} MiB message limit; reduce the batch/answer size or update TUI and worker together",
+                            protocol_line.unwrap_or_default() / (1024 * 1024)
+                        ));
                         break;
                     }
                     let value = if stdout && !truncated {

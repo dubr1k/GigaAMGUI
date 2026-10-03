@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import sys
 
@@ -41,7 +42,7 @@ worker.close()
 values = [json.loads(line) for line in out.getvalue().splitlines()]
 assert values == [
     {'type': 'ready', 'protocol_version': 1,
-     'capabilities': ['resolve_inputs', 'asr', 'llm']},
+     'capabilities': ['resolve_inputs', 'asr', 'llm', 'compact_completed']},
     {'type': 'pong'},
 ], values
 assert not {'torch', 'gigaam', 'pyannote.audio', 'mlx'}.intersection(sys.modules)
@@ -67,6 +68,38 @@ def test_only_interactive_tui_negotiates_compact_asr_completion(interactive):
         assert messages[1]["results"][0]["success"]
         for summary in (messages[0]["result"], messages[1]["results"][0]):
             assert ("utterances" in summary) is not interactive
+        assert "utterances" in result, "emit must not mutate the processor result"
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize(("hello", "compact_file", "compact_completed"), [
+    (None, False, False),  # headless and old clients: the full contract
+    ({"type": "hello", "client": "tui"}, True, True),
+    # Liquid takes full results from file_completed; only `completed` repeated
+    # every result with its word timings and outgrew the 8 MiB line limit.
+    ({"type": "hello", "client": "liquid", "features": ["compact_completed"]}, False, True),
+    ({"type": "hello", "client": "liquid"}, False, False),
+    ({"type": "hello", "client": "liquid", "features": "compact_completed"}, False, False),
+    ({"type": "hello", "client": "liquid", "features": [None, 7, "compact_completed"]}, False, True),
+])
+def test_hello_negotiates_which_asr_events_are_compact(hello, compact_file, compact_completed):
+    output = io.StringIO()
+    worker = TuiWorker(output)
+    try:
+        if hello is not None:
+            worker.handle(hello)
+            assert _messages(output)[-1] == {
+                "type": "ready", "protocol_version": 1, "capabilities": ["resolve_inputs", "asr", "llm", "compact_completed"],
+            }
+        result = {"file_path": "/long.wav", "success": True, "saved_files": ["/long.txt"],
+                  "utterances": [{"text": "длинная запись"}]}
+        worker.emit("file_completed", file="/long.wav", result=result)
+        worker.emit("completed", success=True, results=[result])
+        file_completed, completed = _messages(output)[-2:]
+        assert ("utterances" in file_completed["result"]) is not compact_file
+        assert ("utterances" in completed["results"][0]) is not compact_completed
+        assert completed["results"][0]["saved_files"] == ["/long.txt"]
         assert "utterances" in result, "emit must not mutate the processor result"
     finally:
         worker.close()
@@ -251,7 +284,54 @@ def test_tui_worker_routes_llm_cancel_without_job():
 
     worker.handle({"type": "llm_cancel"})
 
-    assert _messages(output) == [{"type": "error", "message": "No LLM request is running"}]
+    assert _messages(output) == [
+        {"type": "error", "message": "No LLM request is running", "command": "llm_cancel"},
+    ]
+
+
+@pytest.mark.parametrize(("command", "answered"), [
+    ({"type": "cancel"}, "cancel"),  # the late reply that used to reject a new start
+    ({"type": "start", "files": []}, "start"),
+    ({"type": "llm_cancel"}, "llm_cancel"),
+    ({"type": "llm_tool_check", "provider": "Nope"}, "llm_tool_check"),
+    ({"type": "bogus"}, "bogus"),
+])
+def test_command_errors_name_the_command_they_answer(command, answered):
+    """A late "Nothing is being processed" (the reply to `cancel`) arrived while
+    the TUI was starting the next batch and was taken as that start's rejection:
+    the TUI went idle and ignored the `started` that followed."""
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+    try:
+        worker.handle(command)
+        error = _messages(output)[-1]
+        assert error["type"] == "error"
+        assert error["command"] == answered
+        worker.emit("error", message="from a background thread")
+        assert "command" not in _messages(output)[-1], "only replies to a command are tagged"
+    finally:
+        worker.close()
+
+
+def test_batch_failure_before_started_is_tagged_as_the_start(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "src.core.model_loader":
+            raise ModuleNotFoundError("No module named 'torch'", name="torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+    worker._run_batch(["/a.wav"], "", ["txt"], False, "pyannote", None, "auto",
+                      "v3_e2e_rnnt", "auto", "auto", True, 2, 64)
+    error, completed = _messages(output)[-2:]
+    assert error["type"] == "error" and error["command"] == "start"
+    assert "torch" in error["message"] and "traceback" in error
+    assert completed["type"] == "completed"
 
 
 def test_tui_worker_routes_live_commands_to_service():
@@ -284,8 +364,8 @@ def test_tui_worker_batch_start_is_rejected_while_live_session_runs(tmp_path):
     worker.handle({"type": "llm_start", "text": "t", "modes": ["summary"], "settings": {}})
 
     assert _messages(output) == [
-        {"type": "error", "message": "Processing is already running"},
-        {"type": "error", "message": "Processing is already running"},
+        {"type": "error", "message": "Processing is already running", "command": "start"},
+        {"type": "error", "message": "Processing is already running", "command": "llm_start"},
     ]
 
 
@@ -345,6 +425,7 @@ def test_tui_worker_rejects_invalid_subtitle_limits(tmp_path):
     assert _messages(output)[0] == {
         "type": "error",
         "message": "max_line_count должен быть от 1 до 4",
+        "command": "start",
     }
 
 
@@ -417,3 +498,52 @@ def test_tui_worker_llm_tool_check_unknown_provider():
     worker.handle({"type": "llm_tool_check", "provider": "Nope"})
 
     assert _messages(output)[0]["type"] == "error"
+
+
+@pytest.mark.parametrize("locale_encoding", ["cp1252", "cp1251"])
+def test_worker_protocol_is_utf8_whatever_the_locale_encoding(locale_encoding):
+    """Windows gives a piped stdout the ANSI code page. cp1251 wrote Cyrillic as
+    bytes the clients could not parse as UTF-8 (the message became a diagnostic,
+    the TUI waited forever); cp1252 raised UnicodeEncodeError and no reply left
+    at all. Simulated here by forcing the locale encoding of the worker process."""
+    environment = {**os.environ, "PYTHONIOENCODING": locale_encoding, "PYTHONUTF8": "0"}
+    result = subprocess.run(
+        [sys.executable, "-m", "src.tui_worker"],
+        input='{"type": "запись"}\n{"type": "ping"}\n'.encode(),
+        capture_output=True, env=environment, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    messages = [json.loads(line) for line in result.stdout.decode("utf-8").splitlines()]
+    assert messages[0]["type"] == "error"
+    assert "запись" in messages[0]["message"]
+    assert messages[-1] == {"type": "pong"}
+
+
+def test_emit_never_writes_invalid_json_or_unencodable_text():
+    """`json.dumps` writes NaN/Infinity by default, which no strict parser accepts:
+    the client dropped the whole line — a `completed` with a NaN duration left the
+    batch running forever. A non-UTF-8 file name (surrogateescape) made the write
+    itself raise, so the reply never left."""
+    from pathlib import Path
+
+    raw = io.BytesIO()
+    output = io.TextIOWrapper(raw, encoding="utf-8")
+    worker = TuiWorker(output)
+    try:
+        worker.emit("progress", file_progress=float("nan"), total_seconds=float("inf"),
+                    file="/tmp/\udcff.wav", stage=Path("/x"), nested={"values": [float("-inf"), 1.5]})
+        worker.emit("pong")
+    finally:
+        worker.close()
+    output.flush()
+
+    def reject(constant):
+        raise AssertionError(f"non-JSON constant {constant}")
+
+    lines = raw.getvalue().decode("utf-8").splitlines()
+    progress = json.loads(lines[0], parse_constant=reject)
+    assert progress["file_progress"] is None and progress["total_seconds"] is None
+    assert progress["file"] == "/tmp/�.wav"
+    assert progress["stage"] == "/x"
+    assert progress["nested"] == {"values": [None, 1.5]}
+    assert json.loads(lines[1]) == {"type": "pong"}

@@ -7,6 +7,7 @@ human-readable diagnostics.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import threading
@@ -33,6 +34,76 @@ from src.services.tui_input_service import InputResolver  # noqa: E402
 from src.utils.output_naming import find_output_collisions  # noqa: E402
 
 
+def _protocol_text(value: str) -> str:
+    """Строка, которую можно закодировать в UTF-8.
+
+    Имена файлов, не являющиеся UTF-8 (Linux), приходят из ОС с суррогатами
+    ``surrogateescape``; ``json.dumps`` пропускает их, а запись в UTF-8 поток
+    падает — и ответ клиенту не уходит вовсе. Показываем такие байты как U+FFFD.
+    """
+    try:
+        value.encode("utf-8")
+        return value
+    except UnicodeEncodeError:
+        try:
+            return value.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _protocol_value(value: Any) -> Any:
+    """Значение, которое кодируется в строгий JSON: NaN/Inf → null, прочее → str."""
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _protocol_text(value)
+    if isinstance(value, dict):
+        return {_protocol_text(str(key)): _protocol_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_protocol_value(item) for item in value]
+    return _protocol_text(str(value))
+
+
+def protocol_line(message: dict[str, Any]) -> str:
+    """Одна строка JSONL, которую примет любой строгий JSON-парсер (serde_json, Swift).
+
+    ``json.dumps`` по умолчанию пишет ``NaN``/``Infinity`` — это не JSON, и клиент
+    отбрасывал всю строку, а с ней, например, ``completed``. Быстрый путь не трогает
+    обычные сообщения; медленный чинит только то, что иначе не дошло бы.
+    """
+    try:
+        line = json.dumps(message, ensure_ascii=False, allow_nan=False)
+        line.encode("utf-8")
+        return line
+    except (TypeError, ValueError):  # UnicodeEncodeError — тоже ValueError
+        return json.dumps(_protocol_value(message), ensure_ascii=False, allow_nan=False)
+
+
+def _use_utf8_stdio() -> None:
+    """Протокол — UTF-8 независимо от локали.
+
+    На Windows stdout в трубе получает кодовую страницу ANSI: cp1251 превращал
+    кириллические пути в байты, которые клиент не разбирал как UTF-8, а cp1252
+    падал с UnicodeEncodeError, и ответ не уходил вовсе. Клиенты ещё и выставляют
+    PYTHONUTF8/PYTHONIOENCODING, но замороженная сборка может их не учитывать.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            # stderr — диагностика для человека: лучше экранированный символ, чем исключение.
+            reconfigure(encoding="utf-8", errors="strict" if stream is sys.stdout else "backslashreplace")
+
+
+def _features(command: dict[str, Any]) -> set[str]:
+    """`hello.features`: необязательный список строк; всё прочее — пустой набор."""
+    features = command.get("features")
+    if not isinstance(features, list):
+        return set()
+    return {item for item in features if isinstance(item, str)}
+
+
 class TuiWorker:
     """Runs one transcription batch at a time and exposes it over JSONL."""
 
@@ -41,7 +112,15 @@ class TuiWorker:
         self._write_lock = threading.Lock()
         self._task: threading.Thread | None = None
         self._cancel_requested = threading.Event()
-        self._compact_events = False
+        # `file_completed` и `completed` в TUI: только пути/статусы.
+        self._compact_file_events = False
+        # Только `completed`: клиентам, которые берут полные результаты из `file_completed`.
+        self._compact_completed = False
+        # Команда, которую handle() сейчас обрабатывает в этом потоке. Её `error`
+        # получает поле `command` (её `type`): поздний ответ на `cancel` («Nothing
+        # is being processed») клиент иначе принимал за отказ следующего `start`.
+        # Поле, заданное самим источником ошибки (live-сервис), не переписывается.
+        self._handling = threading.local()
         self._llm = LLMWorkerService(self.emit)
         self._live = LiveWorkerService(self.emit)
         self._inputs = InputResolver(self.emit)
@@ -52,14 +131,17 @@ class TuiWorker:
     def emit(self, message_type: str, **payload: Any) -> None:
         # В TUI нужны пути/статусы, а не полный массив слов многочасовой записи.
         # Остальные клиенты (включая headless) сохраняют прежний полный контракт.
-        if self._compact_events:
-            if message_type == "file_completed" and isinstance(payload.get("result"), dict):
-                payload["result"] = self._result_metadata(payload["result"])
-            elif message_type == "completed" and isinstance(payload.get("results"), list):
-                payload["results"] = [self._result_metadata(result) for result in payload["results"]]
-        message = {"type": message_type, **payload}
+        if self._compact_file_events and message_type == "file_completed" and isinstance(payload.get("result"), dict):
+            payload["result"] = self._result_metadata(payload["result"])
+        elif self._compact_completed and message_type == "completed" and isinstance(payload.get("results"), list):
+            payload["results"] = [self._result_metadata(result) for result in payload["results"]]
+        if message_type == "error" and "command" not in payload:
+            command = getattr(self._handling, "command", None)
+            if command is not None:
+                payload["command"] = command
+        line = protocol_line({"type": message_type, **payload})
         with self._write_lock:
-            self._output.write(json.dumps(message, ensure_ascii=False) + "\n")
+            self._output.write(line + "\n")
             self._output.flush()
 
     @staticmethod
@@ -71,9 +153,21 @@ class TuiWorker:
 
     def handle(self, command: dict[str, Any]) -> None:
         command_type = command.get("type")
+        self._handling.command = command_type if isinstance(command_type, str) else None
+        try:
+            self._handle(command, command_type)
+        finally:
+            self._handling.command = None
+
+    def _handle(self, command: dict[str, Any], command_type: Any) -> None:
         if command_type == "hello":
-            self._compact_events = command.get("client") == "tui"
-            self.emit("ready", protocol_version=1, capabilities=["resolve_inputs", "asr", "llm"])
+            tui = command.get("client") == "tui"
+            self._compact_file_events = tui
+            # Liquid (`features: ["compact_completed"]`) берёт полные результаты из
+            # `file_completed`; `completed` повторял их все со словами и на большой
+            # пачке перерастал лимит строки клиента в 8 MiB.
+            self._compact_completed = tui or "compact_completed" in _features(command)
+            self.emit("ready", protocol_version=1, capabilities=["resolve_inputs", "asr", "llm", "compact_completed"])
         elif command_type == "ping":
             self.emit("pong")
         elif command_type == "resolve_inputs":
@@ -318,10 +412,12 @@ class TuiWorker:
                     "or launch TUI with GIGAAM_PYTHON pointing to the configured environment."
                 ),
                 traceback=traceback.format_exc(),
+                # The batch thread answers the `start` that launched it.
+                command="start",
             )
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
         except Exception as exc:  # Keep JSONL valid even for startup failures.
-            self.emit("error", message=str(exc), traceback=traceback.format_exc())
+            self.emit("error", message=str(exc), traceback=traceback.format_exc(), command="start")
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
 
 
@@ -373,6 +469,7 @@ def read_commands(stream) -> Iterator[dict[str, Any]]:
 
 
 def main() -> int:
+    _use_utf8_stdio()
     worker = TuiWorker()
     # Небуферизованный поток: BufferedReader.read(n) ждёт n байт или EOF, а
     # команды приходят по одной строке — с ним воркер «завис» бы на первой же.
@@ -387,7 +484,9 @@ def main() -> int:
             try:
                 worker.handle(command)
             except Exception as exc:
-                worker.emit("error", message=f"{command.get('type', 'command')} failed: {exc}")
+                command_type = command.get("type")
+                tag = {"command": command_type} if isinstance(command_type, str) else {}
+                worker.emit("error", message=f"{command_type or 'command'} failed: {exc}", **tag)
     finally:
         worker.close()
     return 0

@@ -38,12 +38,17 @@ impl Connection {
                     .iter()
                     .all(|name| items.iter().any(|item| item.as_str() == Some(name)))
             });
+        // The detail is technical (what the worker actually announced); the
+        // localized sentence around it comes from `status.worker_incompatible`.
         if !compatible {
             self.state = ConnectionState::Unavailable;
-            return Err("Incompatible worker protocol or capabilities".into());
+            return Err(format!(
+                "protocol_version {}, capabilities {} (expected {PROTOCOL_VERSION} with resolve_inputs, asr, llm)",
+                value["protocol_version"], value["capabilities"]
+            ));
         }
         if self.state != ConnectionState::Connecting {
-            return Err("Unexpected worker readiness response".into());
+            return Err("ready received twice".into());
         }
         self.state = ConnectionState::Ready;
         Ok(())
@@ -59,6 +64,16 @@ impl Connection {
 pub(crate) enum JobKind {
     Asr,
     Llm,
+}
+
+impl JobKind {
+    /// The command that starts this job; the worker names it in `error.command`.
+    pub(crate) fn start_command(self) -> &'static str {
+        match self {
+            Self::Asr => "start",
+            Self::Llm => "llm_start",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,12 +95,16 @@ impl Activity {
         self.kind() == Some(JobKind::Llm)
     }
 
-    pub(crate) fn is_starting(self) -> bool {
-        matches!(self, Self::Starting(_) | Self::CancellingStart(_))
-    }
-
     pub(crate) fn is_stopping(self) -> bool {
         matches!(self, Self::CancellingStart(_) | Self::Stopping(_))
+    }
+
+    /// The job whose start the worker has not acknowledged yet.
+    pub(crate) fn starting_kind(self) -> Option<JobKind> {
+        match self {
+            Self::Starting(kind) | Self::CancellingStart(kind) => Some(kind),
+            _ => None,
+        }
     }
 
     fn kind(self) -> Option<JobKind> {

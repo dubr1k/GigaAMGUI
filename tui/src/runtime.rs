@@ -11,6 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Per tick: at most this many worker events …
+const DRAIN_LIMIT: usize = 256;
+/// … and no longer than this, so that a flood never stalls drawing or keys.
+const DRAIN_BUDGET: Duration = Duration::from_millis(10);
+
 pub(crate) struct WorkerRuntime {
     session: Option<WorkerSession>,
     events: Receiver<WorkerEvent>,
@@ -66,7 +71,15 @@ impl WorkerRuntime {
 
     pub fn tick(&mut self, app: &mut App) {
         app.poll_result_opening();
-        for _ in 0..EVENT_CAPACITY {
+        // Everything that is queued, within a frame-friendly budget. At most
+        // EVENT_CAPACITY per tick, with an 80 ms idle poll, capped the transport at
+        // ~100 messages a second: a token stream backed up into the pipe and the
+        // worker blocked in `emit`, delaying `llm_completed` and everything else.
+        let started = Instant::now();
+        for _ in 0..DRAIN_LIMIT {
+            if started.elapsed() >= DRAIN_BUDGET {
+                break;
+            }
             let Ok(event) = self.events.try_recv() else {
                 break;
             };
@@ -77,7 +90,9 @@ impl WorkerRuntime {
             }
             app.handle_worker_event(event);
         }
-        app.check_connection(Instant::now());
+        let now = Instant::now();
+        app.check_connection(now);
+        app.check_pending_inputs(now);
         if app.worker_stop_requested {
             if let Some(session) = &self.session {
                 session.stop();
@@ -130,6 +145,35 @@ impl Drop for WorkerRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_tick_drains_a_token_stream_not_just_eight_events() {
+        let mut app = crate::test_support::ready_app();
+        app.activity.start(crate::lifecycle::JobKind::Llm);
+        app.handle_message(json!({"type":"llm_started","mode":"summary","index":1,"total":1}));
+        let (sender, events) = mpsc::sync_channel(64);
+        let mut runtime = WorkerRuntime {
+            session: None,
+            sender,
+            events,
+            generation: app.connection.generation,
+            stopped: true,
+        };
+        for index in 0..40 {
+            runtime
+                .sender
+                .send(WorkerEvent {
+                    generation: app.connection.generation,
+                    kind: WorkerEventKind::Message(
+                        json!({"type":"llm_chunk","mode":"summary","text":format!("{index},")}),
+                    ),
+                })
+                .unwrap();
+        }
+        runtime.tick(&mut app);
+        let expected: String = (0..40).map(|index| format!("{index},")).collect();
+        assert_eq!(app.llm_stream, expected);
+    }
 
     #[test]
     fn shutdown_requires_confirmation_and_reports_the_original_failure() {

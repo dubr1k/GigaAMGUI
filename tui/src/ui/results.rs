@@ -128,7 +128,7 @@ mod tests {
                 for pet in [false, true] {
                     let mut app = crate::test_support::ready_app();
                     app.lang = lang;
-                    app.pet_enabled = pet;
+                    app.pet.enabled = pet;
                     app.result_files = (0..40)
                         .map(|i| format!("/meetings/папка {i}/запись {i}.txt"))
                         .collect();

@@ -37,11 +37,11 @@ def main():
             if stopped.wait(0.02):
                 return
         version = 99 if os.environ.get("GIGAAM_TEST_INVALID_HELLO") else 1
-        emit("ready", protocol_version=version, capabilities=["resolve_inputs", "asr", "llm"])
+        emit("ready", protocol_version=version, capabilities=["resolve_inputs", "asr", "llm", "compact_completed"])
 
     def run(command):
         if os.environ.get("GIGAAM_TEST_REJECT_AFTER_CANCEL"):
-            reject_start()
+            reject_start("start")
             return
         if os.environ.get("GIGAAM_TEST_WORKER_DELAY_START"):
             while not (directory / "release-start").exists():
@@ -49,7 +49,8 @@ def main():
                     emit("completed", success=False, cancelled=True)
                     return
         if os.environ.get("GIGAAM_TEST_WORKER_FAIL_START"):
-            emit("error", message="fixture initialization failed")
+            # Как настоящий worker: ошибка называет команду, на которую отвечает.
+            emit("error", message="fixture initialization failed", command="start")
             return
         files = command["files"]
         emit("started", total_files=len(files), backend="fixture")
@@ -68,12 +69,12 @@ def main():
             emit("file_completed", file=file, result={"success": True, "saved_files": [str(saved)]})
         emit("completed", success=True, cancelled=stopped.is_set())
 
-    def reject_start():
+    def reject_start(request):
         while not (directory / "reject-start").exists():
             if closing.wait(0.02):
                 return
         # Валидация может отклонить запуск после получения отмены, без completed.
-        emit("error", message="Input file does not exist")
+        emit("error", message="Input file does not exist", command=request)
 
     def long_llm_result():
         emit("llm_started", mode="summary", index=1, total=1)
@@ -104,7 +105,7 @@ def main():
                 stopped.set()
                 emit("cancelling")
             elif kind == "llm_start" and os.environ.get("GIGAAM_TEST_REJECT_AFTER_CANCEL"):
-                threading.Thread(target=reject_start, daemon=True).start()
+                threading.Thread(target=reject_start, args=("llm_start",), daemon=True).start()
             elif kind == "llm_start" and os.environ.get("GIGAAM_TEST_LONG_LLM_RESULT"):
                 threading.Thread(target=long_llm_result, daemon=True).start()
             elif kind == "llm_start" and os.environ.get("GIGAAM_TEST_BLOCK_ON_LLM"):

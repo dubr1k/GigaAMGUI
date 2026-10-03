@@ -17,16 +17,10 @@ use crate::{
     commands::short_name,
     i18n::{t, tf, Lang},
     ui::{processing::fit_middle, Action, AreaId, ButtonId},
-    worker::llm_tool_for,
 };
 
-/// The mode checkboxes, top to bottom: the worker's mode id and its label key.
-pub(crate) const MODES: [(&str, &str); 4] = [
-    ("summary", "llm.mode_summary"),
-    ("tasks", "llm.mode_tasks"),
-    ("terms", "llm.mode_terms"),
-    ("custom", "llm.mode_custom"),
-];
+/// The mode checkboxes, top to bottom.
+use crate::options::LLM_MODES as MODES;
 
 /// Rows of the «Что сделать» block plus its border: four modes, prompt, provider.
 const TASKS_HEIGHT: u16 = MODES.len() as u16 + 2 + 2;
@@ -135,7 +129,7 @@ fn draw_inputs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
 fn provider_line(app: &App) -> String {
     let provider = app.llm_provider.as_str();
-    let detail = match llm_tool_for(app, provider) {
+    let detail = match app.llm_tool(provider) {
         Some(tool) if tool.status == "found" => tool.version.clone().unwrap_or_default(),
         Some(tool) if tool.status == "broken" => t(app.lang, "llm.broken").to_owned(),
         Some(tool) if tool.status == "missing" => t(app.lang, "llm.not_installed").to_owned(),

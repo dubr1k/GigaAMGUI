@@ -128,9 +128,9 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         if app.activity == crate::lifecycle::Activity::Starting(crate::lifecycle::JobKind::Asr) {
             format!(" {}", t(app.lang, "status.batch_starting"))
         } else if app.running() && !app.llm_running() {
-            let stage = try_t(app.lang, &format!("stage.{}", app.stage))
-                .map_or_else(|| app.stage.clone(), str::to_owned);
-            match (app.processed_seconds, app.total_seconds) {
+            let stage = try_t(app.lang, &format!("stage.{}", app.progress.stage))
+                .map_or_else(|| app.progress.stage.clone(), str::to_owned);
+            match (app.progress.processed_seconds, app.progress.total_seconds) {
                 (Some(done), Some(total)) => {
                     format!(" {stage}  {}/{}", timecode(done), timecode(total))
                 }
@@ -145,17 +145,17 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     );
     let mut lines = Vec::<Line>::new();
     if app.running() && !app.llm_running() {
-        let current = if app.stage == "preparing" {
+        let current = if app.progress.stage == "preparing" {
             "—".into()
         } else {
-            format!("{}%", (app.progress * 100.0).round() as u16)
+            format!("{}%", (app.progress.fraction * 100.0).round() as u16)
         };
-        if let Some(file) = &app.current_file {
+        if let Some(file) = &app.progress.current_file {
             lines.push(Line::from(format!(
                 "{} {}/{}: {current} · {}",
                 t(app.lang, "progress.file"),
-                app.file_index + 1,
-                app.total_files,
+                app.progress.file_index + 1,
+                app.progress.total_files,
                 short_name(file)
             )));
         }
