@@ -172,13 +172,12 @@ def load_data_dir_selection(*, locator_path: str | os.PathLike[str] | None = Non
 
 
 def _save_locator(value: str | None, target: Path) -> Path:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(
+    from .utils.atomic_json import write_text_atomic
+
+    write_text_atomic(
+        target,
         json.dumps({"schema": 1, "data_dir": value}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
     )
-    os.replace(temporary, target)
     os.environ.pop(DATA_DIR_RECOVERY_ENV, None)
     return target
 

@@ -35,6 +35,7 @@ from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 
 from . import torch_downloader
+from .atomic_json import save_json_atomic
 
 # Суффикс C-расширений текущего интерпретатора (`.cpython-312-darwin.so`,
 # `.cp311-win_amd64.pyd`). Колёса torch привязаны к нему: кэш, скачанный сборкой
@@ -246,11 +247,11 @@ def _read_config() -> dict:
 
 
 def _write_config(cfg: dict) -> None:
+    # Уникальный временный файл + fsync: два процесса (GUI и worker) больше
+    # не пишут в один и тот же runtime.json.tmp, а обрыв питания не оставляет
+    # пустой runtime.json вместо выбранного варианта.
     ensure_data_dir()
-    tmp = _config_path().with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, _config_path())
+    save_json_atomic(str(_config_path()), cfg)
 
 
 def get_selected_variant() -> str | None:
