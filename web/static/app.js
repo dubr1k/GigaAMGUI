@@ -222,10 +222,8 @@ function applyLanguage() {
     if (selectedLlmFiles.length === 0 && document.getElementById('llm-files-count')) {
         document.getElementById('llm-files-count').textContent = t('llmFilesNone');
     }
-    const providerSelect = document.getElementById('llm-provider');
-    if (providerSelect && providerSelect.options.length >= 6) {
-        providerSelect.options[5].textContent = currentLang === 'ru' ? 'Другое' : 'Other';
-    }
+    // Подписи пунктов провайдера (перевод «Other» и бейджи инструментов); value не трогаем
+    renderLlmTools();
 }
 
 // ===== AUTH =====
@@ -1047,7 +1045,14 @@ window.removeLlmFile = function(idx) {
     updateLlmFileList();
 };
 
-const LLM_PROVIDER_IDS = { 'API': 'api', 'Claude Code': 'claude', 'Codex': 'codex', 'OpenCode': 'opencode', 'Pi': 'pi', 'oh-my-pi': 'omp', 'Другое': 'other', 'Other': 'other' };
+// Ключ — value пункта <select>: каноническое имя провайдера из реестра cli_tools,
+// которое уходит на сервер. Подпись пункта может быть переведена, value — никогда.
+const LLM_PROVIDER_IDS = { 'API': 'api', 'Claude Code': 'claude', 'Codex': 'codex', 'OpenCode': 'opencode', 'Pi': 'pi', 'oh-my-pi': 'omp', 'Other': 'other' };
+
+function providerLabel(value) {
+    if (value === 'Other') return currentLang === 'ru' ? 'Другое' : 'Other';
+    return value;
+}
 
 function updateLlmProviderFields() {
     const provider = document.getElementById('llm-provider').value;
@@ -1078,21 +1083,23 @@ function renderLlmTools() {
         const detail = tool.status === 'found' ? (tool.path || '')
             : tool.status === 'broken' ? (tool.detail || '')
             : (tool.install_hint ? `${t('toolInstall')} ${tool.install_hint}` : '');
+        // Текст приходит с сервера (stderr `--version`, пути) — только экранированным
         li.innerHTML = `<span class="tool-status">${toolStatusIcon(tool.status)}</span>`
-            + `<span class="tool-name">${tool.provider}</span>`
-            + `<span class="tool-version">${tool.version ? tool.version : label}</span>`
-            + `<span class="tool-detail">${detail}</span>`;
+            + `<span class="tool-name">${escapeHtml(String(tool.provider || ''))}</span>`
+            + `<span class="tool-version">${escapeHtml(String(tool.version || label))}</span>`
+            + `<span class="tool-detail">${escapeHtml(String(detail || ''))}</span>`;
         list.appendChild(li);
     });
     Array.from(select.options).forEach(option => {
-        const base = option.dataset.name || option.textContent.trim();
-        option.dataset.name = base;
-        const tool = byProvider[base];
-        if (!tool) return;
+        const label = providerLabel(option.value);
+        const tool = byProvider[option.value];
+        if (!tool) {
+            option.textContent = label;
+            return;
+        }
         option.textContent = tool.status === 'found'
-            ? `${toolStatusIcon('found')} ${base}${tool.version ? ' ' + tool.version : ''}`
-            : `${toolStatusIcon(tool.status)} ${base} — ${tool.status === 'broken' ? t('toolBroken') : t('toolMissing')}`;
-        option.value = base;
+            ? `${toolStatusIcon('found')} ${label}${tool.version ? ' ' + tool.version : ''}`
+            : `${toolStatusIcon(tool.status)} ${label} — ${tool.status === 'broken' ? t('toolBroken') : t('toolMissing')}`;
     });
 }
 
@@ -1135,7 +1142,6 @@ function setupLlmTab() {
     loadLlmTools();
     document.getElementById('llm-summary-prompt').value = `Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке.`;
     document.getElementById('llm-tasks-prompt').value = `Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде.`;
-    document.getElementById('llm-provider').querySelector('option:last-child').textContent = currentLang === 'ru' ? 'Другое' : 'Other';
     document.getElementById('btn-llm-clear').addEventListener('click', () => {
         selectedLlmFiles = [];
         document.getElementById('llm-manual-text').value = '';
