@@ -162,6 +162,18 @@ def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_process
     assert web_app.tasks_storage["t2"]["message"] == "Обработка не удалась"
 
 
+# ==================== /health ====================
+
+
+def test_public_health_has_no_server_paths(anon_client):
+    response = anon_client.get("/health")
+    assert response.status_code == 200
+    asr = response.json()["asr"]
+    assert asr["active_backend"] == "pytorch"
+    assert "cache_root" not in asr and "repo" not in asr
+    assert "/srv/secret/models" not in response.text
+
+
 # ==================== вход ====================
 
 

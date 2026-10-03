@@ -54,6 +54,16 @@ def asr_health(model_loader) -> dict[str, object]:
     }
 
 
+# Пути и репозитории на сервере: нужны для диагностики владельцу, а не любому, кто
+# дотянулся до неавторизованного /health (раскладка контейнера, домашний каталог).
+_SERVER_PATH_FIELDS = ("repo", "cache_root")
+
+
+def public_asr_health(model_loader) -> dict[str, object]:
+    """`asr_health` для неавторизованного /health: без путей сервера."""
+    return {key: value for key, value in asr_health(model_loader).items() if key not in _SERVER_PATH_FIELDS}
+
+
 def runtime_info(
     platform_fn: Callable[[], str],
     machine_fn: Callable[[], str],

@@ -64,6 +64,15 @@ def test_health_needs_no_key(client):
     assert r.status_code == 200 and r.json()["model_loaded"] is True
 
 
+def test_public_health_has_no_server_paths(client, monkeypatch):
+    monkeypatch.setattr(api.model_loader, "diagnostics", lambda: {
+        "active_backend": "onnx", "repo": "salute-developers/GigaAM", "cache_root": "/srv/secret/models"})
+    r = client.get("/health")
+    asr = r.json()["asr"]
+    assert asr["active_backend"] == "onnx"
+    assert "cache_root" not in asr and "repo" not in asr and "/srv/secret" not in r.text
+
+
 def test_root_points_to_docs(client):
     body = client.get("/").json()
     assert body["docs"] == "/docs" and "/v1/audio/transcriptions" in json.dumps(body)

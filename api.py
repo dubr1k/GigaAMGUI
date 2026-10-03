@@ -159,7 +159,8 @@ _hash_key = hash_key
 
 
 def _asr_health() -> dict[str, object]:
-    return health_service.asr_health(model_loader)
+    # Публичный /health: без путей сервера (cache_root, repo)
+    return health_service.public_asr_health(model_loader)
 
 
 def _runtime_info() -> dict[str, object]:
