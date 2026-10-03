@@ -23,9 +23,10 @@ from .diarization import (
 )
 from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
+from .mixing import MAX_MIX_SKEW_NS, MAX_PENDING_MIX_CHUNKS, MixCoordinator
 from .recorder import SessionRecorder, join_segments
 from .recording_policy import MAX_RECORDING_FAILURES, RecordingGuard
-from .timeline import AlignedMixer, SourceTimeline
+from .timeline import SourceTimeline
 from .types import (
     CaptureEvent,
     CaptureEventKind,
@@ -79,10 +80,6 @@ SchedulerFactory = Callable[
     [CaptureSource, Callable[[TranscriptEvent], None], Callable[[TranscriptEvent], None], Callable[[Exception], None]], AsrScheduler
 ]
 
-MAX_MIX_SKEW_NS = 1_000_000_000
-MAX_SOURCE_START_DELAY_NS = 5_000_000_000
-"""Largest start delay between sources that is taken from their clocks."""
-MAX_PENDING_MIX_CHUNKS = 100
 CHECKPOINT_INTERVAL_SECONDS = 2.0
 STOP_DRAIN_TIMEOUT_SECONDS = 120.0
 """How long stop() waits for each source's queued decodes.
@@ -91,11 +88,6 @@ Stopping drains every queued final (issue #42), but a decode that never
 returns — a wedged GPU backend — must not keep the session in STOPPING for
 ever: after this the undecoded speech is abandoned and the session still
 closes its recordings and writes its exports."""
-# How long a source that has already produced audio may stay quiet before the
-# mixer stops waiting for it, and how long to wait for a source that has never
-# produced anything at all (an idle WASAPI loopback endpoint, typically).
-MIX_SOURCE_IDLE_SECONDS = 0.5
-MIX_SOURCE_STARTUP_GRACE_SECONDS = 1.0
 
 
 class LiveSession:
@@ -146,16 +138,13 @@ class LiveSession:
         self._active_sources: set[CaptureSource] = set()
         self._failed_sources: set[CaptureSource] = set()
         self._timelines: dict[CaptureSource, SourceTimeline] = {}
-        self._mix_inputs: dict[CaptureSource, list[PcmChunk]] = {}
-        self._mix_offset_origins: dict[CaptureSource, int] = {}
-        self._mix_source_origins_ns: dict[CaptureSource, int] = {}
-        self._mix_last_input_at: dict[CaptureSource, float] = {}
-        self._mix_stalled_sources: set[CaptureSource] = set()
-        self._reported_mix_stalls: set[CaptureSource] = set()
-        self._mix_started_at = float("inf")
-        self._mix_session_origin_ns: int | None = None
-        self._mixer = AlignedMixer(max_skew_seconds=MAX_MIX_SKEW_NS / 1_000_000_000)
-        self._mix_recording_enabled = settings.record_mix_audio
+        self._mix = MixCoordinator(
+            enabled=settings.record_mix_audio,
+            write_mix=self._recorder.write_mix,
+            notify=self._notify,
+            log=self.log,
+            translate=self._translate,
+        )
         self._schedulers: dict[CaptureSource, AsrScheduler] = {}
         self._live_diarizers: dict[CaptureSource, object] = {}
         self._live_diarization_unavailable: set[CaptureSource] = set()
@@ -173,6 +162,19 @@ class LiveSession:
     def session_dir(self) -> Path:
         return self._session_dir
 
+    # Mix state as the session's own attributes, for tests and diagnostics.
+    @property
+    def _mix_recording_enabled(self) -> bool:
+        return self._mix.enabled
+
+    @property
+    def _mix_inputs(self) -> dict[CaptureSource, list[PcmChunk]]:
+        return self._mix.inputs
+
+    @property
+    def _mix_stalled_sources(self) -> set[CaptureSource]:
+        return self._mix.stalled_sources
+
     def log(self, message: str) -> None:
         """Record a live-path diagnostic to the session log and the UI sink."""
         self._session_log.write(message)
@@ -189,7 +191,7 @@ class LiveSession:
                 raise RuntimeError("session has already started")
             self.log(f"session start: dir={self._session_dir} sources={sorted(s.value for s in self._adapters)}")
             self._state = CaptureState.STARTING
-            self._mix_started_at = monotonic()
+            self._mix.start()
             for source, adapter in self._adapters.items():
                 self._schedulers[source] = self._scheduler_factory(
                     source,
@@ -265,7 +267,7 @@ class LiveSession:
                     lambda source=source, scheduler=scheduler: self._drain_scheduler(source, scheduler),
                 )
             with self._lock:
-                self._attempt(errors, "flush mix", self._flush_mix_inputs)
+                self._attempt(errors, "flush mix", self._mix.flush)
                 recordings = self._close_recorder(errors)
                 recording_files = self._recording_files(recordings)
                 self._attempt(errors, "update metadata", self._record_artifacts)
@@ -400,14 +402,7 @@ class LiveSession:
             )
             for aligned in timeline.ingest(chunk):
                 self._recording.write(aligned)
-                if self._mix_recording_enabled:
-                    pending = self._mix_inputs.setdefault(aligned.source, [])
-                    pending.append(self._normalize_mix_timestamp(aligned))
-                    self._mix_last_input_at[aligned.source] = monotonic()
-                    self._mix_stalled_sources.discard(aligned.source)
-                    if len(pending) > MAX_PENDING_MIX_CHUNKS:
-                        self._mark_stalled_mix_peers(aligned)
-                    self._write_ready_mixes()
+                self._mix.add(aligned, self._active_sources)
                 # All channels, downmixed: channel 0 alone missed a talker on
                 # input 2 of a stereo interface entirely.
                 audio = normalize_window_audio(aligned.frames, aligned.sample_rate, self._settings.asr_sample_rate)
@@ -437,162 +432,6 @@ class LiveSession:
             )
         except Exception as exc:
             self.log(f"checkpoint write failed: {type(exc).__name__}: {exc}")
-
-    def _normalize_mix_timestamp(self, chunk: PcmChunk) -> PcmChunk:
-        """Position a chunk on the mix timeline by its audio, not by wall clock.
-
-        Capture timestamps are arrival times, so they jitter by tens of
-        milliseconds even when both streams are perfectly continuous. The
-        mixer takes the difference between the two sources at face value, and
-        jitter has no sign there — every pair contributed ``abs(jitter)``, so
-        even zero-mean jitter inflated the track (issue #50).
-
-        Sample offsets come from ``SourceTimeline``, which has already filled
-        gaps and trimmed overlaps, so they advance exactly with the audio. The
-        one thing wall clock is still needed for — where each source starts —
-        stays where it was: both sources are rebased onto the session origin at
-        their first chunk.
-        """
-        if self._mix_session_origin_ns is None:
-            self._mix_session_origin_ns = chunk.timestamp_ns
-        if chunk.source not in self._mix_offset_origins:
-            # Read the clock once per source, at its first chunk. Rebasing every
-            # source onto the session origin instead erased the start delay of
-            # a later source (SCStream starts ~0.5 s after the microphone), and
-            # the system track played that much early in mix.flac.
-            # Devices can also run on unrelated clocks (WASAPI endpoints have
-            # their own epochs); a delay outside a plausible start-up window
-            # says nothing about when the source started, so it starts at the
-            # session origin as before.
-            self._mix_offset_origins[chunk.source] = chunk.sample_offset
-            delay_ns = chunk.timestamp_ns - self._mix_session_origin_ns
-            self._mix_source_origins_ns[chunk.source] = self._mix_session_origin_ns + (
-                delay_ns if 0 < delay_ns <= MAX_SOURCE_START_DELAY_NS else 0
-            )
-        origin_offset = self._mix_offset_origins[chunk.source]
-        elapsed_ns = round((chunk.sample_offset - origin_offset) * 1_000_000_000 / chunk.sample_rate)
-        return replace(chunk, timestamp_ns=self._mix_source_origins_ns[chunk.source] + elapsed_ns)
-
-    def _mix_participants(self) -> set[CaptureSource]:
-        """Sources the mixer should still wait for before writing a block.
-
-        A source that never starts (an idle loopback endpoint) or that has gone
-        quiet must not hold the mix track hostage — that starvation is what
-        used to disable mixed recording seconds after the session began.
-        """
-        now = monotonic()
-        participants: set[CaptureSource] = set()
-        for source in self._active_sources:
-            if source in self._mix_stalled_sources:
-                continue
-            last_input_at = self._mix_last_input_at.get(source)
-            if last_input_at is None:
-                if now - self._mix_started_at <= MIX_SOURCE_STARTUP_GRACE_SECONDS:
-                    participants.add(source)
-                continue
-            if now - last_input_at <= MIX_SOURCE_IDLE_SECONDS:
-                participants.add(source)
-        return participants
-
-    def _mark_stalled_mix_peers(self, chunk: PcmChunk) -> None:
-        stalled = {
-            source for source in self._active_sources
-            if source is not chunk.source and not self._mix_inputs.get(source)
-        }
-        if not stalled:
-            return
-        self._mix_stalled_sources |= stalled
-        for source in sorted(stalled, key=lambda item: item.value):
-            self.log(f"mix peer stalled [{source.value}]: no audio delivered; mixing without it")
-            if source in self._reported_mix_stalls:
-                continue
-            self._reported_mix_stalls.add(source)
-            self._notify(CaptureEvent(
-                CaptureEventKind.STATUS,
-                source,
-                chunk.sample_offset,
-                chunk.timestamp_ns,
-                self._translate(
-                    f"Источник «{source.value}» не отдаёт звук — проверьте выбранное устройство. "
-                    "Общая дорожка записывается без него.",
-                    f"Source '{source.value}' is not delivering audio — check the selected device. "
-                    "The combined track continues without it.",
-                ),
-            ))
-
-    def _write_ready_mixes(self) -> None:
-        if not self._mix_recording_enabled:
-            return
-        while True:
-            participants = self._mix_participants()
-            if not participants or not all(self._mix_inputs.get(source) for source in participants):
-                return
-            heads = {source: self._mix_inputs[source][0] for source in participants}
-            earliest = min(heads.values(), key=lambda chunk: chunk.timestamp_ns)
-            latest_timestamp_ns = max(chunk.timestamp_ns for chunk in heads.values())
-            if latest_timestamp_ns - earliest.timestamp_ns > MAX_MIX_SKEW_NS:
-                self._disable_mix_recording(
-                    earliest.source,
-                    earliest.timestamp_ns,
-                    "timestamp skew exceeds 1.000s",
-                )
-                return
-            # Mix in time order: a head that starts after the earliest one ends
-            # waits for its turn. Popping one chunk from every source paired
-            # chunks by index, so a source that started later stayed a constant
-            # distance ahead of its peer instead of lining up with it.
-            earliest_end_ns = earliest.timestamp_ns + round(
-                len(earliest.frames) * 1_000_000_000 / earliest.sample_rate
-            )
-            inputs = {
-                source: self._mix_inputs[source].pop(0)
-                for source, head in heads.items()
-                if head.timestamp_ns < earliest_end_ns
-            }
-            self._write_mix(inputs)
-
-    def _flush_mix_inputs(self) -> None:
-        if not self._mix_recording_enabled:
-            self._mix_inputs.clear()
-            return
-        pending = [chunk for chunks in self._mix_inputs.values() for chunk in chunks]
-        self._mix_inputs.clear()
-        for chunk in sorted(pending, key=lambda item: item.timestamp_ns):
-            self._write_mix({chunk.source: chunk})
-        # The mixer holds back audio whose peer has not caught up yet; at stop
-        # there is no peer left to wait for, and dropping it would truncate the
-        # tail of the mix track.
-        try:
-            tail = self._mixer.flush()
-        except Exception as exc:
-            self.log(f"mix flush failed: {type(exc).__name__}: {exc}")
-            return
-        if tail is not None and len(tail.frames):
-            try:
-                self._recorder.write_mix(tail)
-            except Exception as exc:
-                self.log(f"mix flush failed: {type(exc).__name__}: {exc}")
-
-    def _write_mix(self, chunks: Mapping[CaptureSource, PcmChunk]) -> None:
-        try:
-            self._recorder.write_mix(self._mixer.mix(chunks))
-        except Exception as exc:
-            timestamp_ns = min(chunk.timestamp_ns for chunk in chunks.values())
-            self._disable_mix_recording(next(iter(chunks)), timestamp_ns, str(exc))
-
-    def _disable_mix_recording(self, source: CaptureSource, timestamp_ns: int, reason: str) -> None:
-        if not self._mix_recording_enabled:
-            return
-        self._mix_recording_enabled = False
-        self._mix_inputs.clear()
-        self.log(f"mix recording disabled [{source.value}]: {reason}")
-        detail = self._translate(
-            "Запись смешанного аудио отключена для этой сессии: "
-            f"{reason}. Раздельная запись микрофона и системы, а также распознавание продолжаются.",
-            "Mixed audio recording disabled for this session: "
-            f"{reason}. Separate microphone and system recording and recognition continue.",
-        )
-        self._notify(CaptureEvent(CaptureEventKind.STATUS, source, 0, timestamp_ns, detail))
 
     def _on_event(self, event: CaptureEvent) -> None:
         with self._lock:
