@@ -26,6 +26,10 @@ struct PythonRuntime {
         var errorDescription: String? { message }
     }
 
+    /// How a job finds its worker; tests substitute a scripted stand-in.
+    typealias Provider = () throws -> PythonRuntime
+    static let resolveDefault: Provider = { try PythonRuntime.resolve() }
+
     static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> PythonRuntime {
         let root = try projectRoot(environment: environment)
         let companion = companionURL(root: root, environment: environment)

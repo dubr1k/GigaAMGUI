@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import GigaAMLiquidCore
 
 /// Error type shared by every worker-backed job.
 struct WorkerFailure: LocalizedError {
@@ -8,29 +9,16 @@ struct WorkerFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
-/// Redacts secrets and credential-looking substrings from worker output before it reaches logs or the UI.
-enum WorkerRedaction {
-    private static let credentialPatterns = [
-        #"\b(?:hf_|sk-)[A-Za-z0-9_-]+"#,
-        #"(?i)\bBearer\s+\S+"#,
-        #"(?i)((?:token|api[_-]?key|password|secret)[\"']?\s*[:=]\s*[\"']?)[^\s\"'&,}]+"#,
-        #"(?i)(https?://)[^\s/@]+:[^\s/@]+@"#
-    ].compactMap { try? NSRegularExpression(pattern: $0) }
+/// Which job a worker serves, as its error messages name it.
+enum WorkerRole {
+    case transcription, live, llm, toolsQuery
 
-    static func safeText(_ text: String, secrets: [String]) -> String {
-        var value = text
-        for secret in secrets { value = value.replacingOccurrences(of: secret, with: "[redacted]") }
-        for pattern in credentialPatterns {
-            value = pattern.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: "[redacted]")
-        }
-        return String(value.suffix(8192))
-    }
-
-    /// Environment values that look like credentials, for `safeText(_:secrets:)`.
-    static func secrets(in environment: [String: String]) -> [String] {
-        environment.compactMap { key, value in
-            let name = key.uppercased()
-            return value.count >= 6 && ["TOKEN", "SECRET", "PASSWORD", "API_KEY"].contains(where: name.contains) ? value : nil
+    var name: String {
+        switch self {
+        case .transcription: return L10n.text("Воркер распознавания")
+        case .live: return L10n.text("Live-воркер")
+        case .llm: return L10n.text("LLM-воркер")
+        case .toolsQuery: return L10n.text("Воркер проверки CLI")
         }
     }
 }
@@ -42,16 +30,18 @@ enum WorkerRedaction {
 /// lines) and a graceful → forced termination ladder.
 final class WorkerProcess {
     private let queue: DispatchQueue
+    private let role: WorkerRole
     private var process: Process?
     private var input: FileHandle?
     private var stdout: LineReader?
     private var stderr: LineReader?
 
-    init(runtime: PythonRuntime, arguments: [String], environment: [String: String], queue: DispatchQueue,
+    init(role: WorkerRole, runtime: PythonRuntime, arguments: [String], environment: [String: String], queue: DispatchQueue,
          onLine: @escaping (Data) -> Void, onStderr: @escaping (String) -> Void,
          onStdoutEnd: @escaping () -> Void, onError: @escaping (String) -> Void,
          onExit: @escaping (Int32) -> Void) throws {
         self.queue = queue
+        self.role = role
         let task = Process()
         task.executableURL = runtime.executable
         task.arguments = arguments
@@ -63,18 +53,23 @@ final class WorkerProcess {
         task.standardError = stderrPipe
         // A worker exiting between isRunning and write must not SIGPIPE the app.
         guard fcntl(stdinPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
-            throw WorkerFailure("Could not configure the worker input pipe: \(String(cString: strerror(errno)))")
+            throw WorkerFailure(L10n.format("Не удалось настроить канал ввода воркера: %@", String(cString: strerror(errno))))
         }
         input = stdinPipe.fileHandleForWriting
-        stdout = try LineReader(handle: stdoutPipe.fileHandleForReading, queue: queue, limit: 8 * 1024 * 1024,
-                                truncate: false, onLine: onLine, onError: onError,
-                                onEnd: { [weak self] in
-                                    guard let self, self.process?.isRunning == true else { return }
-                                    onStdoutEnd()
-                                })
-        stderr = try LineReader(handle: stderrPipe.fileHandleForReading, queue: queue, limit: 16 * 1024,
-                                truncate: true, onLine: { onStderr(String(decoding: $0, as: UTF8.self)) },
-                                onError: onError)
+        let describe: (LineReader.Failure) -> Void = { onError(Self.describe($0, role: role)) }
+        do {
+            stdout = try LineReader(handle: stdoutPipe.fileHandleForReading, queue: queue, limit: Self.eventLimit,
+                                    truncate: false, onLine: onLine, onError: describe,
+                                    onEnd: { [weak self] in
+                                        guard let self, self.process?.isRunning == true else { return }
+                                        onStdoutEnd()
+                                    })
+            stderr = try LineReader(handle: stderrPipe.fileHandleForReading, queue: queue, limit: 16 * 1024,
+                                    truncate: true, onLine: { onStderr(String(decoding: $0, as: UTF8.self)) },
+                                    onError: describe)
+        } catch let failure as LineReader.Failure {
+            throw WorkerFailure(Self.describe(failure, role: role))
+        }
         // Retain the worker until the OS has reaped it, even if its UI is rebuilt.
         task.terminationHandler = { [self] task in
             queue.async {
@@ -92,7 +87,7 @@ final class WorkerProcess {
             process = task
         } catch {
             task.terminationHandler = nil
-            throw WorkerFailure("Could not launch the project Python (\(runtime.executable.path)): \(error.localizedDescription)")
+            throw WorkerFailure(L10n.format("Не удалось запустить Python проекта (%@): %@", runtime.executable.path, error.localizedDescription))
         }
         try? stdinPipe.fileHandleForReading.close()
         try? stdoutPipe.fileHandleForWriting.close()
@@ -102,7 +97,7 @@ final class WorkerProcess {
     var isRunning: Bool { process?.isRunning == true }
 
     func send(_ command: [String: Any]) throws {
-        guard let input, let process, process.isRunning else { throw WorkerFailure("The transcription worker is not running.") }
+        guard let input, let process, process.isRunning else { throw WorkerFailure(L10n.format("%@ не запущен.", role.name)) }
         var data = try JSONSerialization.data(withJSONObject: command)
         data.append(10)
         try input.write(contentsOf: data)
@@ -132,9 +127,28 @@ final class WorkerProcess {
         if let task = process, task.isRunning { Darwin.kill(task.processIdentifier, SIGKILL) }
     }
 
-    func drain() {
-        stdout?.drain()
+    /// Pulls pending stderr (tracebacks) before a failure report is composed.
+    /// Only stderr: this is called while a stdout line is being handled, and the
+    /// stdout reader must not be re-entered from its own callback.
+    func drainDiagnostics() {
         stderr?.drain()
+    }
+
+    /// One stdout event may carry a whole file result; the cap only stops a runaway line.
+    static let eventLimit = 8 * 1024 * 1024
+
+    static func describe(_ failure: LineReader.Failure, role: WorkerRole) -> String {
+        switch failure {
+        case .configure(let code):
+            return L10n.format("Не удалось настроить вывод воркера: %@", String(cString: strerror(code)))
+        case .oversizedLine(let limit):
+            // The event is gone, so the job cannot know its outcome; what the worker
+            // already wrote is safe, and that is where the user should look.
+            return L10n.format("%@: событие больше %@ МиБ пропущено, поэтому итог задачи неизвестен. Файлы, которые воркер успел сохранить, остались на диске.",
+                               role.name, String(limit / (1024 * 1024)))
+        case .readFailed(let code):
+            return L10n.format("%@: не удалось прочитать вывод (%@).", role.name, String(cString: strerror(code)))
+        }
     }
 
     func close() {
@@ -144,95 +158,4 @@ final class WorkerProcess {
         stdout = nil
         stderr = nil
     }
-}
-
-/// Nonblocking readers drain both pipes concurrently without growing an
-/// unbounded callback queue or waiting forever for a descendant's open pipe.
-final class LineReader {
-    private let handle: FileHandle
-    private let limit: Int
-    private let truncate: Bool
-    private let onLine: (Data) -> Void
-    private let onError: (String) -> Void
-    private let onEnd: () -> Void
-    private var source: DispatchSourceRead?
-    private var buffer = [UInt8](repeating: 0, count: 8192)
-    private var line = Data()
-    private var dropping = false
-
-    init(handle: FileHandle, queue: DispatchQueue, limit: Int, truncate: Bool,
-         onLine: @escaping (Data) -> Void, onError: @escaping (String) -> Void,
-         onEnd: @escaping () -> Void = {}) throws {
-        self.handle = handle
-        self.limit = limit
-        self.truncate = truncate
-        self.onLine = onLine
-        self.onError = onError
-        self.onEnd = onEnd
-        let flags = fcntl(handle.fileDescriptor, F_GETFL)
-        guard flags != -1, fcntl(handle.fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
-            throw WorkerFailure("Could not configure the transcription output pipe.")
-        }
-        let source = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
-        self.source = source
-        source.setEventHandler { [weak self] in self?.drain() }
-        source.setCancelHandler { try? handle.close() }
-        source.resume()
-    }
-
-    func drain() {
-        guard source != nil else { return }
-        // Bound one turn so busy diagnostics cannot starve Cancel/teardown.
-        for _ in 0..<64 {
-            let count = buffer.withUnsafeMutableBytes { Darwin.read(handle.fileDescriptor, $0.baseAddress, $0.count) }
-            if count > 0 {
-                consume(count)
-            } else if count == 0 {
-                if !line.isEmpty && !dropping { onLine(line) }
-                line.removeAll(keepingCapacity: false)
-                close()
-                onEnd()
-                return
-            } else if errno == EINTR {
-                continue
-            } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                return
-            } else {
-                onError("Could not read transcription worker output: \(String(cString: strerror(errno)))")
-                close()
-                return
-            }
-        }
-    }
-
-    private func consume(_ count: Int) {
-        var start = 0
-        while start < count {
-            let newline = buffer[start..<count].firstIndex(of: 10)
-            let end = newline ?? count
-            if !dropping {
-                let available = max(0, limit - line.count)
-                line.append(contentsOf: buffer[start..<min(end, start + available)])
-                if end - start > available {
-                    dropping = true
-                    if truncate { onLine(line) }
-                    else { onError("The transcription worker exceeded the 8 MiB JSONL event limit.") }
-                    line.removeAll(keepingCapacity: true)
-                }
-            }
-            if let newline {
-                if !dropping { onLine(line) }
-                line.removeAll(keepingCapacity: true)
-                dropping = false
-                start = newline + 1
-            } else { break }
-        }
-    }
-
-    func close() {
-        source?.cancel()
-        source = nil
-    }
-
-    deinit { close() }
 }

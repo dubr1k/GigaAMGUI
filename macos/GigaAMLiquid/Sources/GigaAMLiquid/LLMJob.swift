@@ -1,4 +1,5 @@
 import Foundation
+import GigaAMLiquidCore
 
 struct LLMRequest {
     var text: String
@@ -27,8 +28,12 @@ final class LLMJob {
     private var finished = false
     private var secrets: [String] = []
 
-    init(request: LLMRequest, onEvent: @escaping (LLMJobEvent) -> Void) {
+    private let resolveRuntime: PythonRuntime.Provider
+
+    init(request: LLMRequest, runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
+         onEvent: @escaping (LLMJobEvent) -> Void) {
         self.request = request
+        self.resolveRuntime = runtime
         self.onEvent = onEvent
     }
 
@@ -56,7 +61,7 @@ final class LLMJob {
     }
 
     private func launch() throws {
-        let runtime = try PythonRuntime.resolve()
+        let runtime = try resolveRuntime()
         if let key = request.settings["api_key"] as? String, key.count >= 6 { secrets.append(key) }
         secrets.append(contentsOf: WorkerRedaction.secrets(in: runtime.environment))
         var command: [String: Any] = [
@@ -65,47 +70,44 @@ final class LLMJob {
         ]
         if let directory = request.outputDirectory { command["output_dir"] = directory.path }
         let worker = try WorkerProcess(
-            runtime: runtime, arguments: runtime.transcriptionArguments, environment: runtime.environment, queue: queue,
+            role: .llm, runtime: runtime, arguments: runtime.transcriptionArguments, environment: runtime.environment, queue: queue,
             onLine: { self.consume($0) },
             onStderr: { self.emit(.log(self.safe($0))) },
-            onStdoutEnd: { self.finish(.failed("The LLM worker closed its output without completing.")) },
+            onStdoutEnd: { self.finish(.failed(L10n.format("%@ закрыл вывод, не завершив запрос.", WorkerRole.llm.name))) },
             onError: { self.finish(.failed($0)) },
-            onExit: { status in self.finish(.failed("The LLM worker exited without completing (status \(status)).")) }
+            onExit: { status in
+                self.finish(.failed(L10n.format("%@ завершился, не завершив запрос (код %@).", WorkerRole.llm.name, String(status))))
+                self.releaseWorker()
+            }
         )
         self.worker = worker
         try worker.send(command)
     }
 
     private func consume(_ line: Data) {
-        guard !finished, !line.isEmpty else { return }
-        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let type = object["type"] as? String else {
-            let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { emit(.log(safe(text))) }
+        guard !finished else { return }
+        switch LLMEventDecoder.decode(line) {
+        case nil:
             return
-        }
-        switch type {
-        case "llm_started":
-            emit(.started(mode: object["mode"] as? String ?? "", index: object["index"] as? Int ?? 0, total: object["total"] as? Int ?? 0))
-        case "llm_chunk":
-            emit(.chunk(mode: object["mode"] as? String ?? "", text: object["text"] as? String ?? ""))
-        case "llm_completed":
-            if object["cancelled"] as? Bool == true { finish(.cancelled); return }
-            guard object["success"] as? Bool == true else {
-                finish(.failed(safe(object["message"] as? String ?? "LLM request failed.")))
-                return
-            }
-            let results = (object["results"] as? [[String: Any]] ?? []).map {
-                (mode: $0["mode"] as? String ?? "", text: $0["text"] as? String ?? "")
-            }
-            let saved = (object["saved_files"] as? [String] ?? []).map { URL(fileURLWithPath: $0) }
-            finish(.completed(results: results, saved: saved))
-        case "error":
-            finish(.failed(safe(object["message"] as? String ?? "LLM worker error.")))
-        case "log":
-            emit(.log(safe(object["message"] as? String ?? "")))
-        default:
-            break
+        case .text(let text):
+            emit(.log(safe(text)))
+        case .unknown(let type), .invalid(let type):
+            // The worker is shared with the TUI and gains events over time.
+            emit(.log(L10n.format("Пропущено неизвестное событие воркера: %@", type)))
+        case .event(.started(let mode, let index, let total)):
+            emit(.started(mode: mode, index: index, total: total))
+        case .event(.chunk(let mode, let text)):
+            emit(.chunk(mode: mode, text: text))
+        case .event(.completed(let results, let saved)):
+            finish(.completed(results: results, saved: saved.map { URL(fileURLWithPath: $0) }))
+        case .event(.cancelled):
+            finish(.cancelled)
+        case .event(.failed(let message)):
+            finish(.failed(safe(message ?? L10n.text("Запрос к LLM не удался."))))
+        case .event(.error(let message)):
+            finish(.failed(safe(message ?? L10n.text("Ошибка LLM-воркера."))))
+        case .event(.log(let text)):
+            emit(.log(safe(text)))
         }
     }
 
@@ -122,5 +124,12 @@ final class LLMJob {
         worker?.closeInput()
         worker?.terminateGracefully(after: 2)
         DispatchQueue.main.async { self.onEvent(event) }
+    }
+
+    /// The worker's line readers hold this job through their callbacks; once the
+    /// process is gone, drop them so the job is freed.
+    private func releaseWorker() {
+        worker?.close()
+        worker = nil
     }
 }
