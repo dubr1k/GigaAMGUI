@@ -159,8 +159,6 @@ extension AppController {
         defaults.set(prompt, forKey: "llm.prompt")
     }
 
-    // MARK: - LLM
-
     /// Same shape as the PyQt client's `_collect_llm_settings`, so `llm_service` needs no adapter.
     func llmSettings() throws -> [String: Any] {
         let provider = option("llm.provider", values: Self.llmProviders)
@@ -194,7 +192,7 @@ extension AppController {
         ]
     }
 
-    // MARK: - LLM CLI tools (registry lives in the Python worker)
+    // MARK: - CLI tools (the registry lives in the Python worker)
 
     static let llmToolsCacheKey = "llm.toolsCache"
 

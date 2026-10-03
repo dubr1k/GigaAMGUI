@@ -137,7 +137,7 @@ extension AppController {
         refreshLiveClock()
     }
 
-    // MARK: - Live
+    // MARK: - Session
 
     var liveExports: [String: Any] {
         [

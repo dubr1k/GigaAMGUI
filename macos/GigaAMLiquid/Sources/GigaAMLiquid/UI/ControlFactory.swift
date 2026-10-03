@@ -208,7 +208,6 @@ extension AppController {
         return scroll
     }
 
-    // MARK: - Native controls
     func card(_ title: String, trailing: NSView? = nil, dense: Bool = false) -> GlassView {
         let view = GlassView(radius: dense ? 14 : 16)
         view.translatesAutoresizingMaskIntoConstraints = false

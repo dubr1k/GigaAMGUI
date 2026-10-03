@@ -88,8 +88,6 @@ extension AppController {
         content.addArrangedSubview(stretchy(fillRow([result, useful], spacing: 16)))
     }
 
-    // MARK: - Interaction and persistence
-
     var currentResult: NativeTranscriptionResult? {
         transcriptionResults.first { $0.inputURL == selectedResultURL } ?? transcriptionResults.first
     }
