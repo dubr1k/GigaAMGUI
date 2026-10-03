@@ -1245,7 +1245,8 @@ async def list_tasks(user: str = Depends(require_auth)):
 
 @app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str, user: str = Depends(require_auth)):
-    return _user_task_or_404(task_id, user)
+    # Без result_files: там абсолютные пути сервера; файлы отдают /result и /download
+    return _visible_task_copy(_user_task_or_404(task_id, user))
 
 
 @app.get("/api/tasks/{task_id}/logs")

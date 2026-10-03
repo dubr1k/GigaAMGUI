@@ -195,3 +195,24 @@ def test_result_skips_unknown_formats_persisted_by_older_versions(client, web_di
     response = client.get("/api/tasks/done2/result")
     assert response.status_code == 200
     assert [item["format"] for item in response.json()["result_files"]] == ["txt"]
+
+
+# ==================== видимость задач ====================
+
+
+def test_single_task_does_not_expose_server_paths(client, web_dirs):
+    _, results_dir = web_dirs
+    _completed_task(results_dir, "done3")
+    response = client.get("/api/tasks/done3")
+    assert response.status_code == 200
+    assert response.json()["task_id"] == "done3"
+    assert str(results_dir) not in response.text
+    # тот же вид, что у списка задач
+    listed = client.get("/api/tasks").json()["tasks"]
+    assert listed == [response.json()]
+
+
+def test_single_task_of_another_user_is_404(client, web_dirs):
+    _, results_dir = web_dirs
+    _completed_task(results_dir, "bob1", user="bob")
+    assert client.get("/api/tasks/bob1").status_code == 404
