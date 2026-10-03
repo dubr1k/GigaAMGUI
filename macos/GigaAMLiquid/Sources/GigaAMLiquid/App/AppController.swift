@@ -2,91 +2,95 @@ import AppKit
 import GigaAMLiquidCore
 import UniformTypeIdentifiers
 
-private final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSearchFieldDelegate, NSTextViewDelegate {
-    private let defaults = UserDefaults.standard
-    private var window: NSWindow!
-    private var mainSurface: GlassView!
-    private var pageTitle: NSTextField!
-    private var pageSubtitle: NSTextField!
-    private var pageScroll: NSScrollView!
-    private var navigationButtons: [Page: NSButton] = [:]
-    private var selectedFilesLabel: NSTextField?
-    private var selectedFilesRows: NSStackView?
-    private var selectedFilesCountLabel: NSTextField?
-    private var settingsCategoryButtons: [String: NSButton] = [:]
-    private var currentPage: Page = .processing
-    private var settingsDetail: NSView?
-    private var transcriptEditor: NSTextView?
-    private var promptEditor: NSTextView?
-    private var apiCodeText: NSTextView?
-    private var resultTranscript: NSTextView?
-    private var resultPages: [(key: String, title: String, text: String)] = []
-    private var selectedResultTab = "transcript"
-    private var selectedResultURL: URL?
-    private var selectedOutputFormat: String?
-    private var transcriptionResults: [NativeTranscriptionResult] = []
-    private var transcriptionJob: NativeTranscriptionJob?
-    private var liveJob: LiveSessionJob?
-    private var liveState = "idle"
-    private var liveFinals: [(id: String, text: String, speaker: String?)] = []
-    private var livePartials: [LiveSource: String] = [:]
-    private var liveStartedAt: Date?
-    private var liveTimer: Timer?
-    private var liveAnswerText = ""
-    private var liveDeviceIDs: [String] = []
-    private weak var liveTranscriptView: NSTextView?
-    private weak var liveClockLabel: NSTextField?
-    private weak var liveStatusLabel: NSTextField?
-    private weak var liveFolderLabel: NSTextField?
-    private weak var liveRootField: NSTextField?
+/// The application delegate and the window's controller. Its state lives here;
+/// each page, the shared control factory, media import and persistence are
+/// extensions in their own files (Pages/, UI/, MediaImportFlow.swift,
+/// Persistence.swift). Members used across those files are internal.
+final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSearchFieldDelegate, NSTextViewDelegate {
+    let defaults = UserDefaults.standard
+    var window: NSWindow!
+    var mainSurface: GlassView!
+    var pageTitle: NSTextField!
+    var pageSubtitle: NSTextField!
+    var pageScroll: NSScrollView!
+    var navigationButtons: [Page: NSButton] = [:]
+    var selectedFilesLabel: NSTextField?
+    var selectedFilesRows: NSStackView?
+    var selectedFilesCountLabel: NSTextField?
+    var settingsCategoryButtons: [String: NSButton] = [:]
+    var currentPage: Page = .processing
+    var settingsDetail: NSView?
+    var transcriptEditor: NSTextView?
+    var promptEditor: NSTextView?
+    var apiCodeText: NSTextView?
+    var resultTranscript: NSTextView?
+    var resultPages: [(key: String, title: String, text: String)] = []
+    var selectedResultTab = "transcript"
+    var selectedResultURL: URL?
+    var selectedOutputFormat: String?
+    var transcriptionResults: [NativeTranscriptionResult] = []
+    var transcriptionJob: NativeTranscriptionJob?
+    var liveJob: LiveSessionJob?
+    var liveState = "idle"
+    var liveFinals: [(id: String, text: String, speaker: String?)] = []
+    var livePartials: [LiveSource: String] = [:]
+    var liveStartedAt: Date?
+    var liveTimer: Timer?
+    var liveAnswerText = ""
+    var liveDeviceIDs: [String] = []
+    weak var liveTranscriptView: NSTextView?
+    weak var liveClockLabel: NSTextField?
+    weak var liveStatusLabel: NSTextField?
+    weak var liveFolderLabel: NSTextField?
+    weak var liveRootField: NSTextField?
     /// The folder of the running or last finished session; nil before the first one.
-    private var liveSessionDir: URL?
-    private weak var liveLevelView: ProgressTrackView?
-    private weak var liveStartButton: NSButton?
-    private weak var livePauseButton: NSButton?
-    private weak var liveStopButton: NSButton?
-    private weak var liveQuestionField: NSTextField?
-    private weak var liveAskButton: NSButton?
-    private weak var liveAnswerView: NSTextView?
-    private var llmJob: LLMJob?
-    private var llmToolsQuery: LLMToolsQuery?
-    private var llmToolChecks: [String: LLMToolsQuery] = [:]
+    var liveSessionDir: URL?
+    weak var liveLevelView: ProgressTrackView?
+    weak var liveStartButton: NSButton?
+    weak var livePauseButton: NSButton?
+    weak var liveStopButton: NSButton?
+    weak var liveQuestionField: NSTextField?
+    weak var liveAskButton: NSButton?
+    weak var liveAnswerView: NSTextView?
+    var llmJob: LLMJob?
+    var llmToolsQuery: LLMToolsQuery?
+    var llmToolChecks: [String: LLMToolsQuery] = [:]
     /// Last discovery result per provider name; persisted so the page renders
     /// badges immediately while a fresh scan runs in the worker.
-    private var llmToolStatuses: [String: LLMToolStatus] = [:]
-    private weak var llmProviderStatusLabel: NSTextField?
-    private var llmToolRows: [String: (dot: NSTextField, version: NSTextField, path: NSTextField, check: NSButton)] = [:]
-    private weak var llmRescanButton: NSButton?
-    private var llmResultText = ""
-    private weak var llmResultView: NSTextView?
-    private weak var llmRunButton: NSButton?
-    private weak var llmCancelButton: NSButton?
-    private weak var llmStatusLabel: NSTextField?
-    private weak var llmCopyButton: NSButton?
-    private weak var llmSaveButton: NSButton?
-    private var transcriptionFiles: [URL] = []
-    private var fileStates: [URL: String] = [:]
-    private var cancellationRequested = false
-    private var transcriptionProgress: Double? = 0
-    private var transcriptionStatus = "Нет активных задач"
-    private var transcriptionLog = ""
-    private weak var processingValidationLabel: NSTextField?
-    private weak var startProcessingButton: NSButton?
-    private weak var cancelProcessingButton: NSButton?
-    private weak var progressTrack: ProgressTrackView?
-    private weak var progressPercentage: NSTextField?
-    private weak var progressStatus: NSTextField?
-    private var selectedFileURLs: [URL] = []
-    private var downloadedMediaRoots = Set<URL>()
-    private var mediaDownloadJob: MediaDownloadJob?
-    private var mediaImportAlert: NSAlert?
-    private weak var mediaImportButton: NSButton?
-    private var isClosing = false
-    private var isTerminating = false
-    private var searchField: NSSearchField?
-    private var searchResults = NSView()
-    private var searchCapsule: GlassView?
-    private var searchWidth: NSLayoutConstraint?
+    var llmToolStatuses: [String: LLMToolStatus] = [:]
+    weak var llmProviderStatusLabel: NSTextField?
+    var llmToolRows: [String: (dot: NSTextField, version: NSTextField, path: NSTextField, check: NSButton)] = [:]
+    weak var llmRescanButton: NSButton?
+    var llmResultText = ""
+    weak var llmResultView: NSTextView?
+    weak var llmRunButton: NSButton?
+    weak var llmCancelButton: NSButton?
+    weak var llmStatusLabel: NSTextField?
+    weak var llmCopyButton: NSButton?
+    weak var llmSaveButton: NSButton?
+    var transcriptionFiles: [URL] = []
+    var fileStates: [URL: String] = [:]
+    var cancellationRequested = false
+    var transcriptionProgress: Double? = 0
+    var transcriptionStatus = "Нет активных задач"
+    var transcriptionLog = ""
+    weak var processingValidationLabel: NSTextField?
+    weak var startProcessingButton: NSButton?
+    weak var cancelProcessingButton: NSButton?
+    weak var progressTrack: ProgressTrackView?
+    weak var progressPercentage: NSTextField?
+    weak var progressStatus: NSTextField?
+    var selectedFileURLs: [URL] = []
+    var downloadedMediaRoots = Set<URL>()
+    var mediaDownloadJob: MediaDownloadJob?
+    var mediaImportAlert: NSAlert?
+    weak var mediaImportButton: NSButton?
+    var isClosing = false
+    var isTerminating = false
+    var searchField: NSSearchField?
+    var searchResults = NSView()
+    var searchCapsule: GlassView?
+    var searchWidth: NSLayoutConstraint?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         for (old, current) in [("settings.sentences", "subtitle.sentences"), ("settings.subtitleLines", "subtitle.lines"), ("settings.subtitleCharacters", "subtitle.characters")] {
@@ -121,7 +125,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     /// A SwiftPM executable ships no MainMenu.nib, so without this the menu bar shows only the
     /// app name and ⌘Q/⌘W/⌘C/⌘V have no key equivalents. Standard selectors with a nil target
     /// travel the responder chain (text fields, window, NSApp); own actions target self.
-    private func installMainMenu() {
+    func installMainMenu() {
         let appName = "GigaAM v3"
         func item(_ title: String, _ action: Selector?, keyEquivalent: String = "", modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil) -> NSMenuItem {
             let item = NSMenuItem(title: L10n.text(title), action: action, keyEquivalent: keyEquivalent)
@@ -178,16 +182,16 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         NSApp.helpMenu = helpMenu.submenu
     }
 
-    @objc private func openProjectPage(_ sender: Any?) {
+    @objc func openProjectPage(_ sender: Any?) {
         NSWorkspace.shared.open(URL(string: "https://github.com/dubr1k/GigaAMGUI")!)
     }
 
     /// The smallest window in which every page fits without scrolling; the tallest
     /// page, «Обработка», needs ~870 pt of window height. Pages stretch beyond it.
-    private static let minimumWindowSize = NSSize(width: 1100, height: 880)
-    private static let defaultWindowSize = NSSize(width: 1240, height: 940)
+    static let minimumWindowSize = NSSize(width: 1100, height: 880)
+    static let defaultWindowSize = NSSize(width: 1240, height: 940)
 
-    private func buildWindow() {
+    func buildWindow() {
         // Clamp to the screen: on a display shorter than the minimum the page falls
         // back to scrolling rather than the window hanging off the screen.
         let screen = NSScreen.main?.visibleFrame.size ?? Self.defaultWindowSize
@@ -207,7 +211,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         buildWindowContent()
     }
 
-    private func buildWindowContent() {
+    func buildWindowContent() {
         navigationButtons.removeAll()
         selectedFilesLabel = nil
         selectedFilesRows = nil
@@ -242,7 +246,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         buildMainSurface()
     }
 
-    private func buildSidebar() -> NSView {
+    func buildSidebar() -> NSView {
         let surface = GlassView(drawsBorder: false, drawsSurface: false)
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -299,7 +303,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
 
-    private func brandMark() -> NSView {
+    func brandMark() -> NSView {
         let view = NSView()
         view.wantsLayer = true
         let colors = [Palette.blue, NSColor.black, Palette.ink]
@@ -321,7 +325,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return view
     }
 
-    private func navigationButton(for page: Page) -> NSButton {
+    func navigationButton(for page: Page) -> NSButton {
         let button = NavigationRowButton(title: L10n.text(page.navigationTitle), target: self, action: #selector(navigate(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(page.rawValue)
         button.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: L10n.text(page.navigationTitle))
@@ -340,7 +344,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return button
     }
 
-    private func buildMainSurface() {
+    func buildMainSurface() {
         let header = NSStackView()
         header.orientation = .horizontal
         header.alignment = .centerY
@@ -438,12 +442,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         ])
     }
 
-    @objc private func navigate(_ sender: NSButton) {
+    @objc func navigate(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue, let page = Page(rawValue: id) else { return }
         show(page: page)
     }
 
-    private func show(page: Page) {
+    func show(page: Page) {
         currentPage = page
         pageTitle.stringValue = L10n.text(page.title)
         pageSubtitle.stringValue = L10n.text(page.subtitle)
@@ -480,7 +484,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshProcessingControls()
     }
 
-    private func scrollDocument(for page: Page) -> NSView {
+    func scrollDocument(for page: Page) -> NSView {
         let document = AutoLayoutDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         let content = vertical([], spacing: 16)
@@ -505,7 +509,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return document
     }
 
-    private func buildProcessing(into content: NSStackView) {
+    func buildProcessing(into content: NSStackView) {
         let upload = card("Загрузка файлов")
         let zone = DropZoneView()
         let zoneText = vertical([
@@ -626,7 +630,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         content.addArrangedSubview(progressCard())
     }
 
-    private func buildResult(into content: NSStackView) {
+    func buildResult(into content: NSStackView) {
         let selected = currentResult
         let outputs = existingOutputs
         let result = card("Результат обработки")
@@ -712,10 +716,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         content.addArrangedSubview(stretchy(fillRow([result, useful], spacing: 16)))
     }
 
-    private static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
-    private static let liveDiarizationModeValues = ["off", "live_estimate", "after_stop"]
+    static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
+    static let liveDiarizationModeValues = ["off", "live_estimate", "after_stop"]
 
-    private func buildLive(into content: NSStackView) {
+    func buildLive(into content: NSStackView) {
         let source = card("Источник аудио", dense: true)
         let sourceBody = contentStack(source)
         sourceBody.spacing = 5
@@ -847,9 +851,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// Mirrors `cli_tools.PROVIDERS` (order included). The Python registry is the
     /// source of truth; this copy only seeds the popup before the worker answers.
-    private static let llmProviders = ["API", "Claude Code", "Codex", "OpenCode", "Pi", "oh-my-pi", "Other"]
+    static let llmProviders = ["API", "Claude Code", "Codex", "OpenCode", "Pi", "oh-my-pi", "Other"]
     /// Example flags shown as placeholders; each is a real option of that CLI.
-    private static let llmArgsExamples: [String: String] = [
+    static let llmArgsExamples: [String: String] = [
         "claude": "--permission-mode bypassPermissions",
         "codex": "--dangerously-bypass-approvals-and-sandbox",
         "opencode": "--agent build",
@@ -858,12 +862,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     ]
     /// CLI providers with their settings-key prefix, default binary and whether the
     /// tool takes an inner `--provider` (pi / oh-my-pi).
-    private static let llmCliProviders: [(name: String, prefix: String, binary: String, hasProvider: Bool)] = [
+    static let llmCliProviders: [(name: String, prefix: String, binary: String, hasProvider: Bool)] = [
         ("Claude Code", "claude", "claude", false), ("Codex", "codex", "codex", false),
         ("OpenCode", "opencode", "opencode", false), ("Pi", "pi", "pi", true), ("oh-my-pi", "omp", "omp", true),
     ]
 
-    private func buildLLM(into content: NSStackView) {
+    func buildLLM(into content: NSStackView) {
         let source = card("Исходный текст")
         let sourceBody = contentStack(source)
         sourceBody.spacing = 10
@@ -943,7 +947,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshLLMControls()
     }
 
-    private func buildAPI(into content: NSStackView) {
+    func buildAPI(into content: NSStackView) {
         let examples = card("Примеры запросов")
         let body = contentStack(examples)
         body.spacing = 10
@@ -980,7 +984,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         content.addArrangedSubview(stretchy(fillRow([examples, docs], spacing: 16)))
     }
 
-    private func buildHistory(into content: NSStackView) {
+    func buildHistory(into content: NSStackView) {
         let history = card("История")
         let body = contentStack(history)
         body.spacing = 18
@@ -1048,7 +1052,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         content.addArrangedSubview(stretchy(history))
     }
 
-    private func buildSettings(into content: NSStackView) {
+    func buildSettings(into content: NSStackView) {
         settingsCategoryButtons.removeAll()
         let names = ["Общие", "Модели", "Обработка", "Диаризация", "Аудио", "LLM", "API", "Пути", "О приложении"]
         let stored = defaults.string(forKey: "settings.category") ?? "Общие"
@@ -1066,7 +1070,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         applySettingsCategorySelection(selected)
     }
 
-    private func settingsPage(_ category: String) -> NSView {
+    func settingsPage(_ category: String) -> NSView {
         let surface = GlassView(radius: 28)
         let body = vertical([label(category, size: 24, weight: .medium, color: Palette.ink)], spacing: 24)
         switch category {
@@ -1215,7 +1219,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// A transparent, vertically scrolling wrapper for a settings body that may be
     /// taller than its panel. Outer page scrolling takes over at either end.
-    private func scrollable(_ body: NSStackView, inset: CGFloat = 6) -> NSScrollView {
+    func scrollable(_ body: NSStackView, inset: CGFloat = 6) -> NSScrollView {
         // Auto Layout document: its height follows the stack, so the scroll view
         // knows the real content height without a manual layout pass.
         let document = AutoLayoutDocumentView()
@@ -1242,7 +1246,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return scroll
     }
 
-    private func size(_ view: NSView, width: CGFloat, height: CGFloat) {
+    func size(_ view: NSView, width: CGFloat, height: CGFloat) {
         view.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             view.widthAnchor.constraint(equalToConstant: width),
@@ -1250,7 +1254,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         ])
     }
 
-    private func vertical(_ views: [NSView], spacing: CGFloat, alignment: NSLayoutConstraint.Attribute = .width) -> NSStackView {
+    func vertical(_ views: [NSView], spacing: CGFloat, alignment: NSLayoutConstraint.Attribute = .width) -> NSStackView {
         let stack = ContentStackView()
         stack.orientation = .vertical
         stack.fillsWidth = alignment == .width
@@ -1272,7 +1276,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     /// every level on the way down: the row in the page, the card in its column,
     /// the editor or list in its card.
     @discardableResult
-    private func stretchy<View: NSView>(_ view: View) -> View {
+    func stretchy<View: NSView>(_ view: View) -> View {
         view.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         // A card's glass effect view hosts SwiftUI content that hugs its own height
         // at 250; relax it too, or the card resists growing as much as a label does.
@@ -1288,26 +1292,26 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// Columns that all take the row's full height: with one column (or a card in
     /// it) left without a fixed height, that part stretches with the window.
-    private func fillRow(_ views: [NSView], spacing: CGFloat) -> NSStackView {
+    func fillRow(_ views: [NSView], spacing: CGFloat) -> NSStackView {
         let row = horizontal(views, spacing: spacing)
         for view in views { view.heightAnchor.constraint(equalTo: row.heightAnchor).isActive = true }
         return row
     }
 
-    private func equalColumns(_ views: [NSView], spacing: CGFloat) -> NSStackView {
+    func equalColumns(_ views: [NSView], spacing: CGFloat) -> NSStackView {
         let stack = horizontal(views, spacing: spacing)
         stack.distribution = .fillEqually
         return stack
     }
 
-    private func flexibleSpace() -> NSView {
+    func flexibleSpace() -> NSView {
         let view = NSView()
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return view
     }
 
-    private func centered(_ view: NSView) -> NSView {
+    func centered(_ view: NSView) -> NSView {
         let wrapper = NSView()
         view.translatesAutoresizingMaskIntoConstraints = false
         wrapper.addSubview(view)
@@ -1320,7 +1324,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return wrapper
     }
 
-    private func embed(_ child: NSView, in parent: NSView, inset: CGFloat, top: CGFloat? = nil, fillHeight: Bool = false) {
+    func embed(_ child: NSView, in parent: NSView, inset: CGFloat, top: CGFloat? = nil, fillHeight: Bool = false) {
         child.translatesAutoresizingMaskIntoConstraints = false
         parent.addSubview(child)
         NSLayoutConstraint.activate([
@@ -1333,7 +1337,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         ])
     }
 
-    private func insetPanel() -> NSView {
+    func insetPanel() -> NSView {
         let view = NSView()
         view.wantsLayer = true
         view.layer?.cornerRadius = 12
@@ -1343,7 +1347,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return view
     }
 
-    private func wrappedLabel(_ text: String, size: CGFloat, color: NSColor) -> NSTextField {
+    func wrappedLabel(_ text: String, size: CGFloat, color: NSColor) -> NSTextField {
         let field = label(text, size: size, color: color)
         field.maximumNumberOfLines = 0
         field.lineBreakMode = .byWordWrapping
@@ -1352,7 +1356,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// A `nil` width marks the column that takes the remaining width; rows built
     /// with the same widths line up under the headings.
-    private func columnHeadings(_ columns: [(String, CGFloat?)], trailing: CGFloat = 0) -> NSView {
+    func columnHeadings(_ columns: [(String, CGFloat?)], trailing: CGFloat = 0) -> NSView {
         var views = columns.map { title, width -> NSView in
             let text = label(title, size: 12, color: Palette.muted)
             if let width {
@@ -1371,7 +1375,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return horizontal(views, spacing: 8)
     }
 
-    private func symbol(_ name: String, size: CGFloat) -> NSImageView {
+    func symbol(_ name: String, size: CGFloat) -> NSImageView {
         let image = NSImageView()
         image.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
         image.contentTintColor = Palette.blue
@@ -1380,7 +1384,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     /// `minHeight` instead of `height` makes the editor the stretchy part of its card.
-    private func textEditor(_ value: String, key: String?, height: CGFloat?, minHeight: CGFloat? = nil) -> NSScrollView {
+    func textEditor(_ value: String, key: String?, height: CGFloat?, minHeight: CGFloat? = nil) -> NSScrollView {
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 280, height: height ?? 330))
         text.string = value
         text.isRichText = false
@@ -1417,7 +1421,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return scroll
     }
 
-    private func apiExample(_ language: Int) -> String {
+    func apiExample(_ language: Int) -> String {
         switch language {
         case 1:
             return """
@@ -1463,7 +1467,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     // MARK: - Native controls
-    private func card(_ title: String, trailing: NSView? = nil, dense: Bool = false) -> GlassView {
+    func card(_ title: String, trailing: NSView? = nil, dense: Bool = false) -> GlassView {
         let view = GlassView(radius: dense ? 14 : 16)
         view.translatesAutoresizingMaskIntoConstraints = false
         let titleLabel = label(title, size: dense ? 14 : 17, weight: .medium, color: Palette.ink)
@@ -1489,17 +1493,17 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return view
     }
 
-    private func compactCard(_ title: String) -> GlassView {
+    func compactCard(_ title: String) -> GlassView {
         card(title, dense: true)
     }
 
-    private func contentStack(_ card: GlassView) -> NSStackView {
+    func contentStack(_ card: GlassView) -> NSStackView {
         guard let stack = card.contentView.subviews.compactMap({ $0 as? NSStackView }).first(where: { $0.identifier?.rawValue == "card.body" }) else { fatalError("Card body missing") }
         return stack
     }
 
 
-    private func compactField(_ title: String, control: NSView) -> NSView {
+    func compactField(_ title: String, control: NSView) -> NSView {
         let stack = vertical([label(title, size: 11, color: Palette.muted), control], spacing: 4)
         control.heightAnchor.constraint(equalToConstant: 28).isActive = true
         control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -1507,7 +1511,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return stack
     }
 
-    private func settingsField(_ title: String, control: NSView) -> NSView {
+    func settingsField(_ title: String, control: NSView) -> NSView {
         let stack = vertical([label(title, size: 12, color: Palette.muted), control], spacing: 8)
         control.heightAnchor.constraint(equalToConstant: 36).isActive = true
         control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -1519,14 +1523,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return stack
     }
 
-    private func inactive(_ view: NSView) -> NSView {
+    func inactive(_ view: NSView) -> NSView {
         if let control = view as? NSControl { control.isEnabled = false }
         view.subviews.forEach { _ = inactive($0) }
         view.toolTip = L10n.text("Параметр задаёт рабочий сервис; отдельное управление недоступно.")
         return view
     }
 
-    private func popup(_ values: [String], key: String) -> NSPopUpButton {
+    func popup(_ values: [String], key: String) -> NSPopUpButton {
         let popup = GlassPopupButton()
         popup.cell = GlassPopupCell(textCell: "", pullsDown: false)
         popup.addItems(withTitles: values)
@@ -1542,7 +1546,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     /// Secure text field whose value lives in the Keychain (`SecureStore`) under `account`; `key` is only the control identifier.
-    private func secureField(account: String, key: String) -> NSTextField {
+    func secureField(account: String, key: String) -> NSTextField {
         let value = SecureStore.string(for: account) ?? ""
         let field = RoundedSecureTextField(string: value)
         field.cell = CenteredSecureTextCell(textCell: value)
@@ -1561,7 +1565,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return field
     }
 
-    private func editableText(_ value: String, key: String, placeholder: String) -> NSTextField {
+    func editableText(_ value: String, key: String, placeholder: String) -> NSTextField {
         let field = RoundedTextField(string: value)
         field.cell = CenteredTextCell(textCell: value)
         field.isEditable = true
@@ -1580,7 +1584,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return field
     }
 
-    private func toggleRow(_ title: String, key: String, defaultValue: Bool) -> NSView {
+    func toggleRow(_ title: String, key: String, defaultValue: Bool) -> NSView {
         let text = wrappedLabel(title, size: 12, color: Palette.body)
         text.maximumNumberOfLines = 2
         let toggle = ThemedSwitch()
@@ -1597,7 +1601,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return row
     }
 
-    private func progressCard() -> GlassView {
+    func progressCard() -> GlassView {
         let view = GlassView(radius: 16)
         let progress = ProgressTrackView()
         progress.heightAnchor.constraint(equalToConstant: 8).isActive = true
@@ -1630,7 +1634,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return view
     }
 
-    private func checkbox(_ title: String, key: String, defaultValue: Bool) -> NSButton {
+    func checkbox(_ title: String, key: String, defaultValue: Bool) -> NSButton {
         let box = RoundedCheckButton(checkboxWithTitle: L10n.text(title), target: self, action: #selector(switchChanged(_:)))
 
         box.identifier = NSUserInterfaceItemIdentifier(key)
@@ -1642,7 +1646,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return box
     }
 
-    private func template(_ title: String, _ detail: String) -> NSButton {
+    func template(_ title: String, _ detail: String) -> NSButton {
         let button = PaddedButton(title: L10n.text(title), target: self, action: #selector(selectTemplate(_:)))
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
@@ -1668,7 +1672,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return button
     }
 
-    private func documentationRow(_ title: String) -> NSButton {
+    func documentationRow(_ title: String) -> NSButton {
         let button = button(title, action: #selector(openDocumentation(_:)), height: 46)
         button.identifier = NSUserInterfaceItemIdentifier(title)
         button.alignment = .left
@@ -1678,7 +1682,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return button
     }
 
-    private func settingsCategoryButton(_ title: String, selected: Bool) -> NSButton {
+    func settingsCategoryButton(_ title: String, selected: Bool) -> NSButton {
         let button = NavigationRowButton(title: L10n.text(title), target: self, action: #selector(selectSettingsCategory(_:)))
         button.identifier = NSUserInterfaceItemIdentifier("settings.category.\(title)")
         button.isBordered = false
@@ -1695,7 +1699,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return button
     }
 
-    private func applySettingsCategorySelection(_ selectedTitle: String) {
+    func applySettingsCategorySelection(_ selectedTitle: String) {
         guard let settingsDetail, settingsCategoryButtons[selectedTitle] != nil else { return }
         window.makeFirstResponder(nil)
         defaults.set(selectedTitle, forKey: "settings.category")
@@ -1709,7 +1713,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
 
-    private func codeView(_ code: String) -> NSScrollView {
+    func codeView(_ code: String) -> NSScrollView {
         let scroll = textEditor(code, key: nil, height: nil)
         guard let text = scroll.documentView as? NSTextView else { return scroll }
         text.isEditable = false
@@ -1724,7 +1728,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
 
 
-    private func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor) -> NSTextField {
+    func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: L10n.text(text))
         label.font = NSFont.systemFont(ofSize: size, weight: weight)
         label.textColor = color
@@ -1735,7 +1739,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return label
     }
 
-    private func horizontal(_ views: [NSView], spacing: CGFloat) -> NSStackView {
+    func horizontal(_ views: [NSView], spacing: CGFloat) -> NSStackView {
         for view in views { view.translatesAutoresizingMaskIntoConstraints = false }
         let stack = NSStackView(views: views)
         stack.orientation = .horizontal
@@ -1748,13 +1752,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return stack
     }
 
-    private func divider() -> NSBox {
+    func divider() -> NSBox {
         let box = NSBox()
         box.boxType = .separator
         return box
     }
 
-    private func button(_ title: String, primary: Bool = false, action: Selector? = nil, height: CGFloat = 38) -> NSButton {
+    func button(_ title: String, primary: Bool = false, action: Selector? = nil, height: CGFloat = 38) -> NSButton {
         let button = PaddedButton(title: L10n.text(title), target: self, action: action)
         button.font = NSFont.systemFont(ofSize: 14, weight: .regular)
         button.contentTintColor = primary ? (Palette.isDark ? .black : .white) : Palette.ink
@@ -1776,13 +1780,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return button
     }
 
-    private func pill(_ title: String, width: CGFloat, action: Selector?) -> NSButton {
+    func pill(_ title: String, width: CGFloat, action: Selector?) -> NSButton {
         let button = button(title, action: action)
         button.widthAnchor.constraint(equalToConstant: width).isActive = true
         return button
     }
 
-    private func iconButton(_ name: String, hint: String, action: Selector? = nil) -> NSButton {
+    func iconButton(_ name: String, hint: String, action: Selector? = nil) -> NSButton {
         let button = CircularIconButton(image: NSImage(systemSymbolName: name, accessibilityDescription: L10n.text(hint)) ?? NSImage(), target: self, action: action)
         button.isBordered = false
         button.setAccessibilityLabel(L10n.text(hint))
@@ -1796,26 +1800,26 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     // MARK: - Interaction and persistence
 
-    private var currentResult: NativeTranscriptionResult? {
+    var currentResult: NativeTranscriptionResult? {
         transcriptionResults.first { $0.inputURL == selectedResultURL } ?? transcriptionResults.first
     }
 
-    private var existingOutputs: [String: URL] {
+    var existingOutputs: [String: URL] {
         (currentResult?.outputFiles ?? [:]).filter { FileManager.default.isReadableFile(atPath: $0.value.path) }
     }
 
-    private func option(_ key: String, values: [String]) -> String {
+    func option(_ key: String, values: [String]) -> String {
         let stored = defaults.string(forKey: key) ?? values[0]
         return values.contains(stored) ? stored : values[0]
     }
 
-    private func enabledOption(_ key: String, defaultValue: Bool) -> Bool {
+    func enabledOption(_ key: String, defaultValue: Bool) -> Bool {
         defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
     }
 
-    private static let speakerCountValues = ["Авто", "1", "2", "3", "4", "5", "6"]
+    static let speakerCountValues = ["Авто", "1", "2", "3", "4", "5", "6"]
 
-    private func speakerCountPopup() -> NSPopUpButton {
+    func speakerCountPopup() -> NSPopUpButton {
         let control = popup(Self.speakerCountValues, key: "processing.speakers")
         control.toolTip = L10n.text("Sortformer определяет спикеров автоматически (до 4); ручное значение доступно для pyannote и ONNX.")
         return control
@@ -1823,19 +1827,19 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// Sortformer infers the speaker set itself (up to 4); a manual count is only
     /// meaningful for pyannote and ONNX clustering.
-    private var manualSpeakerCountAvailable: Bool {
+    var manualSpeakerCountAvailable: Bool {
         enabledOption("settings.diarization", defaultValue: false)
             && option("settings.diarizationEngine", values: ["pyannote", "onnx", "sortformer"]) != "sortformer"
     }
 
     /// Mirrors the PyQt client: a count hidden behind a disabled control must not
     /// resurface when the engine or the diarization toggle changes again.
-    private func resetManualSpeakerCountIfUnavailable() {
+    func resetManualSpeakerCountIfUnavailable() {
         guard !manualSpeakerCountAvailable else { return }
         defaults.removeObject(forKey: "processing.speakers")
     }
 
-    private var outputFormats: [String] {
+    var outputFormats: [String] {
         let diarization = enabledOption("settings.diarization", defaultValue: false)
         let choices: [(String, String, Bool)] = [
             ("output.txt", "txt", true), ("output.timestamps", "txt_timecodes", true),
@@ -1846,7 +1850,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func transcriptionSettings() -> NativeTranscriptionSettings {
+    func transcriptionSettings() -> NativeTranscriptionSettings {
         var settings = NativeTranscriptionSettings()
         settings.formats = outputFormats
         settings.backend = option("settings.backend", values: ["auto", "mlx", "onnx", "pytorch"])
@@ -1866,13 +1870,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// The field persists on every keystroke, so a cleared field stores "" rather
     /// than nil; an empty path means "next to the source file", not a default folder.
-    private var outputPathText: String {
+    var outputPathText: String {
         (defaults.string(forKey: "output.path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Where results go: `.besideSource` for an empty field, `.folder` for a usable
     /// path, `nil` for a path that is not absolute or not writable.
-    private enum OutputDestination {
+    enum OutputDestination {
         case besideSource
         case folder(URL)
 
@@ -1882,11 +1886,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private var outputDestination: OutputDestination? {
+    var outputDestination: OutputDestination? {
         outputPathText.isEmpty ? .besideSource : outputDirectory.map(OutputDestination.folder)
     }
 
-    private var outputDirectory: URL? {
+    var outputDirectory: URL? {
         let path = (outputPathText as NSString).expandingTildeInPath
         guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
         let destination = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
@@ -1900,7 +1904,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return directory.boolValue && FileManager.default.isWritableFile(atPath: ancestor.path) ? destination : nil
     }
 
-    private func refreshProcessingControls() {
+    func refreshProcessingControls() {
         let busy = transcriptionJob != nil || mediaDownloadJob != nil || liveJob != nil || isClosing
         func update(_ view: NSView) {
             if let control = view as? NSControl, let key = control.identifier?.rawValue {
@@ -1932,7 +1936,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         cancelProcessingButton?.title = L10n.text(cancellationRequested ? "Остановка запрошена" : "Остановить после текущего файла")
     }
 
-    private func refreshProgress() {
+    func refreshProgress() {
         progressTrack?.fraction = transcriptionProgress ?? 0
         progressPercentage?.stringValue = transcriptionProgress.map { "\(Int($0 * 100))%" } ?? "—"
         let status = cancellationRequested && transcriptionJob != nil ? L10n.text("Остановка после текущего файла.") + " " + L10n.text(transcriptionStatus) : L10n.text(transcriptionStatus)
@@ -1941,7 +1945,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         progressStatus?.invalidateIntrinsicContentSize()
     }
 
-    @objc private func startProcessing(_ sender: Any?) {
+    @objc func startProcessing(_ sender: Any?) {
         window.makeFirstResponder(nil)
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let settings = transcriptionSettings()
@@ -1988,7 +1992,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         job.start()
     }
 
-    @objc private func cancelProcessing(_ sender: Any?) {
+    @objc func cancelProcessing(_ sender: Any?) {
         guard let job = transcriptionJob, !cancellationRequested else { return }
         cancellationRequested = true
         job.cancel()
@@ -1999,12 +2003,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     /// The worker already logs in plain Russian (src.core.processor); the English
     /// UI translates it with the table shared with PyQt (LogTranslation.swift,
     /// generated from src/core/log_i18n.py).
-    private func appendProcessingLog(_ message: String) {
+    func appendProcessingLog(_ message: String) {
         transcriptionLog += (L10n.isEnglish ? LogTranslation.englishText(message) : message) + "\n"
         if transcriptionLog.utf8.count > 131_072 { transcriptionLog = String(transcriptionLog.suffix(65_536)) }
     }
 
-    private func receiveTranscriptionEvent(_ event: NativeTranscriptionEvent) {
+    func receiveTranscriptionEvent(_ event: NativeTranscriptionEvent) {
         switch event {
         case .log(let message):
             appendProcessingLog(message)
@@ -2036,7 +2040,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func finishTranscription(status: String, pendingState: String) {
+    func finishTranscription(status: String, pendingState: String) {
         transcriptionJob = nil
         transcriptionStatus = status
         for file in transcriptionFiles where fileStates[file] == "В очереди" || fileStates[file] == "В обработке" { fileStates[file] = pendingState }
@@ -2046,11 +2050,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshProgress()
     }
 
-    private func replyWhenJobsFinished() {
+    func replyWhenJobsFinished() {
         if isTerminating && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil && liveJob == nil { NSApp.reply(toApplicationShouldTerminate: true) }
     }
 
-    @objc private func showProcessingLog(_ sender: Any?) {
+    @objc func showProcessingLog(_ sender: Any?) {
         let alert = NSAlert()
         alert.messageText = L10n.text("Журнал обработки")
         alert.addButton(withTitle: L10n.text("Понятно"))
@@ -2070,7 +2074,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func popupChanged(_ sender: NSPopUpButton) {
+    @objc func popupChanged(_ sender: NSPopUpButton) {
         guard let key = sender.identifier?.rawValue, let value = sender.titleOfSelectedItem else { return }
         if key == "live.microphone" {
             // Titles are device names; persist the stable device id instead.
@@ -2084,7 +2088,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshProcessingControls()
     }
 
-    @objc private func switchChanged(_ sender: NSButton) {
+    @objc func switchChanged(_ sender: NSButton) {
         guard let key = sender.identifier?.rawValue else { return }
         defaults.set(sender.state == .on, forKey: key)
         if key == "settings.liquidGlass" { rebuildInterface() }
@@ -2092,7 +2096,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshProcessingControls()
     }
 
-    @objc private func textChanged(_ sender: NSTextField) {
+    @objc func textChanged(_ sender: NSTextField) {
         guard let key = sender.identifier?.rawValue else { return }
         if key == "settings.hfToken" {
             do {
@@ -2121,7 +2125,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func chooseFiles(_ sender: Any?) {
+    @objc func chooseFiles(_ sender: Any?) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -2137,13 +2141,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     /// Shared by the open panel and drag & drop: normalises paths and skips duplicates.
-    private func appendSelectedFiles(_ urls: [URL]) {
+    func appendSelectedFiles(_ urls: [URL]) {
         var known = Set(selectedFileURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
         selectedFileURLs.append(contentsOf: urls.map { $0.standardizedFileURL.resolvingSymlinksInPath() }.filter { known.insert($0).inserted })
         refreshSelectedFiles()
     }
 
-    private func acceptDroppedFiles(_ urls: [URL]) -> Bool {
+    func acceptDroppedFiles(_ urls: [URL]) -> Bool {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil, window.attachedSheet == nil else { return false }
         // Same rules as the PyQt client: a dropped folder is scanned recursively for
         // media by extension; documents are ignored, not rejected loudly.
@@ -2154,12 +2158,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return true
     }
 
-    @objc private func chooseMediaURL(_ sender: Any?) {
+    @objc func chooseMediaURL(_ sender: Any?) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil, window.attachedSheet == nil else { return }
         presentMediaURLSheet()
     }
 
-    private func presentMediaURLSheet(value: String = "", error: String? = nil) {
+    func presentMediaURLSheet(value: String = "", error: String? = nil) {
         guard !isClosing else { return }
         let alert = NSAlert()
         alert.messageText = L10n.text("Ссылка на медиа")
@@ -2212,7 +2216,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         alert.window.makeFirstResponder(input)
     }
 
-    private func downloadMedia(_ url: URL) {
+    func downloadMedia(_ url: URL) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let alert = NSAlert()
         alert.messageText = L10n.text("Загрузка медиа")
@@ -2281,14 +2285,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return .terminateLater
     }
 
-    @objc private func clearFiles(_ sender: Any?) {
+    @objc func clearFiles(_ sender: Any?) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         selectedFileURLs.removeAll()
         cleanupDownloadedMedia()
         refreshSelectedFiles()
     }
 
-    @objc private func removeSelectedFile(_ sender: NSButton) {
+    @objc func removeSelectedFile(_ sender: NSButton) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil, liveJob == nil,
               selectedFileURLs.indices.contains(sender.tag) else { return }
         selectedFileURLs.remove(at: sender.tag)
@@ -2296,13 +2300,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshSelectedFiles()
     }
 
-    private func mediaCacheRoot() -> URL? {
+    func mediaCacheRoot() -> URL? {
         try? FileManager.default.url(
             for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         ).appendingPathComponent("GigaAMLiquid/Media", isDirectory: true).standardizedFileURL
     }
 
-    private func rememberDownloadedMedia(_ files: [URL]) {
+    func rememberDownloadedMedia(_ files: [URL]) {
         guard let cache = mediaCacheRoot() else { return }
         let prefix = cache.path + "/"
         for file in files {
@@ -2311,7 +2315,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func cleanupDownloadedMedia() {
+    func cleanupDownloadedMedia() {
         let manager = FileManager.default
         if let cache = mediaCacheRoot(), downloadedMediaRoots.isEmpty {
             guard manager.fileExists(atPath: cache.path) else { return }
@@ -2335,7 +2339,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         downloadedMediaRoots = failed
     }
 
-    @objc private func chooseOutputFolder(_ sender: Any?) {
+    @objc func chooseOutputFolder(_ sender: Any?) {
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -2348,7 +2352,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func chooseTranscript(_ sender: Any?) {
+    @objc func chooseTranscript(_ sender: Any?) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.plainText]
@@ -2364,7 +2368,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func selectTemplate(_ sender: NSButton) {
+    @objc func selectTemplate(_ sender: NSButton) {
         let prompt: String
         switch sender.identifier?.rawValue {
         case "Краткое содержание": prompt = "Сделай краткое содержание транскрипции и выдели основные решения."
@@ -2379,7 +2383,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     // MARK: - Live
 
-    private var liveExports: [String: Any] {
+    var liveExports: [String: Any] {
         [
             "txt": enabledOption("live.txt", defaultValue: true),
             "txt_timecodes": enabledOption("live.timestamps", defaultValue: false),
@@ -2395,18 +2399,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     /// Like `outputPathText`: an empty field means the default folder.
-    private var liveSessionRootText: String {
+    var liveSessionRootText: String {
         let stored = (defaults.string(forKey: "live.sessionRoot") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return stored.isEmpty ? "~/Documents/GigaAM/live" : stored
     }
 
-    private var liveSessionRoot: URL? {
+    var liveSessionRoot: URL? {
         let path = (liveSessionRootText as NSString).expandingTildeInPath
         guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
         return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 
-    @objc private func startLive(_ sender: Any?) {
+    @objc func startLive(_ sender: Any?) {
         window.makeFirstResponder(nil)
         if liveState == "paused" { liveJob?.resume(); return }
         guard liveJob == nil, transcriptionJob == nil, mediaDownloadJob == nil, llmJob == nil, !isClosing else {
@@ -2434,7 +2438,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func launchLive(root: URL, withSystem: Bool) {
+    func launchLive(root: URL, withSystem: Bool) {
         var settings = LiveSessionSettings(sessionRoot: root, sources: withSystem ? [.mic, .system] : [.mic])
         let device = defaults.string(forKey: "live.microphone") ?? "default"
         settings.microphoneDeviceID = device == "default" ? nil : device
@@ -2477,7 +2481,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         created.start()
     }
 
-    private func refreshLiveFolderLabel() {
+    func refreshLiveFolderLabel() {
         func short(_ url: URL) -> String { (url.path as NSString).abbreviatingWithTildeInPath }
         let text: String
         if let directory = liveSessionDir {
@@ -2492,7 +2496,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         liveFolderLabel?.toolTip = [(liveSessionDir ?? liveSessionRoot)?.path, hint].compactMap { $0 }.joined(separator: "\n")
     }
 
-    @objc private func revealLiveSession(_ sender: Any?) {
+    @objc func revealLiveSession(_ sender: Any?) {
         if let directory = liveSessionDir, FileManager.default.fileExists(atPath: directory.path) {
             NSWorkspace.shared.open(directory)
             return
@@ -2506,7 +2510,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         NSWorkspace.shared.open(root)
     }
 
-    @objc private func chooseLiveSessionRoot(_ sender: Any?) {
+    @objc func chooseLiveSessionRoot(_ sender: Any?) {
         guard liveJob == nil, !isClosing else { return }
         // A focused root field would write its old text back over the pick when
         // it ends editing.
@@ -2526,13 +2530,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func pauseLive(_ sender: Any?) { liveJob?.pause() }
-    @objc private func stopLive(_ sender: Any?) {
+    @objc func pauseLive(_ sender: Any?) { liveJob?.pause() }
+    @objc func stopLive(_ sender: Any?) {
         liveStatusLabel?.stringValue = L10n.text("Остановка…")
         liveJob?.stop()
     }
 
-    @objc private func askLive(_ sender: Any?) {
+    @objc func askLive(_ sender: Any?) {
         guard let job = liveJob else { return }
         let question = (liveQuestionField?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
@@ -2543,9 +2547,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         job.ask(question, settings: settings)
     }
 
-    @objc private func cancelAskLive(_ sender: Any?) { liveJob?.cancelAsk() }
+    @objc func cancelAskLive(_ sender: Any?) { liveJob?.cancelAsk() }
 
-    private func receiveLiveEvent(_ event: LiveSessionEvent) {
+    func receiveLiveEvent(_ event: LiveSessionEvent) {
         switch event {
         case .loading:
             liveStatusLabel?.stringValue = L10n.text("Загрузка модели распознавания… Запись начнётся, когда она будет готова.")
@@ -2612,7 +2616,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func finishLive(status: String) {
+    func finishLive(status: String) {
         liveJob = nil
         liveState = "idle"
         liveTimer?.invalidate()
@@ -2631,7 +2635,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         refreshProcessingControls()
     }
 
-    private func renderLiveTranscript() {
+    func renderLiveTranscript() {
         var lines = liveFinals.map { ($0.speaker.map { "\($0): " } ?? "") + $0.text }
         for (source, text) in livePartials.sorted(by: { $0.key.rawValue < $1.key.rawValue }) { lines.append("[\(source.rawValue) …] \(text)") }
         liveTranscriptView?.string = lines.isEmpty ? L10n.text("Нет фрагментов. Начните запись.") : lines.joined(separator: "\n")
@@ -2640,7 +2644,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     /// `scrollToEndOfDocument` also scrolls horizontally to the end of a long line;
     /// revealing the last character keeps the wrapped text pinned to the left edge.
-    private func scrollToTail(_ view: NSTextView?) {
+    func scrollToTail(_ view: NSTextView?) {
         guard let view else { return }
         view.scrollRangeToVisible(NSRange(location: (view.string as NSString).length, length: 0))
         if let clip = view.enclosingScrollView?.contentView, clip.bounds.origin.x != 0 {
@@ -2649,13 +2653,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func refreshLiveClock() {
+    func refreshLiveClock() {
         guard let started = liveStartedAt else { liveClockLabel?.stringValue = "00:00:00"; return }
         let seconds = Int(Date().timeIntervalSince(started))
         liveClockLabel?.stringValue = String(format: "%02d:%02d:%02d", seconds / 3600, seconds % 3600 / 60, seconds % 60)
     }
 
-    private func refreshLiveControls() {
+    func refreshLiveControls() {
         let running = liveJob != nil
         liveStartButton?.isEnabled = !isClosing && (!running || liveState == "paused") && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil
         livePauseButton?.isEnabled = running && liveState == "recording"
@@ -2675,7 +2679,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     // MARK: - LLM
 
     /// Same shape as the PyQt client's `_collect_llm_settings`, so `llm_service` needs no adapter.
-    private func llmSettings() throws -> [String: Any] {
+    func llmSettings() throws -> [String: Any] {
         let provider = option("llm.provider", values: Self.llmProviders)
         func text(_ key: String, _ fallback: String = "") -> String {
             let value = (defaults.string(forKey: key) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2709,21 +2713,21 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     // MARK: - LLM CLI tools (registry lives in the Python worker)
 
-    private static let llmToolsCacheKey = "llm.toolsCache"
+    static let llmToolsCacheKey = "llm.toolsCache"
 
-    private func loadLLMToolsCache() {
+    func loadLLMToolsCache() {
         guard let data = defaults.data(forKey: Self.llmToolsCacheKey),
               let objects = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
         for status in objects.compactMap(LLMToolStatus.init) { llmToolStatuses[status.provider] = status }
     }
 
-    private func saveLLMToolsCache() {
+    func saveLLMToolsCache() {
         let objects = llmToolStatuses.values.map(\.dictionary)
         if let data = try? JSONSerialization.data(withJSONObject: objects) { defaults.set(data, forKey: Self.llmToolsCacheKey) }
     }
 
     /// User-entered paths, keyed by registry id, for the worker's `overrides`.
-    private func llmToolOverrides() -> [String: String] {
+    func llmToolOverrides() -> [String: String] {
         var overrides: [String: String] = [:]
         for tool in Self.llmCliProviders {
             let value = (defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2732,7 +2736,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return overrides
     }
 
-    private func refreshLLMTools(fresh: Bool) {
+    func refreshLLMTools(fresh: Bool) {
         guard llmToolsQuery == nil, !isClosing else { return }
         llmRescanButton?.isEnabled = false
         let query = LLMToolsQuery.scan(overrides: llmToolOverrides(), fresh: fresh) { [weak self] result in
@@ -2756,11 +2760,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         query.start()
     }
 
-    @objc private func rescanLLMTools(_ sender: Any?) {
+    @objc func rescanLLMTools(_ sender: Any?) {
         refreshLLMTools(fresh: true)
     }
 
-    private func checkLLMTool(_ provider: String) {
+    func checkLLMTool(_ provider: String) {
         guard llmToolChecks[provider] == nil, !isClosing,
               let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
         let path = (defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2783,12 +2787,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         query.start()
     }
 
-    @objc private func checkLLMToolButton(_ sender: NSButton) {
+    @objc func checkLLMToolButton(_ sender: NSButton) {
         guard let provider = sender.identifier?.rawValue.replacingOccurrences(of: "llm.check.", with: "") else { return }
         checkLLMTool(provider)
     }
 
-    @objc private func browseLLMTool(_ sender: NSButton) {
+    @objc func browseLLMTool(_ sender: NSButton) {
         guard let provider = sender.identifier?.rawValue.replacingOccurrences(of: "llm.browse.", with: ""),
               let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
         let panel = NSOpenPanel()
@@ -2805,9 +2809,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private static let llmStatusGlyph: [String: String] = ["found": "●", "missing": "○", "broken": "⚠"]
+    static let llmStatusGlyph: [String: String] = ["found": "●", "missing": "○", "broken": "⚠"]
 
-    private func llmStatusColor(_ status: String) -> NSColor {
+    func llmStatusColor(_ status: String) -> NSColor {
         switch status {
         case "found": return NSColor.systemGreen
         case "broken": return NSColor.systemOrange
@@ -2815,7 +2819,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func llmStatusText(_ status: LLMToolStatus?) -> String {
+    func llmStatusText(_ status: LLMToolStatus?) -> String {
         guard let status else { return L10n.text("проверка…") }
         switch status.status {
         case "found": return status.version ?? L10n.text("найден")
@@ -2824,7 +2828,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func llmToolRow(_ tool: (name: String, prefix: String, binary: String, hasProvider: Bool)) -> NSView {
+    func llmToolRow(_ tool: (name: String, prefix: String, binary: String, hasProvider: Bool)) -> NSView {
         let dot = label("○", size: 14, weight: .bold, color: Palette.muted)
         dot.widthAnchor.constraint(equalToConstant: 16).isActive = true
         let name = label(tool.name, size: 14, weight: .medium, color: Palette.ink)
@@ -2854,7 +2858,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return row
     }
 
-    private func refreshLLMToolRows() {
+    func refreshLLMToolRows() {
         for (provider, row) in llmToolRows {
             let status = llmToolStatuses[provider]
             row.dot.stringValue = Self.llmStatusGlyph[status?.status ?? ""] ?? "○"
@@ -2876,7 +2880,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func refreshLLMProviderStatus() {
+    func refreshLLMProviderStatus() {
         guard let label = llmProviderStatusLabel else { return }
         let provider = option("llm.provider", values: Self.llmProviders)
         switch provider {
@@ -2897,7 +2901,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func runLLM(_ sender: Any?) {
+    @objc func runLLM(_ sender: Any?) {
         window.makeFirstResponder(nil)
         guard llmJob == nil, !isClosing else { return }
         let source = (transcriptEditor?.string ?? defaults.string(forKey: "llm.source") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2922,9 +2926,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         job.start()
     }
 
-    @objc private func cancelLLM(_ sender: Any?) { llmJob?.cancel() }
+    @objc func cancelLLM(_ sender: Any?) { llmJob?.cancel() }
 
-    private func receiveLLMEvent(_ event: LLMJobEvent) {
+    func receiveLLMEvent(_ event: LLMJobEvent) {
         switch event {
         case .started:
             llmStatusLabel?.stringValue = L10n.text("Ожидание ответа провайдера…")
@@ -2950,13 +2954,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    private func finishLLM() {
+    func finishLLM() {
         llmJob = nil
         if isTerminating { replyWhenJobsFinished(); return }
         refreshLLMControls()
     }
 
-    private func refreshLLMControls() {
+    func refreshLLMControls() {
         let running = llmJob != nil
         llmRunButton?.isEnabled = !running && !isClosing
         llmCancelButton?.isEnabled = running
@@ -2964,12 +2968,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         llmSaveButton?.isEnabled = !llmResultText.isEmpty
     }
 
-    @objc private func copyLLMResult(_ sender: Any?) {
+    @objc func copyLLMResult(_ sender: Any?) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(llmResultText, forType: .string)
     }
 
-    @objc private func saveLLMResult(_ sender: Any?) {
+    @objc func saveLLMResult(_ sender: Any?) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "llm_result.md"
         panel.beginSheetModal(for: window) { [weak self] response in
@@ -2979,7 +2983,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func openDocumentation(_ sender: NSButton) {
+    @objc func openDocumentation(_ sender: NSButton) {
         let title = sender.identifier?.rawValue ?? "Открыть документацию"
         let detail: String
         switch title {
@@ -2997,29 +3001,29 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         showNotice(title, detail)
     }
 
-    @objc private func openProject(_ sender: Any?) {
+    @objc func openProject(_ sender: Any?) {
         guard let url = URL(string: "https://github.com/dubr1k/GigaAMGUI") else { return }
         NSWorkspace.shared.open(url)
     }
 
-    @objc private func openDeveloper(_ sender: NSButton) {
+    @objc func openDeveloper(_ sender: NSButton) {
         guard let name = sender.identifier?.rawValue,
               ["Baggrisha", "dubr1k"].contains(name),
               let url = URL(string: "https://github.com/\(name)") else { return }
         NSWorkspace.shared.open(url)
     }
 
-    @objc private func copyAPIURL(_ sender: Any?) {
+    @objc func copyAPIURL(_ sender: Any?) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("http://127.0.0.1:8000", forType: .string)
     }
 
-    @objc private func copyCode(_ sender: Any?) {
+    @objc func copyCode(_ sender: Any?) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(apiCodeText?.string ?? "", forType: .string)
     }
 
-    @objc private func apiLanguageChanged(_ sender: PillSelector) {
+    @objc func apiLanguageChanged(_ sender: PillSelector) {
         let names = ["Python", "cURL", "JavaScript"]
         defaults.set(names[sender.selectedSegment], forKey: "api.exampleLanguage")
         apiCodeText?.string = apiExample(sender.selectedSegment)
@@ -3033,10 +3037,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     /// Колонки списка выбранных файлов: номер, имя, состояние. Оставляем место
     /// справа для кнопки удаления, не смещая состояние относительно заголовка.
     /// The name column takes whatever width the card has.
-    private var selectedFileColumns: [(String, CGFloat?)] { [("№", 28), ("Файл", nil), ("Состояние", 200)] }
-    private static let selectedFileRemoveWidth: CGFloat = 22
+    var selectedFileColumns: [(String, CGFloat?)] { [("№", 28), ("Файл", nil), ("Состояние", 200)] }
+    static let selectedFileRemoveWidth: CGFloat = 22
 
-    private func selectedFileRow(index: Int, url: URL) -> NSView {
+    func selectedFileRow(index: Int, url: URL) -> NSView {
         let number = label("\(index + 1).", size: 14, color: Palette.muted)
         number.alignment = .right
         number.widthAnchor.constraint(equalToConstant: selectedFileColumns[0].1 ?? 0).isActive = true
@@ -3066,7 +3070,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return row
     }
 
-    private func refreshSelectedFiles() {
+    func refreshSelectedFiles() {
         refreshProcessingControls()
         let empty = selectedFileURLs.isEmpty
         selectedFilesCountLabel?.stringValue = empty ? "" : FileCount.text(selectedFileURLs.count, english: L10n.isEnglish)
@@ -3085,7 +3089,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func resultTabChanged(_ sender: PillSelector) {
+    @objc func resultTabChanged(_ sender: PillSelector) {
         guard resultPages.indices.contains(sender.selectedSegment) else { return }
         let page = resultPages[sender.selectedSegment]
         selectedResultTab = page.key
@@ -3093,29 +3097,29 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         resultTranscript?.scrollToBeginningOfDocument(nil)
     }
 
-    @objc private func resultFileChanged(_ sender: NSPopUpButton) {
+    @objc func resultFileChanged(_ sender: NSPopUpButton) {
         guard transcriptionResults.indices.contains(sender.indexOfSelectedItem) else { return }
         selectedResultURL = transcriptionResults[sender.indexOfSelectedItem].inputURL
         show(page: .result)
     }
 
-    @objc private func resultOutputChanged(_ sender: NSPopUpButton) {
+    @objc func resultOutputChanged(_ sender: NSPopUpButton) {
         selectedOutputFormat = sender.titleOfSelectedItem
     }
 
-    @objc private func copyResult(_ sender: Any?) {
+    @objc func copyResult(_ sender: Any?) {
         guard let result = currentResult, !result.transcript.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result.transcript, forType: .string)
     }
 
-    @objc private func useResultForLLM(_ sender: Any?) {
+    @objc func useResultForLLM(_ sender: Any?) {
         guard let result = currentResult, !result.transcript.isEmpty else { return }
         defaults.set(result.transcript, forKey: "llm.source")
         show(page: .llm)
     }
 
-    @objc private func openResultOutput(_ sender: Any?) {
+    @objc func openResultOutput(_ sender: Any?) {
         guard let key = selectedOutputFormat, let url = existingOutputs[key] else {
             showNotice("Не удалось открыть файл", "Файл результата больше недоступен.")
             return
@@ -3123,7 +3127,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         if !NSWorkspace.shared.open(url) { showNotice("Не удалось открыть файл", url.path) }
     }
 
-    @objc private func revealResultOutputs(_ sender: Any?) {
+    @objc func revealResultOutputs(_ sender: Any?) {
         guard let key = selectedOutputFormat, let url = existingOutputs[key] else {
             showNotice("Не удалось открыть файл", "Файл результата больше недоступен.")
             return
@@ -3133,7 +3137,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
 
 
-    @objc private func selectSettingsCategory(_ sender: NSButton) {
+    @objc func selectSettingsCategory(_ sender: NSButton) {
         guard let rawValue = sender.identifier?.rawValue,
               rawValue.hasPrefix("settings.category.") else { return }
         applySettingsCategorySelection(String(rawValue.dropFirst("settings.category.".count)))
@@ -3141,18 +3145,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
 
-    @objc private func toggleLanguage(_ sender: Any?) {
+    @objc func toggleLanguage(_ sender: Any?) {
         let current = defaults.string(forKey: "settings.language") ?? "Русский"
         defaults.set(current == "Русский" ? "English" : "Русский", forKey: "settings.language")
         rebuildInterface()
     }
 
-    @objc private func toggleDarkTheme(_ sender: Any?) {
+    @objc func toggleDarkTheme(_ sender: Any?) {
         defaults.set(Palette.isDark ? "Светлая" : "Тёмная", forKey: "settings.theme")
         rebuildInterface()
     }
 
-    private func rebuildInterface() {
+    func rebuildInterface() {
         window.makeFirstResponder(nil)
         let page = currentPage
         DispatchQueue.main.async { [weak self] in
@@ -3164,7 +3168,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         }
     }
 
-    @objc private func toggleSearch(_ sender: NSButton) {
+    @objc func toggleSearch(_ sender: NSButton) {
         guard let searchField, let searchWidth else { return }
         let opening = searchField.isHidden
         searchField.isHidden = !opening
@@ -3223,12 +3227,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         searchResults = surface
     }
 
-    @objc private func selectSearchResult(_ sender: NSButton) {
+    @objc func selectSearchResult(_ sender: NSButton) {
         searchResults.removeFromSuperview()
         navigate(sender)
     }
 
-    private func showNotice(_ title: String, _ message: String) {
+    func showNotice(_ title: String, _ message: String) {
         let alert = NSAlert()
         alert.messageText = L10n.text(title)
         alert.informativeText = L10n.text(message)
@@ -3236,9 +3240,3 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         alert.beginSheetModal(for: window)
     }
 }
-
-let application = NSApplication.shared
-private let delegate = AppController()
-application.delegate = delegate
-application.setActivationPolicy(.regular)
-application.run()
