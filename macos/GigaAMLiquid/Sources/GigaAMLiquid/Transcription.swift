@@ -232,16 +232,21 @@ final class NativeTranscriptionJob {
             } else {
                 requestTerminal(.completed(success: success && !hadFileError, cancelled: cancelled))
             }
-        case .error(let message, let traceback):
+        case .error(let message, let traceback, let command):
             guard let text = message else { throw WorkerFailure(L10n.text("Воркер прислал ошибку без текста.")) }
-            if helloReply {
+            switch BatchErrorPolicy.disposition(command: command, helloReply: helloReply) {
+            case .diagnostic:
                 // A worker older than the handshake rejects `hello`; `start` follows.
                 recordDiagnostic(text)
-                return
+            case .logged:
+                // Another command's answer, e.g. a `cancel` that crossed the end of the
+                // batch: the files keep coming and `completed` decides the outcome.
+                recordLog(text)
+            case .fatal:
+                recordLog(text)
+                if let traceback { recordLog(traceback) }
+                requestTerminal(.failed(safeText(text)))
             }
-            recordLog(text)
-            if let traceback { recordLog(traceback) }
-            requestTerminal(.failed(safeText(text)))
         }
     }
 

@@ -433,6 +433,8 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     assert "Live и LLM пока не подключены" not in main
     receive = _swift_block(main, "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
     assert "case .partial" in receive and "case .final" in receive and "case .stopped" in receive and "case .failed" in receive
+    # A stop whose stage failed next to saved files is a warning, not a failed stop.
+    assert "case .savedWithWarning(let message):" in _swift_case(receive, "case .stopped(")
     terminate = _swift_block(main, "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {")
     # Quitting stops and saves the session (live_stop); the kill is the bounded fallback.
     assert "stopLiveForExit" in terminate and "liveJob?.terminate()" not in terminate
@@ -443,19 +445,59 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     # после начала записи больше не меняется — без refresh она оставалась выключенной.
     assert "if firstFinal { refreshLiveControls() }" in receive
     job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LiveSessionJob.swift").read_text(encoding="utf-8")
-    # Ошибка до первого live_status (например, старый companion без live_*) завершает
-    # job, иначе UI навсегда остаётся в «Запуск…». После него ошибки — отказы отдельных
-    # команд, в том числе во время остановки: live_stopped за ними не выбрасывается.
-    assert "switch LiveErrorPolicy.disposition(of: raw, sessionReported: sessionReported) {" in job
+    # Текущий воркер называет команду ошибки (`command`): job завершают только
+    # live_start/live_stop. У старого воркера ошибка до первого live_status
+    # (например, companion без live_*) завершает job, иначе UI навсегда остаётся в
+    # «Запуск…»; после него ошибки — отказы отдельных команд, в том числе во время
+    # остановки: live_stopped за ними не выбрасывается.
+    assert "switch LiveErrorPolicy.disposition(of: raw, command: command, sessionReported: sessionReported) {" in job
     assert "case .fatal: finish(.failed(message))" in job
     policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
     assert "guard sessionReported else { return .fatal }" in policy
 
 
+def test_swift_live_status_line_keeps_capture_noise_in_the_log() -> None:
+    # Every capture event goes to the log; the status line, which shows the
+    # recording state, takes only what the user should see. A silent loopback's
+    # "idle gap=…" DISCONTINUITY replaced it on every resume.
+    receive = _swift_block(_liquid_sources(), "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
+    capture = _swift_case(receive, "case .captureEvent(")
+    assert "LiveCaptureNotice.classify(kind: kind, detail: detail)" in capture
+    assert 'appendLogLine("[live/\\(kind)] \\(detail)")' in capture
+    notice = (LIQUID_CORE / "LiveCaptureNotice.swift").read_text(encoding="utf-8")
+    assert 'case "status", "discontinuity":' in notice
+    # The overflow detail Liquid shortens to seconds is the worker's wording.
+    assert '"dropped_frames="' in notice
+    for path in ("src/live/capture/common.py", "src/live/capture/queue.py"):
+        assert "dropped_frames=" in Path(path).read_text(encoding="utf-8"), path
+    assert "CaptureEventKind.DISCONTINUITY" in Path("src/live/timeline.py").read_text(encoding="utf-8")
+
+
+def test_swift_live_error_commands_match_the_worker() -> None:
+    # A current worker names the command an `error` answers; LiveErrorPolicy
+    # decides by that name. A renamed command in Python would silently turn a
+    # rejected question into a log line, or a failed start into a hung page.
+    service = Path("src/services/live_worker_service.py").read_text(encoding="utf-8")
+    worker = Path("src/tui_worker.py").read_text(encoding="utf-8")
+    policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
+    named = _swift_block(policy, "public static func disposition(of message: String, command: String?, sessionReported: Bool) -> LiveErrorDisposition {")
+    commands = set(re.findall(r'case ((?:"live_[a-z_]+",?\s*)+):', named))
+    names = {name for group in commands for name in re.findall(r'"(live_[a-z_]+)"', group)}
+    assert names == {"live_start", "live_stop", "live_ask", "live_ask_cancel"}
+    for name in names:
+        assert f'self._error("{name}"' in service, name
+        assert f'"{name}"' in worker, name
+    # The batch: only `start` fails it, and the batch thread names it too.
+    batch = (LIQUID_CORE / "BatchErrorPolicy.swift").read_text(encoding="utf-8")
+    assert 'case "start": return .fatal' in batch
+    assert 'command="start"' in worker
+
+
 def test_swift_live_error_texts_match_the_worker() -> None:
-    # The live worker's `error` carries no command id, so Liquid recognises
-    # per-command rejections by their exact text; a reworded message in Python
-    # would silently turn a rejected question into a fatal or ignored error.
+    # An older live worker's `error` carries no command id, so for it Liquid
+    # recognises per-command rejections by their exact text; a reworded message
+    # in Python would silently turn a rejected question into a fatal or ignored
+    # error.
     service = Path("src/services/live_worker_service.py").read_text(encoding="utf-8")
     policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
     messages = re.findall(r'"([A-Z][^"\\]+)"', policy.split("public enum LiveErrorPolicy", 1)[1])
@@ -610,6 +652,25 @@ def test_swift_settings_choices_match_the_worker() -> None:
     for name in ("backends", "models", "onnxProviders", "diarizationEngines", "audioPreprocessing"):
         literal = "[" + ", ".join(f'"{value}"' for value in swift_list(name)) + "]"
         assert literal not in sources, name
+
+
+def test_swift_live_diarization_offers_only_modes_the_worker_runs() -> None:
+    # "Live estimate" is a DiarizationMode the worker accepts but no backend
+    # implements: it reports it unavailable at once and the session has no
+    # speakers. Liquid does not offer it; PyQt shows it disabled.
+    schema = (LIQUID_CORE / "SettingsSchema.swift").read_text(encoding="utf-8")
+    literal = schema.split("public static let liveDiarizationModes", 1)[1].split("\n    ]\n", 1)[0]
+    values = re.findall(r'\("[^"]+", "([a-z_]+)"\)', literal)
+    types = Path("src/live/types.py").read_text(encoding="utf-8")
+    modes = set(re.findall(r'^\s+[A-Z_]+ = "([a-z_]+)"', types.split("class DiarizationMode", 1)[1].split("\nclass ", 1)[0], flags=re.MULTILINE))
+    assert values == ["off", "after_stop"]
+    assert set(values) < modes and "live_estimate" in modes
+    sources = _liquid_sources()
+    assert '"live_estimate"' not in sources and '"Оценка вживую"' not in sources
+    live = _swift_block(sources, "private func launchLive(root: URL, withSystem: Bool) {")
+    assert 'SettingsSchema.liveDiarizationMode(stored: defaults.string(forKey: "live.diarizationMode"))' in live
+    page = _swift_block(sources, "func buildLive(into content: NSStackView) {")
+    assert 'popup(SettingsSchema.liveDiarizationModes.map(\\.title), key: "live.diarizationMode")' in page
 
 
 def test_swift_decoder_fixtures_are_events_the_worker_emits() -> None:

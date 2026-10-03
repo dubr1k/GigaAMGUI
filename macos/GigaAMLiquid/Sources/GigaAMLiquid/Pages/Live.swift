@@ -4,10 +4,6 @@ import GigaAMLiquidCore
 /// The Live page: capture sources, the live session job, its transcript and
 /// the assistant's questions.
 extension AppController {
-    private static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
-
-    private static let liveDiarizationModeValues = ["off", "live_estimate", "after_stop"]
-
     func buildLive(into content: NSStackView) {
         let source = card("Источник аудио", dense: true)
         let sourceBody = contentStack(source)
@@ -20,7 +16,11 @@ extension AppController {
         sourceBody.addArrangedSubview(toggleRow("Системный звук", key: "live.systemAudio", defaultValue: false))
         sourceBody.addArrangedSubview(toggleRow("Записывать микрофон", key: "live.recordMic", defaultValue: true))
         sourceBody.addArrangedSubview(toggleRow("Записывать системный звук", key: "live.recordSystem", defaultValue: false))
-        sourceBody.addArrangedSubview(compactField("Диаризация", control: popup(Self.liveDiarizationModes, key: "live.diarizationMode")))
+        // Live speaker estimates are not offered: no backend implements them, and a
+        // session started with them had no speakers at all.
+        let diarizationMode = popup(SettingsSchema.liveDiarizationModes.map(\.title), key: "live.diarizationMode")
+        diarizationMode.toolTip = L10n.text("Оценка спикеров во время записи пока недоступна: спикеры размечаются после остановки.")
+        sourceBody.addArrangedSubview(compactField("Диаризация", control: diarizationMode))
         sourceBody.addArrangedSubview(compactField("Движок", control: popup(SettingsSchema.diarizationEngines, key: "live.diarizationEngine")))
         source.heightAnchor.constraint(equalToConstant: 306).isActive = true
 
@@ -202,8 +202,7 @@ extension AppController {
         var settings = LiveSessionSettings(sessionRoot: root, sources: withSystem ? [.mic, .system] : [.mic])
         let device = defaults.string(forKey: "live.microphone") ?? "default"
         settings.microphoneDeviceID = device == "default" ? nil : device
-        let modeIndex = Self.liveDiarizationModes.firstIndex(of: option("live.diarizationMode", values: Self.liveDiarizationModes)) ?? 0
-        settings.diarizationMode = Self.liveDiarizationModeValues[modeIndex]
+        settings.diarizationMode = SettingsSchema.liveDiarizationMode(stored: defaults.string(forKey: "live.diarizationMode"))
         settings.diarizationBackend = option("live.diarizationEngine", values: SettingsSchema.diarizationEngines)
         settings.recordMic = enabledOption("live.recordMic", defaultValue: true)
         settings.recordSystem = enabledOption("live.recordSystem", defaultValue: false)
@@ -356,8 +355,16 @@ extension AppController {
             if firstFinal { refreshLiveControls() }  // the assistant needs at least one final
         case .level(_, let rms):
             liveLevelView?.fraction = Double(min(1, rms * 4))
-        case .captureEvent(_, let kind, let detail):
-            if kind != "status" { liveStatusLabel?.stringValue = detail }
+        case .captureEvent(let source, let kind, let detail):
+            // The status line holds the recording state; an idle gap of a silent
+            // system-audio loopback replaced it with "idle gap=3.512s" every time.
+            switch LiveCaptureNotice.classify(kind: kind, detail: detail) {
+            case .logOnly: break
+            case .detail: liveStatusLabel?.stringValue = detail
+            case .droppedAudio(let seconds):
+                liveStatusLabel?.stringValue = L10n.format("Worker не успевает обрабатывать звук (%@): пропущено %@ с.",
+                                                           source.rawValue, String(format: "%.1f", seconds))
+            }
             appendLogLine("[live/\(kind)] \(detail)")
         case .answerChunk(_, let text):
             // The first chunk replaces "Ассистент отвечает…"; later ones are appended.
@@ -375,13 +382,22 @@ extension AppController {
             liveAnswerView?.string = liveAnswerText
             liveAsking = false
             refreshLiveControls()
-        case .stopped(let directory, let saved, let error):
+        case .stopped(let directory, let exports, let recordings, let outcome):
             liveSessionDir = directory
-            if let error {
-                finishLive(status: L10n.text("Сессия остановлена с ошибкой: ") + error)
-            } else {
-                let names = saved.map(\.lastPathComponent).joined(separator: ", ")
-                finishLive(status: L10n.text("Сессия сохранена") + (names.isEmpty ? "" : " · " + names))
+            // Every file in the log — each recording segment of a long session too;
+            // the status line names them as far as it reaches.
+            let saved = exports + recordings
+            saved.forEach { appendLogLine(L10n.format("Сохранён файл: %@", $0.path)) }
+            let names = saved.map(\.lastPathComponent).joined(separator: ", ")
+            let list = names.isEmpty ? "" : " · " + names
+            switch outcome {
+            case .saved:
+                finishLive(status: L10n.text("Сессия сохранена") + list)
+            case .savedWithWarning(let message):
+                // A failed stage (after-stop diarization, one export) next to saved files.
+                finishLive(status: L10n.format("Сессия сохранена, но не полностью: %@", message) + list)
+            case .failed(let message):
+                finishLive(status: L10n.text("Сессия остановлена с ошибкой: ") + message)
             }
         case .failed(let message):
             appendLogLine(message)

@@ -1,4 +1,5 @@
 import Foundation
+import GigaAMLiquidCore
 import Testing
 @testable import GigaAMLiquid
 
@@ -72,6 +73,37 @@ import Testing
         #expect(try await terminal(in: log) == "stopped")
     }
 
+    private func stopped(in log: EventLog<LiveSessionEvent>) async throws -> (exports: [URL], recordings: [URL], outcome: LiveStopOutcome) {
+        let event = try await log.wait { if case .stopped = $0 { return true } else { return false } }
+        guard case .stopped(_, let exports, let recordings, let outcome) = event else { throw TimeoutError(description: "not stopped") }
+        return (exports, recordings, outcome)
+    }
+
+    /// stop() finishes even when a stage fails and reports it in `message` next to
+    /// what it saved. That read as "the session stopped with an error" over a
+    /// saved transcript; and only the first FLAC of each source was listed.
+    @Test func aStopThatSavedFilesDespiteAFailedStageIsAWarning() async throws {
+        let dir = Self.sessionDir
+        let partial = #"{"type":"live_stopped","session_dir":"\#(dir)","saved_files":["\#(dir)/transcript.txt"],"recordings":{"mic":"\#(dir)/mic.flac"},"recording_files":{"mic":["\#(dir)/mic.flac","\#(dir)/mic-002.flac"]},"message":"diarize: RuntimeError: boom"}"#
+        let worker = try FakeWorker(replies: ["live_start": [Self.recording], "live_stop": [partial]])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.stop()
+        let result = try await stopped(in: log)
+        #expect(result.outcome == .savedWithWarning("diarize: RuntimeError: boom"))
+        #expect(result.exports.map(\.lastPathComponent) == ["transcript.txt"])
+        #expect(result.recordings.map(\.lastPathComponent) == ["mic.flac", "mic-002.flac"])
+    }
+
+    @Test func aStopThatSavedNothingFails() async throws {
+        let failed = #"{"type":"live_stopped","session_dir":"\#(Self.sessionDir)","saved_files":[],"recordings":{},"message":"session is not running"}"#
+        let worker = try FakeWorker(replies: ["live_start": [Self.recording], "live_stop": [failed]])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.stop()
+        #expect(try await stopped(in: log).outcome == .failed("session is not running"))
+    }
+
     /// A question before the first final is answered with the worker's reason,
     /// not shown as a raw English status line.
     @Test func rejectedQuestionIsAnsweredAndTheSessionGoesOn() async throws {
@@ -87,6 +119,40 @@ import Testing
         #expect(result.status == "rejected")
         #expect(result.text == "No final transcript events are available yet")
         #expect(errorStatuses(in: log).isEmpty)
+        job.stop()
+        #expect(try await terminal(in: log) == "stopped")
+    }
+
+    /// Any error the worker names as live_ask's answers the question. By text,
+    /// "already running" was only logged, and the answer field kept saying the
+    /// assistant was answering, with Ask disabled, until the session ended.
+    @Test func everyRejectionOfANamedQuestionAnswersIt() async throws {
+        let worker = try FakeWorker(replies: [
+            "live_start": [Self.recording],
+            "live_ask": [#"{"type":"error","message":"An assistant question is already running","command":"live_ask"}"#],
+            "live_stop": [Self.stopped],
+        ])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.ask("Что решили?", settings: ["provider": "API"])
+        let result = try await answer(in: log)
+        #expect(result.status == "rejected")
+        #expect(result.text == "An assistant question is already running")
+        job.stop()
+        #expect(try await terminal(in: log) == "stopped")
+    }
+
+    /// A rejected pause is a notice for the log; the session and its stop go on.
+    @Test func aNamedPauseRejectionKeepsTheSession() async throws {
+        let worker = try FakeWorker(replies: [
+            "live_start": [Self.recording],
+            "live_pause": [#"{"type":"error","message":"Session is already paused","command":"live_pause"}"#],
+            "live_stop": [Self.stopped],
+        ])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.pause()
+        try await log.wait { if case .log("Session is already paused") = $0 { return true } else { return false } }
         job.stop()
         #expect(try await terminal(in: log) == "stopped")
     }

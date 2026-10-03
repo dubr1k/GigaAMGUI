@@ -27,8 +27,9 @@ enum LiveSessionEvent {
     case captureEvent(source: LiveSource, kind: String, detail: String)
     case answerChunk(turnID: String, text: String)
     case answer(turnID: String, status: String, text: String)
-    /// `error` is set when the worker stopped the session but could not finish saving it.
-    case stopped(sessionDir: URL, saved: [URL], error: String?)
+    /// `recordings` lists every segment of every track; `outcome` says whether a
+    /// stage of the stop failed, and if so whether anything was saved.
+    case stopped(sessionDir: URL, exports: [URL], recordings: [URL], outcome: LiveStopOutcome)
     case failed(String)
     case log(String)
 }
@@ -265,22 +266,26 @@ final class LiveSessionJob {
             // as "Bearer token". Only an error message is a diagnostic.
             emit(.answer(turnID: turnID, status: status, text: status == "error" ? safe(text) : text))
         case .stopped(let sessionDir, let exports, let recordings, let failure):
-            let saved = (exports + recordings).map { URL(fileURLWithPath: $0) }
             let directory = URL(fileURLWithPath: sessionDir ?? settings.sessionRoot.path)
-            // The worker reports a failed stop as live_stopped plus a message; showing
-            // it only in the log left the status claiming the session was saved.
+            // The worker reports failed stop stages as live_stopped plus a message;
+            // showing it only in the log left the status claiming the session was
+            // saved. Next to saved files it is a warning, not a failed stop.
             let message = failure.map(safe)
             if let message { emit(.log(message)) }
-            finish(.stopped(sessionDir: directory, saved: saved, error: message))
-        case .error(let text):
+            finish(.stopped(sessionDir: directory, exports: exports.map { URL(fileURLWithPath: $0) },
+                            recordings: recordings.map { URL(fileURLWithPath: $0) },
+                            outcome: LiveStopOutcome(message: message, savedFiles: exports, recordings: recordings)))
+        case .error(let text, let command):
             let raw = text ?? L10n.text("Ошибка Live-воркера.")
             let message = safe(raw)
-            // Before the first live_status the only thing we sent was live_start, so an error
-            // (rejected settings, an old companion without live support, …) is terminal.
-            // Afterwards errors concern single commands (a bad chunk, a second pause, a
-            // question too early) — also while stopping, where ending the job here threw
-            // away the live_stopped that follows.
-            switch LiveErrorPolicy.disposition(of: raw, sessionReported: sessionReported) {
+            // A current worker names the command: only a failed live_start or live_stop
+            // (or a session that is gone) ends the job. An older one does not; then
+            // before the first live_status the only thing we sent was live_start, so an
+            // error (rejected settings, an old companion without live support, …) is
+            // terminal. Otherwise errors concern single commands (a bad chunk, a second
+            // pause, a question too early) — also while stopping, where ending the job
+            // here threw away the live_stopped that follows.
+            switch LiveErrorPolicy.disposition(of: raw, command: command, sessionReported: sessionReported) {
             case .fatal: finish(.failed(message))
             case .questionRejected: emit(.answer(turnID: "", status: "rejected", text: message))
             case .ignorable: break

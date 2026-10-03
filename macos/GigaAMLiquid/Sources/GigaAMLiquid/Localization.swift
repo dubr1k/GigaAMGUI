@@ -23,6 +23,7 @@ enum L10n {
         "No final transcript events are available yet": "В записи ещё нет распознанных фраз — спросите после первой.",
         "Question is required": "Введите вопрос.",
         "LLM settings are required": "LLM не настроена.",
+        "An assistant question is already running": "Ассистент ещё отвечает на предыдущий вопрос.",
     ]
 
     private static let english: [String: String] = [
@@ -142,6 +143,7 @@ enum L10n {
         "По умолчанию": "Default",
         "Оценка вживую": "Live estimate",
         "После остановки": "After stop",
+        "Оценка спикеров во время записи пока недоступна: спикеры размечаются после остановки.": "Live speaker estimates are not available yet: speakers are labelled after stop.",
         "Уровень сигнала": "Signal level",
         "Папка сессий": "Sessions folder",
         "Вопрос ассистенту по текущей записи": "Ask the assistant about this recording",
@@ -167,6 +169,8 @@ enum L10n {
         "Сессия сохранена": "Session saved",
         "Загрузка модели распознавания… Запись начнётся, когда она будет готова.": "Loading the recognition model… Recording starts once it is ready.",
         "Сессия остановлена с ошибкой: ": "Session stopped with an error: ",
+        "Сессия сохранена, но не полностью: %@": "Session saved, but not completely: %@",
+        "Сохранён файл: %@": "Saved file: %@",
         "Сохранено в ": "Saved to ",
         "Запись в ": "Recording to ",
         "Сохраняется в ": "Saving to ",
@@ -176,6 +180,7 @@ enum L10n {
         "Выбрать": "Choose",
         "Live-сессия прервана.": "Live session interrupted.",
         "Worker не успевает обрабатывать звук; фрагмент пропущен.": "The worker cannot keep up with the audio; a chunk was dropped.",
+        "Worker не успевает обрабатывать звук (%@): пропущено %@ с.": "The worker cannot keep up with the audio (%@): %@ s dropped.",
         "Микрофон недоступен.": "The microphone is unavailable.",
         "Микрофон отключён.": "The microphone was disconnected.",
         "Нет доступного дисплея для захвата системного звука.": "No display is available for system audio capture.",
@@ -365,6 +370,7 @@ enum L10n {
         "В записи ещё нет распознанных фраз — спросите после первой.": "No phrase has been recognised yet; ask after the first one.",
         "Введите вопрос.": "Enter a question.",
         "LLM не настроена.": "LLM is not configured.",
+        "Ассистент ещё отвечает на предыдущий вопрос.": "The assistant is still answering the previous question.",
         "Файлы с одинаковым базовым именем перезапишут результаты друг друга: %@. Переименуйте файлы или обработайте их отдельно.": "Files with the same base name would overwrite each other's results: %@. Rename them or process them separately.",
         "Воркер распознавания": "The transcription worker",
         "Live-воркер": "The live worker",
