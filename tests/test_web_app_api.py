@@ -59,6 +59,7 @@ def web_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(web_app, "API_KEYS_FILE", tmp_path / ".api_keys")
     monkeypatch.setattr(web_app, "ModelLoader", _FakeLoader)
     monkeypatch.setattr(web_app, "HF_TOKEN", "")
+    web_app.limiter.reset()  # лимит входа — в памяти процесса, общий для всех тестов
     web_app.tasks_storage.clear()
     web_app.log_queues.clear()
     web_app.deleted_task_ids.clear()
@@ -158,6 +159,30 @@ def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_process
     _run_processing("t2", source, "voice.wav")
 
     assert web_app.tasks_storage["t2"]["message"] == "Обработка не удалась"
+
+
+# ==================== вход ====================
+
+
+def test_login_attempts_are_rate_limited(anon_client):
+    limit = int(web_app.WEB_LOGIN_RATE_LIMIT.split("/")[0])
+    bad = {"username": web_app.WEB_USERNAME, "password": "wrong"}
+    statuses = [anon_client.post("/api/auth/login", json=bad).status_code for _ in range(limit)]
+    assert set(statuses) == {401}
+    blocked = anon_client.post("/api/auth/login", json=bad)
+    assert blocked.status_code == 429
+    assert "Retry-After" in blocked.headers
+    assert blocked.json()["detail"]
+    # Перебор пароля дальше не проверяется — даже верный пароль ждёт окна
+    good = {"username": web_app.WEB_USERNAME, "password": web_app.WEB_PASSWORD}
+    assert anon_client.post("/api/auth/login", json=good).status_code == 429
+
+
+def test_login_rate_limit_setting_is_validated():
+    assert web_app._validated_login_rate_limit("") == "10/minute"
+    assert web_app._validated_login_rate_limit("3/minute;20/hour") == "3/minute;20/hour"
+    with pytest.raises(ValueError):
+        web_app._validated_login_rate_limit("ten per minute")
 
 
 # ==================== тело запроса до авторизации ====================

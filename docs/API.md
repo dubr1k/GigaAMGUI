@@ -500,6 +500,7 @@ Code, Codex, OpenCode, Pi, oh-my-pi, «Другое») из настроек с�
 |---|---|---|
 | `WEB_SECRET`, `WEB_USERNAME`, `WEB_PASSWORD` | — (обязательны) | Подпись JWT (не короче 32 байт) и единственная учётная запись. |
 | `JWT_EXPIRE_HOURS` | `72` | Срок жизни сессии. |
+| `WEB_LOGIN_RATE_LIMIT` | `10/minute` | Попыток `POST /api/auth/login` с одного адреса (формат slowapi, можно `10/minute;100/hour`); сверх — `429` с `Retry-After`. За прокси без доверенного `X-Forwarded-For` адрес у всех один, и лимит общий на панель. Неразборное значение останавливает сервер при старте. |
 | `COOKIE_SECURE` | `1` | `0` — cookie без `Secure`, только для доступа по чистому HTTP. |
 | `MAX_FILE_SIZE` | `2147483648` (2 ГБ) | Лимит файла и всего тела `POST /api/upload` (+1 МиБ на multipart), а также загрузки по URL. |
 | `WEB_MAX_LLM_BODY_SIZE` | `52428800` (50 МБ) | Лимит тела `POST /api/llm/process` (транскрипты для LLM). |

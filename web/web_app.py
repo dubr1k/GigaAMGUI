@@ -38,7 +38,11 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from limits import parse_many
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.asr.models import ASR_MODELS
@@ -88,6 +92,20 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "72"))
 # True; при доступе по чистому HTTP с не-localhost домена браузер молча выкинет
 # cookie и логин зациклится — тогда выставите COOKIE_SECURE=0.
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _validated_login_rate_limit(value: str | None) -> str:
+    """Лимит попыток входа; неразборная строка — отказ при старте, а не молча без лимита
+    (slowapi при ошибке разбора лимит просто не применяет)."""
+    limit = (value or "").strip() or "10/minute"
+    try:
+        parse_many(limit)
+    except ValueError as exc:
+        raise ValueError(f"WEB_LOGIN_RATE_LIMIT={limit!r} is not a valid rate limit (e.g. '10/minute').") from exc
+    return limit
+
+
+WEB_LOGIN_RATE_LIMIT = _validated_login_rate_limit(os.getenv("WEB_LOGIN_RATE_LIMIT"))
 # Origin-ы (scheme://host[:port]) кроме самой панели, которым можно слать изменяющие
 # запросы с cookie сессии и читать API через CORS (фронтенд разработки). Обычно пусто.
 WEB_TRUSTED_ORIGINS: tuple[str, ...] = tuple(
@@ -960,6 +978,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
+app.state.limiter = limiter
 
 app.add_middleware(_BodyGuard)
 
@@ -1035,8 +1055,22 @@ def _run_llm_provider(llm_settings: dict, transcript_text: str, prompt: str) -> 
         raise RuntimeError(f"Неизвестный провайдер: {exc.provider}") from exc
 
 
+@app.exception_handler(RateLimitExceeded)
+async def _login_rate_limited(request: Request, exc: RateLimitExceeded):
+    response = JSONResponse({"detail": "Слишком много попыток входа. Повторите позже."}, status_code=429)
+    # Retry-After / X-RateLimit-* — как у api.py
+    view_rate_limit = getattr(request.state, "view_rate_limit", None)
+    if view_rate_limit is not None:
+        response = request.app.state.limiter._inject_headers(response, view_rate_limit)
+    return response
+
+
 @app.post("/api/auth/login")
-async def login(req: LoginRequest):
+@limiter.limit(WEB_LOGIN_RATE_LIMIT)
+async def login(request: Request, req: LoginRequest):
+    # Лимит считает все попытки с адреса: без него пароль единственной учётной
+    # записи перебирался со скоростью сети. За прокси без доверенного
+    # X-Forwarded-For адрес у всех общий — лимит тогда общий на панель.
     if req.username == WEB_USERNAME and hmac.compare_digest(_hash_password(req.password), _hash_password(WEB_PASSWORD)):
         token = _create_token(req.username)
         response = JSONResponse({"ok": True, "username": req.username})
