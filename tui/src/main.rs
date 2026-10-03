@@ -103,11 +103,11 @@ fn run_interactive(
     let mut terminal_guard = terminal_guard::TerminalGuard::enter(app.mouse_enabled)?;
     let mut mouse_captured = app.mouse_enabled;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    app.pet_picker = Picker::from_query_stdio()
+    app.pet.picker = Picker::from_query_stdio()
         .ok()
         .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
-    app.pet_protocol = app.pet_picker.as_ref().map(Picker::protocol_type);
-    if app.pet_enabled {
+    app.pet.protocol = app.pet.picker.as_ref().map(Picker::protocol_type);
+    if app.pet.enabled {
         if let Err(error) = app.refresh_pet_image() {
             app.status = error;
             app.log(app.status.clone());
@@ -129,16 +129,17 @@ fn run_interactive(
         }
         // Animated image frames are safe for Kitty after explicitly deleting the
         // prior layer. Other protocols remain stable rather than leaving pixels.
-        if app.pet_enabled
+        if app.pet.enabled
             && app
-                .pet_protocol
+                .pet
+                .protocol
                 .is_some_and(|protocol| protocol != ProtocolType::Halfblocks)
             && last_pet_frame.elapsed() >= Duration::from_millis(1_300)
         {
-            app.pet_frame = app.pet_frame.wrapping_add(1);
+            app.pet.frame = app.pet.frame.wrapping_add(1);
             if let Err(error) = app.refresh_pet_image() {
-                app.pet_enabled = false;
-                app.pet_image = None;
+                app.pet.enabled = false;
+                app.pet.image = None;
                 app.status = error;
                 app.log(app.status.clone());
             }
@@ -164,10 +165,10 @@ fn run_interactive(
                 // clear stale Kitty layers and force ratatui to recalculate its grid.
                 terminal.autoresize()?;
                 terminal.clear()?;
-                if app.pet_enabled {
+                if app.pet.enabled {
                     if let Err(error) = app.refresh_pet_image() {
-                        app.pet_enabled = false;
-                        app.pet_image = None;
+                        app.pet.enabled = false;
+                        app.pet.image = None;
                         app.status = error;
                     }
                 }

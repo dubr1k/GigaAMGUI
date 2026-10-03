@@ -53,7 +53,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     draw_header(frame, header, app);
     draw_tabs(frame, tabs, app);
     let mut page_area = main;
-    if app.pet_enabled && main.width >= 120 {
+    if app.pet.enabled && main.width >= 120 {
         page_area.width -= PET_COLUMNS;
     }
     match app.page {
@@ -187,10 +187,10 @@ fn draw_tabs(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_pet(frame: &mut ratatui::Frame, main: Rect, app: &mut App) {
-    if !app.pet_enabled {
+    if !app.pet.enabled {
         return;
     }
-    let Some(image) = app.pet_image.as_mut() else {
+    let Some(image) = app.pet.image.as_mut() else {
         return;
     };
     let pet_area = Rect::new(
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn hidden_input_has_no_prompt_but_active_input_has_a_visible_cursor() {
         let mut app = crate::test_support::ready_app();
-        app.pet_enabled = false;
+        app.pet.enabled = false;
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();

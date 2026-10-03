@@ -29,7 +29,7 @@ pub(crate) fn apply_settings(app: &mut App, settings: TuiSettings, lang_override
     app.theme = Theme::by_name(&settings.theme).unwrap_or_else(Theme::default_theme);
     let stored_language = Lang::parse(&settings.language).unwrap_or(Lang::Ru);
     app.lang = lang_override.unwrap_or(stored_language);
-    app.pet_enabled = settings.pet_enabled;
+    app.pet.enabled = settings.pet_enabled;
     if backend_is_supported(&settings.backend) {
         app.backend = settings.backend;
     }
@@ -85,7 +85,7 @@ pub(crate) fn apply_settings(app: &mut App, settings: TuiSettings, lang_override
 impl From<&App> for TuiSettings {
     fn from(app: &App) -> Self {
         Self {
-            pet_enabled: app.pet_enabled,
+            pet_enabled: app.pet.enabled,
             language: app.lang.code().to_owned(),
             mouse: app.mouse_enabled,
             backend: app.backend.clone(),

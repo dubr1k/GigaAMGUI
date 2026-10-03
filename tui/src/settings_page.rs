@@ -56,7 +56,7 @@ pub(crate) fn rows(app: &App) -> Vec<SettingRow> {
         row("settings.theme", app.theme.name, Action::OpenMenu("/theme")),
         row(
             "settings.pets",
-            on_off(app, app.pet_enabled),
+            on_off(app, app.pet.enabled),
             Action::ToggleSetting("pets"),
         ),
         row(

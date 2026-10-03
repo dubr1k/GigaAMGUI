@@ -67,7 +67,10 @@ pub(crate) fn fit_middle(text: &str, width: usize) -> String {
 /// The row's own state, not a lookup by path: `App::file_state` scans the queue,
 /// which made every frame O(n²) in the queue length.
 fn state_of(app: &App, item: &QueueItem) -> FileState {
-    if app.running() && !app.llm_running() && app.current_file.as_deref() == Some(&item.path) {
+    if app.running()
+        && !app.llm_running()
+        && app.progress.current_file.as_deref() == Some(&item.path)
+    {
         FileState::Processing
     } else {
         item.state
@@ -459,7 +462,7 @@ mod tests {
                 for pet_enabled in [false, true] {
                     let mut app = crate::test_support::ready_app();
                     app.lang = lang;
-                    app.pet_enabled = pet_enabled;
+                    app.pet.enabled = pet_enabled;
                     app.queue.add("/Users/test/meeting.wav".into());
                     let mut terminal =
                         ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
@@ -512,7 +515,7 @@ mod tests {
                 for pet_enabled in [false, true] {
                     let mut app = crate::test_support::ready_app();
                     app.lang = lang;
-                    app.pet_enabled = pet_enabled;
+                    app.pet.enabled = pet_enabled;
                     app.queue.add("/a.wav".into());
                     app.queue.add("/b.wav".into());
                     app.begin_batch(RunSelection::Pending, false);
@@ -611,9 +614,9 @@ mod tests {
         // ratatui's Gauge paints the filled part as `█` in the gauge fg, so a theme
         // with every colour Reset still shows the bar in the terminal foreground.
         let mut app = crate::test_support::ready_app();
-        app.progress = 0.5;
+        app.progress.fraction = 0.5;
         app.batch = Some(crate::batch::BatchRun::new(vec!["/a.wav".into()]));
-        app.current_file = Some("/a.wav".into());
+        app.progress.current_file = Some("/a.wav".into());
         app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
         let render = |app: &mut App| {
             let backend = ratatui::backend::TestBackend::new(100, 40);
@@ -793,11 +796,11 @@ mod tests {
             app.queue.add(path.into());
         }
         app.activity = crate::lifecycle::Activity::Running(crate::lifecycle::JobKind::Asr);
-        app.file_index = 0;
-        app.current_file = Some("/tmp/a.wav".into());
-        app.stage = "transcription".into();
-        app.processed_seconds = Some(190.0);
-        app.total_seconds = Some(450.0);
+        app.progress.file_index = 0;
+        app.progress.current_file = Some("/tmp/a.wav".into());
+        app.progress.stage = "transcription".into();
+        app.progress.processed_seconds = Some(190.0);
+        app.progress.total_seconds = Some(450.0);
         let backend = ratatui::backend::TestBackend::new(100, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw_all(f, &mut app)).unwrap();

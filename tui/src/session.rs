@@ -217,17 +217,17 @@ impl App {
             }
         }
         let payload = start_payload(self, &files);
-        self.total_files = files.len();
+        self.progress.total_files = files.len();
         self.batch = Some(BatchRun::new(files));
         self.batch_summary = None;
         self.activity.start(JobKind::Asr);
         self.cancelled = false;
-        self.current_file = None;
-        self.file_index = 0;
-        self.progress = 0.0;
-        self.stage = "preparing".into();
-        self.processed_seconds = None;
-        self.total_seconds = None;
+        self.progress.current_file = None;
+        self.progress.file_index = 0;
+        self.progress.fraction = 0.0;
+        self.progress.stage = "preparing".into();
+        self.progress.processed_seconds = None;
+        self.progress.total_seconds = None;
         self.input.close();
         self.status = t(self.lang, "status.batch_starting").into();
         vec![payload]
@@ -287,9 +287,9 @@ mod tests {
         app.handle_message(complete);
         assert_eq!(app.overall_progress(), 0.5);
         app.handle_message(json!({"type":"file_started", "file":"/b.wav", "file_index":1}));
-        assert_eq!(app.processed_seconds, None);
-        assert_eq!(app.total_seconds, None);
-        assert_eq!(app.stage, "preparing");
+        assert_eq!(app.progress.processed_seconds, None);
+        assert_eq!(app.progress.total_seconds, None);
+        assert_eq!(app.progress.stage, "preparing");
         app.handle_message(json!({"type":"progress", "file":"/b.wav", "stage":"transcription", "file_progress":0.5}));
         assert_eq!(app.overall_progress(), 0.75);
         app.handle_message(json!({"type":"file_completed", "file":"/b.wav", "result":{"success":false,"error":"decoder failed"}}));

@@ -322,16 +322,16 @@ pub(crate) fn run_command(app: &mut App) {
 
 /// `/pets` and the Settings row: shows or hides the companion and persists it.
 pub(crate) fn toggle_pets(app: &mut App) {
-    if app.pet_enabled {
+    if app.pet.enabled {
         app.clear_pet_layer();
-        app.pet_enabled = false;
-        app.pet_image = None;
+        app.pet.enabled = false;
+        app.pet.image = None;
         app.status = t(app.lang, "status.pets_off").into();
         save_app_settings(app);
     } else if let Err(error) = app.refresh_pet_image() {
         app.status = error;
     } else {
-        app.pet_enabled = true;
+        app.pet.enabled = true;
         app.status = t(app.lang, "status.pets_on").into();
         save_app_settings(app);
     }

@@ -11,6 +11,32 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The current file of a batch and how far it got, as the worker reports it.
+pub(crate) struct FileProgress {
+    pub current_file: Option<String>,
+    pub file_index: usize,
+    pub total_files: usize,
+    pub stage: String,
+    /// The current file's fraction, 0.0–1.0.
+    pub fraction: f64,
+    pub processed_seconds: Option<f64>,
+    pub total_seconds: Option<f64>,
+}
+
+impl Default for FileProgress {
+    fn default() -> Self {
+        Self {
+            current_file: None,
+            file_index: 0,
+            total_files: 0,
+            stage: "preparing".into(),
+            fraction: 0.0,
+            processed_seconds: None,
+            total_seconds: None,
+        }
+    }
+}
+
 pub(crate) struct BatchRun {
     pub files: Vec<String>,
     pub started_at: Instant,
@@ -61,8 +87,8 @@ impl App {
         self.batch.as_ref().map_or_else(
             || self.batch_summary.as_ref().map_or(0.0, |s| s.progress),
             |batch| {
-                batch.overall_progress(if self.current_file.is_some() {
-                    self.progress
+                batch.overall_progress(if self.progress.current_file.is_some() {
+                    self.progress.fraction
                 } else {
                     0.0
                 })
@@ -123,7 +149,7 @@ impl App {
                         item.error = None;
                     }
                 }
-                self.total_files = self
+                self.progress.total_files = self
                     .batch
                     .as_ref()
                     .map_or(value["total_files"].as_u64().unwrap_or(0) as usize, |b| {
@@ -146,12 +172,12 @@ impl App {
                     batch.started.insert(file.into());
                 }
                 if kind == "file_started" {
-                    self.current_file = Some(file.into());
-                    self.file_index = value["file_index"].as_u64().unwrap_or(0) as usize;
-                    self.progress = 0.0;
-                    self.stage = "preparing".into();
-                    self.processed_seconds = None;
-                    self.total_seconds = None;
+                    self.progress.current_file = Some(file.into());
+                    self.progress.file_index = value["file_index"].as_u64().unwrap_or(0) as usize;
+                    self.progress.fraction = 0.0;
+                    self.progress.stage = "preparing".into();
+                    self.progress.processed_seconds = None;
+                    self.progress.total_seconds = None;
                     if let Some(item) = self.queue.find_mut(file) {
                         item.state = FileState::Processing;
                     }
@@ -190,8 +216,8 @@ impl App {
                             self.result_files.push(path);
                         }
                     }
-                    self.current_file = None;
-                    self.progress = 0.0;
+                    self.progress.current_file = None;
+                    self.progress.fraction = 0.0;
                     self.log(format!(
                         "{} {}{}",
                         if success { "✓" } else { "×" },
@@ -201,20 +227,20 @@ impl App {
                 }
             }
             "progress" => {
-                if self.current_file.is_none()
+                if self.progress.current_file.is_none()
                     || value["file"]
                         .as_str()
-                        .is_some_and(|p| Some(p) != self.current_file.as_deref())
+                        .is_some_and(|p| Some(p) != self.progress.current_file.as_deref())
                 {
                     return true;
                 }
-                self.stage = value["stage"].as_str().unwrap_or("preparing").into();
-                self.progress = value["file_progress"]
+                self.progress.stage = value["stage"].as_str().unwrap_or("preparing").into();
+                self.progress.fraction = value["file_progress"]
                     .as_f64()
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0);
-                self.processed_seconds = value["processed_seconds"].as_f64();
-                self.total_seconds = value["total_seconds"].as_f64();
+                self.progress.processed_seconds = value["processed_seconds"].as_f64();
+                self.progress.total_seconds = value["total_seconds"].as_f64();
                 if let Some(message) = value["message"].as_str() {
                     self.status = message.into();
                 }
