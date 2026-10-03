@@ -272,15 +272,17 @@ final class LiveSessionJob {
             let message = failure.map(safe)
             if let message { emit(.log(message)) }
             finish(.stopped(sessionDir: directory, saved: saved, error: message))
-        case .error(let text):
+        case .error(let text, let command):
             let raw = text ?? L10n.text("Ошибка Live-воркера.")
             let message = safe(raw)
-            // Before the first live_status the only thing we sent was live_start, so an error
-            // (rejected settings, an old companion without live support, …) is terminal.
-            // Afterwards errors concern single commands (a bad chunk, a second pause, a
-            // question too early) — also while stopping, where ending the job here threw
-            // away the live_stopped that follows.
-            switch LiveErrorPolicy.disposition(of: raw, sessionReported: sessionReported) {
+            // A current worker names the command: only a failed live_start or live_stop
+            // (or a session that is gone) ends the job. An older one does not; then
+            // before the first live_status the only thing we sent was live_start, so an
+            // error (rejected settings, an old companion without live support, …) is
+            // terminal. Otherwise errors concern single commands (a bad chunk, a second
+            // pause, a question too early) — also while stopping, where ending the job
+            // here threw away the live_stopped that follows.
+            switch LiveErrorPolicy.disposition(of: raw, command: command, sessionReported: sessionReported) {
             case .fatal: finish(.failed(message))
             case .questionRejected: emit(.answer(turnID: "", status: "rejected", text: message))
             case .ignorable: break

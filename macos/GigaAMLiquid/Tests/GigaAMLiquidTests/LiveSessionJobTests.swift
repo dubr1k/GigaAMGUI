@@ -91,6 +91,40 @@ import Testing
         #expect(try await terminal(in: log) == "stopped")
     }
 
+    /// Any error the worker names as live_ask's answers the question. By text,
+    /// "already running" was only logged, and the answer field kept saying the
+    /// assistant was answering, with Ask disabled, until the session ended.
+    @Test func everyRejectionOfANamedQuestionAnswersIt() async throws {
+        let worker = try FakeWorker(replies: [
+            "live_start": [Self.recording],
+            "live_ask": [#"{"type":"error","message":"An assistant question is already running","command":"live_ask"}"#],
+            "live_stop": [Self.stopped],
+        ])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.ask("Что решили?", settings: ["provider": "API"])
+        let result = try await answer(in: log)
+        #expect(result.status == "rejected")
+        #expect(result.text == "An assistant question is already running")
+        job.stop()
+        #expect(try await terminal(in: log) == "stopped")
+    }
+
+    /// A rejected pause is a notice for the log; the session and its stop go on.
+    @Test func aNamedPauseRejectionKeepsTheSession() async throws {
+        let worker = try FakeWorker(replies: [
+            "live_start": [Self.recording],
+            "live_pause": [#"{"type":"error","message":"Session is already paused","command":"live_pause"}"#],
+            "live_stop": [Self.stopped],
+        ])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.pause()
+        try await log.wait { if case .log("Session is already paused") = $0 { return true } else { return false } }
+        job.stop()
+        #expect(try await terminal(in: log) == "stopped")
+    }
+
     @Test func cancellingAFinishedAnswerChangesNothing() async throws {
         let worker = try FakeWorker(replies: [
             "live_start": [Self.recording],

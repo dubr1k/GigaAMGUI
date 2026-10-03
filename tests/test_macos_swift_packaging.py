@@ -443,19 +443,42 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     # после начала записи больше не меняется — без refresh она оставалась выключенной.
     assert "if firstFinal { refreshLiveControls() }" in receive
     job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LiveSessionJob.swift").read_text(encoding="utf-8")
-    # Ошибка до первого live_status (например, старый companion без live_*) завершает
-    # job, иначе UI навсегда остаётся в «Запуск…». После него ошибки — отказы отдельных
-    # команд, в том числе во время остановки: live_stopped за ними не выбрасывается.
-    assert "switch LiveErrorPolicy.disposition(of: raw, sessionReported: sessionReported) {" in job
+    # Текущий воркер называет команду ошибки (`command`): job завершают только
+    # live_start/live_stop. У старого воркера ошибка до первого live_status
+    # (например, companion без live_*) завершает job, иначе UI навсегда остаётся в
+    # «Запуск…»; после него ошибки — отказы отдельных команд, в том числе во время
+    # остановки: live_stopped за ними не выбрасывается.
+    assert "switch LiveErrorPolicy.disposition(of: raw, command: command, sessionReported: sessionReported) {" in job
     assert "case .fatal: finish(.failed(message))" in job
     policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
     assert "guard sessionReported else { return .fatal }" in policy
 
 
+def test_swift_live_error_commands_match_the_worker() -> None:
+    # A current worker names the command an `error` answers; LiveErrorPolicy
+    # decides by that name. A renamed command in Python would silently turn a
+    # rejected question into a log line, or a failed start into a hung page.
+    service = Path("src/services/live_worker_service.py").read_text(encoding="utf-8")
+    worker = Path("src/tui_worker.py").read_text(encoding="utf-8")
+    policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
+    named = _swift_block(policy, "public static func disposition(of message: String, command: String?, sessionReported: Bool) -> LiveErrorDisposition {")
+    commands = set(re.findall(r'case ((?:"live_[a-z_]+",?\s*)+):', named))
+    names = {name for group in commands for name in re.findall(r'"(live_[a-z_]+)"', group)}
+    assert names == {"live_start", "live_stop", "live_ask", "live_ask_cancel"}
+    for name in names:
+        assert f'self._error("{name}"' in service, name
+        assert f'"{name}"' in worker, name
+    # The batch: only `start` fails it, and the batch thread names it too.
+    batch = (LIQUID_CORE / "BatchErrorPolicy.swift").read_text(encoding="utf-8")
+    assert 'case "start": return .fatal' in batch
+    assert 'command="start"' in worker
+
+
 def test_swift_live_error_texts_match_the_worker() -> None:
-    # The live worker's `error` carries no command id, so Liquid recognises
-    # per-command rejections by their exact text; a reworded message in Python
-    # would silently turn a rejected question into a fatal or ignored error.
+    # An older live worker's `error` carries no command id, so for it Liquid
+    # recognises per-command rejections by their exact text; a reworded message
+    # in Python would silently turn a rejected question into a fatal or ignored
+    # error.
     service = Path("src/services/live_worker_service.py").read_text(encoding="utf-8")
     policy = (LIQUID_CORE / "LiveErrorPolicy.swift").read_text(encoding="utf-8")
     messages = re.findall(r'"([A-Z][^"\\]+)"', policy.split("public enum LiveErrorPolicy", 1)[1])

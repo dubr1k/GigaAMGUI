@@ -98,7 +98,8 @@ public enum BatchEvent {
     case progress(index: Int, file: String, totalFiles: Int?, stage: String, message: String?, fileProgress: Double?)
     case fileCompleted(index: Int, file: String, result: BatchFileResult)
     case completed(success: Bool, cancelled: Bool, results: [BatchFileResult], message: String?)
-    case error(message: String?, traceback: String?)
+    /// `command` names the command the error answers; an older worker sends none.
+    case error(message: String?, traceback: String?, command: String?)
 }
 
 public enum BatchEventDecoder {
@@ -143,7 +144,8 @@ public enum BatchEventDecoder {
             guard results.count == raws.count else { return .invalid(type: type) }
             return .event(.completed(success: success, cancelled: cancelled, results: results, message: object["message"] as? String))
         case "error":
-            return .event(.error(message: object["message"] as? String, traceback: object["traceback"] as? String))
+            return .event(.error(message: object["message"] as? String, traceback: object["traceback"] as? String,
+                                 command: object["command"] as? String))
         default:
             return .unknown(type: type)
         }
@@ -162,7 +164,8 @@ public enum LiveWorkerEvent {
     case answer(turnID: String, status: String, text: String)
     /// `recordings` in source order; `message` is set when the stop failed to save.
     case stopped(sessionDir: String?, savedFiles: [String], recordings: [String], message: String?)
-    case error(String?)
+    /// `command` names the live_* command the error answers; an older worker sends none.
+    case error(message: String?, command: String?)
     case log(String)
 }
 
@@ -205,7 +208,7 @@ public enum LiveEventDecoder {
             return .stopped(sessionDir: object["session_dir"] as? String, savedFiles: object["saved_files"] as? [String] ?? [],
                             recordings: recordings, message: message)
         case "error":
-            return .error(object["message"] as? String)
+            return .error(message: object["message"] as? String, command: object["command"] as? String)
         case "log":
             return .log(object["message"] as? String ?? "")
         default:

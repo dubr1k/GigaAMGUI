@@ -102,6 +102,47 @@ import Testing
         #expect(outcome(log) == "completed(success: true, cancelled: false)")
     }
 
+    /// The worker names the command an error answers. "Nothing is being processed"
+    /// is its reply to `cancel`, not the batch failing: the files still arrive.
+    @Test func anErrorForAnotherCommandDoesNotFailTheBatch() async throws {
+        let worker = try FakeWorker(replies: [:])
+        let batch = try Batch(in: worker)
+        try (Self.ready + "\n").write(to: worker.directory.appendingPathComponent("reply-hello.jsonl"), atomically: true, encoding: .utf8)
+        let started = #"{"type": "started", "files": ["\#(batch.input.path)"], "total_files": 1, "backend": "auto"}"#
+        try ([started, batch.fileStarted].joined(separator: "\n") + "\n")
+            .write(to: worker.directory.appendingPathComponent("reply-start.jsonl"), atomically: true, encoding: .utf8)
+        let cancelReply = [#"{"type": "error", "message": "Nothing is being processed", "command": "cancel"}"#,
+                           batch.fileCompleted, batch.compactCompleted]
+        try (cancelReply.joined(separator: "\n") + "\n")
+            .write(to: worker.directory.appendingPathComponent("reply-cancel.jsonl"), atomically: true, encoding: .utf8)
+        let log = EventLog<NativeTranscriptionEvent>()
+        let job = NativeTranscriptionJob(files: [batch.input], outputDirectory: nil, settings: NativeTranscriptionSettings(),
+                                         runtime: worker.provider) { log.append($0) }
+        job.start()
+        try await log.wait { if case .fileStarted = $0 { return true } else { return false } }
+        job.cancel()
+        try await log.wait { event in
+            switch event {
+            case .completed, .failed: return true
+            default: return false
+            }
+        }
+        #expect(outcome(log) == "completed(success: true, cancelled: false)")
+        #expect(logs(log).contains("Nothing is being processed"))
+    }
+
+    /// An older worker names no command: an error that is not the reply to
+    /// `hello` is still the batch failing.
+    @Test func anUnnamedErrorStillFailsTheBatch() async throws {
+        let worker = try FakeWorker(replies: [:])
+        let batch = try Batch(in: worker)
+        try (Self.ready + "\n").write(to: worker.directory.appendingPathComponent("reply-hello.jsonl"), atomically: true, encoding: .utf8)
+        try (#"{"type": "error", "message": "No input files supplied"}"# + "\n")
+            .write(to: worker.directory.appendingPathComponent("reply-start.jsonl"), atomically: true, encoding: .utf8)
+        let log = try await run(worker, batch)
+        #expect(outcome(log).hasPrefix("failed: No input files supplied"))
+    }
+
     /// No `ready` at all must neither block the batch nor fail it.
     @Test func missingReadyDoesNotBlock() async throws {
         let worker = try FakeWorker(replies: [:])

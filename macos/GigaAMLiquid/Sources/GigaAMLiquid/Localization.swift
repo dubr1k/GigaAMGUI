@@ -23,6 +23,7 @@ enum L10n {
         "No final transcript events are available yet": "В записи ещё нет распознанных фраз — спросите после первой.",
         "Question is required": "Введите вопрос.",
         "LLM settings are required": "LLM не настроена.",
+        "An assistant question is already running": "Ассистент ещё отвечает на предыдущий вопрос.",
     ]
 
     private static let english: [String: String] = [
@@ -365,6 +366,7 @@ enum L10n {
         "В записи ещё нет распознанных фраз — спросите после первой.": "No phrase has been recognised yet; ask after the first one.",
         "Введите вопрос.": "Enter a question.",
         "LLM не настроена.": "LLM is not configured.",
+        "Ассистент ещё отвечает на предыдущий вопрос.": "The assistant is still answering the previous question.",
         "Файлы с одинаковым базовым именем перезапишут результаты друг друга: %@. Переименуйте файлы или обработайте их отдельно.": "Files with the same base name would overwrite each other's results: %@. Rename them or process them separately.",
         "Воркер распознавания": "The transcription worker",
         "Live-воркер": "The live worker",

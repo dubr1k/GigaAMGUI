@@ -64,6 +64,11 @@ private func data(_ line: String) -> Data { Data(line.utf8) }
         guard case .progress(_, _, nil, "export", _, nil) = event(missing) else { Issue.record("null file progress"); return }
     }
 
+    @Test func errorsCarryTheirCommandWhenTheWorkerNamesIt() {
+        guard case .error("Nothing is being processed", nil, "cancel") = event(WorkerFixtures.cancelError) else { Issue.record("cancel error"); return }
+        guard case .error("boom", nil, nil) = event(#"{"type": "error", "message": "boom"}"#) else { Issue.record("old error"); return }
+    }
+
     @Test func brokenKnownEventsAreInvalidAndNewOnesUnknown() {
         guard case .invalid("progress") = BatchEventDecoder.decode(data(#"{"type": "progress", "file": "/a.wav", "file_index": 0, "stage": "x", "file_progress": "half"}"#)) else { Issue.record("string progress"); return }
         guard case .invalid("file_completed") = BatchEventDecoder.decode(data(#"{"type": "file_completed", "file": "/a.wav", "file_index": 0, "result": {"success": 1}}"#)) else { Issue.record("bad result"); return }
@@ -86,7 +91,7 @@ private func data(_ line: String) -> Data { Data(line.utf8) }
         guard case .partial("mic-0", "mic", 0, let draft) = event(WorkerFixtures.livePartial) else { Issue.record("partial"); return }
         #expect(draft.hasPrefix("Testing"))
         guard case .final("mic-0", "mic", 0, 109_413, _, nil) = event(WorkerFixtures.liveFinal) else { Issue.record("final"); return }
-        guard case .error("No assistant question is running") = event(WorkerFixtures.liveError) else { Issue.record("error"); return }
+        guard case .error("No assistant question is running", nil) = event(WorkerFixtures.liveError) else { Issue.record("error"); return }
         guard case .log(let log) = event(WorkerFixtures.liveLog) else { Issue.record("log"); return }
         #expect(log.hasPrefix("session start"))
         guard case .stopped(_, let saved, let recordings, nil) = event(WorkerFixtures.liveStopped) else { Issue.record("live_stopped"); return }
@@ -99,6 +104,11 @@ private func data(_ line: String) -> Data { Data(line.utf8) }
         guard case .answer("conversation-0", "complete", let text) = event(WorkerFixtures.liveAnswer) else { Issue.record("answer"); return }
         #expect(text.contains("О чём запись?"))
         #expect(text.contains("\n"))
+    }
+
+    /// A current worker names the command an error answers.
+    @Test func errorsCarryTheirCommand() {
+        guard case .error("Session is already paused", "live_pause") = event(WorkerFixtures.liveErrorWithCommand) else { Issue.record("error with command"); return }
     }
 
     @Test func unknownLiveEventsAreReported() {
