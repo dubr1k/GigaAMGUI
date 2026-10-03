@@ -126,6 +126,7 @@ extension AppController {
         let cancelAsk = button("Отменить вопрос", action: #selector(cancelAskLive(_:)), height: 36)
         cancelAsk.identifier = NSUserInterfaceItemIdentifier("live.askCancel")
         cancelAsk.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        liveAskCancelButton = cancelAsk
         transcriptBody.addArrangedSubview(horizontal([question, ask, cancelAsk], spacing: 12))
         let answer = textEditor(liveAnswerText, key: nil, height: 96)
         liveAnswerView = answer.documentView as? NSTextView
@@ -305,8 +306,11 @@ extension AppController {
         guard !question.isEmpty else { return }
         let settings: [String: Any]
         do { settings = try llmSettings() } catch { showNotice("LLM не настроена", error.localizedDescription); return }
+        guard !liveAsking else { return }
+        liveAsking = true
         liveAnswerText = ""
         liveAnswerView?.string = L10n.text("Ассистент отвечает…")
+        refreshLiveControls()
         job.ask(question, settings: settings)
     }
 
@@ -363,6 +367,8 @@ extension AppController {
             default: liveAnswerText = L10n.text("Ошибка LLM: ") + text
             }
             liveAnswerView?.string = liveAnswerText
+            liveAsking = false
+            refreshLiveControls()
         case .stopped(let directory, let saved, let error):
             liveSessionDir = directory
             if let error {
@@ -381,6 +387,7 @@ extension AppController {
 
     func finishLive(status: String) {
         liveJob = nil
+        liveAsking = false
         liveState = "idle"
         liveTimer?.invalidate()
         liveTimer = nil
@@ -417,7 +424,10 @@ extension AppController {
         livePauseButton?.isEnabled = running && liveState == "recording"
         liveStopButton?.isEnabled = running && liveState != "stopping"
         liveQuestionField?.isEnabled = running
-        liveAskButton?.isEnabled = running && !liveFinals.isEmpty
+        // One question at a time: a second one cleared the streaming answer, the
+        // worker rejected it, and the old answer's chunks kept arriving.
+        liveAskButton?.isEnabled = running && !liveFinals.isEmpty && !liveAsking
+        liveAskCancelButton?.isEnabled = running && liveAsking
         func update(_ view: NSView) {
             if let control = view as? NSControl, let key = control.identifier?.rawValue,
                key.hasPrefix("live."), !["live.question", "live.start", "live.pause", "live.stop", "live.ask", "live.askCancel", "live.reveal", "live.folderPath"].contains(key) {

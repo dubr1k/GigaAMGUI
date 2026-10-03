@@ -51,6 +51,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     weak var liveStopButton: NSButton?
     weak var liveQuestionField: NSTextField?
     weak var liveAskButton: NSButton?
+    weak var liveAskCancelButton: NSButton?
+    /// A question was sent and its answer (or refusal) has not arrived yet.
+    var liveAsking = false
     weak var liveAnswerView: NSTextView?
     var llmJob: LLMJob?
     var llmToolsQuery: LLMToolsQuery?

@@ -697,3 +697,16 @@ def test_swift_processing_log_has_one_capped_writer() -> None:
     assert "processingLog.append(line)" in _swift_block(main, "func appendLogLine(_ line: String) {")
     job = (LIQUID_APP / "LiveSessionJob.swift").read_text(encoding="utf-8")
     assert "switch backlog.admit() {" in job and "case .dropFirst:" in job
+
+
+def test_swift_live_asks_one_question_at_a_time() -> None:
+    # Asking while an answer streamed cleared it, the worker rejected the new
+    # question, and the old chunks kept appending; Cancel was always enabled.
+    main = _liquid_sources()
+    controls = _swift_block(main, "private func refreshLiveControls() {")
+    assert "liveAskButton?.isEnabled = running && !liveFinals.isEmpty && !liveAsking" in controls
+    assert "liveAskCancelButton?.isEnabled = running && liveAsking" in controls
+    ask = _swift_block(main, "@objc private func askLive(_ sender: Any?) {")
+    assert ask.index("guard !liveAsking else { return }") < ask.index("liveAnswerText = \"\"")
+    receive = _swift_block(main, "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
+    assert "liveAsking = false" in receive
