@@ -65,7 +65,7 @@ class LiveWorkerService:
 
     def start(self, command: dict[str, Any]) -> None:
         if self._session is not None:
-            self._emit("error", message="Processing is already running")
+            self._error("live_start", "Processing is already running")
             return
         requested_root = str(command.get("session_root") or "").strip()
         root = Path(requested_root) if requested_root else default_session_root()
@@ -73,26 +73,26 @@ class LiveWorkerService:
             try:
                 root.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                self._emit("error", message=f"Could not create {root}: {exc}")
+                self._error("live_start", f"Could not create {root}: {exc}")
                 return
         if not root.is_dir():
-            self._emit("error", message="session_root must be an existing directory")
+            self._error("live_start", "session_root must be an existing directory")
             return
         raw_sources = command.get("sources") or []
         if not isinstance(raw_sources, list) or not raw_sources:
-            self._emit("error", message="sources must contain mic and/or system")
+            self._error("live_start", "sources must contain mic and/or system")
             return
         sources: list[CaptureSource] = []
         for value in raw_sources:
             try:
                 sources.append(CaptureSource(str(value)))
             except ValueError:
-                self._emit("error", message=f"Unknown live source: {value!r}")
+                self._error("live_start", f"Unknown live source: {value!r}")
                 return
         try:
             mode = DiarizationMode(str(command.get("diarization_mode") or "off"))
         except ValueError:
-            self._emit("error", message=f"Unknown diarization mode: {command.get('diarization_mode')!r}")
+            self._error("live_start", f"Unknown diarization mode: {command.get('diarization_mode')!r}")
             return
         self._sample_rate = int(command.get("sample_rate") or 16_000)
         diarization_backend = str(command.get("diarization_backend") or "pyannote")
@@ -109,12 +109,12 @@ class LiveWorkerService:
         )
         exports_raw = command.get("exports") or {"txt": True}
         if not isinstance(exports_raw, dict):
-            self._emit("error", message="exports must be an object")
+            self._error("live_start", "exports must be an object")
             return
         try:
             exports = ExportSelection(**{k: v for k, v in exports_raw.items() if k in ExportSelection.__dataclass_fields__})
         except TypeError as exc:
-            self._emit("error", message=f"Invalid exports: {exc}")
+            self._error("live_start", f"Invalid exports: {exc}")
             return
         adapters = {source: PushCaptureAdapter(source, self._sample_rate) for source in sources}
         scheduler_factory = self._scheduler_factory
@@ -135,13 +135,13 @@ class LiveWorkerService:
             session.subscribe(lambda value, session=session: self._on_update(value, session))
             session.start()
         except Exception as exc:
-            self._emit("error", message=f"Could not start live session: {exc}")
+            self._error("live_start", f"Could not start live session: {exc}")
             return
         self._adapters = adapters
         self._session = session
 
     def audio(self, command: dict[str, Any]) -> None:
-        adapter = self._adapter_for(command)
+        adapter = self._adapter_for(command, "live_audio")
         if adapter is None:
             return
         try:
@@ -150,52 +150,52 @@ class LiveWorkerService:
                 raise ValueError("odd byte count")
             samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
         except (binascii.Error, ValueError):
-            self._emit("error", message="live_audio pcm is not valid base64 int16")
+            self._error("live_audio", "live_audio pcm is not valid base64 int16")
             return
         try:
             seq = int(command.get("seq", 0))
             offset = int(command.get("sample_offset", 0))
             timestamp_ns = int(command.get("timestamp_ns", 0))
         except (TypeError, ValueError):
-            self._emit("error", message="live_audio seq/sample_offset/timestamp_ns must be integers")
+            self._error("live_audio", "live_audio seq/sample_offset/timestamp_ns must be integers")
             return
         adapter.push(seq, offset, timestamp_ns, samples[:, None])
 
     def capture_event(self, command: dict[str, Any]) -> None:
-        adapter = self._adapter_for(command)
+        adapter = self._adapter_for(command, "live_capture_event")
         if adapter is None:
             return
         try:
             kind = CaptureEventKind(str(command.get("kind") or ""))
         except ValueError:
-            self._emit("error", message=f"Unknown capture event kind: {command.get('kind')!r}")
+            self._error("live_capture_event", f"Unknown capture event kind: {command.get('kind')!r}")
             return
         adapter.event(kind, str(command.get("detail") or ""))
 
     def pause(self) -> None:
         if self._session is None:
-            self._emit("error", message=_NOT_RUNNING)
+            self._error("live_pause", _NOT_RUNNING)
             return
         # A second click arrives before the client has seen the first state
         # change; that is a rejected command, not a reason to end the session.
         try:
             self._session.pause()
         except RuntimeError as exc:
-            self._emit("error", message=str(exc))
+            self._error("live_pause", str(exc))
 
     def resume(self) -> None:
         if self._session is None:
-            self._emit("error", message=_NOT_RUNNING)
+            self._error("live_resume", _NOT_RUNNING)
             return
         try:
             self._session.resume()
         except RuntimeError as exc:
-            self._emit("error", message=str(exc))
+            self._error("live_resume", str(exc))
 
     def stop(self) -> None:
         session = self._session
         if session is None:
-            self._emit("error", message=_NOT_RUNNING)
+            self._error("live_stop", _NOT_RUNNING)
             return
         try:
             result = session.stop()
@@ -226,22 +226,22 @@ class LiveWorkerService:
     def ask(self, command: dict[str, Any]) -> None:
         session = self._session
         if session is None:
-            self._emit("error", message=_NOT_RUNNING)
+            self._error("live_ask", _NOT_RUNNING)
             return
         question = str(command.get("question") or "").strip()
         if not question:
-            self._emit("error", message="Question is required")
+            self._error("live_ask", "Question is required")
             return
         transcript = session.ask_context()
         if not transcript:
-            self._emit("error", message="No final transcript events are available yet")
+            self._error("live_ask", "No final transcript events are available yet")
             return
         settings = command.get("settings")
         if not isinstance(settings, dict):
-            self._emit("error", message="LLM settings are required")
+            self._error("live_ask", "LLM settings are required")
             return
         if self._ask_thread is not None and self._ask_thread.is_alive():
-            self._emit("error", message="An assistant question is already running")
+            self._error("live_ask", "An assistant question is already running")
             return
         turn = session.begin_conversation(question)
         self._ask_cancel = threading.Event()
@@ -252,7 +252,7 @@ class LiveWorkerService:
 
     def ask_cancel(self) -> None:
         if self._ask_thread is None or not self._ask_thread.is_alive():
-            self._emit("error", message="No assistant question is running")
+            self._error("live_ask_cancel", "No assistant question is running")
             return
         self._ask_cancel.set()
 
@@ -283,19 +283,23 @@ class LiveWorkerService:
 
     # -- helpers ------------------------------------------------------------
 
-    def _adapter_for(self, command: dict[str, Any]) -> PushCaptureAdapter | None:
+    def _error(self, command: str, message: str) -> None:
+        """Report a rejected command; `command` names it so clients can tell which."""
+        self._emit("error", message=message, command=command)
+
+    def _adapter_for(self, command: dict[str, Any], command_type: str) -> PushCaptureAdapter | None:
         if self._session is None:
-            self._emit("error", message=_NOT_RUNNING)
+            self._error(command_type, _NOT_RUNNING)
             return None
         value = str(command.get("source") or "")
         try:
             source = CaptureSource(value)
         except ValueError:
-            self._emit("error", message=f"Unknown live source: {value!r}")
+            self._error(command_type, f"Unknown live source: {value!r}")
             return None
         adapter = self._adapters.get(source)
         if adapter is None:
-            self._emit("error", message=f"Unknown live source: {value!r}")
+            self._error(command_type, f"Unknown live source: {value!r}")
         return adapter
 
     def _on_update(self, value: TranscriptEvent | CaptureEvent | LiveStatus, session: LiveSession) -> None:
@@ -337,7 +341,7 @@ class LiveWorkerService:
         try:
             backend.prepare()
         except Exception as exc:
-            self._emit("error", message=str(exc))
+            self._error("live_start", str(exc))
             return None
 
         def factory(source, on_final, on_partial, on_error):

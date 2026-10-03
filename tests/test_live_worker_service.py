@@ -107,7 +107,41 @@ def test_live_start_validates_root_sources_and_exclusivity(service, tmp_path):
 
     _start(svc, tmp_path)
     _start(svc, tmp_path)
-    assert _messages(output)[-1] == {"type": "error", "message": "Processing is already running"}
+    assert _messages(output)[-1] == {
+        "type": "error", "message": "Processing is already running", "command": "live_start",
+    }
+
+
+def test_every_live_error_names_the_command_it_rejects(service):
+    """Clients match some error texts; `command` says which request failed without that."""
+    svc, output, tmp_path = service
+    svc.audio({"type": "live_audio", "source": "mic"})
+    svc.capture_event({"type": "live_capture_event", "source": "mic", "kind": "status"})
+    svc.pause()
+    svc.resume()
+    svc.stop()
+    svc.ask({"type": "live_ask", "question": "?"})
+    svc.ask_cancel()
+    svc.start({"type": "live_start", "session_root": str(tmp_path), "sources": []})
+    _start(svc, tmp_path)
+    svc.audio({"type": "live_audio", "source": "mic", "pcm": "***"})
+    svc.capture_event({"type": "live_capture_event", "source": "radio", "kind": "status"})
+    svc.capture_event({"type": "live_capture_event", "source": "mic", "kind": "bogus"})
+
+    errors = [(m["command"], m["message"]) for m in _messages(output) if m["type"] == "error"]
+    assert errors == [
+        ("live_audio", "No live session is running"),
+        ("live_capture_event", "No live session is running"),
+        ("live_pause", "No live session is running"),
+        ("live_resume", "No live session is running"),
+        ("live_stop", "No live session is running"),
+        ("live_ask", "No live session is running"),
+        ("live_ask_cancel", "No assistant question is running"),
+        ("live_start", "sources must contain mic and/or system"),
+        ("live_audio", "live_audio pcm is not valid base64 int16"),
+        ("live_capture_event", "Unknown live source: 'radio'"),
+        ("live_capture_event", "Unknown capture event kind: 'bogus'"),
+    ]
 
 
 def test_live_audio_feeds_scheduler_and_partials_finals_are_emitted(service):
