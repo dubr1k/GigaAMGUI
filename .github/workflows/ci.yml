@@ -37,7 +37,7 @@ jobs:
           tests/test_packaging_runtime_deps.py tests/test_macos_packaging_config.py
           tests/test_tui_requirements.py tests/test_data_paths.py
           tests/test_dockerignore.py tests/test_bundle_module_gate.py tests/test_ci_hardening.py
-          tests/test_pin_consistency.py
+          tests/test_pin_consistency.py tests/test_compose_config.py
 
   tui:
     name: TUI tests
