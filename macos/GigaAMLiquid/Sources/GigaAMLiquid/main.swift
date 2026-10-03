@@ -3519,6 +3519,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             self.refreshLLMToolRows()
             self.refreshLLMProviderStatus()
         }
+        query.onLog = { [weak self] line in self?.appendProcessingLog("LLM tools: " + line) }
         llmToolsQuery = query
         query.start()
     }
@@ -3545,6 +3546,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             self.refreshLLMToolRows()
             self.refreshLLMProviderStatus()
         }
+        query.onLog = { [weak self] line in self?.appendProcessingLog("LLM tools: " + line) }
         llmToolChecks[provider] = query
         query.start()
     }
