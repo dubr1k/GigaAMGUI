@@ -155,8 +155,10 @@ async def process_transcription(
             )
 
             if not result['success']:
-                # Причину провала процессор кладёт в result['error']; старые версии её не дают
-                raise Exception(transcription_api.failure_reason(result) or "Обработка не удалась")
+                # Причину провала процессор кладёт в result['error']; старые версии её не дают.
+                # Клиенту — без путей сервера (папки загрузок и результатов).
+                reason = transcription_api.failure_reason(result, known_paths=(file_path, output_dir))
+                raise Exception(reason or "Обработка не удалась")
 
             if task_id not in registry.tasks:
                 if task_id in registry.deleted:

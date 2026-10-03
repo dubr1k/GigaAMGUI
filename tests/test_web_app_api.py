@@ -155,6 +155,19 @@ def test_failed_file_shows_processor_reason(web_dirs, fake_processor, monkeypatc
     assert task["message"] == "boom"
 
 
+def test_failed_file_reason_hides_server_paths(web_dirs, fake_processor, monkeypatch):
+    upload_dir, _ = web_dirs
+    monkeypatch.setattr(state, "model_loader", _FakeLoader())
+    source = upload_dir / "t4 my voice.wav"
+    source.write_bytes(b"RIFF")
+    registry.register("t4", "my voice.wav", 4, "alice")
+    fake_processor.result = {"success": False, "error": f"Ошибка: файл не найден: {source}"}
+
+    _run_processing("t4", source, "my voice.wav")
+
+    assert registry.tasks["t4"]["message"] == "Ошибка: файл не найден: t4 my voice.wav"
+
+
 def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_processor, monkeypatch):
     upload_dir, _ = web_dirs
     monkeypatch.setattr(state, "model_loader", _FakeLoader())
