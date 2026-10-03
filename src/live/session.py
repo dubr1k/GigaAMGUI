@@ -16,15 +16,11 @@ from src.core.asr.types import normalize_window_audio
 from .capture.base import CaptureAdapter
 from .conversation import ConversationLog, ConversationTurn
 from .diagnostics import SessionLog
-from .diarization import (
-    LIVE_ESTIMATE_BACKEND,
-    LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS,
-    BuiltinDiarizers,
-)
+from .diarization import LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS, BuiltinDiarizers, SpeakerLabeler
 from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .mixing import MAX_MIX_SKEW_NS, MAX_PENDING_MIX_CHUNKS, MixCoordinator
-from .recorder import SessionRecorder, join_segments
+from .recorder import SessionRecorder
 from .recording_policy import MAX_RECORDING_FAILURES, RecordingGuard
 from .timeline import SourceTimeline
 from .types import (
@@ -114,7 +110,6 @@ class LiveSession:
             sample_rate=settings.asr_sample_rate,
         )
         self._recorder_factory = recorder_factory
-        self._diarization_factory = diarization_factory or BuiltinDiarizers()
         self._translate = translate or (lambda _ru, en: en)
         self._session_dir = LiveSessionStore(root_dir).create(settings)
         self._log_sink = log
@@ -146,9 +141,6 @@ class LiveSession:
             translate=self._translate,
         )
         self._schedulers: dict[CaptureSource, AsrScheduler] = {}
-        self._live_diarizers: dict[CaptureSource, object] = {}
-        self._live_diarization_unavailable: set[CaptureSource] = set()
-        self._speaker_labels: dict[tuple[CaptureSource, str], str] = {}
         self._finalized_revisions: dict[tuple[CaptureSource, str], int] = {}
         self._partials: dict[CaptureSource, TranscriptEvent] = {}
         self._subscribers: list[Callable[[TranscriptEvent | CaptureEvent | LiveStatus], None]] = []
@@ -157,6 +149,14 @@ class LiveSession:
         )
         self._last_checkpoint_at = float("-inf")
         self._lock = RLock()
+        self._speakers = SpeakerLabeler(
+            diarization_factory or BuiltinDiarizers(),
+            asr_sample_rate=settings.asr_sample_rate,
+            after_stop_backend=settings.diarization_backend,
+            translate=self._translate,
+            notify=self._notify,
+            lock=self._lock,
+        )
 
     @property
     def session_dir(self) -> Path:
@@ -272,7 +272,15 @@ class LiveSession:
                 recording_files = self._recording_files(recordings)
                 self._attempt(errors, "update metadata", self._record_artifacts)
                 if self._settings.diarization_mode is DiarizationMode.AFTER_STOP:
-                    self._attempt(errors, "diarize", lambda: self._diarize_recordings(recordings, recording_files))
+                    self._attempt(errors, "diarize", lambda: self._speakers.diarize_recordings(
+                        recordings,
+                        recording_files,
+                        events_for=lambda source: [
+                            event for event in self._journal.latest_events() if event.source is source
+                        ],
+                        publish=self._publish_revision,
+                        work_dir=self._session_dir,
+                    ))
                 self._attempt(errors, "freeze conversation", self._conversation.freeze)
                 exports = self._attempt(
                     errors, "export",
@@ -457,12 +465,10 @@ class LiveSession:
         # Creating the diarizer loads a model. Under the session lock that
         # stalled _on_chunk for every source, and the native client's backlog
         # overflowed and dropped audio meanwhile.
-        estimates = self._estimate_live_speakers(event.source, recent)
+        estimates = self._speakers.estimate_live(event.source, recent)
         with self._lock:
-            for revised in self._revised_speakers(recent, estimates):
-                self._record_finalized(revised)
-                self._journal.append(revised)
-                self._notify(revised)
+            for revised in self._speakers.revised(recent, estimates):
+                self._publish_revision(revised)
 
     def _on_partial(self, event: TranscriptEvent) -> None:
         with self._lock:
@@ -473,6 +479,11 @@ class LiveSession:
                 return
             self._partials[event.source] = event
             self._notify(event)
+
+    def _publish_revision(self, event: TranscriptEvent) -> None:
+        self._record_finalized(event)
+        self._journal.append(event)
+        self._notify(event)
 
     def _record_finalized(self, event: TranscriptEvent) -> None:
         key = (event.source, event.event_id)
@@ -485,140 +496,6 @@ class LiveSession:
             for item in self._journal.latest_events()
             if item.source is event.source and event.sample_end - item.sample_end <= horizon_samples
         ]
-
-    def _estimate_live_speakers(self, source: CaptureSource, recent: list[TranscriptEvent]) -> dict:
-        """Runs without the session lock; only the ASR thread of `source` calls it."""
-        if source in self._live_diarization_unavailable:
-            return {}
-        if not getattr(self._diarization_factory, "supports_live_estimate", True):
-            with self._lock:
-                self._report_live_diarization_unavailable(
-                    source,
-                    self._translate(
-                        "Оценка спикеров во время записи недоступна с установленными движками диаризации.",
-                        "Live speaker estimates are not available with the installed diarization backends.",
-                    ),
-                )
-            return {}
-        diarizer = self._live_diarizers.get(source)
-        if diarizer is None:
-            try:
-                diarizer = self._create_diarizer(LIVE_ESTIMATE_BACKEND)
-                self._live_diarizers[source] = diarizer
-            except Exception as exc:
-                with self._lock:
-                    self._report_live_diarization_unavailable(source, str(exc))
-                return {}
-        estimate = getattr(diarizer, "estimate_events", None)
-        if not callable(estimate):
-            with self._lock:
-                self._report_live_diarization_unavailable(
-                    source,
-                    "Live Sortformer estimate unavailable; use After stop for offline speaker labels. "
-                    "Retaining source labels.",
-                )
-            return {}
-        try:
-            return estimate(
-                recent,
-                stabilization_horizon_seconds=LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS,
-            )
-        except Exception as exc:
-            with self._lock:
-                self._report_live_diarization_unavailable(source, str(exc))
-            return {}
-
-    def _diarize_recordings(
-        self,
-        recordings: dict[CaptureSource, Path],
-        files: Mapping[str, list[Path]] | None = None,
-    ) -> None:
-        diarizer = None
-        for source, path in recordings.items():
-            parts = list((files or {}).get(source.value) or [path])
-            joined = None
-            try:
-                # One model for every source: it used to be loaded per source.
-                if diarizer is None:
-                    diarizer = self._create_diarizer(self._settings.diarization_backend)
-                # A rolled-over track is diarized as one file: the first
-                # segment alone left everything after ~15 min unlabelled.
-                if len(parts) > 1:
-                    joined = join_segments(parts, self._session_dir / f".{source.value}-diarize.flac")
-                segments = diarizer.diarize(str(joined or parts[0]))
-                events = [event for event in self._journal.latest_events() if event.source is source]
-                for revised in self._revised_speakers(events, self._segment_speakers(events, segments)):
-                    self._record_finalized(revised)
-                    self._journal.append(revised)
-                    self._notify(revised)
-            except Exception as exc:
-                self._notify(CaptureEvent(
-                    CaptureEventKind.STATUS,
-                    source,
-                    0,
-                    0,
-                    f"After-stop diarization unavailable: {exc}. Retaining source labels.",
-                ))
-            finally:
-                if joined is not None:
-                    joined.unlink(missing_ok=True)
-
-    def _create_diarizer(self, backend: str):
-        return self._diarization_factory(backend)
-
-    def _segment_speakers(self, events, segments) -> dict[str, str]:
-        speakers = {}
-        for event in events:
-            start = event.sample_start / self._settings.asr_sample_rate
-            end = event.sample_end / self._settings.asr_sample_rate
-            # Only segments that actually overlap: with all overlaps at zero,
-            # max() fell back to comparing labels and named a speaker who was
-            # not talking.
-            overlaps = [
-                (overlap, segment.speaker)
-                for segment in segments
-                if (overlap := min(end, segment.end) - max(start, segment.start)) > 0
-            ]
-            if overlaps:
-                _, speaker = max(overlaps, key=lambda item: item[0])
-                speakers[event.event_id] = speaker
-        return speakers
-
-    def _revised_speakers(self, events, estimates) -> list[TranscriptEvent]:
-        revised = []
-        for event in events:
-            speaker = estimates.get(event.event_id)
-            if speaker is None:
-                continue
-            anonymous = self._anonymous_speaker(event.source, str(speaker))
-            if event.speaker != anonymous:
-                revised.append(replace(event, revision=event.revision + 1, speaker=anonymous, supersedes=event.revision))
-        return revised
-
-    def _anonymous_speaker(self, source: CaptureSource, raw_speaker: str) -> str:
-        key = (source, raw_speaker)
-        number = len(self._speaker_labels) + 1
-        return self._speaker_labels.setdefault(
-            key,
-            self._translate(f"Спикер {number}", f"Speaker {number}"),
-        )
-
-    def _report_live_diarization_unavailable(self, source: CaptureSource, detail: str) -> None:
-        if source in self._live_diarization_unavailable:
-            return
-        self._live_diarization_unavailable.add(source)
-        guidance = self._translate(
-            "Используйте «После остановки» для офлайн-меток спикеров; "
-            "метки источников сохраняются.",
-            "Use After stop for offline speaker labels; retaining source labels.",
-        )
-        self._notify(CaptureEvent(
-            CaptureEventKind.STATUS,
-            source,
-            0,
-            0,
-            f"{detail} {guidance}",
-        ))
 
     def _on_asr_error(self, source: CaptureSource, error: Exception) -> None:
         self.log(f"asr error [{source.value}]: {type(error).__name__}: {error}")
