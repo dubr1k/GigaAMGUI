@@ -18,6 +18,7 @@ os.environ.setdefault("WEB_PASSWORD", "test-password")
 web_app = importlib.import_module("web.web_app")
 from src.services import transcription_service  # noqa: E402
 from src.utils.atomic_json import load_json, save_json_atomic  # noqa: E402
+from web import jobs  # noqa: E402
 from web.state import STATIC_DIR, state  # noqa: E402
 from web.task_registry import TASK_RECOVERY_MESSAGE, registry  # noqa: E402
 
@@ -128,7 +129,7 @@ def test_download_endpoint_forwards_validated_subtitle_options(monkeypatch):
     async def fake_download(*args):
         captured["subtitle_options"] = args[-1]
 
-    monkeypatch.setattr(web_app, "_download_and_process", fake_download)
+    monkeypatch.setattr(jobs, "download_and_process", fake_download)
 
     async def scenario():
         response = await web_app.download_from_url(
@@ -217,7 +218,7 @@ def test_upload_endpoint_forwards_validated_subtitle_options(monkeypatch, tmp_pa
         captured["subtitle_options"] = args[-1]
 
     monkeypatch.setattr(web_app, "_save_upload", fake_save_upload)
-    monkeypatch.setattr(web_app, "process_transcription", fake_process)
+    monkeypatch.setattr(jobs, "process_transcription", fake_process)
 
     class _File:
         filename = "sample.wav"  # имена проверяются до сохранения

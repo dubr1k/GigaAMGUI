@@ -23,7 +23,7 @@ os.environ.setdefault("WEB_PASSWORD", "test-password")
 web_app = importlib.import_module("web.web_app")
 from src.core.subtitles import SubtitleOptions  # noqa: E402
 from src.services import transcription_service  # noqa: E402
-from web import auth  # noqa: E402
+from web import auth, jobs  # noqa: E402
 from web.state import state, validated_login_rate_limit  # noqa: E402
 from web.task_registry import registry  # noqa: E402
 
@@ -128,7 +128,7 @@ def _completed_task(results_dir, task_id: str, *, user: str | None = None, forma
 def _run_processing(task_id: str, file_path, filename: str):
     async def scenario():
         state.processing_semaphore = asyncio.Semaphore(1)
-        await web_app.process_transcription(task_id, file_path, filename, ["txt"], False, "pyannote", None)
+        await jobs.process_transcription(task_id, file_path, filename, ["txt"], False, "pyannote", None)
 
     asyncio.run(scenario())
 
@@ -491,7 +491,7 @@ def test_background_jobs_are_referenced_until_done(web_dirs, monkeypatch):
     async def fake_download(*args):
         await release.wait()
 
-    monkeypatch.setattr(web_app, "_download_and_process", fake_download)
+    monkeypatch.setattr(jobs, "download_and_process", fake_download)
     monkeypatch.setattr(state, "model_loader", _FakeLoader())
 
     async def scenario():
@@ -504,11 +504,11 @@ def test_background_jobs_are_referenced_until_done(web_dirs, monkeypatch):
             subtitle_max_width=64,
         )
         await asyncio.sleep(0)
-        seen["running"] = len(web_app._background_jobs)
+        seen["running"] = len(jobs.background_jobs)
         release.set()
         for _ in range(5):
             await asyncio.sleep(0)
-        seen["after"] = len(web_app._background_jobs)
+        seen["after"] = len(jobs.background_jobs)
 
     asyncio.run(scenario())
     assert seen == {"running": 1, "after": 0}
@@ -565,7 +565,7 @@ def test_upload_failure_on_a_later_file_starts_nothing(web_dirs, monkeypatch):
         started.append(args)
 
     monkeypatch.setattr(web_app, "_save_upload", fake_save_upload)
-    monkeypatch.setattr(web_app, "process_transcription", fake_process)
+    monkeypatch.setattr(jobs, "process_transcription", fake_process)
     monkeypatch.setattr(state, "model_loader", _FakeLoader())
 
     class _File:
@@ -660,7 +660,7 @@ class _FakeYoutubeDL:
 def _run_download(task_id: str, url: str = "https://example.invalid/watch?v=1"):
     registry.register(task_id, "watch", 0, "alice")
     registry.tasks[task_id]["status"] = "downloading"
-    asyncio.run(web_app._download_and_process(
+    asyncio.run(jobs.download_and_process(
         task_id, url, ["txt"], False, "pyannote", None,
         transcription_service.AsrSelection("auto", "v3_e2e_rnnt", "auto"),
         SubtitleOptions(),
@@ -689,7 +689,7 @@ def test_url_download_is_capped_and_handed_to_processing(web_dirs, monkeypatch):
     async def fake_process(task_id, file_path, filename, *args):
         processed.update(task_id=task_id, file_path=file_path, filename=filename, exists=file_path.exists())
 
-    monkeypatch.setattr(web_app, "process_transcription", fake_process)
+    monkeypatch.setattr(jobs, "process_transcription", fake_process)
 
     _run_download("dl2")
 
