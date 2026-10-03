@@ -302,9 +302,10 @@ class TuiWorker:
             self.emit("error", message="Nothing is being processed")
             return
         self._cancel_requested.set()
-        # The shared processor has no safe mid-file cancellation mechanism.  This
-        # matches the GUI: finish the current file, then stop the remaining queue.
-        self.emit("cancelling", message="Остановка запрошена: закончим текущий файл и остановимся.")
+        # Процессор проверяет флаг между стадиями, на строках прогресса ffmpeg и
+        # перед каждым окном ASR: текущий файл прерывается, его результаты не
+        # сохраняются, остальная очередь не начинается.
+        self.emit("cancelling", message="Остановка запрошена: прерываем текущий файл, его результаты не сохранятся.")
 
     def _run_batch(
         self,
@@ -376,10 +377,16 @@ class TuiWorker:
                             max_line_count=subtitle_max_lines,
                             max_line_width=subtitle_max_width,
                         ),
+                        cancel_check=self._cancel_requested.is_set,
                     )
                 except Exception as exc:
                     self._log(f"Не удалось обработать {os.path.basename(filepath)}: {exc}")
                     result = {"file_path": filepath, "success": False, "error": str(exc), "saved_files": []}
+                if result.get("cancelled"):
+                    # Прерванный отменой файл — остановка, а не сбой: без file_completed
+                    # с «ошибкой» и без записи в results. Клиенты видят его как начатый,
+                    # но не завершённый (TUI: «Прервано»), `completed` несёт cancelled.
+                    break
                 results.append(result)
                 if result.get("success") and result.get("media_duration", 0) > 0:
                     stats.add_processing_record(
