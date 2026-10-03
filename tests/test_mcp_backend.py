@@ -336,6 +336,22 @@ def test_processor_failure_cleans_up_and_maps_to_processing_failed(backend, uplo
     assert _leftovers(upload_dir) == []
 
 
+def test_processor_failure_reason_reaches_the_client(backend, tmp_path, fake_processor, monkeypatch):
+    # Процессор объясняет провал в result["error"] — клиент должен увидеть причину, а не «see the log»
+    monkeypatch.setattr(_FakeProcessor, "process_file",
+                        lambda self, *a, **kw: {"success": False, "error": "boom: ffmpeg could not decode\ntrace"})
+    err = _err(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+    assert err.code == "processing_failed" and err.status == 500
+    assert "boom: ffmpeg could not decode" in err.message
+    assert "trace" not in err.message  # только первая строка: без многострочных подробностей сервера
+
+
+def test_processor_failure_without_reason_keeps_generic_message(backend, tmp_path, fake_processor):
+    fake_processor.fail = True
+    err = _err(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+    assert err.message == "Transcription failed on the server. See the server log."
+
+
 def test_processor_exception_cleans_up(backend, upload_dir, fake_processor, monkeypatch):
     monkeypatch.setattr(_FakeProcessor, "process_file", lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("x")))
     err = _err(backend.transcribe(url="https://example.org/x", opts=TranscribeOptions(), progress=None))
@@ -586,6 +602,41 @@ def test_summarize_provider_and_model_overrides(backend, fake_provider):
     assert call["provider"] == "Other" and call["settings"]["provider"] == "Other" and call["settings"]["model"] == "gpt-x"
     err = _err(backend.summarize("t", "summary", None, "Skynet", None))
     assert err.code == "unsupported_parameter" and err.param == "provider"
+
+
+def _codex_commands(monkeypatch) -> list:
+    """Настоящий llm_service до subprocess: команды Codex записываются, ответ — JSON agent_message."""
+    import subprocess
+
+    commands = []
+
+    def run_command(command, *, input_text=None, cancel_check=None):
+        commands.append(list(command))
+        event = '{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}'
+        return subprocess.CompletedProcess(command, 0, event + "\n", "")
+
+    monkeypatch.setattr(llm_service, "_run_command", run_command)
+    return commands
+
+
+def test_summarize_codex_model_override_reaches_the_command(backend, tmp_path, monkeypatch):
+    # Codex читает только codex_model (общий `model` — это модель API); раньше model=X
+    # из summarize молча терялся, а в ответе всё равно стояло "model": X
+    commands = _codex_commands(monkeypatch)
+    out = _run(backend.summarize("t", "summary", None, "Codex", "o3"))
+    assert out["provider"] == "Codex" and out["model"] == "o3"
+    command = commands[0]
+    assert command[command.index("-m") + 1] == "o3"
+
+
+def test_summarize_codex_ignores_shared_api_model_and_reports_it_honestly(backend, tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "user_settings.json").write_text('{"llm_provider": "Codex", "llm_model": "gpt-4.1-mini"}')
+    commands = _codex_commands(monkeypatch)
+    out = _run(backend.summarize("t", "summary", None, None, None))
+    assert "-m" not in commands[0]  # модель API не уходит в Codex
+    assert out["model"] == ""       # и не выдаётся за использованную
 
 
 def test_summarize_provider_from_settings(backend, fake_provider, tmp_path):

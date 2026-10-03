@@ -4,6 +4,7 @@ GigaAM v3 Transcriber - CLI интерфейс
 Продвинутый интерактивный командный интерфейс для транскрибации
 """
 
+import functools
 import os
 import sys
 import time
@@ -36,7 +37,6 @@ except ValueError as exc:
 import click
 import questionary
 from questionary import Style
-from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -47,12 +47,12 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from rich.table import Table
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты из проекта
 from src.cli_support import interactive as cli_interactive
+from src.cli_support.ui import CLILogger, display_results, print_banner
 from src.config import (
     ASR_BACKEND,
     AUDIO_PREPROCESSING_MODE,
@@ -95,64 +95,6 @@ custom_style = Style([
     ('instruction', ''),                     # Инструкция
     ('text', ''),                           # Текст
 ])
-
-
-class CLILogger:
-    """Логгер для CLI с красивым выводом"""
-
-    def __init__(self, verbose: bool = False):
-        self.verbose = verbose
-        self.file_logger = None
-
-    def set_file_logger(self, logger):
-        """Устанавливает файловый логгер"""
-        self.file_logger = logger
-
-    def info(self, message: str):
-        """Информационное сообщение"""
-        console.print(f"[cyan]ℹ[/cyan] {message}")
-        if self.file_logger:
-            self.file_logger.info(message)
-
-    def success(self, message: str):
-        """Успешное сообщение"""
-        console.print(f"[green]✓[/green] {message}")
-        if self.file_logger:
-            self.file_logger.info(message)
-
-    def warning(self, message: str):
-        """Предупреждение"""
-        console.print(f"[yellow]⚠[/yellow] {message}")
-        if self.file_logger:
-            self.file_logger.warning(message)
-
-    def error(self, message: str):
-        """Ошибка"""
-        console.print(f"[red]✗[/red] {message}")
-        if self.file_logger:
-            self.file_logger.error(message)
-
-    def debug(self, message: str):
-        """Отладочное сообщение"""
-        if self.verbose:
-            console.print(f"[dim]{message}[/dim]")
-        if self.file_logger:
-            self.file_logger.debug(message)
-
-
-def print_banner():
-    """Выводит красивый баннер приложения"""
-    banner = """
-    ╔═══════════════════════════════════════════════════════════╗
-    ║                                                           ║
-    ║              [bold cyan]GigaAM v3 Transcriber[/bold cyan]                 ║
-    ║                                                           ║
-    ║        [dim]Продвинутая транскрибация русской речи[/dim]         ║
-    ║                 [dim]Powered by Sber AI[/dim]                    ║
-    ║                                                           ║
-    ╚═══════════════════════════════════════════════════════════╝
-    """
-    console.print(banner)
 
 
 def process_files_with_progress(
@@ -313,69 +255,25 @@ def process_files_with_progress(
     return results
 
 
-def display_results(results: list[dict]):
+EXIT_FAILED = 1         # хотя бы один файл не обработан
+EXIT_INTERRUPTED = 130  # Ctrl-C: 128 + SIGINT, как у shell
+
+
+def _interrupt_exit_code(func):
+    """Ctrl-C в любой момент работы команды — сообщение и код 130.
+
+    Без этого KeyboardInterrupt ловит сам click (standalone_mode): печатает
+    «Aborted!» и выходит с 1, неотличимо от провала обработки; обработчик в
+    `__main__` до исключения так и не доходил.
     """
-    Отображает результаты обработки в виде таблицы
-
-    Args:
-        results: список результатов
-    """
-    console.print("\n")
-
-    # Создаем таблицу
-    table = Table(
-        title="📊 Результаты обработки",
-        box=box.ROUNDED,
-        show_header=True,
-        header_style="bold cyan"
-    )
-
-    table.add_column("№", style="dim", width=4, justify="right")
-    table.add_column("Файл", style="cyan")
-    table.add_column("Статус", justify="center")
-    table.add_column("Время", justify="right")
-    table.add_column("Длительность", justify="right")
-
-    total_time = 0
-    success_count = 0
-
-    for i, result in enumerate(results, 1):
-        filename = os.path.basename(result['file_path'])
-
-        # Сокращаем длинные имена
-        if len(filename) > 40:
-            filename = filename[:37] + "..."
-
-        status = "[green]✓ Успех[/green]" if result['success'] else "[red]✗ Ошибка[/red]"
-
-        processing_time = f"{result['total_time']:.1f}с"
-
-        duration = result.get('media_duration', 0)
-        duration_str = f"{int(duration//60)}:{int(duration%60):02d}" if duration > 0 else "-"
-
-        table.add_row(
-            str(i),
-            filename,
-            status,
-            processing_time,
-            duration_str
-        )
-
-        total_time += result['total_time']
-        if result['success']:
-            success_count += 1
-
-    console.print(table)
-
-    # Итоговая статистика
-    summary = Panel(
-        f"[bold green]Успешно:[/bold green] {success_count}/{len(results)} файлов\n"
-        f"[bold cyan]Общее время:[/bold cyan] {total_time:.1f}с ({total_time/60:.1f} мин)",
-        title="📈 Итого",
-        border_style="green"
-    )
-    console.print("\n")
-    console.print(summary)
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except KeyboardInterrupt:
+            console.print("\n\n[yellow]⚠ Обработка прервана пользователем[/yellow]")
+            sys.exit(EXIT_INTERRUPTED)
+    return wrapper
 
 
 @click.command()
@@ -480,6 +378,7 @@ def display_results(results: list[dict]):
     show_default=True,
     help='Максимум символов в строке SRT/VTT',
 )
+@_interrupt_exit_code
 def main(
     data_dir, files, directory, output, interactive, verbose, formats, backend, model, onnx_provider,
     diarize, diarization_backend, speakers, audio_preprocessing,
@@ -512,10 +411,10 @@ def main(
         apply_data_dir(data_dir, force_specialized=True)
 
     # Баннер
-    print_banner()
+    print_banner(console)
 
     # Инициализация логгера
-    logger = CLILogger(verbose=verbose)
+    logger = CLILogger(console, verbose=verbose)
 
     # Проверка токена нужна только для pyannote. Публичный Sortformer
     # загружается без HF_TOKEN.
@@ -611,11 +510,14 @@ def main(
     # Подтверждение перед обработкой
     if interactive:
         console.print("\n")
-        if not questionary.confirm(
+        confirmed = questionary.confirm(
             f"Начать обработку {len(file_list)} файлов?",
             default=True,
             style=custom_style
-        ).ask():
+        ).ask()
+        if confirmed is None:  # questionary сам ловит Ctrl-C и возвращает None
+            raise KeyboardInterrupt
+        if not confirmed:
             logger.warning("Обработка отменена пользователем")
             sys.exit(0)
 
@@ -644,7 +546,7 @@ def main(
     total_time = time.time() - start_time
 
     # Отображение результатов
-    display_results(results)
+    display_results(console, results)
 
     # Финальное сообщение
     success_count = sum(1 for r in results if r['success'])
@@ -657,14 +559,13 @@ def main(
         logger.error("Не удалось обработать ни одного файла")
 
     logger.info(f"Результаты сохранены в: {output_dir}")
+    if success_count < len(results):
+        sys.exit(EXIT_FAILED)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except KeyboardInterrupt:
-        console.print("\n\n[yellow]⚠ Обработка прервана пользователем[/yellow]")
-        sys.exit(0)
     except Exception as e:
         console.print(f"\n\n[red]❌ Критическая ошибка: {str(e)}[/red]")
         import traceback

@@ -24,6 +24,7 @@ Obsidian, n8n, Home Assistant, Open WebUI — работает с GigaAM, есл
 - [Расширения GigaAM](#расширения-gigaam)
 - [Postman](#postman)
 - [Переменные окружения](#переменные-окружения)
+- [Веб-панель (web/web_app.py)](#веб-панель-webweb_apppy)
 
 ## Быстрый старт
 
@@ -364,7 +365,7 @@ curl -N http://127.0.0.1:8000/v1/audio/transcriptions \
 | 413 | `invalid_request_error` | `file_too_large` | файл больше `MAX_FILE_SIZE`; если `Content-Length` превышает `MAX_FILE_SIZE` + 1 МиБ, ответ приходит по заголовкам, до чтения тела |
 | 422 | `invalid_request_error` | `null` | ошибка валидации формы: нет `file`/`model`, `num_speakers` < 1 …; `param` — имя поля |
 | 429 | `rate_limit_error` | `rate_limit_exceeded` | больше `RATE_LIMIT_UPLOAD` (10 в минуту) запросов на транскрибацию с одного IP |
-| 500 | `server_error` | `processing_failed` | конвертация/распознавание упали; подробности в журнале сервера |
+| 500 | `server_error` | `processing_failed` | конвертация/распознавание упали; если процессор назвал причину, она в `message` (`Transcription failed: …`), иначе — в журнале сервера |
 | 500 | `server_error` | `internal_error` | необработанное исключение; при `API_DEBUG=true` в `message` добавляется текст исключения |
 | 503 | `server_error` | `diarization_unavailable` | диаризация `pyannote` без `HF_TOKEN` на сервере |
 | 503 | `server_error` | `model_not_loaded` | модель ASR не загружена |
@@ -458,3 +459,53 @@ curl http://127.0.0.1:8000/v1/audio/transcriptions \
 | `HF_TOKEN` | пусто | Токен Hugging Face для `diarization_backend=pyannote`. |
 | `AUDIO_PREPROCESSING_MODE` | `auto` | Режим подготовки аудио по умолчанию (`off`/`auto`/`light`/`denoise`). |
 | `GIGAAM_MCP_ALLOW_PATHS`, `GIGAAM_MCP_PATH_ROOT`, `GIGAAM_MCP_MAX_INLINE_MB` | см. [MCP.md](MCP.md) | Политика источника `path` и лимит base64 для `/mcp`. |
+
+## Веб-панель (web/web_app.py)
+
+Docker-образ запускает не `api.py`, а веб-панель (`web.web_app:app`): вход по
+логину и паролю (`WEB_USERNAME`/`WEB_PASSWORD`, JWT в cookie `gigaam_token` или
+`Authorization: Bearer <jwt>`), внутренний JSON-API под `/api/*` для
+`web/static/app.js` и тот же `/mcp`, что у `api.py` (по API-ключу). Внутренний
+`/api/*` — не публичный контракт, но его защита важна для развёртываний.
+
+**Тело запроса — только после авторизации.** Изменяющие запросы к `/api/*`
+(кроме `/api/auth/login` и `/api/auth/logout`) проверяются ASGI-гардом по
+заголовкам, до чтения тела: без действующей сессии — `401`, `Content-Length`
+больше лимита — `413`. Иначе FastAPI успевал разобрать multipart (и записать
+файлы во временную директорию) раньше, чем срабатывала авторизация.
+
+**Изменяющие запросы с cookie — только со страницы панели.** Запрос,
+авторизованный cookie, а не заголовком `Authorization: Bearer <jwt>`,
+отклоняется с `403`, если браузер сообщает чужой источник: по
+`Sec-Fetch-Site` (`same-origin` — свой), а в браузерах без него — по
+`Origin`/`Referer`, имя хоста которого должно совпасть с `Host` или
+`X-Forwarded-Host`. Запросы без этих заголовков (curl, скрипты) и с
+действующим Bearer-токеном не проверяются. Отдельно поднятый фронтенд
+(разработка) перечисляется в `WEB_TRUSTED_ORIGINS` — только для него
+включается CORS с credentials; по умолчанию CORS выключен.
+
+**LLM-вкладка: бинари CLI выбирает сервер.** `POST /api/llm/process` и
+`POST /api/llm/tools/check` берут пути и аргументы CLI-провайдеров (Claude
+Code, Codex, OpenCode, Pi, oh-my-pi, «Другое») из настроек сервера — реестр
+`cli_tools` плюс `user_settings.json`/`tui_settings.json` в каталоге
+`GIGAAM_CONFIG_DIR`, как у MCP, — а «инструменты и сессии агента» всегда
+выключены. Поля `*_path`, `*_args` и `llm_allow_tools` из формы игнорируются:
+иначе сессия веб-панели (или украденная cookie) означала бы запуск любой
+команды на сервере. Клиент по-прежнему задаёт провайдера, `api_url`,
+`api_key`, `model`, `temperature` и `pi_provider`/`omp_provider`. Прежнее
+поведение — `WEB_ALLOW_CLIENT_LLM_CLI=1`, только для однопользовательской
+установки, где вход в панель и так означает доступ к машине.
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `WEB_SECRET`, `WEB_USERNAME`, `WEB_PASSWORD` | — (обязательны) | Подпись JWT (не короче 32 байт) и единственная учётная запись. |
+| `JWT_EXPIRE_HOURS` | `72` | Срок жизни сессии. |
+| `WEB_LOGIN_RATE_LIMIT` | `10/minute` | Попыток `POST /api/auth/login` с одного адреса (формат slowapi, можно `10/minute;100/hour`); сверх — `429` с `Retry-After`. За прокси без доверенного `X-Forwarded-For` адрес у всех один, и лимит общий на панель. Неразборное значение останавливает сервер при старте. |
+| `COOKIE_SECURE` | `1` | `0` — cookie без `Secure`, только для доступа по чистому HTTP. |
+| `MAX_FILE_SIZE` | `2147483648` (2 ГБ) | Лимит файла и всего тела `POST /api/upload` (+1 МиБ на multipart), а также загрузки по URL. |
+| `WEB_MAX_LLM_BODY_SIZE` | `52428800` (50 МБ) | Лимит тела `POST /api/llm/process` и суммарного размера транскриптов в нём (не больше 20 файлов). |
+| `WEB_MAX_CONCURRENT_LLM` | `2` | Сколько вызовов LLM-провайдеров LLM-вкладки идёт одновременно; остальные ждут. Семафор отдельный от транскрибации. |
+| `MAX_CONCURRENT_TASKS` | `3` | Одновременные транскрибации (общий семафор с `/mcp`). |
+| `WEB_TRUSTED_ORIGINS` | пусто | Origin-ы (`https://host:port`, через запятую), которым можно слать изменяющие запросы с cookie и читать API через CORS. |
+| `WEB_ALLOW_CLIENT_LLM_CLI` | `0` | `1` — принимать пути/аргументы CLI и `llm_allow_tools` из LLM-формы (см. выше). |
+

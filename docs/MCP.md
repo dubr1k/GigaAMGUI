@@ -225,7 +225,7 @@ curl -N -X POST https://gigaam-site.dubr1k.space/mcp \
 | `mode` | `summary` \| `tasks` \| `terms` \| `custom` | `summary` | Выжимка, список задач, глоссарий или свой промпт. |
 | `prompt` | string | — | Инструкция для `mode="custom"`; иначе игнорируется. |
 | `provider` | string | настройки сервера | `API`, `Claude Code`, `Codex`, `OpenCode`, `Pi`, `oh-my-pi`, `Other`; список с доступностью — `list_llm_providers`. |
-| `model` | string | настройки сервера | Имя модели для выбранного провайдера. |
+| `model` | string | настройки сервера | Имя модели для выбранного провайдера. Для `Codex` модель из настроек сервера (она общая с `API`) не применяется: без `model` Codex берёт свою по умолчанию, и в ответе `model` пустой. |
 
 ```json
 {"name": "summarize", "arguments": {"text": "<транскрипт>", "mode": "tasks"}}
@@ -360,7 +360,7 @@ notifications (`notifications/progress` с `progress` 0–100, `total` 100 и
 | `download_failed` | Не удалось скачать `url` (сеть, yt-dlp, пусто). | Проверить ссылку; текст ошибки содержит причину. |
 | `prompt_required` | `mode="custom"` без `prompt`. | Передать `prompt`. |
 | `llm_failed` | Провайдер LLM вернул ошибку (нет ключа, CLI упал). | `list_llm_providers`, лог сервера. |
-| `processing_failed` | Обработка упала на сервере. | Лог сервера. |
+| `processing_failed` | Обработка упала на сервере; причина — в тексте ошибки (`Transcription failed: …`), если процессор её назвал. | Текст ошибки, лог сервера. |
 | `internal_error` | Непредвиденное исключение; детали только в логе. | Лог сервера. |
 
 Ошибки уровня транспорта (`401 invalid_api_key`, `503 service_unavailable`

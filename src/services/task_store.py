@@ -1,16 +1,15 @@
-"""Единая схема записи задачи транскрибации.
+"""Схема записи фоновой задачи транскрибации: 13 базовых полей.
 
-api.py и web_app.py дублировали идентичный набор из 13 базовых полей в своих
-_register_task. Здесь он объединён. Persistence/restore намеренно НЕ объединяются:
-api — одно-тенантный, web — многопользовательский с index/tombstone; это разные
-инварианты, их слияние нарушило бы изоляцию и риск 1:1. web-специфичные поля
-(user, stage, output_formats, …) добавляются через параметр extra.
+Записи создаёт веб-панель (`web/task_registry.py`, `WebTaskStore.register`);
+её поля (user, stage, output_formats, …) добавляются через параметр `extra`,
+хранение, индекс на диске и tombstone-ы — там же. REST API (`api.py`) задач
+больше не ведёт: `/v1/audio/transcriptions` отвечает синхронно или потоком SSE.
 """
 from __future__ import annotations
 
 from datetime import datetime
 
-# Дефолтное сообщение api.py (web передаёт своё через параметр message).
+# Сообщение по умолчанию; веб-панель передаёт своё («В очереди») через `message`.
 DEFAULT_QUEUE_MESSAGE = "Задача в очереди на обработку"
 
 

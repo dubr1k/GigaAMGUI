@@ -21,6 +21,8 @@ except Exception:  # pragma: no cover
 pytestmark = pytest.mark.skipif(not _HAS_CLIENT, reason="нужен fastapi TestClient")
 
 api = importlib.import_module("api")
+from src.services import openai_stream  # noqa: E402
+
 VALID_KEY = "gam_openai_test"
 
 
@@ -62,6 +64,15 @@ def _error(resp):
 def test_health_needs_no_key(client):
     r = client.get("/health")
     assert r.status_code == 200 and r.json()["model_loaded"] is True
+
+
+def test_public_health_has_no_server_paths(client, monkeypatch):
+    monkeypatch.setattr(api.model_loader, "diagnostics", lambda: {
+        "active_backend": "onnx", "repo": "salute-developers/GigaAM", "cache_root": "/srv/secret/models"})
+    r = client.get("/health")
+    asr = r.json()["asr"]
+    assert asr["active_backend"] == "onnx"
+    assert "cache_root" not in asr and "repo" not in asr and "/srv/secret" not in r.text
 
 
 def test_root_points_to_docs(client):
@@ -349,6 +360,29 @@ def test_stream_error_event(client, fake_processor, monkeypatch):
     assert events[-1]["type"] == "error" and events[-1]["error"]["type"] == "server_error"
 
 
+def test_processing_failure_reason_reaches_the_client(client, fake_processor, monkeypatch):
+    # run_transcription кладёт причину провала в BackendError; раньше api.py ловил его
+    # общим `except Exception` и отдавал «See the server log.» без причины
+    monkeypatch.setattr(_FakeProcessor, "process_file",
+                        lambda self, *a, **kw: {"success": False, "error": "ffmpeg could not decode the file"})
+    r = _post(client)
+    assert r.status_code == 500
+    err = _error(r)
+    assert err["code"] == "processing_failed" and err["type"] == "server_error"
+    assert "ffmpeg could not decode the file" in err["message"]
+    events = _sse_events(_post(client, {"stream": "true"}).text)
+    assert events[-1]["type"] == "error" and events[-1]["error"]["code"] == "processing_failed"
+    assert "ffmpeg could not decode the file" in events[-1]["error"]["message"]
+
+
+def test_unexpected_processing_exception_stays_generic(client, fake_processor, monkeypatch):
+    monkeypatch.setattr(_FakeProcessor, "process_file",
+                        lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("/srv/secret/path exploded")))
+    r = _post(client)
+    assert r.status_code == 500 and "/srv/secret" not in r.text
+    assert _error(r)["code"] == "processing_failed"
+
+
 # ---------- fix round 1: owned loader release, stream cleanup, partial uploads ----------
 
 
@@ -398,6 +432,23 @@ def test_oversized_upload_leaves_nothing_behind(client, fake_processor, monkeypa
     r = _post(client)
     assert r.status_code == 413
     assert set(api.UPLOAD_DIR.glob("req_*")) == before
+
+
+def test_upload_write_error_leaves_nothing_behind(tmp_path, monkeypatch):
+    # Диск заполнен / клиент оборвал загрузку посреди тела: req_* не должна оставаться навсегда
+    monkeypatch.setattr(api, "UPLOAD_DIR", tmp_path)
+
+    class _Broken:
+        def read(self, _size):
+            raise OSError(28, "No space left on device")
+
+    class _Upload:
+        filename = "a.wav"
+        file = _Broken()
+
+    with pytest.raises(OSError):
+        api._save_upload(_Upload())
+    assert list(tmp_path.glob("req_*")) == []
 
 
 def test_stream_disconnect_cleans_up_after_task_completes(fake_processor, monkeypatch):
@@ -560,7 +611,7 @@ def test_progress_comment_survives_closed_loop():
     # Сервер остановлен (loop закрыт), а процессор в executor ещё шлёт прогресс — не падаем
     loop = asyncio.new_event_loop()
     loop.close()
-    api._queue_progress(loop, asyncio.Queue(), "transcription", 0.5)
+    openai_stream.queue_progress(loop, asyncio.Queue(), "transcription", 0.5)
 
 
 def test_progress_comment_formats_event_and_legacy_pair():
@@ -570,9 +621,9 @@ def test_progress_comment_formats_event_and_legacy_pair():
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.new_event_loop()
     try:
-        api._queue_progress(loop, queue, Event())
-        api._queue_progress(loop, queue, "transcription", 0.5)
-        api._queue_progress(loop, queue, "diarization", None)
+        openai_stream.queue_progress(loop, queue, Event())
+        openai_stream.queue_progress(loop, queue, "transcription", 0.5)
+        openai_stream.queue_progress(loop, queue, "diarization", None)
         loop.run_until_complete(asyncio.sleep(0))
     finally:
         loop.close()

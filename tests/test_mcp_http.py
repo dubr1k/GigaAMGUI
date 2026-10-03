@@ -179,6 +179,8 @@ os.environ.setdefault("WEB_SECRET", "x" * 32)
 os.environ.setdefault("WEB_USERNAME", "test-user")
 os.environ.setdefault("WEB_PASSWORD", "test-password")
 web_app = importlib.import_module("web.web_app")
+from web.state import state  # noqa: E402
+from web.task_registry import registry  # noqa: E402
 
 WEB_KEY = "gam_web_test"
 
@@ -191,16 +193,14 @@ class _WebFakeLoader(_FakeModelLoader):
 def web_dirs(tmp_path, monkeypatch):
     for name in ("uploads", "results"):
         (tmp_path / name).mkdir()
-    monkeypatch.setattr(web_app, "UPLOAD_DIR", tmp_path / "uploads")
-    monkeypatch.setattr(web_app, "RESULTS_DIR", tmp_path / "results")
-    monkeypatch.setattr(web_app, "TASKS_INDEX_PATH", tmp_path / "results" / ".tasks_index.json")
-    monkeypatch.setattr(web_app, "DELETED_TASKS_PATH", tmp_path / "results" / ".deleted_tasks.json")
-    monkeypatch.setattr(web_app, "API_KEYS_FILE", tmp_path / ".api_keys")
-    monkeypatch.setattr(web_app, "ModelLoader", _WebFakeLoader)
-    monkeypatch.setattr(web_app, "HF_TOKEN", "")
-    web_app.tasks_storage.clear()
+    monkeypatch.setattr(state, "upload_dir", tmp_path / "uploads")
+    monkeypatch.setattr(state, "results_dir", tmp_path / "results")
+    monkeypatch.setattr(state, "api_keys_file", tmp_path / ".api_keys")
+    monkeypatch.setattr(state, "loader_factory", _WebFakeLoader)
+    monkeypatch.setattr(state, "hf_token", "")
+    registry.tasks.clear()
     yield tmp_path
-    web_app.tasks_storage.clear()
+    registry.tasks.clear()
 
 
 @pytest.fixture

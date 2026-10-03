@@ -6,7 +6,8 @@ let selectedFiles = [];
 let selectedLlmFiles = [];
 let progressSource = null;
 let currentLogs = [];
-let completedTaskNotified = new Set();
+// tid -> последний учтённый статус задачи: «Готово»/«Ошибка» пишутся один раз на переход
+const notifiedTaskStatus = new Map();
 let currentLang = localStorage.getItem('gigaam_lang') || 'ru';
 
 const I18N = {
@@ -75,6 +76,7 @@ const I18N = {
         piArgsPlaceholder: 'Доп. аргументы Pi',
         ompArgsPlaceholder: 'Доп. аргументы oh-my-pi',
         llmAllowTools: 'Разрешить инструменты и сессии агента',
+        llmServerCli: 'Задаётся на сервере (WEB_ALLOW_CLIENT_LLM_CLI выключен)',
         llmTools: 'Инструменты на сервере:',
         llmRescan: 'Пересканировать',
         toolFound: 'найден',
@@ -164,6 +166,7 @@ const I18N = {
         piArgsPlaceholder: 'Extra Pi arguments',
         ompArgsPlaceholder: 'Extra oh-my-pi arguments',
         llmAllowTools: 'Allow agent tools and sessions',
+        llmServerCli: 'Set on the server (WEB_ALLOW_CLIENT_LLM_CLI is off)',
         llmTools: 'Tools on the server:',
         llmRescan: 'Rescan',
         toolFound: 'found',
@@ -222,10 +225,8 @@ function applyLanguage() {
     if (selectedLlmFiles.length === 0 && document.getElementById('llm-files-count')) {
         document.getElementById('llm-files-count').textContent = t('llmFilesNone');
     }
-    const providerSelect = document.getElementById('llm-provider');
-    if (providerSelect && providerSelect.options.length >= 6) {
-        providerSelect.options[5].textContent = currentLang === 'ru' ? 'Другое' : 'Other';
-    }
+    // Подписи пунктов провайдера (перевод «Other» и бейджи инструментов); value не трогаем
+    renderLlmTools();
 }
 
 // ===== AUTH =====
@@ -270,8 +271,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         if (res.ok) {
             showMainScreen(username);
         } else {
-            const data = await res.json();
-            errEl.textContent = data.detail || (currentLang === 'ru' ? 'Ошибка входа' : 'Login error');
+            errEl.textContent = (await readErrorDetail(res)) || (currentLang === 'ru' ? 'Ошибка входа' : 'Login error');
         }
     } catch (err) {
         errEl.textContent = currentLang === 'ru' ? 'Ошибка соединения' : 'Connection error';
@@ -279,6 +279,10 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('btn-logout').addEventListener('click', async () => {
+    // Сначала поток: иначе он остаётся открытым (а после истечения cookie
+    // переподключается к 401 каждые 3 с), пока вкладка висит на экране входа
+    sessionActive = false;
+    closeProgressStream();
     await fetch(`${API}/auth/logout`, { method: 'POST' });
     showLoginScreen();
 });
@@ -293,11 +297,20 @@ document.getElementById('btn-lang').addEventListener('click', () => {
 
 // ===== INIT APP =====
 
+// Слушатели вешаются один раз на загрузку страницы. Повторный вход без
+// перезагрузки (выход → вход) снова вызывает initApp(), и без этого флага
+// каждый вход добавлял второй обработчик: один клик «Запустить» грузил файлы дважды.
+let appInitialized = false;
+let sessionActive = false;
+
 async function initApp() {
+    sessionActive = true;
     applyLanguage();
     loadDeviceInfo();
     loadResults();
     startProgressStream();
+    if (appInitialized) return;
+    appInitialized = true;
     setupFileSelection();
     setupDragDrop();
     setupDiarization();
@@ -630,8 +643,7 @@ function setupUrlDownload() {
                 addLog(currentLang === 'ru' ? `Загрузка началась (task: ${data.task_id.substring(0, 8)}...)` : `Download started (task: ${data.task_id.substring(0, 8)}...)`);
                 document.getElementById('url-input').value = '';
             } else {
-                const err = await res.json();
-                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${err.detail}`, 'error');
+                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${await readErrorDetail(res)}`, 'error');
             }
         } catch (e) {
             addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${e}`, 'error');
@@ -691,8 +703,8 @@ function setupStartButton() {
                 document.getElementById('folder-label').textContent = t('folderNone');
                 document.getElementById('folder-label').style.color = 'var(--text-muted)';
             } else {
-                const err = await res.json();
-                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${err.detail}`, 'error');
+                // 413 от nginx приходит HTML-страницей: res.json() здесь бросал SyntaxError
+                addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${await readErrorDetail(res)}`, 'error');
             }
         } catch (e) {
             addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${e}`, 'error');
@@ -780,17 +792,23 @@ function setupDeleteAllUserDataButton() {
     };
 }
 
+// Текст ошибки ответа: `detail` FastAPI или, если тело не JSON (413/502 от nginx —
+// HTML-страница), код и начало текста без тегов. Тело читается один раз: после
+// неудачного res.json() его уже не прочитать как текст.
 async function readErrorDetail(res) {
+    let text = '';
     try {
-        const data = await res.json();
-        return data.detail || JSON.stringify(data);
+        text = await res.text();
     } catch (e) {
-        try {
-            const text = await res.text();
-            return text || `HTTP ${res.status}`;
-        } catch (inner) {
-            return `HTTP ${res.status}`;
-        }
+        return `HTTP ${res.status}`;
+    }
+    try {
+        const data = JSON.parse(text);
+        if (typeof data.detail === 'string') return data.detail;
+        return JSON.stringify(data.detail !== undefined ? data.detail : data);
+    } catch (e) {
+        const plain = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        return plain ? `HTTP ${res.status}: ${plain.slice(0, 200)}` : `HTTP ${res.status}`;
     }
 }
 
@@ -805,37 +823,85 @@ function clearVisibleTaskState() {
     document.getElementById('current-file').textContent = '';
     document.getElementById('status-label').textContent = t('ready');
     document.getElementById('log-panel').innerHTML = '';
-    completedTaskNotified = new Set();
+    notifiedTaskStatus.clear();
     currentLogs = [];
 }
 
 // ===== PROGRESS STREAM (SSE) =====
 
+let progressReconnectTimer = null;
+let loadResultsTimer = null;
+const ACTIVE_TASK_STATUSES = ['pending', 'downloading', 'processing'];
+
+function closeProgressStream() {
+    if (progressReconnectTimer) {
+        clearTimeout(progressReconnectTimer);
+        progressReconnectTimer = null;
+    }
+    if (progressSource) {
+        progressSource.close();
+        progressSource = null;
+    }
+}
+
 function startProgressStream() {
-    if (progressSource) progressSource.close();
-    progressSource = new EventSource(`${API}/progress`);
+    closeProgressStream();
+    const source = new EventSource(`${API}/progress`);
+    progressSource = source;
 
-    progressSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+    source.onmessage = (event) => {
+        if (source !== progressSource) return;  // сообщение уже закрытого потока
+        handleProgressMessage(JSON.parse(event.data));
+    };
 
-        // Обновить задачи
-        if (data.tasks) {
-            for (const [tid, task] of Object.entries(data.tasks)) {
+    source.onerror = () => {
+        // Свой таймер вместо встроенного автопереподключения: один поток за раз
+        // и никаких переподключений после выхода
+        if (source !== progressSource || !sessionActive) return;
+        source.close();
+        progressReconnectTimer = setTimeout(() => {
+            progressReconnectTimer = null;
+            if (sessionActive) startProgressStream();
+        }, 3000);
+    };
+}
+
+function scheduleLoadResults() {
+    // Несколько задач, завершившихся рядом, — один запрос списка
+    if (loadResultsTimer) return;
+    loadResultsTimer = setTimeout(() => {
+        loadResultsTimer = null;
+        loadResults();
+    }, 500);
+}
+
+function handleProgressMessage(data) {
+    if (data.snapshot) {
+        // Первое сообщение каждого подключения — состояние всех задач, а не события.
+        // История не превращается в «Готово»/«Ошибка» в журнале и не дёргает /api/tasks;
+        // событием считаем только задачу, которая на нашей памяти была активной
+        // и завершилась, пока поток был разорван.
+        for (const [tid, task] of Object.entries(data.tasks || {})) {
+            const previous = notifiedTaskStatus.get(tid);
+            if (ACTIVE_TASK_STATUSES.includes(task.status) || ACTIVE_TASK_STATUSES.includes(previous)) {
                 updateTaskProgress(tid, task);
+            } else {
+                notifiedTaskStatus.set(tid, task.status);
             }
         }
+        return;
+    }
 
-        // Добавить логи
-        if (data.logs) {
-            for (const [tid, logs] of Object.entries(data.logs)) {
-                logs.forEach(line => addLog(line));
-            }
+    if (data.tasks) {
+        for (const [tid, task] of Object.entries(data.tasks)) {
+            updateTaskProgress(tid, task);
         }
-    };
-
-    progressSource.onerror = () => {
-        setTimeout(() => startProgressStream(), 3000);
-    };
+    }
+    if (data.logs) {
+        for (const logs of Object.values(data.logs)) {
+            logs.forEach(line => addLog(line));
+        }
+    }
 }
 
 function updateTaskProgress(tid, task) {
@@ -873,16 +939,19 @@ function updateTaskProgress(tid, task) {
         fileBar.style.width = '100%';
         stage.textContent = currentLang === 'ru' ? '✓ Готово' : '✓ Done';
         status.textContent = task.message;
-        if (!completedTaskNotified.has(tid)) {
-            completedTaskNotified.add(tid);
+        if (notifiedTaskStatus.get(tid) !== 'completed') {
             addLog(currentLang === 'ru' ? `Готово: ${task.filename}` : `Done: ${task.filename}`, 'success');
-            loadResults();
+            scheduleLoadResults();
         }
     } else if (task.status === 'failed') {
         stage.textContent = currentLang === 'ru' ? '✕ Ошибка' : '✕ Error';
         status.textContent = task.message;
-        addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${task.filename} — ${task.message}`, 'error');
+        if (notifiedTaskStatus.get(tid) !== 'failed') {
+            addLog(`${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${task.filename} — ${task.message}`, 'error');
+            scheduleLoadResults();
+        }
     }
+    notifiedTaskStatus.set(tid, task.status);
 }
 
 // ===== LOG =====
@@ -975,7 +1044,7 @@ window.viewResult = async function(taskId) {
     preview.innerHTML = `<p class="label-muted">${t('loading')}</p>`;
 
     try {
-        const res = await fetch(`${API}/tasks/${taskId}/result`);
+        const res = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}/result`);
         if (res.ok) {
             const data = await res.json();
             if (data.result_files && data.result_files.length > 0) {
@@ -997,6 +1066,9 @@ window.viewResult = async function(taskId) {
             } else {
                 preview.innerHTML = `<p class="label-muted">${t('noData')}</p>`;
             }
+        } else {
+            const detail = await readErrorDetail(res);
+            preview.innerHTML = `<p class="label-muted">${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${escapeHtml(detail)}</p>`;
         }
     } catch (e) {
         preview.innerHTML = `<p class="label-muted">${currentLang === 'ru' ? 'Ошибка' : 'Error'}: ${escapeHtml(String(e))}</p>`;
@@ -1006,7 +1078,14 @@ window.viewResult = async function(taskId) {
 window.deleteTask = async function(taskId) {
     if (!confirm(currentLang === 'ru' ? 'Удалить задачу и результаты?' : 'Delete task and results?')) return;
     try {
-        await fetch(`${API}/tasks/${taskId}`, { method: 'DELETE' });
+        const res = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+        if (!res.ok) {
+            // Например, 400 для задачи в обработке: раньше UI всё равно писал «Задача удалена»
+            const detail = await readErrorDetail(res);
+            addLog(`${currentLang === 'ru' ? 'Ошибка удаления' : 'Delete error'}: ${detail}`, 'error');
+            alert((currentLang === 'ru' ? 'Ошибка удаления: ' : 'Delete error: ') + detail);
+            return;
+        }
         loadResults();
         addLog(currentLang === 'ru' ? 'Задача удалена' : 'Task deleted');
     } catch (e) {
@@ -1047,7 +1126,14 @@ window.removeLlmFile = function(idx) {
     updateLlmFileList();
 };
 
-const LLM_PROVIDER_IDS = { 'API': 'api', 'Claude Code': 'claude', 'Codex': 'codex', 'OpenCode': 'opencode', 'Pi': 'pi', 'oh-my-pi': 'omp', 'Другое': 'other', 'Other': 'other' };
+// Ключ — value пункта <select>: каноническое имя провайдера из реестра cli_tools,
+// которое уходит на сервер. Подпись пункта может быть переведена, value — никогда.
+const LLM_PROVIDER_IDS = { 'API': 'api', 'Claude Code': 'claude', 'Codex': 'codex', 'OpenCode': 'opencode', 'Pi': 'pi', 'oh-my-pi': 'omp', 'Other': 'other' };
+
+function providerLabel(value) {
+    if (value === 'Other') return currentLang === 'ru' ? 'Другое' : 'Other';
+    return value;
+}
 
 function updateLlmProviderFields() {
     const provider = document.getElementById('llm-provider').value;
@@ -1078,21 +1164,40 @@ function renderLlmTools() {
         const detail = tool.status === 'found' ? (tool.path || '')
             : tool.status === 'broken' ? (tool.detail || '')
             : (tool.install_hint ? `${t('toolInstall')} ${tool.install_hint}` : '');
+        // Текст приходит с сервера (stderr `--version`, пути) — только экранированным
         li.innerHTML = `<span class="tool-status">${toolStatusIcon(tool.status)}</span>`
-            + `<span class="tool-name">${tool.provider}</span>`
-            + `<span class="tool-version">${tool.version ? tool.version : label}</span>`
-            + `<span class="tool-detail">${detail}</span>`;
+            + `<span class="tool-name">${escapeHtml(String(tool.provider || ''))}</span>`
+            + `<span class="tool-version">${escapeHtml(String(tool.version || label))}</span>`
+            + `<span class="tool-detail">${escapeHtml(String(detail || ''))}</span>`;
         list.appendChild(li);
     });
     Array.from(select.options).forEach(option => {
-        const base = option.dataset.name || option.textContent.trim();
-        option.dataset.name = base;
-        const tool = byProvider[base];
-        if (!tool) return;
+        const label = providerLabel(option.value);
+        const tool = byProvider[option.value];
+        if (!tool) {
+            option.textContent = label;
+            return;
+        }
         option.textContent = tool.status === 'found'
-            ? `${toolStatusIcon('found')} ${base}${tool.version ? ' ' + tool.version : ''}`
-            : `${toolStatusIcon(tool.status)} ${base} — ${tool.status === 'broken' ? t('toolBroken') : t('toolMissing')}`;
-        option.value = base;
+            ? `${toolStatusIcon('found')} ${label}${tool.version ? ' ' + tool.version : ''}`
+            : `${toolStatusIcon(tool.status)} ${label} — ${tool.status === 'broken' ? t('toolBroken') : t('toolMissing')}`;
+    });
+}
+
+// Без WEB_ALLOW_CLIENT_LLM_CLI сервер сам выбирает бинари CLI и игнорирует пути,
+// аргументы и «инструменты агента» из формы — отключаем эти поля, чтобы не врать.
+const CLIENT_CLI_FIELDS = [
+    'llm-claude-path', 'llm-claude-args', 'llm-codex-path', 'llm-codex-args',
+    'llm-opencode-path', 'llm-opencode-args', 'llm-pi-path', 'llm-pi-args',
+    'llm-omp-path', 'llm-omp-args', 'llm-other-path', 'llm-other-args', 'llm-allow-tools',
+];
+
+function applyClientCliPolicy(allowed) {
+    CLIENT_CLI_FIELDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.disabled = !allowed;
+        el.title = allowed ? '' : t('llmServerCli');
     });
 }
 
@@ -1102,6 +1207,7 @@ async function loadLlmTools(fresh = false) {
         if (!res.ok) return;
         const data = await res.json();
         llmToolStatuses = data.tools || [];
+        applyClientCliPolicy(data.client_cli !== false);
         renderLlmTools();
     } catch (e) {
         console.warn('llm tools scan failed', e);
@@ -1135,7 +1241,6 @@ function setupLlmTab() {
     loadLlmTools();
     document.getElementById('llm-summary-prompt').value = `Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке.`;
     document.getElementById('llm-tasks-prompt').value = `Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде.`;
-    document.getElementById('llm-provider').querySelector('option:last-child').textContent = currentLang === 'ru' ? 'Другое' : 'Other';
     document.getElementById('btn-llm-clear').addEventListener('click', () => {
         selectedLlmFiles = [];
         document.getElementById('llm-manual-text').value = '';
@@ -1194,8 +1299,8 @@ async function processLlm() {
     document.getElementById('btn-llm-process').disabled = true;
     try {
         const res = await fetch(`${API}/llm/process`, { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(friendlyError(await readErrorDetail(res)));
         const data = await res.json();
-        if (!res.ok) throw new Error(friendlyError(data.detail || 'LLM error'));
         document.getElementById('llm-result').textContent = data.result_text || '';
         document.getElementById('llm-status').textContent = currentLang === 'ru' ? 'LLM-обработка завершена' : 'LLM processing completed';
         const links = (data.saved_files || []).map(file => `<a class="result-file-btn" href="${API}/llm/download/${data.job_id}/${encodeURIComponent(file.name)}" download>${escapeHtml(file.name)}</a>`).join('');
