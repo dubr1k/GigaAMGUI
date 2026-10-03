@@ -14,6 +14,7 @@ from typing import Protocol
 from src.core.asr.types import normalize_window_audio
 
 from .capture.base import CaptureAdapter
+from .conversation import ConversationLog, ConversationTurn
 from .diagnostics import SessionLog
 from .diarization import (
     LIVE_ESTIMATE_BACKEND,
@@ -60,14 +61,6 @@ class SessionResult:
     """Stages of stop() that failed; the rest still ran (see `LiveSession.stop`)."""
     recording_files: dict[str, list[Path]] = field(default_factory=dict)
     """Every segment of every track, "mix" included; `recordings` has the first only."""
-
-
-@dataclass(frozen=True)
-class ConversationTurn:
-    id: str
-    question: str
-    answer: str = ""
-    status: str = "generating"
 
 
 SchedulerFactory = Callable[
@@ -129,7 +122,7 @@ class LiveSession:
         self._log_sink = log
         self._session_log = SessionLog(self._session_dir / "live.log")
         self._journal = EventJournal(self._session_dir / "events.jsonl")
-        self._conversation_journal = ConversationJournal(self._session_dir / "conversation.jsonl")
+        self._conversation = ConversationLog(ConversationJournal(self._session_dir / "conversation.jsonl"))
         self._recorder = recorder_factory(
             self._session_dir,
             {
@@ -163,8 +156,6 @@ class LiveSession:
         self._speaker_labels: dict[tuple[CaptureSource, str], str] = {}
         self._finalized_revisions: dict[tuple[CaptureSource, str], int] = {}
         self._partials: dict[CaptureSource, TranscriptEvent] = {}
-        self._conversation: list[ConversationTurn] = []
-        self._conversation_frozen = False
         self._subscribers: list[Callable[[TranscriptEvent | CaptureEvent | LiveStatus], None]] = []
         self._reported_recording_failures: set[str] = set()
         self._recording_failures: dict[CaptureSource, int] = {}
@@ -274,7 +265,7 @@ class LiveSession:
                 self._attempt(errors, "update metadata", self._record_artifacts)
                 if self._settings.diarization_mode is DiarizationMode.AFTER_STOP:
                     self._attempt(errors, "diarize", lambda: self._diarize_recordings(recordings, recording_files))
-                self._attempt(errors, "freeze conversation", self._freeze_conversation)
+                self._attempt(errors, "freeze conversation", self._conversation.freeze)
                 exports = self._attempt(
                     errors, "export",
                     lambda: export_session(self._session_dir, self._journal.latest_events(), self._export_selection),
@@ -372,38 +363,22 @@ class LiveSession:
         return f"Final transcript:\n{final_text}\n\nDraft transcript:\n{drafts}"
 
     def begin_conversation(self, question: str) -> ConversationTurn:
-        with self._lock:
-            self._require_conversation_open()
-            turn = ConversationTurn(f"conversation-{len(self._conversation)}", question)
-            self._conversation.append(turn)
-            return turn
+        return self._conversation.begin(question)
 
     def append_conversation_answer(self, turn_id: str, text: str) -> None:
-        with self._lock:
-            self._require_conversation_open()
-            turn = self._conversation_turn(turn_id)
-            self._replace_conversation_turn(replace(turn, answer=turn.answer + text))
+        self._conversation.append_answer(turn_id, text)
 
     def finish_conversation(self, turn_id: str, answer: str | None = None, *, status: str = "complete") -> None:
-        with self._lock:
-            self._require_conversation_open()
-            turn = self._conversation_turn(turn_id)
-            turn = replace(turn, answer=turn.answer if answer is None else answer, status=status)
-            self._replace_conversation_turn(turn)
-            self._conversation_journal.append(turn)
+        self._conversation.finish(turn_id, answer, status=status)
 
     def cancel_conversation(self, turn_id: str) -> None:
         self.finish_conversation(turn_id, "", status="cancelled")
 
     def clear_conversation(self) -> None:
-        with self._lock:
-            self._require_conversation_open()
-            self._conversation.clear()
-            self._conversation_journal.clear()
+        self._conversation.clear()
 
     def conversation(self) -> list[ConversationTurn]:
-        with self._lock:
-            return list(self._conversation)
+        return self._conversation.turns()
 
     def subscribe(self, callback: Callable[[TranscriptEvent | CaptureEvent | LiveStatus], None]) -> None:
         with self._lock:
@@ -704,27 +679,6 @@ class LiveSession:
                 return
             self._partials[event.source] = event
             self._notify(event)
-
-    def _require_conversation_open(self) -> None:
-        if self._conversation_frozen:
-            raise RuntimeError("conversation is frozen")
-
-    def _conversation_turn(self, turn_id: str) -> ConversationTurn:
-        for turn in self._conversation:
-            if turn.id == turn_id:
-                return turn
-        raise KeyError(turn_id)
-
-    def _replace_conversation_turn(self, updated: ConversationTurn) -> None:
-        self._conversation = [updated if turn.id == updated.id else turn for turn in self._conversation]
-
-    def _freeze_conversation(self) -> None:
-        if self._conversation_frozen:
-            return
-        for turn in self._conversation:
-            if turn.status == "generating":
-                self._conversation_journal.append(replace(turn, status="frozen"))
-        self._conversation_frozen = True
 
     def _record_finalized(self, event: TranscriptEvent) -> None:
         key = (event.source, event.event_id)
