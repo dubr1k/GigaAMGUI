@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 import os
-import subprocess
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -19,7 +18,7 @@ import numpy as np
 import soundfile as sf
 
 from ..config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
-from .audio_converter import _find_ffmpeg, _windows_startupinfo
+from .audio_converter import FfmpegRun, _find_ffmpeg, run_ffmpeg_with_progress
 
 PreprocessingMode = Literal["off", "auto", "light", "denoise"]
 PreprocessingAction = Literal["none", "normalize", "light_cleanup", "neural_denoise"]
@@ -447,11 +446,15 @@ class FFmpegAudioPreprocessingBackend:
         )
         try:
             source_duration = self._duration(input_path)
-            timeout = max(120.0, min(7200.0, source_duration * 3.0 + 60.0))
             command = [
                 _find_ffmpeg(),
                 "-hide_banner",
                 "-nostdin",
+                # Глобальные опции до входа: выходной файл остаётся последним
+                # аргументом, а строки прогресса служат watchdog-у признаком жизни.
+                "-progress",
+                "pipe:1",
+                "-nostats",
                 "-i",
                 input_path,
                 "-af",
@@ -466,17 +469,14 @@ class FFmpegAudioPreprocessingBackend:
                 "-y",
                 output_path,
             ]
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                startupinfo=_windows_startupinfo(),
-                timeout=timeout,
-            )
-            if completed.returncode != 0:
-                self.logger(f"FFmpeg audio cleanup failed with code {completed.returncode}")
+            # Тот же запуск, что у конвертации: stderr дренируется, зависший без
+            # вывода ffmpeg убивается watchdog-ом, а исключение не оставляет
+            # процесс работать. Прежний subprocess.run с жёстким общим timeout
+            # (3x длительности) обрывал медленную, но живую очистку длинных записей.
+            completed: FfmpegRun = run_ffmpeg_with_progress(command, duration=source_duration)
+            if completed.stalled or completed.returncode != 0:
+                reason = "stalled" if completed.stalled else f"code {completed.returncode}"
+                self.logger(f"FFmpeg audio cleanup failed with {reason}")
                 self._remove_partial(output_path)
                 return None
 
@@ -490,7 +490,7 @@ class FFmpegAudioPreprocessingBackend:
                 self._remove_partial(output_path)
                 return None
             return output_path
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        except (OSError, ValueError) as exc:
             self.logger(f"Audio cleanup failed safely: {exc}")
             self._remove_partial(output_path)
             return None
