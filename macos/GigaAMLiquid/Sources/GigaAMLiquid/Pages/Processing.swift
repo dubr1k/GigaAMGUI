@@ -285,6 +285,10 @@ extension AppController {
         processingValidationLabel?.isHidden = reason.isEmpty
         cancelProcessingButton?.isEnabled = transcriptionJob != nil && !cancellationRequested && !isClosing
         cancelProcessingButton?.title = L10n.text(cancellationRequested ? "Остановка запрошена" : "Остановить после текущего файла")
+        // Live recording is gated on the same jobs (batch, media import); its
+        // controls were refreshed only from Live's own paths and stayed disabled
+        // after a batch or an import had finished.
+        refreshLiveControls()
     }
 
     func refreshProgress() {

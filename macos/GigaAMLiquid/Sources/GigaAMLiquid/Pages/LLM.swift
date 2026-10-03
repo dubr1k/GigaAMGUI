@@ -427,6 +427,7 @@ extension AppController {
         let job = LLMJob(request: request) { [weak self] event in self?.receiveLLMEvent(event) }
         llmJob = job
         refreshLLMControls()
+        refreshLiveControls()
         job.start()
     }
 
@@ -462,6 +463,7 @@ extension AppController {
         llmJob = nil
         if isTerminating { replyWhenJobsFinished(); return }
         refreshLLMControls()
+        refreshLiveControls()  // Live recording waits for the LLM request
     }
 
     func refreshLLMControls() {

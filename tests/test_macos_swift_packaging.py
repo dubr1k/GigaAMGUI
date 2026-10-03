@@ -674,3 +674,15 @@ def test_swift_system_theme_follows_macos() -> None:
     content = _swift_block(main, "private func buildWindowContent() {")
     assert "window.appearance = Palette.followsSystem ? nil :" in content
     assert "NSApp.observe(\\.effectiveAppearance" in _swift_block(main, "func applicationDidFinishLaunching(_ notification: Notification) {")
+
+
+def test_swift_live_controls_follow_every_job_that_gates_them() -> None:
+    # The record button is disabled while a batch, a media import or an LLM
+    # request runs, but it was only refreshed from Live's own code paths: after
+    # such a job finished it stayed disabled until the page was rebuilt.
+    main = _liquid_sources()
+    gate = _swift_block(main, "private func refreshLiveControls() {")
+    assert "transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil" in gate
+    assert "refreshLiveControls()" in _swift_block(main, "private func refreshProcessingControls() {")
+    assert "refreshLiveControls()" in _swift_block(main, "private func finishLLM() {")
+    assert "refreshLiveControls()" in _swift_block(main, "@objc private func runLLM(_ sender: Any?) {")
