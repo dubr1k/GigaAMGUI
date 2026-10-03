@@ -25,6 +25,7 @@ from ..utils import (
     TimeFormatter,
     UserSettings,
 )
+from .api_surface_mixin import ApiSurfaceMixin
 from .application import GigaApplication
 from .download_mixin import DownloadMixin
 from .files_mixin import FilesMixin
@@ -38,6 +39,7 @@ from .llm_settings_dialog_mixin import LlmSettingsDialogMixin
 from .llm_tools_mixin import LlmToolsMixin
 from .llm_ui_mixin import LlmUiMixin
 from .menu_mixin import MenuActionsMixin
+from .preferences_mixin import PreferencesMixin
 from .processing_mixin import ProcessingMixin
 from .processing_options_ui_mixin import ProcessingOptionsUiMixin
 from .result_view_mixin import ResultViewMixin
@@ -50,7 +52,6 @@ from .single_instance import (
     try_acquire_instance_lock,
 )
 from .style_mixin import StyleMixin
-from .support_surfaces_mixin import SupportSurfacesMixin
 from .theme_mixin import ThemeMixin
 from .ui_build_mixin import UiBuildMixin
 
@@ -82,7 +83,7 @@ class WorkerSignals(QObject):
 
 class GigaTranscriberQtApp(
     LlmMixin, LlmUiMixin, LlmToolsMixin, LlmSettingsDialogMixin, DownloadMixin, ProcessingMixin, ResultViewMixin, FilesMixin,
-    I18nMixin, SettingsMixin, JournalMixin, SupportSurfacesMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
+    I18nMixin, SettingsMixin, JournalMixin, PreferencesMixin, ApiSurfaceMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
     LiveMixin, LiveUiMixin, LifecycleMixin, MenuActionsMixin,
     UiBuildMixin, QMainWindow,
 ):

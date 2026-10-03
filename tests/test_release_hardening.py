@@ -23,7 +23,7 @@ def test_api_examples_use_openai_contract() -> None:
     files = [
         "desktop/ui/app.js",
         "desktop/ui/index.html",
-        "src/gui/support_surfaces_mixin.py",
+        "src/gui/api_surface_mixin.py",
         "macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift",
         "macos/GigaAMLiquid/Sources/GigaAMLiquid/Localization.swift",
     ]

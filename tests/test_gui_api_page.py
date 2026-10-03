@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 sys.modules.setdefault("gigaam", types.SimpleNamespace(load_model=lambda *args, **kwargs: object()))
 sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
-from src.gui import support_surfaces_mixin  # noqa: E402
+from src.gui import api_surface_mixin  # noqa: E402
 from src.gui.app_qt import GigaTranscriberQtApp  # noqa: E402
 
 
@@ -50,7 +50,7 @@ def test_api_health_probe_runs_off_the_qt_thread(monkeypatch):
         time.sleep(1.0)
         return _Response()
 
-    monkeypatch.setattr(support_surfaces_mixin, "urlopen", slow_health)
+    monkeypatch.setattr(api_surface_mixin, "urlopen", slow_health)
     window = GigaTranscriberQtApp()
     try:
         started = time.monotonic()
@@ -65,7 +65,7 @@ def test_api_health_probe_runs_off_the_qt_thread(monkeypatch):
 
 def test_api_code_samples_follow_the_dark_theme(monkeypatch):
     app = QApplication.instance() or QApplication([])
-    monkeypatch.setattr(support_surfaces_mixin, "urlopen", lambda *_a, **_k: _Response())
+    monkeypatch.setattr(api_surface_mixin, "urlopen", lambda *_a, **_k: _Response())
     window = GigaTranscriberQtApp()
     try:
         window._theme = "dark"
