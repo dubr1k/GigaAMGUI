@@ -178,12 +178,6 @@ pub(crate) fn open_command_menu(app: &mut App, command: &str) -> bool {
     }
 }
 
-/// Switches the palette; `Theme` is parsed once here, never per frame.
-pub(super) fn set_theme(app: &mut App, theme: Theme) {
-    app.status = tf(app.lang, "status.theme_set", &[("value", theme.name)]);
-    app.theme = theme;
-}
-
 pub(crate) fn apply_command_menu(app: &mut App) {
     let options = command_menu_options(app);
     let Some(option) = options.get(app.command_menu_index.min(options.len().saturating_sub(1)))
@@ -230,25 +224,6 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 &[("value", &app.llm_provider)],
             );
             save_app_settings(app);
-        }
-        "/lang" => {
-            app.lang = if app.command_menu_index == 1 {
-                Lang::En
-            } else {
-                Lang::Ru
-            };
-            app.command_menu = None;
-            app.input.close();
-            app.status = t(app.lang, "settings.language_changed").into();
-            save_app_settings(app);
-        }
-        "/theme" => {
-            if let Some(theme) = Theme::by_name(option) {
-                set_theme(app, theme);
-                app.command_menu = None;
-                app.input.close();
-                save_app_settings(app);
-            }
         }
         "/settings-model" if option == ENTER_MANUALLY_OPTION => {
             app.command_menu = None;

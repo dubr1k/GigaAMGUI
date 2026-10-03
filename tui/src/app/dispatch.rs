@@ -16,7 +16,7 @@ use crate::{
     options::LLM_MODES,
     queue::RunSelection,
     requests::llm_start_payload,
-    settings::save_app_settings,
+    setting::Setting,
     settings_page::rows as setting_rows,
 };
 
@@ -332,11 +332,7 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             }
         }
         Action::Button(ButtonId::ClearLog) => app.logs.clear(),
-        Action::ToggleLang => {
-            app.lang = app.lang.toggle();
-            app.status = t(app.lang, "settings.language_changed").into();
-            save_app_settings(app);
-        }
+        Action::ToggleLang => Setting::Language(app.lang.toggle()).apply(app),
         Action::Help => app.help_open = !app.help_open,
         // The Settings list is a cursor list: the wheel moves the cursor and the list
         // slides to keep it visible, so wheel and arrows can never fight each other.
@@ -393,42 +389,17 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
         }
         Action::ToggleSetting(name) => {
             // Each flip is exactly what the matching command does, status included.
-            match name {
-                "mouse" => {
-                    app.mouse_enabled = !app.mouse_enabled;
-                    app.status = t(
-                        app.lang,
-                        if app.mouse_enabled {
-                            "settings.mouse_on"
-                        } else {
-                            "settings.mouse_off"
-                        },
-                    )
-                    .into();
-                }
+            let setting = match name {
+                "mouse" => Setting::Mouse(!app.mouse_enabled),
                 "pets" => {
                     toggle_pets(app);
                     return Vec::new();
                 }
-                "subtitle_split" => {
-                    app.subtitle_sentence_split = !app.subtitle_sentence_split;
-                    app.status = tf(
-                        app.lang,
-                        "status.subtitle_split",
-                        &[("value", on_off(app.lang, app.subtitle_sentence_split))],
-                    );
-                }
-                "llm_tools" => {
-                    app.llm_allow_tools = !app.llm_allow_tools;
-                    app.status = tf(
-                        app.lang,
-                        "status.llm_tools",
-                        &[("value", on_off(app.lang, app.llm_allow_tools))],
-                    );
-                }
+                "subtitle_split" => Setting::SubtitleSplit(!app.subtitle_sentence_split),
+                "llm_tools" => Setting::LlmTools(!app.llm_allow_tools),
                 _ => return Vec::new(),
-            }
-            save_app_settings(app);
+            };
+            setting.apply(app);
         }
     }
     Vec::new()

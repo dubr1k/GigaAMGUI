@@ -9,6 +9,7 @@ use crate::{
     i18n::{t, tf, Lang},
     options::{backend_is_supported, is_model, AUDIO_MODES, DIARIZATION_BACKENDS, ONNX_PROVIDERS},
     settings::save_app_settings,
+    theme::Theme,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +22,20 @@ pub(crate) enum Setting {
     DiarizationBackend(String),
     /// The count (`None`: automatic) and how the status line names it.
     Speakers(Option<u32>, String),
+    Mouse(bool),
+    SubtitleSplit(bool),
+    LlmTools(bool),
+    Language(Lang),
+    /// A theme name that `Theme::by_name` knows.
+    Theme(String),
+}
+
+fn on_off_argument(argument: &str) -> Option<bool> {
+    match argument {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
 }
 
 impl Setting {
@@ -62,6 +77,26 @@ impl Setting {
                 Ok(count) if count > 0 => Ok(Self::Speakers(Some(count), count.to_string())),
                 _ => usage("usage.speakers"),
             },
+            "/mouse" => on_off_argument(argument)
+                .map(Self::Mouse)
+                .map_or_else(|| usage("usage.mouse"), Ok),
+            "/subtitle-split" => on_off_argument(argument)
+                .map(Self::SubtitleSplit)
+                .map_or_else(|| usage("usage.subtitle-split"), Ok),
+            "/llm-tools" => on_off_argument(argument)
+                .map(Self::LlmTools)
+                .map_or_else(|| usage("usage.llm-tools"), Ok),
+            "/lang" => Lang::parse(argument)
+                .map(Self::Language)
+                .map_or_else(|| usage("usage.lang"), Ok),
+            // Without a name `/theme` opens its menu: not a change.
+            "/theme" if argument.is_empty() => return None,
+            "/theme" if Theme::by_name(argument).is_some() => Ok(Self::Theme(argument.into())),
+            "/theme" => Err(format!(
+                "{} {}",
+                tf(lang, "err.theme_unknown", &[("value", argument)]),
+                t(lang, "usage.theme")
+            )),
             _ => return None,
         })
     }
@@ -85,6 +120,10 @@ impl Setting {
             "/diarization-backend" => Self::DiarizationBackend(option.into()),
             // The menu names the pick as listed (`auto`, `2`, …).
             "/speakers" => Self::Speakers(option.parse().ok(), option.into()),
+            // The menu lists the language names, Russian first.
+            "/lang" if option == t(Lang::En, "lang.name") => Self::Language(Lang::En),
+            "/lang" => Self::Language(Lang::Ru),
+            "/theme" if Theme::by_name(option).is_some() => Self::Theme(option.into()),
             _ => return None,
         })
     }
@@ -136,6 +175,41 @@ impl Setting {
                 app.num_speakers = count;
                 app.status = tf(lang, "status.speakers", &[("value", &label)]);
             }
+            Self::Mouse(on) => {
+                app.mouse_enabled = on;
+                app.status = t(
+                    lang,
+                    if on {
+                        "settings.mouse_on"
+                    } else {
+                        "settings.mouse_off"
+                    },
+                )
+                .into();
+            }
+            Self::SubtitleSplit(on) => {
+                app.subtitle_sentence_split = on;
+                app.status = tf(
+                    lang,
+                    "status.subtitle_split",
+                    &[("value", on_off(lang, on))],
+                );
+            }
+            Self::LlmTools(on) => {
+                app.llm_allow_tools = on;
+                app.status = tf(lang, "status.llm_tools", &[("value", on_off(lang, on))]);
+            }
+            Self::Language(language) => {
+                app.lang = language;
+                app.status = t(language, "settings.language_changed").into();
+            }
+            // `Theme` is parsed once here, never per frame.
+            Self::Theme(name) => {
+                if let Some(theme) = Theme::by_name(&name) {
+                    app.status = tf(lang, "status.theme_set", &[("value", theme.name)]);
+                    app.theme = theme;
+                }
+            }
         }
         save_app_settings(app);
     }
@@ -170,6 +244,40 @@ mod tests {
         }
         assert!(Setting::parse("/backend", "tpu", &app).unwrap().is_err());
         assert!(Setting::parse("/llm-prompt", "x", &app).is_none());
+    }
+
+    #[test]
+    fn rows_commands_and_menus_agree_on_the_interface_settings() {
+        let _config = isolated_config_dir();
+        let app = crate::test_support::ready_app();
+        assert_eq!(
+            Setting::parse("/mouse", "off", &app),
+            Some(Ok(Setting::Mouse(false)))
+        );
+        assert_eq!(
+            Setting::parse("/lang", "en", &app),
+            Some(Ok(Setting::Language(Lang::En)))
+        );
+        assert_eq!(
+            Setting::from_menu("/lang", t(Lang::En, "lang.name")),
+            Some(Setting::Language(Lang::En))
+        );
+        assert_eq!(Setting::parse("/theme", "", &app), None, "opens the menu");
+        assert!(Setting::parse("/theme", "nope", &app).unwrap().is_err());
+        assert!(Setting::parse("/llm-tools", "maybe", &app)
+            .unwrap()
+            .is_err());
+
+        let mut by_row = crate::test_support::ready_app();
+        crate::app::dispatch(
+            &mut by_row,
+            crate::action::Action::ToggleSetting("subtitle_split"),
+        );
+        let mut by_command = crate::test_support::ready_app();
+        by_command.input.replace("/subtitle-split off".into());
+        crate::commands::run_command(&mut by_command);
+        assert!(!by_row.subtitle_sentence_split && !by_command.subtitle_sentence_split);
+        assert_eq!(by_row.status, by_command.status);
     }
 
     #[test]

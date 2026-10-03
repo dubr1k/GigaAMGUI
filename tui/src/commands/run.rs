@@ -3,14 +3,13 @@
 use std::path::Path;
 
 use crate::{
-    app::{llm_input_files, on_off, request_llm, App, Page},
-    i18n::{t, tf, Lang},
+    app::{llm_input_files, request_llm, App, Page},
+    i18n::{t, tf},
     input::InputMode,
     options::{is_llm_mode, FORMAT_KEYS},
     providers::{provider, provider_prefix},
     setting::Setting,
     settings::save_app_settings,
-    theme::Theme,
 };
 
 use super::*;
@@ -105,53 +104,10 @@ pub(crate) fn run_command(app: &mut App) {
             app.status = t(app.lang, "settings.opened").into();
         }
         "/help" => app.help_open = !app.help_open,
-        "/lang" => match Lang::parse(argument) {
-            Some(lang) => {
-                app.lang = lang;
-                app.status = t(lang, "settings.language_changed").into();
-                save_app_settings(app);
-            }
-            None => {
-                accepted = false;
-                app.status = t(app.lang, "usage.lang").into();
-            }
-        },
-        "/theme" if argument.is_empty() => {
+        // A named theme is a `Setting`; without a name the menu opens.
+        "/theme" => {
             open_command_menu(app, "/theme");
         }
-        "/theme" => match Theme::by_name(argument) {
-            Some(theme) => {
-                set_theme(app, theme);
-                save_app_settings(app);
-            }
-            None => {
-                accepted = false;
-                app.status = format!(
-                    "{} {}",
-                    tf(app.lang, "err.theme_unknown", &[("value", argument)]),
-                    t(app.lang, "usage.theme")
-                );
-            }
-        },
-        "/mouse" => match argument {
-            "on" | "off" => {
-                app.mouse_enabled = argument == "on";
-                app.status = t(
-                    app.lang,
-                    if app.mouse_enabled {
-                        "settings.mouse_on"
-                    } else {
-                        "settings.mouse_off"
-                    },
-                )
-                .into();
-                save_app_settings(app);
-            }
-            _ => {
-                accepted = false;
-                app.status = t(app.lang, "usage.mouse").into();
-            }
-        },
         "/llm-mode" if is_llm_mode(argument) => {
             app.llm_modes = vec![argument.into()];
             app.status = tf(
@@ -278,19 +234,6 @@ pub(crate) fn run_command(app: &mut App) {
             }
             save_app_settings(app);
         }
-        "/llm-tools" if matches!(argument, "on" | "off") => {
-            app.llm_allow_tools = argument == "on";
-            app.status = tf(
-                app.lang,
-                "status.llm_tools",
-                &[("value", on_off(app.lang, app.llm_allow_tools))],
-            );
-            save_app_settings(app);
-        }
-        "/llm-tools" => {
-            accepted = false;
-            app.status = t(app.lang, "usage.llm-tools").into();
-        }
         "/pets" => toggle_pets(app),
         "/output" if argument.is_empty() => {
             accepted = false;
@@ -330,19 +273,6 @@ pub(crate) fn run_command(app: &mut App) {
                 );
                 save_app_settings(app);
             }
-        }
-        "/subtitle-split" if matches!(argument, "on" | "off") => {
-            app.subtitle_sentence_split = argument == "on";
-            app.status = tf(
-                app.lang,
-                "status.subtitle_split",
-                &[("value", on_off(app.lang, app.subtitle_sentence_split))],
-            );
-            save_app_settings(app);
-        }
-        "/subtitle-split" => {
-            accepted = false;
-            app.status = t(app.lang, "usage.subtitle-split").into();
         }
         "/subtitle-lines" => match argument.parse::<u8>() {
             Ok(value) if (1..=4).contains(&value) => {
