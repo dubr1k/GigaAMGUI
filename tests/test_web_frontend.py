@@ -28,6 +28,17 @@ def _scenario(name: str) -> dict:
     return json.loads(proc.stdout)
 
 
+def test_relogin_does_not_duplicate_handlers_and_logout_closes_stream():
+    result = _scenario("relogin")
+    # Один клик «Запустить» — одна загрузка, даже после выхода и повторного входа без перезагрузки
+    assert result["startListeners"] == 1
+    assert result["uploads"] == 1
+    # Выход закрывает SSE и не переподключает его к 401
+    assert result["streamsAfterLogout"] == 0
+    assert result["reconnectsAfterLogout"] == 0
+    assert result["openStreamsAfterLogin"] == 1
+
+
 def test_provider_options_keep_canonical_values():
     result = _scenario("provider_values")
     canonical = cli_tools.canonical_provider_names()

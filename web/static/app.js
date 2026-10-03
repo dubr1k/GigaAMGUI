@@ -277,6 +277,10 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('btn-logout').addEventListener('click', async () => {
+    // Сначала поток: иначе он остаётся открытым (а после истечения cookie
+    // переподключается к 401 каждые 3 с), пока вкладка висит на экране входа
+    sessionActive = false;
+    closeProgressStream();
     await fetch(`${API}/auth/logout`, { method: 'POST' });
     showLoginScreen();
 });
@@ -291,11 +295,20 @@ document.getElementById('btn-lang').addEventListener('click', () => {
 
 // ===== INIT APP =====
 
+// Слушатели вешаются один раз на загрузку страницы. Повторный вход без
+// перезагрузки (выход → вход) снова вызывает initApp(), и без этого флага
+// каждый вход добавлял второй обработчик: один клик «Запустить» грузил файлы дважды.
+let appInitialized = false;
+let sessionActive = false;
+
 async function initApp() {
+    sessionActive = true;
     applyLanguage();
     loadDeviceInfo();
     loadResults();
     startProgressStream();
+    if (appInitialized) return;
+    appInitialized = true;
     setupFileSelection();
     setupDragDrop();
     setupDiarization();
@@ -809,11 +822,26 @@ function clearVisibleTaskState() {
 
 // ===== PROGRESS STREAM (SSE) =====
 
-function startProgressStream() {
-    if (progressSource) progressSource.close();
-    progressSource = new EventSource(`${API}/progress`);
+let progressReconnectTimer = null;
 
-    progressSource.onmessage = (event) => {
+function closeProgressStream() {
+    if (progressReconnectTimer) {
+        clearTimeout(progressReconnectTimer);
+        progressReconnectTimer = null;
+    }
+    if (progressSource) {
+        progressSource.close();
+        progressSource = null;
+    }
+}
+
+function startProgressStream() {
+    closeProgressStream();
+    const source = new EventSource(`${API}/progress`);
+    progressSource = source;
+
+    source.onmessage = (event) => {
+        if (source !== progressSource) return;  // сообщение уже закрытого потока
         const data = JSON.parse(event.data);
 
         // Обновить задачи
@@ -831,8 +859,15 @@ function startProgressStream() {
         }
     };
 
-    progressSource.onerror = () => {
-        setTimeout(() => startProgressStream(), 3000);
+    source.onerror = () => {
+        // Свой таймер вместо встроенного автопереподключения: один поток за раз
+        // и никаких переподключений после выхода
+        if (source !== progressSource || !sessionActive) return;
+        source.close();
+        progressReconnectTimer = setTimeout(() => {
+            progressReconnectTimer = null;
+            if (sessionActive) startProgressStream();
+        }, 3000);
     };
 }
 
