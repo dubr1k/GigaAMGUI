@@ -74,8 +74,35 @@ def project_env_path() -> Path:
     return Path(__file__).resolve().parent.parent / ".env"
 
 
+_ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ENV_BARE_VALUE = re.compile(r"[A-Za-z0-9_\-.:/+=@,]*")
+
+
+def _env_quoted(value: str) -> str:
+    """Значение для .env: голое, если безопасно, иначе в двойных кавычках.
+
+    python-dotenv раскрывает в двойных кавычках \\\\, \\", \\n, \\r, \\t — этим
+    и экранируем. Без кавычек перевод строки в значении (вставленный токен)
+    дописывал в .env произвольные ключи, а пробелы по краям и «#» терялись.
+    """
+    if _ENV_BARE_VALUE.fullmatch(value):
+        return value
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
 def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
-    """Save one KEY=value pair to the persistent user .env file."""
+    """Save one KEY=value pair to the persistent user .env file (atomically)."""
+    if not _ENV_KEY.fullmatch(key):
+        raise ValueError(f"Некорректное имя переменной окружения: {key!r}")
+    from .utils.atomic_json import write_text_atomic
+
     target = env_path or user_env_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
@@ -84,8 +111,9 @@ def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
             line for line in target.read_text(encoding="utf-8").splitlines()
             if not line.startswith(f"{key}=")
         ]
-    lines.append(f"{key}={value}")
-    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines.append(f"{key}={_env_quoted(value)}")
+    # Атомарно: обрыв записи не должен оставить .env без остальных ключей.
+    write_text_atomic(target, "\n".join(lines) + "\n")
     os.environ[key] = value
     return target
 
