@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.core.formatters import generate_markdown, generate_srt, generate_vtt
 from src.core.subtitles import SubtitleOptions
-from src.utils.atomic_json import save_text_atomic
+from src.utils.atomic_json import write_text_atomic
 from src.utils.time_formatter import TimeFormatter
 
 from .types import TranscriptEvent
@@ -58,7 +58,7 @@ def export_session(
     if selection.vtt:
         exports.append((session_dir / "transcript.vtt", generate_vtt(utterances, subtitle_options)))
     for path, content in exports:
-        save_text_atomic(str(path), content)
+        write_text_atomic(path, content)
     return [path for path, _ in exports]
 
 

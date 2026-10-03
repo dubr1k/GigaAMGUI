@@ -23,18 +23,18 @@ def load_json(path: str, default: Any) -> Any:
         return default
 
 
-def save_json_atomic(path: str, data: Any):
-    """Атомарно сохраняет data как JSON в path."""
-    save_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))
+def write_text_atomic(path: str | os.PathLike[str], text: str, *, encoding: str = "utf-8") -> None:
+    """Атомарно записать текст: во временный файл рядом, затем os.replace.
 
-
-def save_text_atomic(path: str, text: str):
-    """Атомарно сохраняет text (UTF-8) в path."""
+    Прерванная запись (диск кончился, процесс убит) оставляет прежнее
+    содержимое файла, а не обрезанный результат. Переводы строк — как у
+    обычного open(..., "w"): на Windows транскрипты, как и раньше, с CRLF.
+    """
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(suffix='.tmp', dir=directory)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        with os.fdopen(fd, 'w', encoding=encoding) as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -47,3 +47,8 @@ def save_text_atomic(path: str, text: str):
             except OSError:
                 pass
         raise
+
+
+def save_json_atomic(path: str, data: Any):
+    """Атомарно сохраняет data как JSON в path."""
+    write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))

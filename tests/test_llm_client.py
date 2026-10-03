@@ -127,3 +127,88 @@ def test_retry_wait_is_interrupted_by_cancel(monkeypatch):
 
     with pytest.raises(RuntimeError, match="cancelled"):
         _run_retry(monkeypatch, [_retry_response(headers={"Retry-After": "10"}), _ok_response()], cancel_check)
+
+
+def _real_response(body: bytes, *, status=200, content_type="text/event-stream", reason="OK"):
+    """Ответ так, как его собирает адаптер requests: кодировка — из заголовков."""
+    import io
+
+    import requests
+
+    response = requests.models.Response()
+    response.status_code = status
+    response.reason = reason
+    response.headers["Content-Type"] = content_type
+    response.raw = io.BytesIO(body)
+    response.encoding = requests.utils.get_encoding_from_headers(response.headers)
+    response.url = "https://example.test/v1/chat/completions"
+    return response
+
+
+def _client(monkeypatch, response, url="https://example.test/v1"):
+    monkeypatch.setattr("src.utils.llm_client.requests.post", lambda *a, **k: response)
+    return LLMClient(LLMSettings(url, "key", "model"))
+
+
+def test_openai_sse_without_charset_is_decoded_as_utf8(monkeypatch):
+    # text/event-stream без charset requests декодирует как ISO-8859-1:
+    # русский ответ превращался в «Ð¿Ñ\x80Ð¸Ð²ÐµÑ\x82».
+    body = (
+        'data: {"choices":[{"delta":{"content":"привет"}}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode()
+    client = _client(monkeypatch, _real_response(body))
+    chunks = []
+
+    assert client.process_transcript("текст", "промпт", stream_callback=chunks.append) == "привет"
+    assert chunks == ["привет"]
+
+
+def test_anthropic_sse_without_charset_is_decoded_as_utf8(monkeypatch):
+    body = (
+        "event: content_block_delta\n"
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ответ"}}\n\n'
+    ).encode()
+    client = _client(monkeypatch, _real_response(body), url="https://api.anthropic.com")
+
+    assert client.process_transcript("текст", "промпт", stream_callback=lambda _c: None) == "ответ"
+
+
+def test_openai_stream_error_event_is_reported(monkeypatch):
+    import pytest
+
+    body = (
+        'data: {"choices":[{"delta":{"content":"нача"}}]}\n\n'
+        'data: {"error":{"message":"Rate limit exceeded","code":429}}\n\n'
+    ).encode()
+    client = _client(monkeypatch, _real_response(body))
+
+    with pytest.raises(RuntimeError, match="Rate limit exceeded"):
+        client.process_transcript("текст", "промпт", stream_callback=lambda _c: None)
+
+
+def test_anthropic_stream_error_event_is_reported(monkeypatch):
+    import pytest
+
+    body = (
+        b"event: error\n"
+        b'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n'
+    )
+    client = _client(monkeypatch, _real_response(body), url="https://api.anthropic.com")
+
+    with pytest.raises(RuntimeError, match="Overloaded"):
+        client.process_transcript("текст", "промпт", stream_callback=lambda _c: None)
+
+
+def test_http_error_carries_provider_message(monkeypatch):
+    import pytest
+    import requests
+
+    body = b'{"error":{"message":"The model `gpt-9` does not exist"}}'
+    client = _client(
+        monkeypatch,
+        _real_response(body, status=404, content_type="application/json", reason="Not Found"),
+    )
+
+    with pytest.raises(requests.HTTPError, match="does not exist"):
+        client.process_transcript("текст", "промпт")

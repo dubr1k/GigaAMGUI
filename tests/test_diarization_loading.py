@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from src.core.diarization import pyannote_backend
 from src.core.model_preparation import PreparationState
 from src.core.processor import TranscriptionProcessor
 from src.utils import diarization
@@ -22,7 +23,8 @@ def test_processor_recreates_manager_when_hf_token_changes(monkeypatch):
             self.device = device
             created.append(self)
 
-    monkeypatch.setattr(diarization, "DiarizationManager", FakeManager)
+    # Фабрика создаёт pyannote-менеджер из core.diarization.pyannote_backend.
+    monkeypatch.setattr(pyannote_backend, "DiarizationManager", FakeManager)
     monkeypatch.setenv("HF_TOKEN", "hf_first")
     processor = TranscriptionProcessor(object(), _Stats())
 
@@ -34,6 +36,64 @@ def test_processor_recreates_manager_when_hf_token_changes(monkeypatch):
     assert second.hf_token == "hf_second"
     assert second is not first
     assert created == [first, second]
+
+
+def test_processor_keeps_injected_onnx_manager_prepared_for_same_provider(monkeypatch):
+    # GUI готовит ONNX-диаризацию заранее (build_processing_preparation_plan) и
+    # передаёт менеджер в процессор. Прежде _diarization_provider стартовал с
+    # None, сравнение None != "auto" выбрасывало готовый менеджер, и обе
+    # ONNX-модели грузились второй раз уже внутри обработки файла.
+    class PreparedOnnx:
+        backend = "onnx"
+        provider = "auto"
+        hf_token = None
+
+    class Loader:
+        requested_provider = "auto"
+
+    def unexpected_factory(*_args, **_kwargs):
+        raise AssertionError("готовый менеджер не должен пересоздаваться")
+
+    monkeypatch.setattr(
+        "src.core.diarization.factory.create_diarization_backend",
+        unexpected_factory,
+    )
+    prepared = PreparedOnnx()
+    processor = TranscriptionProcessor(
+        Loader(),
+        _Stats(),
+        diarization_manager=prepared,
+        diarization_backend="onnx",
+    )
+
+    assert processor.diarization_manager is prepared
+
+
+def test_processor_replaces_injected_onnx_manager_after_provider_change(monkeypatch):
+    class PreparedOnnx:
+        backend = "onnx"
+        provider = "auto"
+        hf_token = None
+
+    class Loader:
+        requested_provider = "cpu"
+
+    created = []
+    monkeypatch.setattr(
+        "src.core.diarization.factory.create_diarization_backend",
+        lambda backend, **kwargs: created.append((backend, kwargs["provider"])) or object(),
+    )
+    processor = TranscriptionProcessor(
+        Loader(),
+        _Stats(),
+        diarization_manager=PreparedOnnx(),
+        diarization_backend="onnx",
+    )
+
+    manager = processor.diarization_manager
+
+    assert manager is not None
+    assert created == [("onnx", "cpu")]
 
 
 def test_pipeline_uses_runtime_token_for_all_huggingface_downloads(monkeypatch):
@@ -67,7 +127,7 @@ def test_pipeline_preserves_internal_type_error_without_legacy_retry(monkeypatch
             raise TypeError("missing packaged pipeline component")
 
     _install_pipeline_dependencies(monkeypatch, FakePipeline)
-    monkeypatch.setattr(diarization, "diagnose_hf_access", lambda _token: "all repos OK")
+    monkeypatch.setattr(pyannote_backend, "diagnose_hf_access", lambda _token: "all repos OK")
     manager = diarization.DiarizationManager(hf_token="hf_runtime", device="cpu")
 
     with pytest.raises(ValueError, match="missing packaged pipeline component"):

@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import Any
 
-from ...utils.model_cache import hf_repo_is_cached
+from ...utils.model_cache import hf_hub_offline, hf_repo_is_cached
 from .mlx_backend import MLXBackend
 from .models import onnx_model_repo
 from .onnx_backend import OnnxBackend
 from .pytorch_backend import PyTorchBackend
 from .types import validate_backend_name
-
-# Те же значения, что huggingface_hub считает «истиной» для HF_HUB_OFFLINE.
-_ENV_TRUE_VALUES = {"1", "ON", "YES", "TRUE"}
 
 
 def _is_macos_arm64(platform_name: str, machine_name: str) -> bool:
@@ -28,10 +24,6 @@ def _default_import_probe(modules: tuple[str, ...]) -> bool:
         return True
     except Exception:
         return False
-
-
-def _hf_hub_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").strip().upper() in _ENV_TRUE_VALUES
 
 
 def _mlx_supports_model(model_revision: str) -> bool:
@@ -61,7 +53,7 @@ def create_backend(
 ) -> tuple[Any, str | None]:
     requested = validate_backend_name(requested_backend)
     if offline is None:
-        offline = _hf_hub_offline()
+        offline = hf_hub_offline()
 
     if requested == "pytorch":
         return PyTorchBackend(model=model_name, revision=model_revision), None

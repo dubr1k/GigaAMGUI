@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from src.utils.audio_converter import FfmpegRun
 from src.utils.audio_preprocessing import (
     AudioPreprocessingPolicy,
     AudioPreprocessor,
@@ -384,10 +385,10 @@ def test_ffmpeg_backend_uses_argument_list_and_preserves_timeline(monkeypatch, t
         captured["command"] = command
         captured["kwargs"] = kwargs
         shutil.copyfile(source, command[-1])
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
+        return FfmpegRun(returncode=0, stderr="", stalled=False, last_ratio=1.0)
 
     monkeypatch.setattr("src.utils.audio_preprocessing._find_ffmpeg", lambda: "/usr/bin/ffmpeg")
-    monkeypatch.setattr("src.utils.audio_preprocessing.subprocess.run", fake_run)
+    monkeypatch.setattr("src.utils.audio_preprocessing.run_ffmpeg_with_progress", fake_run)
 
     backend = FFmpegAudioPreprocessingBackend(logger=lambda _message: None)
     output = backend.process(str(source), str(tmp_path), "light_cleanup")
@@ -411,10 +412,10 @@ def test_ffmpeg_backend_rejects_duration_drift_and_removes_output(monkeypatch, t
         target = Path(command[-1])
         created.append(target)
         _write_pcm16(target, np.zeros(8000, dtype=np.float32))
-        return type("Result", (), {"returncode": 0, "stderr": ""})()
+        return FfmpegRun(returncode=0, stderr="", stalled=False, last_ratio=1.0)
 
     monkeypatch.setattr("src.utils.audio_preprocessing._find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr("src.utils.audio_preprocessing.subprocess.run", fake_run)
+    monkeypatch.setattr("src.utils.audio_preprocessing.run_ffmpeg_with_progress", fake_run)
 
     output = FFmpegAudioPreprocessingBackend(logger=lambda _message: None).process(
         str(source), str(tmp_path), "normalize"

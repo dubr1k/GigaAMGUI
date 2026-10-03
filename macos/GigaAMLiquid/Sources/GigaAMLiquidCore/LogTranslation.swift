@@ -115,12 +115,16 @@ public enum LogTranslation {
         (#"^Ошибка: (.+)$"#, "Error: $1"),
         (#"^Объём текста: (\d+) символов$"#, "Text size: $1 characters"),
         (#"^Сохранён файл: (.+)$"#, "Saved file: $1"),
+        (#"^Не удалось создать папку для результатов (.+?): (.+)$"#, "Could not create the output folder $1: $2"),
+        (#"^Не удалось сохранить результаты: (.+)$"#, "Could not save the results: $1"),
+        (#"^Не удалось сохранить (.+?): (.+)$"#, "Could not save $1: $2"),
         (#"^Готово за (.+?) \(подготовка звука (.+?) с, распознавание (.+?) с\)$"#, "Done in $1 (audio preparation $2 s, recognition $3 s)"),
         (#"^(\d+) ч (\d+) мин$"#, "$1 h $2 min"),
         (#"^(\d+) мин (\d+) сек$"#, "$1 min $2 s"),
         (#"^(\d+) сек$"#, "$1 s"),
         (#"^Не удалось обработать (.+?): (.+)$"#, "Could not process $1: $2"),
         (#"^Остановка запрошена: закончим текущий файл и остановимся\.$"#, "Stop requested: finishing the current file, then stopping."),
+        (#"^Обработка отменена пользователем$"#, "Processing cancelled by the user"),
     ].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
 
     private static let groupReference = try! NSRegularExpression(pattern: #"\$(\d)"#)

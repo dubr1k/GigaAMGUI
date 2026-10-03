@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from ...utils.model_cache import resolve_model_dir
+from ...utils.model_cache import OnnxModelLocation, onnx_model_location
+from .onnx_loading import load_vad_model
 from .onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
@@ -46,9 +48,15 @@ class OnnxVadSegmenter:
 
     @staticmethod
     def _load_vad(*args, **kwargs):
-        import onnx_asr  # noqa: PLC0415
+        return load_vad_model(*args, **kwargs)
 
-        return onnx_asr.load_vad(*args, **kwargs)
+    def model_location(self) -> OnnxModelLocation:
+        repo_id = _VAD_REPOS.get(self.model, self.model if "/" in self.model else None)
+        if repo_id is not None:
+            return onnx_model_location(repo_id, root=self.model_dir)
+        # Тип модели без репозитория (например, «pyannote») грузится только
+        # из явно указанного каталога.
+        return OnnxModelLocation(Path(self.model_dir) if self.model_dir else None)
 
     def _ensure_vad(self):
         if self._vad is not None:
@@ -59,16 +67,15 @@ class OnnxVadSegmenter:
                 available=self._available_provider_probe(),
             )
             factory = self._vad_factory or self._load_vad
-            repo_id = _VAD_REPOS.get(self.model, self.model if "/" in self.model else None)
-            model_dir = self.model_dir
-            if model_dir is None and repo_id is not None:
-                model_dir = resolve_model_dir(repo_id)
-            vad = factory(
-                self.model,
-                path=model_dir,
-                quantization=self.quantization,
-                providers=onnx_session_providers(selection),
-            )
+            location = self.model_location()
+            kwargs: dict[str, Any] = {
+                "path": location.path,
+                "quantization": self.quantization,
+                "providers": onnx_session_providers(selection),
+            }
+            if location.offline is not None:
+                kwargs["offline"] = location.offline
+            vad = factory(self.model, **kwargs)
             if not callable(getattr(vad, "segment_batch", None)):
                 raise VadUnavailableError(
                     "Установленная версия onnx-asr не предоставляет VAD segment_batch"

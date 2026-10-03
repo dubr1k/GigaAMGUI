@@ -54,6 +54,8 @@ def test_window_transcription_resamples_and_preserves_absolute_offset():
 
 
 def test_load_passes_model_provider_quantization_and_local_path(tmp_path):
+    # Каталог одной модели (старая раскладка ONNX_MODEL_DIR) передаётся как есть.
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     calls = []
     raw_model = _FakeTimestampModel()
     backend = OnnxBackend(
@@ -70,7 +72,7 @@ def test_load_passes_model_provider_quantization_and_local_path(tmp_path):
         (
             ("gigaam-v3-e2e-rnnt",),
             {
-                "path": str(tmp_path),
+                "path": tmp_path,
                 "quantization": "int8",
                 "providers": ["CPUExecutionProvider"],
                 "preprocessor_config": {"use_numpy_preprocessors": False},
@@ -117,20 +119,34 @@ def test_unload_releases_model_and_runtime_metadata():
 
 
 def test_bundled_download_root_returns_explicit_model_directory(tmp_path):
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     backend = OnnxBackend(model_dir=str(tmp_path))
 
     assert backend._bundled_download_root() == str(tmp_path)
+
+
+def test_bundled_download_root_is_model_subdirectory_of_onnx_root(tmp_path, monkeypatch):
+    from src.utils import model_cache
+
+    monkeypatch.setattr(model_cache, "resolve_bundled_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(model_cache, "hf_repo_is_cached", lambda *_a, **_k: False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    backend = OnnxBackend(model_dir=str(tmp_path))
+
+    assert backend._bundled_download_root() == str(tmp_path / "istupakov--gigaam-v3-onnx")
 
 
 def test_load_uses_matching_bundled_asr_snapshot_when_path_is_not_explicit(
     tmp_path,
     monkeypatch,
 ):
+    from src.utils import model_cache
+
     calls = []
     raw_model = _FakeTimestampModel()
     monkeypatch.setattr(
-        onnx_backend_module,
-        "resolve_model_dir",
+        model_cache,
+        "resolve_bundled_snapshot",
         lambda repo_id, **_kwargs: tmp_path / repo_id.replace("/", "--"),
     )
     backend = OnnxBackend(

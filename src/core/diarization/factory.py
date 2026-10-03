@@ -7,6 +7,8 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from .names import normalize_diarization_backend
+
 
 def should_use_sortformer_onnx(
     *,
@@ -36,8 +38,16 @@ def create_diarization_backend(
     sortformer_onnx_factory: Callable[..., Any] | None = None,
     platform_name: str | None = None,
     nemo_available: bool | None = None,
+    **pyannote_options: Any,
 ):
-    selected = str(backend or "pyannote").strip().lower()
+    """Создать backend диаризации; тяжёлые зависимости импортируются лениво.
+
+    ``onnx`` и Sortformer-ONNX не тянут torch. pyannote и NeMo Sortformer
+    создаются только здесь (бывший ``utils.diarization.get_diarization_manager``
+    — теперь его тонкий псевдоним). ``pyannote_options`` (min_speakers,
+    max_speakers) уходят в ``DiarizationManager``.
+    """
+    selected = normalize_diarization_backend(backend)
     if selected == "onnx":
         if onnx_factory is None:
             from .onnx_backend import OnnxDiarizationBackend
@@ -48,8 +58,6 @@ def create_diarization_backend(
             kwargs["model_dir"] = model_dir
         return onnx_factory(**kwargs)
 
-    if selected == "nvidia":
-        selected = "sortformer"
     if selected == "sortformer" and should_use_sortformer_onnx(
         platform_name=platform_name,
         nemo_available=nemo_available,
@@ -61,11 +69,16 @@ def create_diarization_backend(
         kwargs = {"provider": provider}
         if model_dir is not None:
             kwargs["model_dir"] = model_dir
+        if device != "auto":
+            kwargs["device"] = device
         return sortformer_onnx_factory(**kwargs)
-    if selected not in {"pyannote", "sortformer"}:
-        raise ValueError(f"Неизвестный backend диаризации: {backend!r}")
-    if legacy_factory is None:
-        from ...utils.diarization import get_diarization_manager
 
-        legacy_factory = get_diarization_manager
-    return legacy_factory(backend=selected, hf_token=hf_token, device=device)
+    if legacy_factory is not None:
+        return legacy_factory(backend=selected, hf_token=hf_token, device=device)
+    if selected == "sortformer":
+        from .sortformer_nemo import SortformerDiarizationManager
+
+        return SortformerDiarizationManager(device=device)
+    from .pyannote_backend import DiarizationManager
+
+    return DiarizationManager(hf_token=hf_token, device=device, **pyannote_options)
