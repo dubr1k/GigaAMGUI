@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import sys
 
@@ -417,3 +418,52 @@ def test_tui_worker_llm_tool_check_unknown_provider():
     worker.handle({"type": "llm_tool_check", "provider": "Nope"})
 
     assert _messages(output)[0]["type"] == "error"
+
+
+@pytest.mark.parametrize("locale_encoding", ["cp1252", "cp1251"])
+def test_worker_protocol_is_utf8_whatever_the_locale_encoding(locale_encoding):
+    """Windows gives a piped stdout the ANSI code page. cp1251 wrote Cyrillic as
+    bytes the clients could not parse as UTF-8 (the message became a diagnostic,
+    the TUI waited forever); cp1252 raised UnicodeEncodeError and no reply left
+    at all. Simulated here by forcing the locale encoding of the worker process."""
+    environment = {**os.environ, "PYTHONIOENCODING": locale_encoding, "PYTHONUTF8": "0"}
+    result = subprocess.run(
+        [sys.executable, "-m", "src.tui_worker"],
+        input='{"type": "запись"}\n{"type": "ping"}\n'.encode(),
+        capture_output=True, env=environment, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    messages = [json.loads(line) for line in result.stdout.decode("utf-8").splitlines()]
+    assert messages[0]["type"] == "error"
+    assert "запись" in messages[0]["message"]
+    assert messages[-1] == {"type": "pong"}
+
+
+def test_emit_never_writes_invalid_json_or_unencodable_text():
+    """`json.dumps` writes NaN/Infinity by default, which no strict parser accepts:
+    the client dropped the whole line — a `completed` with a NaN duration left the
+    batch running forever. A non-UTF-8 file name (surrogateescape) made the write
+    itself raise, so the reply never left."""
+    from pathlib import Path
+
+    raw = io.BytesIO()
+    output = io.TextIOWrapper(raw, encoding="utf-8")
+    worker = TuiWorker(output)
+    try:
+        worker.emit("progress", file_progress=float("nan"), total_seconds=float("inf"),
+                    file="/tmp/\udcff.wav", stage=Path("/x"), nested={"values": [float("-inf"), 1.5]})
+        worker.emit("pong")
+    finally:
+        worker.close()
+    output.flush()
+
+    def reject(constant):
+        raise AssertionError(f"non-JSON constant {constant}")
+
+    lines = raw.getvalue().decode("utf-8").splitlines()
+    progress = json.loads(lines[0], parse_constant=reject)
+    assert progress["file_progress"] is None and progress["total_seconds"] is None
+    assert progress["file"] == "/tmp/�.wav"
+    assert progress["stage"] == "/x"
+    assert progress["nested"] == {"values": [None, 1.5]}
+    assert json.loads(lines[1]) == {"type": "pong"}

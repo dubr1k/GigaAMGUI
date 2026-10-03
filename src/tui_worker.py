@@ -7,6 +7,7 @@ human-readable diagnostics.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import threading
@@ -33,6 +34,68 @@ from src.services.tui_input_service import InputResolver  # noqa: E402
 from src.utils.output_naming import find_output_collisions  # noqa: E402
 
 
+def _protocol_text(value: str) -> str:
+    """Строка, которую можно закодировать в UTF-8.
+
+    Имена файлов, не являющиеся UTF-8 (Linux), приходят из ОС с суррогатами
+    ``surrogateescape``; ``json.dumps`` пропускает их, а запись в UTF-8 поток
+    падает — и ответ клиенту не уходит вовсе. Показываем такие байты как U+FFFD.
+    """
+    try:
+        value.encode("utf-8")
+        return value
+    except UnicodeEncodeError:
+        try:
+            return value.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "replace").decode("utf-8")
+
+
+def _protocol_value(value: Any) -> Any:
+    """Значение, которое кодируется в строгий JSON: NaN/Inf → null, прочее → str."""
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _protocol_text(value)
+    if isinstance(value, dict):
+        return {_protocol_text(str(key)): _protocol_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_protocol_value(item) for item in value]
+    return _protocol_text(str(value))
+
+
+def protocol_line(message: dict[str, Any]) -> str:
+    """Одна строка JSONL, которую примет любой строгий JSON-парсер (serde_json, Swift).
+
+    ``json.dumps`` по умолчанию пишет ``NaN``/``Infinity`` — это не JSON, и клиент
+    отбрасывал всю строку, а с ней, например, ``completed``. Быстрый путь не трогает
+    обычные сообщения; медленный чинит только то, что иначе не дошло бы.
+    """
+    try:
+        line = json.dumps(message, ensure_ascii=False, allow_nan=False)
+        line.encode("utf-8")
+        return line
+    except (TypeError, ValueError):  # UnicodeEncodeError — тоже ValueError
+        return json.dumps(_protocol_value(message), ensure_ascii=False, allow_nan=False)
+
+
+def _use_utf8_stdio() -> None:
+    """Протокол — UTF-8 независимо от локали.
+
+    На Windows stdout в трубе получает кодовую страницу ANSI: cp1251 превращал
+    кириллические пути в байты, которые клиент не разбирал как UTF-8, а cp1252
+    падал с UnicodeEncodeError, и ответ не уходил вовсе. Клиенты ещё и выставляют
+    PYTHONUTF8/PYTHONIOENCODING, но замороженная сборка может их не учитывать.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            # stderr — диагностика для человека: лучше экранированный символ, чем исключение.
+            reconfigure(encoding="utf-8", errors="strict" if stream is sys.stdout else "backslashreplace")
+
+
 class TuiWorker:
     """Runs one transcription batch at a time and exposes it over JSONL."""
 
@@ -57,9 +120,9 @@ class TuiWorker:
                 payload["result"] = self._result_metadata(payload["result"])
             elif message_type == "completed" and isinstance(payload.get("results"), list):
                 payload["results"] = [self._result_metadata(result) for result in payload["results"]]
-        message = {"type": message_type, **payload}
+        line = protocol_line({"type": message_type, **payload})
         with self._write_lock:
-            self._output.write(json.dumps(message, ensure_ascii=False) + "\n")
+            self._output.write(line + "\n")
             self._output.flush()
 
     @staticmethod
@@ -373,6 +436,7 @@ def read_commands(stream) -> Iterator[dict[str, Any]]:
 
 
 def main() -> int:
+    _use_utf8_stdio()
     worker = TuiWorker()
     # Небуферизованный поток: BufferedReader.read(n) ждёт n байт или EOF, а
     # команды приходят по одной строке — с ним воркер «завис» бы на первой же.

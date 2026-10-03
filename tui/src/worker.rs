@@ -238,6 +238,11 @@ pub(crate) fn worker_command() -> Command {
         command
     };
     command.current_dir(project_root);
+    // The protocol is UTF-8. Without these a piped Python stdout on Windows uses
+    // the ANSI code page: Cyrillic paths arrive as bytes `from_slice` rejects, or
+    // the worker dies on UnicodeEncodeError (cp1252). The worker also reconfigures
+    // its streams itself, for frozen builds that ignore the environment.
+    command.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
     command
 }
 
@@ -293,5 +298,19 @@ mod tests {
         assert_eq!(payload["claude_path"], "/opt/homebrew/bin/claude");
         assert_eq!(payload["codex_path"], "codex");
         assert_eq!(payload["temperature"], 0.2);
+    }
+
+    #[test]
+    fn worker_command_asks_python_for_a_utf8_protocol_stream() {
+        // Windows pipes get the ANSI code page otherwise; the protocol is UTF-8.
+        let command = worker_command();
+        let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+        for (name, value) in [("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8")] {
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new(name)).copied().flatten(),
+                Some(std::ffi::OsStr::new(value)),
+                "{name}"
+            );
+        }
     }
 }
