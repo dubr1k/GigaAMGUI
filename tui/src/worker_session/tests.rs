@@ -265,6 +265,46 @@ sys.stdin.readline()
     }
 }
 
+/// A grandchild in its own session escapes the process-group kill and holds
+/// stdout open: the first stop cannot be confirmed. The controller used to exit
+/// after reporting that, so Ctrl+R's `stop()` reached nobody and the TUI showed
+/// "reconnecting…" forever. A later stop must retry and confirm.
+#[cfg(unix)]
+#[test]
+fn an_unconfirmed_stop_can_be_retried_once_the_tree_is_gone() {
+    let (tx, rx) = mpsc::sync_channel(128);
+    let session = WorkerSession::spawn_with_command(
+        7,
+        python(
+            r#"
+import json, subprocess, sys
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'], start_new_session=True)
+print(json.dumps({'type':'tree', 'child':child.pid}), flush=True)
+sys.stdin.readline()
+"#,
+        ),
+        tx,
+    );
+    let WorkerEventKind::Message(tree) = receive(&rx) else {
+        panic!("missing tree")
+    };
+    session.stop();
+    let first = loop {
+        if let WorkerEventKind::Stopped(result) = receive(&rx) {
+            break result;
+        }
+    };
+    assert!(first.is_err(), "the escaped grandchild keeps the pipe open");
+    let child = tree["child"].as_u64().unwrap() as u32;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running(child) {
+        assert!(Instant::now() < deadline, "fixture grandchild did not exit");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    session.stop();
+    stopped(&rx);
+}
+
 #[cfg(unix)]
 fn running(pid: u32) -> bool {
     let output = Command::new("ps")

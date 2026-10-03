@@ -178,7 +178,10 @@ fn controller(
             }
             diagnostics.push_back(message);
         }
-        other => publish(&events, &control, generation, other),
+        other => {
+            // Already stopping: a stop request seen here asks for nothing new.
+            publish(&events, &control, generation, other);
+        }
     };
     if let Some(kind) = pending {
         collect(kind);
@@ -196,15 +199,8 @@ fn controller(
     }
     // On a failed cleanup, unblock any reader waiting to deliver data as well.
     drop(data_rx);
-    for reader in readers {
-        if reader.is_finished() {
-            if reader.join().is_err() {
-                result = Err("worker transport thread panicked".into());
-            }
-        } else {
-            result = Err("worker pipes did not close after termination".into());
-        }
-    }
+    let mut readers = readers;
+    result = join_finished(&mut readers, result);
     if omitted > 0 {
         publish(
             &events,
@@ -231,28 +227,75 @@ fn controller(
             WorkerEventKind::Failed(error),
         );
     }
-    publish(
-        &events,
-        &control,
-        generation,
-        WorkerEventKind::Stopped(result),
-    );
+    // An unconfirmed stop (a descendant escaped the group/Job, or a pipe is still
+    // held open) used to end this thread: the next `stop()` from Ctrl+R reached
+    // nobody and the TUI waited for a confirmation forever. The controller stays
+    // reachable instead and retries on every further stop request, so reconnect
+    // and the final shutdown can still confirm once the tree is really gone.
+    loop {
+        let retry_requested = publish(
+            &events,
+            &control,
+            generation,
+            WorkerEventKind::Stopped(result.clone()),
+        );
+        if result.is_ok() {
+            return;
+        }
+        if !retry_requested && control.recv().is_err() {
+            return; // The session was dropped: nobody waits for an answer.
+        }
+        result = tree
+            .terminate(&mut child)
+            .map_err(|error| error.to_string());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while readers.iter().any(|reader| !reader.is_finished()) && Instant::now() < deadline {
+            thread::sleep(TICK);
+        }
+        result = join_finished(&mut readers, result);
+    }
 }
 
+/// Joins the transport threads that have ended and keeps the rest for a retry;
+/// a thread still blocked on a pipe means the stop is not confirmed.
+fn join_finished(
+    readers: &mut Vec<JoinHandle<()>>,
+    mut result: Result<(), String>,
+) -> Result<(), String> {
+    let mut pending = Vec::new();
+    for reader in readers.drain(..) {
+        if !reader.is_finished() {
+            pending.push(reader);
+        } else if reader.join().is_err() {
+            result = Err("worker transport thread panicked".into());
+        }
+    }
+    if !pending.is_empty() {
+        result = Err("worker pipes did not close after termination".into());
+    }
+    *readers = pending;
+    result
+}
+
+/// Delivers one event, waiting while the queue is full. Returns whether a stop
+/// request arrived meanwhile, so that the caller does not lose it.
 fn publish(
     events: &SyncSender<WorkerEvent>,
     control: &Receiver<()>,
     generation: u64,
     kind: WorkerEventKind,
-) {
+) -> bool {
     let mut event = WorkerEvent { generation, kind };
+    let mut stop_requested = false;
     loop {
         match events.try_send(event) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => return,
+            Ok(()) | Err(TrySendError::Disconnected(_)) => return stop_requested,
             Err(TrySendError::Full(returned)) => event = returned,
         }
-        if matches!(control.try_recv(), Err(TryRecvError::Disconnected)) {
-            return;
+        match control.try_recv() {
+            Ok(()) => stop_requested = true,
+            Err(TryRecvError::Disconnected) => return stop_requested,
+            Err(TryRecvError::Empty) => {}
         }
         thread::sleep(TICK);
     }
