@@ -40,6 +40,10 @@ _CHAIN = [
     "pyannote.audio.models.embedding.wespeaker",
     "pyannote.audio.pipelines.speaker_verification",
     "pyannote.audio.pipelines.speaker_diarization",
+    # Подмодуль, а не сам пакет: каталог-пустышка gigaam/ (конфликтные копии
+    # Syncthing) импортируется как namespace-пакет, и `import gigaam` проходит,
+    # хотя модели в бандле нет — так собирались локальные сборки Liquid.
+    "gigaam.model",
     "docx",
 ]
 

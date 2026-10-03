@@ -126,3 +126,9 @@ def test_selfcheck_fails_when_the_flac_writer_rejects_the_session_format(monkeyp
     assert selfcheck.run_recording_writer_check() == 1
     assert selfcheck.run_live_capture_check() == 1
     assert "recording writer" in capsys.readouterr().out
+
+
+def test_selfcheck_requires_the_gigaam_model_code_not_just_the_package():
+    # `import gigaam` проходит и на пустом namespace-пакете; gigaam.model — нет.
+    assert "gigaam.model" in selfcheck._CHAIN
+    assert "gigaam" not in selfcheck._CHAIN
