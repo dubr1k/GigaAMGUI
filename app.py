@@ -11,7 +11,6 @@ import multiprocessing
 import os
 import platform
 import sys
-import time
 import warnings
 from pathlib import Path
 
@@ -22,12 +21,6 @@ from src.data_paths import (
     save_data_dir_selection,
     save_default_data_dir_selection,
 )
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - macOS build uses fcntl
-    fcntl = None
-
 
 # Первое действие в замороженной сборке, до любого режима. multiprocessing.resource_tracker
 # (его поднимают torch/pyannote под shared memory) стартует helper как
@@ -57,6 +50,14 @@ if "--live-capture-smoke" in sys.argv:
 
 from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER  # noqa: E402 — после freeze_support() и гейтов
 
+# Одна реализация блокировки экземпляра, очереди «открыть файлы» и разбора argv
+# для лаунчера и окна (модуль без torch и без Qt на уровне импорта).
+from src.gui import single_instance as _single_instance  # noqa: E402
+
+_argv_open_paths = _single_instance.argv_open_paths
+_qt_argv = _single_instance.qt_argv
+_queue_open_request = _single_instance.queue_open_request
+_try_acquire_instance_lock = _single_instance.try_acquire_instance_lock
 
 def _user_config_dir() -> Path:
     override = os.environ.get("GIGAAM_CONFIG_DIR")
@@ -67,43 +68,6 @@ def _user_config_dir() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "GigaAMTranscriber"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "GigaAMTranscriber"
-
-
-def _argv_open_paths(argv: list[str]) -> list[str]:
-    paths = []
-    skip_next = False
-    for arg in argv[1:]:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--data-dir":
-            skip_next = True
-            continue
-        if arg.startswith("--data-dir="):
-            continue
-        if arg.startswith("-psn_"):
-            continue
-        path = os.path.abspath(os.path.expanduser(arg))
-        if os.path.exists(path):
-            paths.append(path)
-    return paths
-
-
-def _qt_argv(argv: list[str]) -> list[str]:
-    """Не передавать служебный --data-dir парсеру Qt."""
-    result = [argv[0]]
-    skip_next = False
-    for arg in argv[1:]:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--data-dir":
-            skip_next = True
-            continue
-        if arg.startswith("--data-dir="):
-            continue
-        result.append(arg)
-    return result
 
 
 def _offer_data_directory_on_first_portable_launch(parent=None) -> str | None:
@@ -145,28 +109,21 @@ def _offer_data_directory_on_first_portable_launch(parent=None) -> str | None:
     return selected
 
 
-def _try_acquire_instance_lock():
-    lock_path = _user_config_dir() / "instance.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_file = lock_path.open("w", encoding="utf-8")
-    if fcntl is None:
-        return lock_file
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock_file.close()
-        return None
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
-    return lock_file
+def _create_qt_application(argv: list[str]):
+    """Существующий QApplication или GigaApplication, ловящий FileOpen из Finder."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QGuiApplication
+    from PyQt6.QtWidgets import QApplication
 
+    existing = QApplication.instance()
+    if existing is not None:
+        return existing
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+    from src.gui.application import GigaApplication
 
-def _queue_open_request(paths: list[str]) -> None:
-    queue_path = _user_config_dir() / "open_requests.jsonl"
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"paths": paths, "pid": os.getpid(), "time": time.time()}
-    with queue_path.open("a", encoding="utf-8") as queue:
-        queue.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return GigaApplication(_qt_argv(argv))
 
 
 def _torch_is_available() -> bool:
@@ -543,15 +500,7 @@ def main():
     warnings.filterwarnings("ignore", message=".*torchaudio.*deprecated.*")
     warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.*")
 
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QGuiApplication
-    from PyQt6.QtWidgets import QApplication
-
-    if QApplication.instance() is None:
-        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
-    app = QApplication.instance() or QApplication(_qt_argv(sys.argv))
+    app = _create_qt_application(sys.argv)
     app._gigaam_instance_lock_file = early_lock
 
     _offer_data_directory_on_first_portable_launch()
@@ -597,8 +546,10 @@ def main():
     # Для PyTorch всегда активируем сохранённый целый runtime до импорта модели.
     # Это также удаляет namespace-заглушку torch, которую может оставить PyInstaller.
     if _boot_requires_torch():
-        from src.gui.device_dialog import ensure_device_ready
+        from src.gui.device_dialog import ensure_device_ready, set_default_language
 
+        # Окна ещё нет, язык диалогу берём из сохранённых настроек.
+        set_default_language(settings.get_value("language", "ru"))
         if not _prepare_torch_runtime(rm, ensure_device_ready):
             sys.exit(0)
 

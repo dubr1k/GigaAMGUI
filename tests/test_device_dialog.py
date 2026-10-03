@@ -33,3 +33,37 @@ def test_install_progress_dialog_cancel_button_requests_cancellation():
     assert dialog.cancelled() is True
     assert fake_worker.cancel_called is True
     assert dialog._btn_cancel.isEnabled() is False
+
+
+def test_escape_cancels_the_download_instead_of_closing_the_dialog():
+    """Esc вызывает reject() в обход closeEvent: окно закрывалось, установщик
+    продолжал качать, а повторный выбор запускал вторую установку параллельно."""
+    app = QApplication.instance() or QApplication([])
+    dialog = InstallProgressDialog(next(iter(rm.VARIANTS)))
+    fake_worker = _FakeWorker()
+    dialog._worker = fake_worker
+    dialog.show()
+    app.processEvents()
+
+    dialog.reject()
+    app.processEvents()
+
+    assert dialog.isVisible() is True
+    assert fake_worker.cancel_called is True
+    dialog._worker = type("Done", (), {"isRunning": lambda self: False, "cancel_requested": lambda self: True})()
+    dialog.reject()
+    assert dialog.isVisible() is False
+
+
+def test_startup_device_dialog_follows_the_saved_language(monkeypatch):
+    """На старте у диалога нет родительского окна, и он всегда был русским."""
+    from src.gui import device_dialog
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(device_dialog, "_default_language", "ru")
+    device_dialog.set_default_language("en")
+
+    dialog = device_dialog.DeviceSelectDialog(None, recommended=next(iter(rm.VARIANTS)))
+
+    assert dialog.windowTitle() == "Select compute device"
+    app.processEvents()

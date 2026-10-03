@@ -43,6 +43,45 @@ def _format_css_number(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+# Светлая палитра 2.0. Раньше _LIGHT 1.6 лежал в app_qt, а _colors() целиком
+# переписывал его этими значениями — в том числе иконку кнопки темы на «☀»,
+# так что в обеих темах кнопка показывала солнце. Иконка — тема, на которую
+# кнопка переключит.
+LIGHT_PALETTE = {
+    "bg": "#F6F8FB", "bg_card": "#FFFFFF", "border": "#E5E9EF",
+    "text": "#0D0D0D", "text_sub": "#344054", "text_mute": "#98A2B3",
+    "text_mute2": "#667085", "btn_bg": "#FFFFFF", "btn_border": "#DDE3EA",
+    "btn_text": "#0D0D0D", "btn_hover_bg": "#EAF4FF", "btn_hover_border": "#0A84FF",
+    "btn_hover_text": "#006FD6", "accent": "#0A84FF", "accent2": "#0077ED",
+    "accent3": "#006FD6", "accent_dis": "#EAF4FF", "clear_bg": "#F8FAFC",
+    "clear_text": "#667085", "clear_border": "#E5E9EF", "clear_hover_bg": "#FFF1F2",
+    "clear_hover_border": "#FECACA", "clear_hover_text": "#EF4444", "input_bg": "#FFFFFF",
+    "input_sel": "#CFE8FF", "input_dis": "#F8FAFC", "input_dis_text": "#B8C0CC",
+    "progress_bg": "#E8EEF5", "progress_chunk": "#0A84FF", "progress_chunk2": "#0A84FF",
+    "tab_bg": "#F8FAFC", "tab_text": "#667085", "tab_sel_bg": "#EAF4FF",
+    "tab_sel_text": "#006FD6", "tab_accent": "#0A84FF", "tab_hover": "#F0F7FF",
+    "scroll_bg": "transparent", "scroll_handle": "#CBD5E1", "scroll_handle_hover": "#98A2B3",
+    "status_bg": "#FFFFFF", "status_text": "#667085", "theme_btn": "🌙",
+}
+
+DARK_PALETTE = {
+    "bg": "#1e1e21", "bg_card": "#2d2d30", "border": "#3e3e42",
+    "text": "#e8e8e8", "text_sub": "#c8c8c8", "text_mute": "#6b6b6b",
+    "text_mute2": "#888888", "btn_bg": "#3a3a3d", "btn_border": "#4a4a4e",
+    "btn_text": "#d0d0d0", "btn_hover_bg": "#45455a", "btn_hover_border": "#5b7ee5",
+    "btn_hover_text": "#a8c4ff", "accent": "#4f7de8", "accent2": "#3a6ad4",
+    "accent3": "#2c57be", "accent_dis": "#2c3f6b", "clear_bg": "#35353a",
+    "clear_text": "#888888", "clear_border": "#3e3e44", "clear_hover_bg": "#4a2020",
+    "clear_hover_border": "#8b3a3a", "clear_hover_text": "#e05050", "input_bg": "#252528",
+    "input_sel": "#1a3a6b", "input_dis": "#222225", "input_dis_text": "#555558",
+    "progress_bg": "#303035", "progress_chunk": "#4f7de8", "progress_chunk2": "#3a6ad4",
+    "tab_bg": "#2a2a2d", "tab_text": "#909090", "tab_sel_bg": "#1e1e21",
+    "tab_sel_text": "#e8e8e8", "tab_accent": "#4f7de8", "tab_hover": "#333338",
+    "scroll_bg": "#252528", "scroll_handle": "#4a4a50", "scroll_handle_hover": "#6a6a72",
+    "status_bg": "#252528", "status_text": "#c0c0c0", "theme_btn": "☀️",
+}
+
+
 def _mix_colors(color1: str, color2: str, ratio: float) -> str:
     ratio = max(0.0, min(1.0, ratio))
     c1 = QColor(color1)
@@ -54,25 +93,11 @@ def _mix_colors(color1: str, color2: str, ratio: float) -> str:
 
 
 class StyleMixin:
+    _LIGHT = LIGHT_PALETTE
+    _DARK = DARK_PALETTE
+
     def _colors(self):
         base = dict(self._DARK if self._theme == "dark" else self._LIGHT)
-        if self._theme == "light":
-            base.update({
-                "bg": "#F6F8FB", "bg_card": "#FFFFFF", "border": "#E5E9EF",
-                "text": "#0D0D0D", "text_sub": "#344054", "text_mute": "#98A2B3",
-                "text_mute2": "#667085", "btn_bg": "#FFFFFF", "btn_border": "#DDE3EA",
-                "btn_text": "#0D0D0D", "btn_hover_bg": "#EAF4FF", "btn_hover_border": "#0A84FF",
-                "btn_hover_text": "#006FD6", "accent": "#0A84FF", "accent2": "#0077ED",
-                "accent3": "#006FD6", "accent_dis": "#EAF4FF", "clear_bg": "#F8FAFC",
-                "clear_text": "#667085", "clear_border": "#E5E9EF", "clear_hover_bg": "#FFF1F2",
-                "clear_hover_border": "#FECACA", "clear_hover_text": "#EF4444", "input_bg": "#FFFFFF",
-                "input_sel": "#CFE8FF", "input_dis": "#F8FAFC", "input_dis_text": "#B8C0CC",
-                "progress_bg": "#E8EEF5", "progress_chunk": "#0A84FF", "progress_chunk2": "#0A84FF",
-                "tab_bg": "#F8FAFC", "tab_text": "#667085", "tab_sel_bg": "#EAF4FF",
-                "tab_sel_text": "#006FD6", "tab_accent": "#0A84FF", "tab_hover": "#F0F7FF",
-                "scroll_bg": "transparent", "scroll_handle": "#CBD5E1", "scroll_handle_hover": "#98A2B3",
-                "status_bg": "#FFFFFF", "status_text": "#667085", "theme_btn": "☀",
-            })
         accent = str(self.user_settings.get_value("accent_color", "") or "").strip()
         if not accent:
             return base
@@ -155,7 +180,6 @@ class StyleMixin:
         self.user_settings.settings["theme"] = self._theme
         self.user_settings._save_settings()
         self._apply_theme()
-        self._btn_theme.setText(self._colors()["theme_btn"])
 
     def _choose_accent_color(self):
         current = QColor(self._colors()["accent"])

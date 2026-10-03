@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -55,6 +56,16 @@ def window(qapp):
         instance.live_session.stop()
 
 
+def _wait_for_live_start(window, timeout=30.0):
+    """Model load and warm-up run off the Qt thread; wait for the session."""
+    deadline = time.monotonic() + timeout
+    while window._live_starting and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    QApplication.processEvents()
+    assert not window._live_starting, "live session did not finish starting"
+
+
 def _start_live(window, tmp_path, monkeypatch):
     from src.live.capture.noop import NoOpCaptureAdapter
 
@@ -65,6 +76,7 @@ def _start_live(window, tmp_path, monkeypatch):
     monkeypatch.setattr(window, "_preload_live_model", lambda: True)
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
 
 
 # --- overlay -----------------------------------------------------------------
@@ -183,6 +195,7 @@ def test_failed_model_preload_reports_instead_of_starting_silently(window, tmp_p
     monkeypatch.setattr(window, "model_loader", BrokenLoader())
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.live_session is None
     assert "model files are missing" in window.lbl_live_problem.text()

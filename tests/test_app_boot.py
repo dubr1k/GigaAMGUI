@@ -140,6 +140,65 @@ def test_gui_data_directory_argument_is_not_treated_as_an_open_path(tmp_path):
     assert app._argv_open_paths(argv) == [str(media)]
 
 
+def test_gui_and_launcher_share_one_argv_parser(tmp_path):
+    """У app_qt была своя копия разбора argv без `--data-dir`: папку данных
+    окно открывало как входные файлы и сканировало её на медиа."""
+    from src.gui import app_qt, single_instance
+
+    media = tmp_path / "audio.wav"
+    media.write_bytes(b"audio")
+    argv = ["app.py", "--data-dir", str(tmp_path), str(media), f"--data-dir={tmp_path}"]
+
+    assert single_instance.argv_open_paths(argv) == [str(media)]
+    assert app._argv_open_paths is single_instance.argv_open_paths
+    assert app._qt_argv is single_instance.qt_argv
+    assert app_qt.argv_open_paths is single_instance.argv_open_paths
+
+
+def test_launcher_creates_the_file_open_aware_application(tmp_path):
+    """app.py создавал обычный QApplication, и run_qt_app не подключал
+    открытие файлов из Finder/Dock (isinstance(app, GigaApplication) == False)."""
+    import os
+    import subprocess
+    import textwrap
+    from pathlib import Path
+
+    media = tmp_path / "dropped.wav"
+    media.write_bytes(b"audio")
+    script = textwrap.dedent(
+        f"""
+        import app
+        from PyQt6.QtCore import QEvent, QUrl
+
+        class FileOpen:  # QFileOpenEvent в PyQt6 не создаётся из Python
+            def type(self):
+                return QEvent.Type.FileOpen
+
+            def url(self):
+                return QUrl.fromLocalFile({str(media)!r})
+
+        qt_app = app._create_qt_application(["app.py"])
+        print(type(qt_app).__name__)
+        qt_app.event(FileOpen())
+        print(qt_app.take_pending_open_paths())
+        """
+    )
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", GIGAAM_CONFIG_DIR=str(tmp_path / "config"))
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(app.__file__).resolve().parent,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    lines = result.stdout.strip().splitlines()
+    assert lines[-2] == "GigaApplication"
+    assert lines[-1] == repr([str(media)])
+
+
 def test_first_portable_launch_recovers_unavailable_saved_root_before_model_download(
     tmp_path, monkeypatch
 ):

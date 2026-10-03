@@ -29,7 +29,9 @@ class DownloadMixin:
         download_dir = self.input_dir
         if not download_dir:
             initial_dir = self.user_settings.get_last_files_dir() or os.path.expanduser("~")
-            download_dir = QFileDialog.getExistingDirectory(self, "Выберите папку для загрузки медиа", initial_dir)
+            download_dir = QFileDialog.getExistingDirectory(
+                self, self._t("Выберите папку для загрузки медиа", "Choose the folder for downloaded media"), initial_dir,
+            )
             if not download_dir:
                 return
             self.input_dir = download_dir
@@ -41,9 +43,9 @@ class DownloadMixin:
         self.btn_start.setEnabled(False)
         self.progress_upload.setValue(0)
         self.progress_upload.setVisible(True)
-        self.lbl_status.setText("Загрузка медиа по ссылке...")
-        self._set_status("Загрузка по ссылке…")
-        self.log(f"Загрузка медиа по ссылке в папку: {download_dir}")
+        self.lbl_status.setText(self._t("Загрузка медиа по ссылке…", "Downloading media from the URL…"))
+        self._set_status(self._t("Загрузка по ссылке…", "Downloading from the URL…"))
+        self.log(self._t(f"Загрузка медиа по ссылке в папку: {download_dir}", f"Downloading media from the URL to: {download_dir}"))
         threading.Thread(target=self._download_media, args=(url, download_dir), daemon=True).start()
 
     def _download_media(self, url: str, download_dir: str):
@@ -55,7 +57,7 @@ class DownloadMixin:
             )
             files = [p for p in result.files if os.path.isfile(p) and os.path.getsize(p) > 0]
             if not files:
-                raise RuntimeError("yt-dlp не вернул скачанный медиафайл")
+                raise RuntimeError(self._t("yt-dlp не вернул скачанный медиафайл", "yt-dlp returned no downloaded media file"))
             self.signals.download_finished.emit(files)
         except Exception as e:
             self.signals.download_failed.emit(str(e))
@@ -73,10 +75,10 @@ class DownloadMixin:
             self._apply_dropped_or_selected_files(files, append=True, remember_dir=False)
             self.input_path.clear()
             self.lbl_status.setText(self._t("Медиа загружено и добавлено в очередь", "Media downloaded and added to the queue"))
-            self.log(f"Загрузка завершена: {len(files)} файлов")
+            self.log(self._t(f"Загрузка завершена: {len(files)} файлов", f"Download finished: {len(files)} files"))
         else:
             QMessageBox.warning(self, self._t("Загрузка", "Download"), self._t("Не удалось получить медиафайлы по ссылке.", "Failed to get media files from the URL."))
-            self.log("Загрузка завершилась без файлов")
+            self.log(self._t("Загрузка завершилась без файлов", "The download finished without files"))
         if self.start_processing_after_download:
             self.start_processing_after_download = False
             QTimer.singleShot(0, self._start_processing_thread)
@@ -89,5 +91,5 @@ class DownloadMixin:
         self.progress_upload.setValue(0)
         self.progress_upload.setVisible(False)
         self.lbl_status.setText(self._t("Ошибка загрузки", "Download error"))
-        self.log(f"Ошибка загрузки: {message}")
+        self.log(self._t(f"Ошибка загрузки: {message}", f"Download error: {message}"))
         QMessageBox.warning(self, self._t("Ошибка загрузки", "Download error"), message)

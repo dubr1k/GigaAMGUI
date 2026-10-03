@@ -1,16 +1,14 @@
-"""Сохранение/восстановление UI-настроек, геометрии окна и работа с логом.
+"""Сохранение/восстановление UI-настроек, геометрии окна, папки данных и результатов.
 
 Mixin: методы работают со `self` главного окна. Поведение сохранено 1:1.
 """
 from __future__ import annotations
 
 import os
-import re
-from datetime import datetime
 
 from PyQt6.QtCore import QByteArray, QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QTableWidgetItem, QWidget
+from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 from ..config import (
     AUDIO_PREPROCESSING_MODE,
@@ -85,38 +83,6 @@ class SettingsMixin:
         if hasattr(self, "status_bar") and self.status_bar is not None:
             self.status_bar.showMessage(self._translate_runtime_text(message))
 
-    def _copy_log(self):
-        clipboard = QApplication.clipboard()
-        if clipboard is not None:
-            clipboard.setText(self.log_text.toPlainText())
-            self._set_status(self._t("Журнал скопирован в буфер обмена", "Log copied to clipboard"))
-
-    def _save_log(self):
-        if not self.log_text.toPlainText().strip():
-            QMessageBox.information(self, self._t("Журнал пуст", "Empty log"), self._t("Журнал пока пуст — нечего сохранять.", "The log is empty — nothing to save."))
-            return
-        initial_dir = self.user_settings.get_last_output_dir() or self.output_dir or os.path.expanduser("~")
-        path, _ = QFileDialog.getSaveFileName(
-            self, self._t("Сохранить журнал", "Save log"),
-            os.path.join(initial_dir, "transcription_log.txt"),
-            self._t("Текстовые файлы (*.txt);;Все файлы (*.*)", "Text files (*.txt);;All files (*.*)")
-        )
-        if not path:
-            return
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(self.log_text.toPlainText())
-            self._set_status(self._t(f"Журнал сохранён: {os.path.basename(path)}", f"Log saved: {os.path.basename(path)}"))
-            self.log(f"Журнал сохранён в {path}")
-        except OSError as e:
-            QMessageBox.warning(self, self._t("Ошибка", "Error"), self._t("Не удалось сохранить журнал:\n", "Failed to save the log:\n") + str(e))
-
-    def _clear_log(self):
-        self.log_text.clear()
-        self._journal_entries = []
-        self._filter_journal_rows()
-        self._set_status(self._t("Журнал очищен", "Log cleared"))
-
     def _open_results_folder(self):
         target = self._last_result_dir or self.output_dir or self.input_dir
         if not target or not os.path.isdir(target):
@@ -127,151 +93,6 @@ class SettingsMixin:
             )
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(target))
-
-    def log(self, message: str):
-        message = self._translate_runtime_text(message)
-        self.signals.log_message.emit(message)
-        self.app_logger.get_logger().info(message)
-
-    def _append_log(self, message: str):
-        self.log_text.append(f">> {message}")
-        self._ingest_journal_log(message)
-
-    def _journal_text(self, ru: str, en: str) -> str:
-        return ru if self._lang == "ru" else en
-
-    def _refresh_journal_labels(self):
-        if not hasattr(self, "journal_table"):
-            return
-        self.journal_title.setText(self._journal_text("Журнал", "Journal"))
-        self.journal_subtitle.setText(self._journal_text(
-            "Текущие события обработки из журнала приложения.",
-            "Current processing events from the application log.",
-        ))
-        self.journal_technical_title.setText(self._journal_text("Технический журнал", "Technical log"))
-        self.journal_search.setPlaceholderText(self._journal_text("Поиск…", "Search…"))
-        self.journal_table.setHorizontalHeaderLabels((
-            self._journal_text("Файл", "File"),
-            self._journal_text("Длительность", "Duration"),
-            self._journal_text("Статус", "Status"),
-            self._journal_text("Дата", "Date"),
-        ))
-        for key, button in self._journal_filter_buttons.items():
-            button.setText({
-                "all": self._journal_text("Все", "All"),
-                "ready": self._journal_text("Готово", "Ready"),
-                "processing": self._journal_text("В обработке", "Processing"),
-                "error": self._journal_text("Ошибка", "Error"),
-            }[key])
-        self._filter_journal_rows()
-
-    def _journal_status_label(self, status: str) -> str:
-        return {
-            "ready": self._journal_text("Готово", "Ready"),
-            "processing": self._journal_text("В обработке", "Processing"),
-            "error": self._journal_text("Ошибка", "Error"),
-        }[status]
-
-    def _journal_active_entry(self, filename: str | None = None) -> dict | None:
-        for entry in reversed(getattr(self, "_journal_entries", [])):
-            if entry["status"] != "processing":
-                continue
-            if filename is None or entry["file"] == filename:
-                return entry
-        return None
-
-    def _journal_record_error(self, filename: str) -> None:
-        entry = self._journal_active_entry(filename)
-        if entry is None:
-            entry = {
-                "file": filename, "duration": "—", "status": "error",
-                "date": datetime.now().strftime("%d.%m"),
-            }
-            self._journal_entries.append(entry)
-        else:
-            entry["status"] = "error"
-
-    def _ingest_journal_log(self, message: str) -> None:
-        if not hasattr(self, "journal_table"):
-            return
-        text = message.strip()
-        started = re.match(r"^--- (?:Обработка файла|Processing file) \d+/\d+: (.+) ---$", text)
-        duration = re.match(r"^(?:Длительность|Duration): (.+)$", text)
-        skipped = re.match(r"^(?:Пропуск файла|Skipping file) (.+)$", text)
-        failed = re.match(
-            r"^(?:Ошибка при обработке(?: файла)?|Error (?:while )?processing(?: file)?)\s+(.+?)(?::\s|$)",
-            text,
-        )
-        if started:
-            self._journal_entries.append({
-                "file": started.group(1), "duration": "—", "status": "processing",
-                "date": datetime.now().strftime("%d.%m"),
-            })
-        elif duration:
-            entry = self._journal_active_entry()
-            if entry is not None:
-                entry["duration"] = duration.group(1)
-        elif skipped:
-            self._journal_record_error(skipped.group(1))
-        elif failed:
-            self._journal_record_error(failed.group(1))
-        elif text.startswith(("ОШИБКА", "ERROR", "Критическая ошибка", "Critical error")):
-            entry = self._journal_active_entry()
-            if entry is not None:
-                entry["status"] = "error"
-        elif text.startswith(("Время обработки:", "Processing time:")):
-            entry = self._journal_active_entry()
-            if entry is not None:
-                entry["status"] = "ready"
-        self._filter_journal_rows()
-
-    def _filter_journal_rows(self):
-        if not hasattr(self, "journal_table"):
-            return
-        selected_filter = next(
-            (key for key, button in self._journal_filter_buttons.items() if button.isChecked()),
-            "all",
-        )
-        query = self.journal_search.text().strip().casefold()
-        entries = [
-            entry for entry in self._journal_entries
-            if (selected_filter == "all" or entry["status"] == selected_filter)
-            and (not query or query in entry["file"].casefold() or query in self._journal_status_label(entry["status"]).casefold())
-        ]
-        self.journal_table.setUpdatesEnabled(False)
-        self.journal_table.clearContents()
-        self.journal_table.setRowCount(len(entries))
-        for row, entry in enumerate(entries):
-            self.journal_table.setItem(row, 0, QTableWidgetItem(entry["file"]))
-            self.journal_table.setItem(row, 1, QTableWidgetItem(entry["duration"]))
-            self.journal_table.setCellWidget(row, 2, self._journal_status_widget(entry["status"]))
-            self.journal_table.setItem(row, 3, QTableWidgetItem(entry["date"]))
-            self.journal_table.setRowHeight(row, self._px(32))
-        self.journal_table.setUpdatesEnabled(True)
-        has_entries = bool(entries)
-        self.journal_table.setVisible(has_entries)
-        self.journal_empty.setVisible(not has_entries)
-        self.journal_empty.setText(
-            self._journal_text("События обработки появятся здесь после запуска.", "Processing events will appear here after a run.")
-            if not self._journal_entries else self._journal_text("Нет событий по текущему фильтру.", "No events match the current filter.")
-        )
-
-    def _journal_status_widget(self, status: str) -> QWidget:
-        colors = {"ready": "#22A06B", "processing": "#0A84FF", "error": "#EF4444"}
-        container = QWidget()
-        container.setObjectName("journal_status_badge")
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(self._px(4), 0, self._px(4), 0)
-        layout.setSpacing(self._px(6))
-        dot = QLabel("●")
-        dot.setObjectName("journal_status_dot")
-        dot.setStyleSheet(f"color: {colors[status]};")
-        layout.addWidget(dot)
-        label = QLabel(self._journal_status_label(status))
-        label.setObjectName("journal_status_text")
-        layout.addWidget(label)
-        layout.addStretch()
-        return container
 
     def _restore_ui_settings(self):
         saved_formats = self.user_settings.get_value("output_formats", {}) or {}
@@ -316,9 +137,27 @@ class SettingsMixin:
             preprocessing_index if preprocessing_index >= 0 else 0
         )
 
+        self._restore_llm_ui_settings()
+
+        tab_index = int(self.user_settings.get_value("active_tab_index", 0) or 0)
+        if 0 <= tab_index < self.tabs.count():
+            self.tabs.setCurrentIndex(tab_index)
+
+        self._rebuild_pending_audio_files()
+        if self.files_to_process:
+            self._refresh_files_list()
+
+        self._restore_asr_settings()
+
+        self._rebuild_pending_llm_transcripts()
+        self._refresh_llm_files_list()
+        if hasattr(self, "_restore_support_surface_settings"):
+            self._restore_support_surface_settings()
+
+    def _restore_llm_ui_settings(self) -> None:
+        """Провайдер, поля API/CLI, промпты, режимы и форматы LLM."""
         provider = self._normalize_llm_provider(self.user_settings.get_value("llm_provider", "API"))
-        display_provider = ("Другое" if self._lang == "ru" else "Other") if provider == "Other" else provider
-        index = self.combo_llm_provider.findText(display_provider)
+        index = self.combo_llm_provider.findData(provider)
         self.combo_llm_provider.setCurrentIndex(index if index >= 0 else 0)
         self.entry_llm_api_url.setText(self.user_settings.get_value("llm_api_url", LLM_API_URL))
         self.entry_llm_api_key.setText(LLM_API_KEY)
@@ -349,14 +188,6 @@ class SettingsMixin:
         self.txt_llm_custom_prompt.setPlainText(self.user_settings.get_value("llm_custom_prompt", ""))
         self.txt_llm_transcript.setPlainText(self.user_settings.get_value("llm_manual_transcript", ""))
 
-        tab_index = int(self.user_settings.get_value("active_tab_index", 0) or 0)
-        if 0 <= tab_index < self.tabs.count():
-            self.tabs.setCurrentIndex(tab_index)
-
-        self._rebuild_pending_audio_files()
-        if self.files_to_process:
-            self._refresh_files_list()
-
         saved_llm_actions = self.user_settings.get_value("llm_actions", {}) or {}
         for key, cb in self.llm_action_checkboxes.items():
             cb.setChecked(bool(saved_llm_actions.get(key, cb.isChecked())))
@@ -365,6 +196,8 @@ class SettingsMixin:
         for key, cb in self.llm_export_checkboxes.items():
             cb.setChecked(bool(saved_llm_exports.get(key, cb.isChecked())))
 
+    def _restore_asr_settings(self) -> None:
+        """Модель, движок и ONNX provider — в ModelLoader до первой обработки."""
         saved_asr_model = self.user_settings.get_value("asr_model", "")
         if isinstance(saved_asr_model, str) and saved_asr_model:
             try:
@@ -385,11 +218,6 @@ class SettingsMixin:
                 self.model_loader.configure_onnx_runtime(provider=saved_onnx_provider)
             except ValueError:
                 self.model_loader.configure_onnx_runtime(provider="auto")
-
-        self._rebuild_pending_llm_transcripts()
-        self._refresh_llm_files_list()
-        if hasattr(self, "_restore_support_surface_settings"):
-            self._restore_support_surface_settings()
 
     def _save_ui_settings(self):
         self.user_settings.set_value("output_formats", self.output_formats)
@@ -414,11 +242,13 @@ class SettingsMixin:
         self.user_settings.set_value("llm_provider", self._normalize_llm_provider(self.combo_llm_provider.currentText()))
         self.user_settings.set_value("llm_api_url", self.entry_llm_api_url.text().strip())
         llm_api_key = self.entry_llm_api_key.text().strip()
-        if llm_api_key:
+        # Пустое поле при сохранённом ключе — это удаление ключа: раньше .env
+        # писался только для непустого значения, и стереть ключ было нельзя.
+        if llm_api_key != os.environ.get("LLM_API_KEY", "").strip():
             try:
                 save_env_value("LLM_API_KEY", llm_api_key)
             except OSError as exc:
-                self.log(f"Не удалось сохранить LLM API key: {exc}")
+                self.log(self._t(f"Не удалось сохранить LLM API key: {exc}", f"Could not save the LLM API key: {exc}"))
         self.user_settings.set_value("llm_model", self.entry_llm_model.text().strip())
         self.user_settings.set_value("llm_temperature", self.entry_llm_temperature.text().strip())
         for spec in cli_tools.cli_specs():

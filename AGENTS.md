@@ -65,14 +65,37 @@ Dockerfile, docker-compose.yml
   `src.gui` from the web/api/cli layers — the web layer is deliberately GUI-free
   so it runs headless.
 - **GUI architecture:** the main window `GigaTranscriberQtApp` (`src/gui/app_qt.py`)
-  is composed from **mixins** — `StyleMixin`, `ThemeMixin`, `UiBuildMixin`,
-  `ProcessingMixin`, `FilesMixin`, `I18nMixin`, `SettingsMixin`, `DownloadMixin`,
-  `LlmMixin`, `LlmUiMixin`. Each mixin's methods operate on `self` (the composed
-  window). Keep every gui module ≤ ~600 lines; extract a mixin when one grows.
-- **i18n:** UI strings are bilingual (ru/en). New user-facing widgets that show
-  text must be (a) created with a default string and (b) retranslated in
-  `i18n_mixin.py` (`_apply_language`). Prefer the `self._t("ru", "en")` helper in
-  processing/logic code.
+  is composed from **mixins**, one per surface or concern: shell and Processing
+  page (`UiBuildMixin`, `ProcessingOptionsUiMixin`, `FilesMixin`,
+  `ProcessingMixin`, `ResultViewMixin`, `DownloadMixin`), Live (`LiveMixin`
+  session control, `LiveUiMixin` widgets/display, `LiveAssistantMixin` overlay
+  and Q&A), LLM (`LlmMixin` logic, `LlmUiMixin` page, `LlmToolsMixin`,
+  `LlmSettingsDialogMixin`), `JournalMixin`, `ApiSurfaceMixin`,
+  `PreferencesMixin` (Settings tab), `MenuActionsMixin`, `SettingsMixin`
+  (persistence), `StyleMixin` (palettes, metrics), `ThemeMixin` (+ the pure
+  `qss.build_stylesheet`), `I18nMixin` and `LifecycleMixin`. Each mixin's
+  methods operate on `self` (the composed window); a name may be defined in only
+  one of them (`tests/test_gui_mixin_contract.py`). Keep every gui module
+  ≤ ~600 lines; extract a mixin when one grows.
+- **GUI busy state and exit:** `LifecycleMixin._busy_items()` is the one answer
+  to "what is running" (batch, Live, download, LLM). Quit asks while anything
+  runs, stops a Live session and waits (bounded) for its export; model/backend/
+  device changes are refused while batch processing or Live hold the model.
+  Long work (model load, device enumeration, `/health`, CLI scans) never runs
+  on the Qt thread — results come back through `WorkerSignals`. An exception
+  escaping a Qt slot is fatal in PyQt6, so slots that call into Live/LLM catch
+  and report; `run_qt_app` also installs a logging `sys.excepthook`.
+- **Single instance:** `src/gui/single_instance.py` (lock, open-files queue, argv
+  parsing; stdlib + `src.config` only) is shared by `app.py` and `app_qt`;
+  `src/gui/application.py` holds `GigaApplication`, which `app.py` must create
+  so Finder/Dock `FileOpen` events reach the window.
+- **i18n:** UI strings are bilingual (ru/en). Register a static caption once with
+  `self._bilingual(widget.setText, "ru", "en")` (any setter: tooltip, title,
+  placeholder, combo item via a lambda); captions that change at runtime belong
+  in the surface's `_retranslate_*` method next to its builder (`_apply_language`
+  only dispatches). Prefer `self._t("ru", "en")` in processing/logic code,
+  dialog titles and messages. `tests/test_gui_english_ui.py` fails on any
+  Russian text left after switching to English.
 - **UI scaling:** never hard-code pixels/points in the GUI — use `self._px(n)` /
   `self._pt(n)` / `self._pt_css(n)` so the UI honours the display scale.
 - **Runtime import boundary:** `runtime_manager.py`, `torch_downloader.py`,

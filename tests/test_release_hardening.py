@@ -31,7 +31,7 @@ def test_api_examples_use_openai_contract() -> None:
     files = [
         "desktop/ui/app.js",
         "desktop/ui/index.html",
-        "src/gui/support_surfaces_mixin.py",
+        "src/gui/api_surface_mixin.py",
         # The Liquid API page may live in any file of the app target.
         "macos/GigaAMLiquid/Sources/GigaAMLiquid",
         "macos/GigaAMLiquid/Sources/GigaAMLiquid/Localization.swift",
@@ -90,8 +90,8 @@ def test_liquid_release_bundle_contains_configured_icon():
 
 
 def test_pyqt_about_displays_release_version():
-    source = Path("src/gui/ui_build_mixin.py").read_text(encoding="utf-8")
-    about = source.split("def _show_about", 1)[1].split("def _make_progress_bar", 1)[0]
+    source = Path("src/gui/menu_mixin.py").read_text(encoding="utf-8")
+    about = source.split("def _show_about", 1)[1].split("\n    def ", 1)[0]
     assert "APP_VERSION" in about
     assert "Версия {APP_VERSION}" in about
     assert "Version {APP_VERSION}" in about

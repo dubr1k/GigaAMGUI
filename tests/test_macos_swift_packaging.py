@@ -176,11 +176,14 @@ def test_theme_styles_2_0_page_widgets_from_the_palette():
     # settings) must be styled with palette colours rather than a separate
     # dark-only override block of hard-coded hex values.
     theme = Path("src/gui/theme_mixin.py").read_text(encoding="utf-8")
+    qss = Path("src/gui/qss.py").read_text(encoding="utf-8")
     assert 'if self._theme == "dark":' not in theme
+    assert '_theme' not in qss
     for selector in ("QPlainTextEdit#api_code_editor", "QTabWidget#result_tabs::pane", "QLineEdit#settings_path_value"):
-        assert selector in theme, selector
-    sheet = theme.split("self.setStyleSheet(", 1)[1]
+        assert selector in qss, selector
+    sheet = qss.split("def build_stylesheet(", 1)[1]
     assert 'c["input_bg"]' in sheet and 'c["border"]' in sheet
+    assert "build_stylesheet(c," in theme.split("self.setStyleSheet(", 1)[1]
 
 
 def test_downloaded_media_cleanup_retains_failed_roots_for_retry() -> None:
