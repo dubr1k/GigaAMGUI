@@ -347,6 +347,7 @@ enum L10n {
         "Свернуть": "Minimize",
         "Масштабировать": "Zoom",
         "Все окна — на передний план": "Bring All to Front",
-        "Справка": "Help"
+        "Справка": "Help",
+        "Пропущено неизвестное событие воркера: %@": "Skipped an unknown worker event: %@"
     ]
 }

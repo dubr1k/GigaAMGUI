@@ -285,6 +285,19 @@ def test_swift_jobs_never_reenter_the_stdout_reader() -> None:
     assert "guard source != nil, !draining else { return }" in reader
 
 
+def test_swift_batch_negotiates_compact_completion_and_tolerates_new_events() -> None:
+    # `completed` repeated every full file result (word lists of hour-long
+    # recordings) and could pass the 8 MiB event cap after all outputs were saved.
+    # Liquid asks for compact completion first; file_completed stays full. The
+    # worker is shared with the TUI, so unknown events and stray stdout are logged.
+    job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
+    assert '["type": "hello", "client": "liquid", "features": ["compact_completed"]]' in job
+    launch = _swift_block(job, "private func launch() throws {")
+    assert launch.index("try send(Self.hello)") < launch.index("try send(command)")
+    assert "malformed JSON" not in job and "Unexpected transcription worker event" not in job
+    assert 'case "ready":' in job
+
+
 def test_swift_llm_job_uses_worker_protocol_and_redacts_api_key() -> None:
     job = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/LLMJob.swift").read_text(encoding="utf-8")
     assert '"type": "llm_start"' in job and '"type": "llm_cancel"' in job

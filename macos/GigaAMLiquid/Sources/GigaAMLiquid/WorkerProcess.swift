@@ -152,8 +152,10 @@ final class WorkerProcess {
         switch failure {
         case .configure(let code):
             return "Could not configure the transcription output pipe: \(String(cString: strerror(code)))"
-        case .oversizedLine:
-            return "The transcription worker exceeded the 8 MiB JSONL event limit."
+        case .oversizedLine(let limit):
+            // The event is gone, so the job cannot know its outcome; what the worker
+            // already wrote is safe, and that is where the user should look.
+            return "A worker event larger than \(limit / (1024 * 1024)) MiB was dropped, so the outcome of this job is unknown. Files the worker already saved remain on disk."
         case .readFailed(let code):
             return "Could not read transcription worker output: \(String(cString: strerror(code)))"
         }

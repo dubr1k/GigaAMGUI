@@ -54,6 +54,8 @@ final class NativeTranscriptionJob {
     private var resolvedOutputDirectory: URL?
     private var completedIndices = Set<Int>()
     private var hadFileError = false
+    /// Set once `hello` is sent; the first protocol event is its reply.
+    private var awaitingHelloReply = false
     private var diagnostics = ""
     private var secrets: [String] = []
 
@@ -150,9 +152,17 @@ final class NativeTranscriptionJob {
             onExit: { self.workerExited(status: $0) }
         )
         self.worker = worker
+        // First the handshake: it asks the worker to keep `completed` to per-file
+        // metadata (file_completed already carried each full result), so a long
+        // batch's completion line stays far below the 8 MiB event cap. The batch
+        // never waits for `ready`: an older worker answers with an error or not at all.
+        try send(Self.hello)
+        awaitingHelloReply = true
         try send(command)
         emit(.progress(nil, "Загружаем модель распознавания речи…"))
     }
+
+    static let hello: [String: Any] = ["type": "hello", "client": "liquid", "features": ["compact_completed"]]
 
     private func send(_ command: [String: Any]) throws {
         guard let worker else { throw WorkerFailure("The transcription worker is not running.") }
@@ -161,24 +171,21 @@ final class NativeTranscriptionJob {
 
     private func consume(_ line: Data) {
         guard !finished, pendingTerminal == nil, !line.isEmpty else { return }
-        let object: Any
-        do { object = try JSONSerialization.jsonObject(with: line) }
-        catch {
-            // Some Python dependencies print ordinary messages to stdout.
-            let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if text.hasPrefix("{") {
-                requestTerminal(.failed("The transcription worker returned malformed JSON."))
-            } else {
-                recordLog(text)
-            }
+        // Some Python dependencies print to stdout: plain text, a Python repr such as
+        // "{'loaded': True}", a bare JSON value. That is log material, not a protocol
+        // violation; the batch goes on and its results decide the outcome.
+        guard let message = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+              let type = message["type"] as? String else {
+            recordLog(String(decoding: line, as: UTF8.self))
             return
         }
-        guard let message = object as? [String: Any], let type = message["type"] as? String else {
-            requestTerminal(.failed("The transcription worker returned an invalid event."))
-            return
-        }
+        // The worker answers commands in order, so the first event replies to hello.
+        let helloReply = awaitingHelloReply
+        awaitingHelloReply = false
         do {
             switch type {
+            case "ready":
+                break  // compact_completed acknowledged; nothing here depends on it
             case "started":
                 guard integer(message["total_files"]) == files.count else { throw WorkerFailure("Invalid worker batch size.") }
             case "log", "cancelling":
@@ -221,11 +228,17 @@ final class NativeTranscriptionJob {
                 }
             case "error":
                 guard let text = message["message"] as? String else { throw WorkerFailure("Invalid worker error event.") }
+                if helloReply {
+                    // A worker older than the handshake rejects `hello`; `start` follows.
+                    recordDiagnostic(text)
+                    return
+                }
                 recordLog(text)
                 if let traceback = message["traceback"] as? String { recordLog(traceback) }
                 requestTerminal(.failed(safeText(text)))
             default:
-                throw WorkerFailure("Unexpected transcription worker event: \(safeText(type))")
+                // The worker is shared with the TUI and gains events over time.
+                recordLog(L10n.format("Пропущено неизвестное событие воркера: %@", type))
             }
         } catch { requestTerminal(.failed(safeText(error.localizedDescription))) }
     }
