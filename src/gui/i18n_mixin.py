@@ -67,10 +67,13 @@ class I18nMixin:
             self.btn_llm_process.setText("ОБРАБОТАТЬ" if is_ru else "PROCESS")
         if hasattr(self, "btn_llm_clear"):
             self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
-        if hasattr(self, "status_bar"):
-            self.status_bar.showMessage("Готов к работе" if is_ru else "Ready to work")
-        if hasattr(self, "lbl_status") and self.lbl_status.text() in {"Готов к работе", "Ready to work"}:
-            self.lbl_status.setText("Готов к работе" if is_ru else "Ready to work")
+        # Переводим только «пустые» состояния: статус идущей обработки или
+        # текст ошибки при смене языка затирался словами «Готов к работе».
+        ready = ("Готов к работе", "Ready to work")
+        if hasattr(self, "status_bar") and self.status_bar.currentMessage() in ("", *ready):
+            self.status_bar.showMessage(ready[0] if is_ru else ready[1])
+        if hasattr(self, "lbl_status") and self.lbl_status.text() in ready:
+            self.lbl_status.setText(ready[0] if is_ru else ready[1])
         if hasattr(self, "grp_files"):
             self.grp_files.setTitle("1. Выбор файлов" if is_ru else "1. File selection")
             self.grp_output.setTitle("2. Папка сохранения результатов" if is_ru else "2. Output folder")
@@ -162,7 +165,9 @@ class I18nMixin:
             if hasattr(self, "lbl_llm_custom_prompt"):
                 self.lbl_llm_custom_prompt.setText("Свой промпт:" if is_ru else "Custom prompt:")
             self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
-            self.lbl_llm_status.setText("Готово к LLM-обработке" if is_ru else "Ready for LLM processing")
+            llm_ready = ("Готово к LLM-обработке", "Ready for LLM processing")
+            if self.lbl_llm_status.text() in llm_ready:
+                self.lbl_llm_status.setText(llm_ready[0] if is_ru else llm_ready[1])
             if hasattr(self, "llm_drop_hint"):
                 self.llm_drop_hint.setText("Перетащите или выберите" if is_ru else "Drop or choose")
             if hasattr(self, "btn_remove_llm_file"):

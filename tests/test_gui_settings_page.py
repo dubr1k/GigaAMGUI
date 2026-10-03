@@ -34,6 +34,25 @@ def window():
     app.processEvents()
 
 
+def test_language_switch_keeps_running_llm_and_status_bar_messages(window):
+    window.lbl_llm_status.setText("Ошибка LLM: Неверный API key")
+    window._set_status("Обработка 3 файлов…")
+
+    window._toggle_language()
+
+    assert window.lbl_llm_status.text() == "Ошибка LLM: Неверный API key"
+    assert window.statusBar().currentMessage() != "Ready to work"
+
+
+def test_language_switch_translates_idle_llm_and_status_bar_messages(window):
+    assert window.lbl_llm_status.text() == "Готово к LLM-обработке"
+
+    window._toggle_language()
+
+    assert window.lbl_llm_status.text() == "Ready for LLM processing"
+    assert window.statusBar().currentMessage() == "Ready to work"
+
+
 def test_cancelled_hf_token_prompt_does_not_persist_diarization(window, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setattr(window, "_show_hf_token_dialog", lambda: False)
