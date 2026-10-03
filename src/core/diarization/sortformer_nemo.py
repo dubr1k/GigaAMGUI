@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from ...utils.model_cache import hf_repo_is_cached
+from ..devices import best_torch_device, empty_accelerator_cache
 from ..model_preparation import PreparationCancelled, PreparationState
 from .base import SpeakerSegment
 from .pyannote_backend import DiarizationManager
@@ -63,17 +64,8 @@ class SortformerDiarizationManager(DiarizationManager):
             raise ValueError(f"Неподдерживаемое устройство Sortformer: {device}")
         if device == "cpu":
             return "cpu"
-        try:
-            import torch
-
-            if device in {"auto", "cuda"} and torch.cuda.is_available():
-                return "cuda"
-            mps = getattr(getattr(torch, "backends", None), "mps", None)
-            if device in {"auto", "mps"} and mps is not None and mps.is_available():
-                return "mps"
-        except ImportError:
-            pass
-        return "cpu"
+        candidates = {"auto": ("cuda", "mps"), "cuda": ("cuda",), "mps": ("mps",)}[device]
+        return best_torch_device(candidates)
 
     def _fallback_to_cpu(self) -> None:
         """Сбросить нерабочий MPS pipeline и лениво загрузить отдельный CPU."""
@@ -106,15 +98,7 @@ class SortformerDiarizationManager(DiarizationManager):
 
     def _empty_accelerator_cache(self) -> None:
         """Вернуть драйверу VRAM/unified memory, освободившуюся после выгрузки."""
-        try:
-            import torch
-
-            if self.device == "cuda" and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif self.device == "mps" and hasattr(torch, "mps"):
-                torch.mps.empty_cache()
-        except Exception:
-            pass
+        empty_accelerator_cache(self.device)
 
     def _run_sortformer(self, audio_path: Path):
         with self._inference_lock:

@@ -16,6 +16,7 @@ from ...config import (
     MODEL_NAME,
     MODEL_REVISION,
 )
+from ..devices import best_torch_device, empty_accelerator_cache
 from .chunking import (
     AudioChunk,
     plan_audio_chunks,
@@ -93,20 +94,11 @@ class PyTorchBackend:
         except Exception:
             preferred = None
 
-        import torch
-
         if preferred == "cuda":
-            return "cuda" if torch.cuda.is_available() else "cpu"
+            return best_torch_device(("cuda",))
         if preferred == "cpu":
             return "cpu"
-
-        if torch.cuda.is_available():
-            return "cuda"
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            return "xpu"
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+        return best_torch_device(("cuda", "xpu", "mps"))
 
     @classmethod
     def _decode_text(cls, decode_result: object) -> str:
@@ -209,18 +201,7 @@ class PyTorchBackend:
             return False
 
     def _empty_cache(self):
-        try:
-            if not self.device:
-                return
-
-            import torch
-
-            if self.device == "cuda" and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif self.device == "mps" and hasattr(torch, "mps"):
-                torch.mps.empty_cache()
-        except Exception:
-            pass
+        empty_accelerator_cache(self.device)
 
     def transcribe_longform(
         self,

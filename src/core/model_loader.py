@@ -18,6 +18,7 @@ from .asr.factory import create_backend_from_config
 from .asr.models import onnx_model_repo, validate_asr_model
 from .asr.pytorch_backend import PyTorchBackend
 from .asr.types import ProgressCallback
+from .devices import empty_accelerator_cache
 
 
 class ModelLoader:
@@ -230,16 +231,7 @@ class ModelLoader:
     def _empty_cache(self):
         """Освобождает кэш ускорителя."""
         if self._backend is None:
-            if self.device in {"cuda", "mps"}:
-                try:
-                    import torch
-
-                    if self.device == "cuda" and torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    elif self.device == "mps" and hasattr(torch, "mps"):
-                        torch.mps.empty_cache()
-                except Exception:
-                    pass
+            empty_accelerator_cache(self.device)
             return
 
         if self._backend and hasattr(self._backend, "_empty_cache"):

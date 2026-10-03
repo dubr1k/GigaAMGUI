@@ -9,6 +9,7 @@ import warnings
 from pathlib import Path
 
 from ...utils.model_cache import hf_repo_is_cached
+from ..devices import best_torch_device
 from ..model_preparation import PreparationCancelled, PreparationState
 from .base import SpeakerSegment
 from .hf_access import _DIARIZATION_REQUIRED_REPOS, diagnose_hf_access
@@ -77,18 +78,7 @@ class DiarizationManager(SpeakerMappingMixin):
 
     def _resolve_device(self, device: str) -> str:
         """Определение устройства: CUDA > MPS (Apple Silicon) > CPU."""
-        if device == "auto":
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    return "cuda"
-                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                    return "mps"
-                else:
-                    return "cpu"
-            except ImportError:
-                return "cpu"
-        return device
+        return best_torch_device() if device == "auto" else device
 
     @property
     def pipeline(self):
