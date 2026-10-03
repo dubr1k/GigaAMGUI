@@ -17,7 +17,12 @@ from pathlib import Path
 
 from ..core.diarization.base import SpeakerSegment
 from ..core.diarization.factory import should_use_sortformer_onnx
-from ..core.diarization.mapping import SpeakerMappingMixin, _validated_timed_words
+from ..core.diarization.mapping import (  # noqa: F401 — реэкспорт для старых импортов
+    MAX_SPEAKER_SNAP_DISTANCE_SEC,
+    MIN_SPEAKER_TURN_SEC,
+    UNKNOWN_SPEAKER,
+    SpeakerMappingMixin,
+)
 from ..core.model_preparation import PreparationCancelled, PreparationState
 from .model_cache import hf_repo_is_cached
 
@@ -26,19 +31,6 @@ from .model_cache import hf_repo_is_cached
 # диаризация не используется. apply_pyannote_patch идемпотентен.
 
 logger = logging.getLogger(__name__)
-
-UNKNOWN_SPEAKER = "Неизвестный спикер"
-
-# Слово, не пересёкшееся ни с одним сегментом диаризации, притягивается к
-# ближайшему говорящему в пределах этого допуска. Зазоры между сегментами на
-# паузах — доли секунды; дальше допуска речи уже нет, и «неизвестный» честнее.
-MAX_SPEAKER_SNAP_DISTANCE_SEC = 2.0
-
-# Ниже этого порога одиночное слово не может образовать реплику: у RNNT
-# однотокенное слово занимает один энкодерный фрейм (~80 мс), и его границы
-# слишком грубы, чтобы менять говорящего.
-MIN_SPEAKER_TURN_SEC = 0.4
-
 
 # Репозитории, нужные пайплайну pyannote/speaker-diarization-3.1.
 _DIARIZATION_REQUIRED_REPOS = [
@@ -431,213 +423,6 @@ class DiarizationManager(SpeakerMappingMixin):
     def unload(self) -> None:
         """Освободить ссылку экземпляра на legacy pipeline."""
         self._pipeline = None
-
-    def _rename_speakers(
-        self,
-        segments: list[SpeakerSegment]
-    ) -> list[SpeakerSegment]:
-        """
-        Переименование спикеров в человекочитаемый формат.
-
-        SPEAKER_00 -> Спикер №1
-        SPEAKER_01 -> Спикер №2
-        """
-        # Получаем уникальных спикеров в порядке первого появления
-        seen = set()
-        speaker_order = []
-        for seg in segments:
-            if seg.speaker not in seen:
-                seen.add(seg.speaker)
-                speaker_order.append(seg.speaker)
-
-        # Создаём маппинг
-        speaker_map = {
-            old_name: f"Спикер №{i+1}"
-            for i, old_name in enumerate(speaker_order)
-        }
-
-        # Применяем переименование
-        for seg in segments:
-            seg.speaker = speaker_map.get(seg.speaker, seg.speaker)
-
-        return segments
-
-    def map_speakers_to_transcription(
-        self,
-        transcription_segments: list,
-        speaker_segments: list[SpeakerSegment],
-    ) -> list:
-        """Сопоставить ASR с диаризацией, сохраняя смены спикеров.
-
-        PyTorch GigaAM передаёт word-level timestamps. В этом случае один
-        длинный ASR-сегмент разбивается на последовательные реплики по словам,
-        а не схлопывается до спикера в midpoint. Backend-ы без word timestamps
-        сохраняют прежний безопасный fallback с одним спикером на ASR-сегмент.
-        """
-        mapped: list = []
-        for trans_seg in transcription_segments:
-            words = self._resolve_word_speakers(trans_seg, speaker_segments)
-            if not words:
-                turns = [self._map_segment_without_words(trans_seg, speaker_segments)]
-                self._append_mapped_turns(mapped, turns)
-                continue
-            turns = self._group_words_into_turns(self._smooth_micro_turns(words))
-            self._append_mapped_turns(mapped, turns)
-
-        return mapped
-
-    def _map_segment_without_words(
-        self,
-        trans_seg: dict,
-        speaker_segments: list[SpeakerSegment],
-    ) -> dict:
-        """Один спикер на весь ASR-сегмент — backend не дал word timestamps."""
-        segment = dict(trans_seg)
-        segment.pop("words", None)
-        start, end = segment.get('boundaries', (0.0, 0.0))
-        speaker = self._find_speaker_at_time((start + end) / 2, speaker_segments)
-        if speaker is None:
-            speaker = self._find_speaker_by_overlap(start, end, speaker_segments)
-        segment['speaker'] = speaker or UNKNOWN_SPEAKER
-        return segment
-
-    def _resolve_word_speakers(
-        self,
-        trans_seg: dict,
-        speaker_segments: list[SpeakerSegment],
-    ) -> list[dict]:
-        """Определить говорящего для каждого слова ASR-сегмента."""
-        resolved: list[dict] = []
-        for word in _validated_timed_words(trans_seg):
-            text = word["text"]
-            start = word["start"]
-            end = word["end"]
-            resolved.append({
-                "text": text,
-                "start": start,
-                "end": end,
-                "speaker": self._find_speaker_for_word(start, end, speaker_segments),
-            })
-        return resolved
-
-    def _find_speaker_for_word(
-        self,
-        start: float,
-        end: float,
-        speaker_segments: list[SpeakerSegment],
-    ) -> str:
-        """Говорящий для одного слова: пересечение, затем midpoint, затем ближайший."""
-        speaker = self._find_speaker_by_overlap(start, end, speaker_segments)
-        if speaker is None:
-            speaker = self._find_speaker_at_time((start + end) / 2, speaker_segments)
-        if speaker is None:
-            speaker = self._find_nearest_speaker(start, end, speaker_segments)
-        return speaker or UNKNOWN_SPEAKER
-
-    @staticmethod
-    def _smooth_micro_turns(words: list[dict]) -> list[dict]:
-        """Погасить смену говорящего длиной в одно короткое слово.
-
-        Однотокенное слово занимает у RNNT ровно один энкодерный фрейм (~80 мс).
-        Такая метка слишком груба, чтобы на ней одной ставить смену говорящего
-        посреди чужой реплики: почти всегда это край соседнего сегмента, задетый
-        неточной границей. Настоящая реплика длиннее либо состоит из нескольких
-        слов, поэтому обе такие ситуации сглаживание не трогает.
-        """
-        for index in range(1, len(words) - 1):
-            previous, current, following = words[index - 1], words[index], words[index + 1]
-            if previous["speaker"] != following["speaker"]:
-                continue
-            if current["speaker"] == previous["speaker"]:
-                continue
-            if current["end"] - current["start"] >= MIN_SPEAKER_TURN_SEC:
-                continue
-            current["speaker"] = previous["speaker"]
-        return words
-
-    @staticmethod
-    def _group_words_into_turns(words: list[dict]) -> list[dict]:
-        """Слить подряд идущие слова одного говорящего в реплику."""
-        turns: list[dict] = []
-        for word in words:
-            timed_word = {
-                "text": word["text"],
-                "start": word["start"],
-                "end": word["end"],
-            }
-            if turns and turns[-1]["speaker"] == word["speaker"]:
-                turn = turns[-1]
-                turn["transcription"] = f'{turn["transcription"]} {word["text"]}'
-                turn["boundaries"] = (turn["boundaries"][0], word["end"])
-                turn["words"].append(timed_word)
-                continue
-            turns.append({
-                "transcription": word["text"],
-                "boundaries": (word["start"], word["end"]),
-                "speaker": word["speaker"],
-                "words": [timed_word],
-            })
-        return turns
-
-    def _find_speaker_at_time(
-        self,
-        time: float,
-        speaker_segments: list[SpeakerSegment],
-    ) -> str | None:
-        """Найти спикера, говорившего в указанный момент времени."""
-        for seg in speaker_segments:
-            if seg.start <= time <= seg.end:
-                return seg.speaker
-        return None
-
-    def _find_nearest_speaker(
-        self,
-        start: float,
-        end: float,
-        speaker_segments: list[SpeakerSegment],
-        max_distance: float = MAX_SPEAKER_SNAP_DISTANCE_SEC,
-    ) -> str | None:
-        """Ближайший говорящий для слова, упавшего в паузу между сегментами.
-
-        Диаризация режет речь по паузам и оставляет между сегментами реальные
-        зазоры. Короткое слово может целиком попасть в такой зазор и не пересечься
-        ни с одним сегментом — оно принадлежит ближайшему говорящему, а не
-        «неизвестному». Вдали от речи снап не срабатывает: там незнание честнее.
-        """
-        best_speaker = None
-        best_distance = max_distance
-
-        for sp_seg in speaker_segments:
-            distance = max(sp_seg.start - end, start - sp_seg.end, 0.0)
-            if distance < best_distance:
-                best_distance = distance
-                best_speaker = sp_seg.speaker
-
-        return best_speaker
-
-    def _find_speaker_by_overlap(
-        self,
-        start: float,
-        end: float,
-        speaker_segments: list[SpeakerSegment],
-    ) -> str | None:
-        """
-        Найти спикера с максимальным пересечением по времени.
-        """
-        max_overlap = 0
-        best_speaker = None
-
-        for sp_seg in speaker_segments:
-            # Вычисляем пересечение
-            overlap_start = max(start, sp_seg.start)
-            overlap_end = min(end, sp_seg.end)
-            overlap = max(0, overlap_end - overlap_start)
-
-            if overlap > max_overlap:
-                max_overlap = overlap
-                best_speaker = sp_seg.speaker
-
-        return best_speaker
 
 
 class SortformerDiarizationManager(DiarizationManager):
