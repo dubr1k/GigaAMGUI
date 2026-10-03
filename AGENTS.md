@@ -181,10 +181,10 @@ python -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 # GigaAM + (macOS) MLX are installed from git — see packaging/build_exe_mac.sh
 
-# tests / lint (never bare `ruff check .`: untracked offline/ and dist/ hold
-# unpacked bundles with vendored code)
+# tests / lint (offline/, dist/ and build/ hold unpacked bundles and are
+# gitignored, so ruff and graphify skip them)
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest tests/ -q
-.venv/bin/python -m ruff check src tests web api.py cli.py app.py scripts
+.venv/bin/python -m ruff check .
 cargo test --locked --manifest-path tui/Cargo.toml          # + clippy -D warnings
 swift test --package-path macos/GigaAMLiquid                # retry once on a
                                                             # "TestingMacros" plugin error
