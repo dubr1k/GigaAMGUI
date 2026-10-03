@@ -641,12 +641,13 @@ class SupportSurfacesMixin:
     def _set_settings_diarization(self, checked: bool) -> None:
         if not self._can_change_processing_settings():
             return
-        self.settings_diarization.setText(
-            self._t("Включена", "Enabled") if checked else self._t("Выключена", "Disabled")
-        )
         if hasattr(self, "cb_diarization"):
             self.cb_diarization.setChecked(checked)
+            # Включение pyannote без HF_TOKEN спрашивает токен, и отмена
+            # возвращает флажок назад: сохраняем то, что осталось на деле.
+            checked = self.cb_diarization.isChecked()
         self.user_settings.set_value("enable_diarization", checked)
+        self._sync_support_surface_settings()
 
     def _set_settings_speakers(self, count: int) -> None:
         if not self._can_change_processing_settings():
