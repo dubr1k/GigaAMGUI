@@ -6,6 +6,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import replace
 from time import monotonic
 
+from .reporting import ReportOnce
 from .timeline import AlignedMixer
 from .types import CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
 
@@ -51,7 +52,7 @@ class MixCoordinator:
         self._offset_origins: dict[CaptureSource, int] = {}
         self._source_origins_ns: dict[CaptureSource, int] = {}
         self._last_input_at: dict[CaptureSource, float] = {}
-        self._reported_stalls: set[CaptureSource] = set()
+        self._reported_stalls = ReportOnce()
         self._started_at = float("inf")
         self._session_origin_ns: int | None = None
         self._mixer = AlignedMixer(max_skew_seconds=MAX_MIX_SKEW_NS / 1_000_000_000)
@@ -158,9 +159,8 @@ class MixCoordinator:
         self.stalled_sources |= stalled
         for source in sorted(stalled, key=lambda item: item.value):
             self._log(f"mix peer stalled [{source.value}]: no audio delivered; mixing without it")
-            if source in self._reported_stalls:
+            if not self._reported_stalls.first(source):
                 continue
-            self._reported_stalls.add(source)
             self._notify(CaptureEvent(
                 CaptureEventKind.STATUS,
                 source,

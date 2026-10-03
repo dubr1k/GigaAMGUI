@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .reporting import ReportOnce
 from .types import CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
 
 MAX_RECORDING_FAILURES = 5
@@ -36,7 +37,7 @@ class RecordingGuard:
         self._notify = notify
         self._log = log
         self._translate = translate
-        self._reported: set[str] = set()
+        self._reported = ReportOnce()
         self._failures: dict[CaptureSource, int] = {}
         self._disabled: set[CaptureSource] = set()
 
@@ -58,9 +59,8 @@ class RecordingGuard:
         if failures >= MAX_RECORDING_FAILURES:
             self._disable(chunk, detail)
             return
-        if detail in self._reported:
+        if not self._reported.first(detail):
             return
-        self._reported.add(detail)
         self._notify(CaptureEvent(
             CaptureEventKind.STATUS,
             chunk.source,

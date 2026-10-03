@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from ..reporting import ReportOnce
 from ..types import CaptureDevice, CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
 from .factory import CaptureUnavailable
 from .queue import BoundedChunkQueue
@@ -156,7 +157,7 @@ class QueuedCaptureAdapter:
         self._worker: Thread | None = None
         self._on_chunk: Callable[[PcmChunk], None] | None = None
         self._on_event: Callable[[CaptureEvent], None] | None = None
-        self._reported_failures: set[str] = set()
+        self._reported_failures = ReportOnce()
         self._overflow_lock = Lock()
         self._unreported_drops = 0
         self._last_overflow_report = float("-inf")
@@ -345,9 +346,8 @@ class QueuedCaptureAdapter:
     def _report_dispatch_failure(self, exc: Exception, chunk: PcmChunk) -> None:
         self.dispatch_failures += 1
         detail = f"chunk delivery failed: {type(exc).__name__}: {exc}"
-        if detail in self._reported_failures:
+        if not self._reported_failures.first(detail):
             return
-        self._reported_failures.add(detail)
         if self._on_event is None:
             return
         self._deliver_event(

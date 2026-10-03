@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import RLock
 
 from .recorder import join_segments
+from .reporting import ReportOnce
 from .types import CaptureEvent, CaptureEventKind, CaptureSource, TranscriptEvent
 
 LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS = 10
@@ -60,7 +61,7 @@ class SpeakerLabeler:
         self._notify = notify
         self._lock = lock
         self._live_diarizers: dict[CaptureSource, object] = {}
-        self._live_unavailable: set[CaptureSource] = set()
+        self._live_unavailable = ReportOnce()
         self._labels: dict[tuple[CaptureSource, str], str] = {}
 
     def estimate_live(self, source: CaptureSource, recent: list[TranscriptEvent]) -> dict:
@@ -180,9 +181,8 @@ class SpeakerLabeler:
         )
 
     def report_live_unavailable(self, source: CaptureSource, detail: str) -> None:
-        if source in self._live_unavailable:
+        if not self._live_unavailable.first(source):
             return
-        self._live_unavailable.add(source)
         guidance = self._translate(
             "Используйте «После остановки» для офлайн-меток спикеров; "
             "метки источников сохраняются.",
