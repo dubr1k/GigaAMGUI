@@ -84,15 +84,24 @@ def _format_timecodes(events: Iterable[TranscriptEvent], sample_rate: int) -> st
 
 
 def _format_diarized(events: Iterable[TranscriptEvent]) -> str:
-    return "".join(f"{event.speaker}: {event.text}\n" for event in events if event.speaker)
+    return "".join(f"{_speaker_label(event)}: {event.text}\n" for event in events)
 
 
 def _format_diarized_timecodes(events: Iterable[TranscriptEvent], sample_rate: int) -> str:
     return "".join(
-        f"[{_short_timestamp(event.sample_start / sample_rate)}] {event.speaker}: {event.text}\n"
+        f"[{_short_timestamp(event.sample_start / sample_rate)}] {_speaker_label(event)}: {event.text}\n"
         for event in events
-        if event.speaker
     )
+
+
+def _speaker_label(event: TranscriptEvent) -> str:
+    """The speaker when diarization named one, otherwise the source.
+
+    Events without a speaker used to be left out, so a session whose
+    diarization was unavailable wrote an empty diarized transcript while the
+    status promised it was "retaining source labels".
+    """
+    return event.speaker or event.source_label
 
 
 def _short_timestamp(seconds: float) -> str:
