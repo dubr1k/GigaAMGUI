@@ -431,7 +431,9 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     receive = _swift_block(main, "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
     assert "case .partial" in receive and "case .final" in receive and "case .stopped" in receive and "case .failed" in receive
     terminate = _swift_block(main, "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {")
-    assert "liveJob?.terminate()" in terminate
+    # Quitting stops and saves the session (live_stop); the kill is the bounded fallback.
+    assert "stopLiveForExit" in terminate and "liveJob?.terminate()" not in terminate
+    assert "self?.liveJob?.terminate()" in _swift_block(main, "func stopLiveForExit(then done: @escaping () -> Void) {")
     controls = _swift_block(main, "private func refreshProcessingControls() {")
     assert "liveJob != nil" in controls  # batch and live exclude each other in one worker
     # Первый final включает «Спросить»: кнопка гейтится на liveFinals, а статус
@@ -710,3 +712,18 @@ def test_swift_live_asks_one_question_at_a_time() -> None:
     assert ask.index("guard !liveAsking else { return }") < ask.index("liveAnswerText = \"\"")
     receive = _swift_block(main, "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
     assert "liveAsking = false" in receive
+
+
+def test_swift_quitting_during_live_asks_and_saves_the_session() -> None:
+    # Closing the window or ⌘Q during Live killed the worker at once, without a
+    # question: the session's exports were never written.
+    main = _liquid_sources()
+    should_close = _swift_block(main, "func windowShouldClose(_ sender: NSWindow) -> Bool {")
+    assert "confirmStoppingLive()" in should_close and "return false" in should_close
+    assert "stopLiveForExit { [weak self] in self?.window.close() }" in should_close
+    terminate = _swift_block(main, "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {")
+    assert "guard confirmStoppingLive() else { return .terminateCancel }" in terminate
+    stop = _swift_block(main, "func stopLiveForExit(then done: @escaping () -> Void) {")
+    assert "job.stop()" in stop and "Self.liveExitGrace" in stop
+    finish = _swift_block(main, "private func finishLive(status: String) {")
+    assert "defer { exitHandler?() }" in finish

@@ -54,6 +54,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     weak var liveAskCancelButton: NSButton?
     /// A question was sent and its answer (or refusal) has not arrived yet.
     var liveAsking = false
+    /// Quitting with a Live session: the user agreed to stop it, the work to do
+    /// once it has ended, and the deadline after which the worker is killed.
+    var liveExitConfirmed = false
+    var liveExitHandler: (() -> Void)?
+    var liveExitDeadline: Timer?
     weak var liveAnswerView: NSTextView?
     var llmJob: LLMJob?
     var llmToolsQuery: LLMToolsQuery?
@@ -537,6 +542,11 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         window?.makeFirstResponder(nil)  // commit a secret still being typed
+        // A Live session is stopped and saved, not killed — and only if the user agrees.
+        if liveJob != nil, !liveExitConfirmed {
+            guard confirmStoppingLive() else { return .terminateCancel }
+            liveExitConfirmed = true
+        }
         isClosing = true
         guard mediaDownloadJob != nil || transcriptionJob != nil || llmJob != nil || liveJob != nil else { return .terminateNow }
         isTerminating = true
@@ -544,8 +554,37 @@ final class AppController: NSObject, NSApplicationDelegate {
         transcriptionJob?.cancel()
         transcriptionJob?.terminate()
         llmJob?.terminate()
-        liveJob?.terminate()
+        // replyWhenJobsFinished() answers once the session has been saved.
+        stopLiveForExit {}
         return .terminateLater
+    }
+
+    /// Longest wait for a Live session to stop and export when the app quits;
+    /// after-stop diarization can take a while. Past it the worker is killed.
+    static let liveExitGrace: TimeInterval = 30
+
+    /// Whether to stop the running Live session so the app can quit.
+    func confirmStoppingLive() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = L10n.text("Идёт Live-запись")
+        alert.informativeText = L10n.text("Остановить запись и сохранить сессию перед выходом?")
+        alert.addButton(withTitle: L10n.text("Остановить и выйти"))
+        alert.addButton(withTitle: L10n.text("Отмена"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Stops the Live session the normal way (live_stop → exports → live_stopped)
+    /// and runs `done` when it has ended. Killing the worker at once lost the
+    /// session's exports; the kill is now only the fallback after the grace period.
+    func stopLiveForExit(then done: @escaping () -> Void) {
+        guard let job = liveJob else { done(); return }
+        liveExitHandler = done
+        liveStatusLabel?.stringValue = L10n.text("Сохраняем сессию перед выходом…")
+        job.stop()
+        liveExitDeadline?.invalidate()
+        liveExitDeadline = Timer.scheduledTimer(withTimeInterval: Self.liveExitGrace, repeats: false) { [weak self] _ in
+            self?.liveJob?.terminate()
+        }
     }
 
     @objc func toggleLanguage(_ sender: Any?) {
@@ -642,6 +681,18 @@ final class AppController: NSObject, NSApplicationDelegate {
 // Each delegate method lives in the extension that declares its conformance, so
 // the Objective-C runtime sees it as the protocol's witness.
 extension AppController: NSWindowDelegate {
+    /// Closing the window quits the app; with a Live session running, ask first
+    /// and close only once the session has been stopped and saved.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard liveJob != nil else { return true }
+        guard liveExitConfirmed || confirmStoppingLive() else { return false }
+        liveExitConfirmed = true
+        isClosing = true  // no new jobs while the session is being saved
+        refreshProcessingControls()
+        stopLiveForExit { [weak self] in self?.window.close() }
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         window.makeFirstResponder(nil)  // commit a secret still being typed
         isClosing = true

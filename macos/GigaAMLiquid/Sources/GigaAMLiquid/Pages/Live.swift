@@ -399,6 +399,12 @@ extension AppController {
         livePartials.removeAll()
         renderLiveTranscript()
         refreshLiveFolderLabel()
+        // Quitting waited for this session to end.
+        let exitHandler = liveExitHandler
+        liveExitHandler = nil
+        liveExitDeadline?.invalidate()
+        liveExitDeadline = nil
+        defer { exitHandler?() }
         if isTerminating { replyWhenJobsFinished(); return }
         guard !isClosing else { return }
         refreshLiveControls()

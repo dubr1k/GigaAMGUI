@@ -443,6 +443,10 @@ enum L10n {
         "Связка ключей недоступна": "Keychain unavailable",
         "Не удалось прочитать HF Token из Связки ключей: %@": "Could not read the HF Token from the Keychain: %@",
         "Не удалось прочитать API Key из Связки ключей: %@": "Could not read the API Key from the Keychain: %@",
-        "Пропущено фрагментов звука по 100 мс: %@.": "Dropped 100 ms audio chunks: %@."
+        "Пропущено фрагментов звука по 100 мс: %@.": "Dropped 100 ms audio chunks: %@.",
+        "Идёт Live-запись": "Live recording in progress",
+        "Остановить запись и сохранить сессию перед выходом?": "Stop recording and save the session before quitting?",
+        "Остановить и выйти": "Stop and Quit",
+        "Сохраняем сессию перед выходом…": "Saving the session before quitting…"
     ]
 }
