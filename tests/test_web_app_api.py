@@ -230,6 +230,76 @@ def test_login_and_authenticated_upload_still_pass_the_guard(client, web_dirs, f
     assert response.json()["total"] == 1
 
 
+# ==================== CSRF: источник изменяющих запросов ====================
+
+
+def _upload(client, headers=None):
+    return client.post("/api/upload", files={"files": ("voice.wav", b"RIFF", "audio/wav")},
+                       data={"output_formats": "txt"}, headers=headers or {})
+
+
+@pytest.mark.parametrize("headers", [
+    {"Origin": "https://evil.example"},
+    {"Referer": "https://evil.example/page"},
+    {"Origin": "null"},
+    {"Origin": "https://testserver.evil.example"},
+    {"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"},
+    {"Sec-Fetch-Site": "same-site", "Origin": "https://other.testserver"},
+    {"Sec-Fetch-Site": "cross-site"},
+], ids=["origin", "referer", "null-origin", "suffix-host", "fetch-cross-site", "fetch-same-site", "fetch-only"])
+def test_cookie_request_from_foreign_origin_is_rejected(client, web_dirs, fake_processor, headers):
+    response = _upload(client, headers)
+    assert response.status_code == 403
+    assert web_app.tasks_storage == {}
+
+
+def test_cookie_delete_from_foreign_origin_is_rejected(client, web_dirs):
+    _, results_dir = web_dirs
+    _completed_task(results_dir, "keep1")
+    response = client.delete("/api/tasks", params={"status_filter": "all"}, headers={"Origin": "https://evil.example"})
+    assert response.status_code == 403
+    assert "keep1" in web_app.tasks_storage
+
+
+@pytest.mark.parametrize("headers", [
+    {"Origin": "https://testserver"},
+    {"Referer": "https://testserver/"},
+    {},  # не браузер: curl/скрипт без Origin и Referer
+    {"Origin": "https://gigaam.example.com", "Host": "127.0.0.1:8000", "X-Forwarded-Host": "gigaam.example.com"},
+    # nginx без `proxy_set_header Host`: Host внутренний, но браузер сам говорит same-origin
+    {"Origin": "https://gigaam.example.com", "Host": "127.0.0.1:8001", "Sec-Fetch-Site": "same-origin"},
+], ids=["same-origin", "same-referer", "no-headers", "behind-proxy", "proxy-without-host"])
+def test_same_origin_cookie_requests_pass(client, web_dirs, fake_processor, headers):
+    assert _upload(client, headers).status_code == 200
+
+
+def test_bearer_requests_skip_origin_check(anon_client, web_dirs, fake_processor):
+    # Токен в заголовке браузер сам не подставит — CSRF тут невозможен
+    token = web_app._create_token(web_app.WEB_USERNAME)
+    response = _upload(anon_client, {"Authorization": f"Bearer {token}", "Origin": "https://tool.example"})
+    assert response.status_code == 200
+
+
+def test_forged_bearer_does_not_bypass_origin_check(client, web_dirs, fake_processor):
+    # Мусорный Bearer при живой cookie не должен отключать проверку источника
+    response = _upload(client, {"Authorization": "Bearer junk", "Origin": "https://evil.example"})
+    assert response.status_code == 403
+
+
+def test_trusted_origins_are_accepted(client, web_dirs, fake_processor, monkeypatch):
+    monkeypatch.setattr(web_app, "WEB_TRUSTED_ORIGINS", ("https://dev.example:5173",))
+    assert _upload(client, {"Origin": "https://dev.example:5173"}).status_code == 200
+
+
+def test_no_credentialed_cors_for_localhost_by_default(anon_client):
+    # Раньше http://localhost:8001 получал CORS с credentials — любая страница на этом порту читала API панели
+    response = anon_client.options("/api/tasks", headers={
+        "Origin": "http://localhost:8001", "Access-Control-Request-Method": "GET"})
+    assert "access-control-allow-origin" not in response.headers
+    response = anon_client.get("/health", headers={"Origin": "http://localhost:8001"})
+    assert "access-control-allow-credentials" not in response.headers
+
+
 # ==================== LLM: что решает клиент, а что сервер ====================
 
 

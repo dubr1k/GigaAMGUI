@@ -20,6 +20,7 @@ from pathlib import Path
 from platform import machine
 from platform import platform as runtime_platform
 from typing import Final
+from urllib.parse import urlsplit
 
 import aiofiles
 import jwt
@@ -38,7 +39,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from starlette.middleware.sessions import SessionMiddleware
 
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.asr.models import ASR_MODELS
@@ -88,6 +88,11 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "72"))
 # True; при доступе по чистому HTTP с не-localhost домена браузер молча выкинет
 # cookie и логин зациклится — тогда выставите COOKIE_SECURE=0.
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
+# Origin-ы (scheme://host[:port]) кроме самой панели, которым можно слать изменяющие
+# запросы с cookie сессии и читать API через CORS (фронтенд разработки). Обычно пусто.
+WEB_TRUSTED_ORIGINS: tuple[str, ...] = tuple(
+    origin.strip().rstrip("/") for origin in os.getenv("WEB_TRUSTED_ORIGINS", "").split(",") if origin.strip()
+)
 
 if len(WEB_SECRET.encode("utf-8")) < 32:
     raise RuntimeError("WEB_SECRET must be set and contain at least 32 bytes")
@@ -181,6 +186,13 @@ def _runtime_info() -> dict[str, object]:
     return health_service.runtime_info(runtime_platform, machine)
 
 
+def _bearer_user(request: Request) -> str | None:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return _verify_token(auth_header[7:])
+    return None
+
+
 def _authenticated_user(request: Request) -> str | None:
     """Пользователь из JWT в cookie или в `Authorization: Bearer`; None — не авторизован."""
     token = request.cookies.get("gigaam_token")
@@ -188,13 +200,52 @@ def _authenticated_user(request: Request) -> str | None:
         username = _verify_token(token)
         if username:
             return username
+    return _bearer_user(request)
 
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        username = _verify_token(auth_header[7:])
-        if username:
-            return username
-    return None
+
+def _hostname(value: str | None) -> str | None:
+    """Имя хоста без порта из `Host`/`X-Forwarded-Host` (первого из списка)."""
+    if not value:
+        return None
+    try:
+        return urlsplit("//" + value.split(",")[0].strip()).hostname
+    except ValueError:
+        return None
+
+
+def _same_origin(request: Request) -> bool:
+    """Запрос пришёл со страницы самой панели (или из WEB_TRUSTED_ORIGINS).
+
+    Главный признак — `Sec-Fetch-Site`: его ставит сам браузер (страница
+    подделать не может), и он не зависит от того, передаёт ли reverse proxy
+    `Host` (nginx без `proxy_set_header Host` шлёт 127.0.0.1:8001).
+    Старые браузеры его не шлют — тогда источник берётся из Origin, иначе
+    Referer, и сравнивается только имя хоста с `Host`/`X-Forwarded-Host`:
+    схема и порт за TLS-прокси у браузера и у приложения разные. Без Origin и
+    Referer запрос не из браузера (curl, скрипт): CSRF — атака через чужой
+    браузер, а он на POST/DELETE шлёт Origin.
+    """
+    source = request.headers.get("origin") or request.headers.get("referer")
+    source_origin = None
+    source_host = None
+    if source and source != "null":
+        try:
+            parsed = urlsplit(source)
+            source_origin = f"{parsed.scheme}://{parsed.netloc}"
+            source_host = parsed.hostname
+        except ValueError:
+            pass
+    if source_origin in WEB_TRUSTED_ORIGINS:
+        return True
+
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site is not None:
+        return fetch_site in ("same-origin", "none")
+
+    if not source:
+        return True
+    own_hosts = {_hostname(request.headers.get("host")), _hostname(request.headers.get("x-forwarded-host"))}
+    return source_host is not None and source_host in own_hosts - {None}
 
 
 async def require_auth(request: Request) -> str:
@@ -226,7 +277,7 @@ def _body_limit(path: str) -> int:
 
 
 class _BodyGuard:
-    """Авторизация и Content-Length для изменяющих запросов /api ДО чтения тела.
+    """Авторизация, источник и Content-Length изменяющих запросов /api ДО чтения тела.
 
     Чистый ASGI, как `_UploadGuard` в api.py. FastAPI разбирает тело формы
     (multipart спулится во временную директорию — в Docker это tmpfs /tmp)
@@ -235,6 +286,12 @@ class _BodyGuard:
     записи. Здесь — та же проверка JWT, что у require_auth, и лимит по
     заголовку; точный размер файла по-прежнему считает _save_upload при
     записи (тело без Content-Length, chunked, проверяется только им).
+
+    Запрос, авторизованный cookie, должен прийти со страницы панели
+    (`_same_origin`), иначе 403: cookie браузер подставит и в запрос с чужого
+    сайта. SameSite=Lax этого не закрывает для соседних поддоменов (один
+    «сайт»). Действующий `Authorization: Bearer` проверку снимает — его
+    чужая страница подставить не может; мусорный Bearer при живой cookie — нет.
     """
 
     def __init__(self, app):
@@ -250,6 +307,12 @@ class _BodyGuard:
             request = Request(scope)
             if _authenticated_user(request) is None:
                 await JSONResponse({"detail": "Не авторизован"}, status_code=401)(scope, receive, send)
+                return
+            if _bearer_user(request) is None and not _same_origin(request):
+                await JSONResponse(
+                    {"detail": "Запрос с чужого источника (Origin) отклонён; см. WEB_TRUSTED_ORIGINS"},
+                    status_code=403,
+                )(scope, receive, send)
                 return
             content_length = request.headers.get("content-length", "")
             limit = _body_limit(scope["path"])
@@ -898,22 +961,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=WEB_SECRET,
-    session_cookie="gigaam_session",
-    max_age=72 * 3600,
-)
-
 app.add_middleware(_BodyGuard)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:8001", "http://127.0.0.1:8001"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Панель и её API — один origin, CORS ей не нужен. Отдельно поднятый фронтенд
+# (разработка) перечисляется в WEB_TRUSTED_ORIGINS; раньше здесь был зашитый
+# localhost:8001 с credentials — любая страница на этом порту читала API панели.
+# Добавляется после _BodyGuard, т.е. снаружи: его 401/403/413 тоже с CORS-заголовками.
+if WEB_TRUSTED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(WEB_TRUSTED_ORIGINS),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
