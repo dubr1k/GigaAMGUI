@@ -41,6 +41,17 @@ One event per dropped chunk was a log line per 10 ms while a consumer stalled,
 the same flood issue #48 had with recording failures."""
 
 
+def select_device(devices: list[dict[str, Any]], device_id: str | None) -> dict[str, Any] | None:
+    """The requested device; without a request the default one, else the first.
+
+    A requested id that is gone yields None rather than a substitute: capture
+    from a device the user did not pick is worse than a clear failure.
+    """
+    if device_id:
+        return next((item for item in devices if item["id"] == device_id), None)
+    return next((item for item in devices if item["is_default"]), devices[0] if devices else None)
+
+
 class SoundDeviceCapture:
     """Optional sounddevice bridge for microphones and Pulse/PipeWire monitors."""
 
@@ -92,10 +103,7 @@ class SoundDeviceCapture:
             raise
 
     def _select(self, source: CaptureSource, device_id: str | None) -> dict[str, Any]:
-        devices = self.devices(source)
-        selected = next((item for item in devices if item["id"] == device_id), None) if device_id else next(
-            (item for item in devices if item["is_default"]), devices[0] if devices else None
-        )
+        selected = select_device(self.devices(source), device_id)
         if selected is None:
             if source is CaptureSource.SYSTEM:
                 raise CaptureUnavailable(self.no_system_source_message())

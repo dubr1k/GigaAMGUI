@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from ..types import CaptureSource
-from .common import NativeCaptureApi, QueuedCaptureAdapter, SoundDeviceCapture
+from .common import NativeCaptureApi, QueuedCaptureAdapter, SoundDeviceCapture, looks_like_permission_denial
 from .factory import CaptureUnavailable
 
 _SCREEN_CAPTURE_OUTPUT_CLASS: type[Any] | None = None
@@ -205,7 +205,7 @@ class _ScreenCaptureKitCapture:
     @staticmethod
     def _raise_capture_error(error: Any) -> None:
         detail = str(error)
-        if any(word in detail.casefold() for word in ("permission", "screen recording", "tcc", "not authorized")):
+        if looks_like_permission_denial(detail):
             raise PermissionError(f"Screen Recording permission denied: {detail}")
         raise OSError(f"ScreenCaptureKit capture failed: {detail}")
 
