@@ -172,3 +172,18 @@ def test_tui_requirements_stay_on_the_tested_major_lines():
         pinned = main.get(name, "")
         if pinned.startswith("=="):
             assert spec.contains(pinned[2:], prereleases=True), f"{name}: TUI {spec} excludes tested {pinned}"
+
+
+def test_every_tui_installer_builds_with_the_committed_lockfile():
+    # CI собирает TUI с --locked; установщики без него брали свежие версии
+    # крейтов, и у пользователя собиралось не то, что проверено.
+    installers = [
+        INSTALL_TUI_SCRIPT,
+        Path("distribution/homebrew/Formula/gigaam-tui.rb"),
+        Path("distribution/npm/gigaam-tui/bin/gigaam.js"),
+    ]
+    for installer in installers:
+        text = installer.read_text(encoding="utf-8")
+        builds = [line for line in text.splitlines() if re.search(r"""cargo["',\s\[\]]+build\b""", line)]
+        assert builds, installer
+        assert all("--locked" in line for line in builds), (installer, builds)
