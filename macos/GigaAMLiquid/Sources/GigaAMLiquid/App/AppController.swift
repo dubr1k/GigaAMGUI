@@ -91,6 +91,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     var searchResults = NSView()
     var searchCapsule: GlassView?
     var searchWidth: NSLayoutConstraint?
+    var appearanceObservation: NSKeyValueObservation?
+    /// Whether the views on screen were built with the dark palette.
+    var appliedDarkLook = false
     /// Secrets typed but not yet written to the Keychain, by control identifier.
     var pendingSecrets: [String: String] = [:]
     /// A tool re-check waiting for the user to stop typing its path, by provider.
@@ -116,6 +119,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         defaults.removeObject(forKey: "settings.animations")
         cleanupDownloadedMedia()
         loadLLMToolsCache()
+        // The palette is baked into the views when they are built; with «Системная»
+        // a change of the macOS appearance needs a rebuild to show.
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self, Palette.followsSystem, Palette.isDark != self.appliedDarkLook else { return }
+                self.rebuildInterface(activate: false)
+            }
+        }
         installMainMenu()
         buildWindow()
         show(page: .processing)
@@ -221,7 +232,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         selectedFilesRows = nil
         selectedFilesCountLabel = nil
         settingsCategoryButtons.removeAll()
-        window.appearance = NSAppearance(named: Palette.isDark ? .darkAqua : .aqua)
+        // A pinned theme pins the window; «Системная» leaves it to macOS.
+        window.appearance = Palette.followsSystem ? nil : NSAppearance(named: Palette.isDark ? .darkAqua : .aqua)
+        appliedDarkLook = Palette.isDark
         let background = BlobBackgroundView()
         background.translatesAutoresizingMaskIntoConstraints = false
         background.dropHandler = { [weak self] urls in self?.acceptDroppedFiles(urls) ?? false }
@@ -542,7 +555,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         rebuildInterface()
     }
 
-    func rebuildInterface() {
+    /// `activate: false` for a rebuild the user did not ask for (the system
+    /// appearance changed): it must not pull the window to the front.
+    func rebuildInterface(activate: Bool = true) {
         window.makeFirstResponder(nil)
         let page = currentPage
         DispatchQueue.main.async { [weak self] in
@@ -550,7 +565,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             self.installMainMenu()
             self.buildWindowContent()
             self.show(page: page)
-            self.window.makeKeyAndOrderFront(nil)
+            if activate { self.window.makeKeyAndOrderFront(nil) }
         }
     }
 

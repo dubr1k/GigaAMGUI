@@ -137,7 +137,7 @@ def test_swift_client_installs_main_menu_with_standard_shortcuts() -> None:
     assert "NSApp.windowsMenu = " in menu
     assert "func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }" in main
     assert "installMainMenu()" in _swift_block(main, "func applicationDidFinishLaunching(_ notification: Notification) {").split("buildWindow()", 1)[0]
-    assert "installMainMenu()" in _swift_block(main, "private func rebuildInterface() {").split("show(page: page)", 1)[0]
+    assert "installMainMenu()" in _swift_block(main, "private func rebuildInterface(activate: Bool = true) {").split("show(page: page)", 1)[0]
 
 
 def test_swift_window_accepts_dropped_media_files() -> None:
@@ -663,3 +663,14 @@ def test_swift_cli_path_edits_check_the_latest_path() -> None:
     assert "llmToolChecks.removeValue(forKey: provider)?.cancel()" in check
     assert "guard llmToolChecks[provider] == nil" not in check
     assert "self.llmToolChecks[provider] === current" in check
+
+
+def test_swift_system_theme_follows_macos() -> None:
+    # «Системная» (the popup's first entry, also shown before any choice) was
+    # always light: Palette checked only «Тёмная» and the window was forced to aqua.
+    main = _liquid_sources()
+    palette = _swift_type(main, "Palette")
+    assert "ThemeChoice.isDark(setting: themeSetting, systemIsDark: systemIsDark)" in palette
+    content = _swift_block(main, "private func buildWindowContent() {")
+    assert "window.appearance = Palette.followsSystem ? nil :" in content
+    assert "NSApp.observe(\\.effectiveAppearance" in _swift_block(main, "func applicationDidFinishLaunching(_ notification: Notification) {")
