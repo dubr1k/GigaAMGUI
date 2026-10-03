@@ -34,6 +34,8 @@ from .lifecycle_mixin import LifecycleMixin, install_exception_hook
 from .live_mixin import LiveMixin
 from .live_ui_mixin import LiveUiMixin
 from .llm_mixin import LlmMixin
+from .llm_settings_dialog_mixin import LlmSettingsDialogMixin
+from .llm_tools_mixin import LlmToolsMixin
 from .llm_ui_mixin import LlmUiMixin
 from .menu_mixin import MenuActionsMixin
 from .processing_mixin import ProcessingMixin
@@ -79,7 +81,7 @@ class WorkerSignals(QObject):
 
 
 class GigaTranscriberQtApp(
-    LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, ResultViewMixin, FilesMixin,
+    LlmMixin, LlmUiMixin, LlmToolsMixin, LlmSettingsDialogMixin, DownloadMixin, ProcessingMixin, ResultViewMixin, FilesMixin,
     I18nMixin, SettingsMixin, JournalMixin, SupportSurfacesMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
     LiveMixin, LiveUiMixin, LifecycleMixin, MenuActionsMixin,
     UiBuildMixin, QMainWindow,
