@@ -171,6 +171,9 @@ pub(crate) struct App {
     pub(crate) audio_preprocessing_mode: String,
     /// Цветовая схема; все виджеты берут цвета из `palette()`.
     pub(crate) theme: Theme,
+    /// The persisted settings as this session last loaded or saved them; a save
+    /// writes only the fields that differ (see `settings::save_app_settings`).
+    pub(crate) settings_baseline: Option<serde_json::Map<String, Value>>,
 }
 
 impl Default for App {
@@ -261,6 +264,7 @@ impl Default for App {
             llm_saved_files: Vec::new(),
             audio_preprocessing_mode: "auto".into(),
             theme: Theme::default_theme(),
+            settings_baseline: None,
         }
     }
 }

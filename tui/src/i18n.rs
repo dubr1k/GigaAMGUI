@@ -1157,7 +1157,7 @@ mod tests {
         "headless.rs",
         // Its file errors carry OS text and reach the status line only through
         // `err.settings_save`.
-        "settings.rs",
+        "settings/store.rs",
         // Provider names and the JSON protocol.
         "worker.rs",
         // The string table itself.
