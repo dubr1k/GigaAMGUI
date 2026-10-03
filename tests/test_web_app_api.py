@@ -23,6 +23,7 @@ os.environ.setdefault("WEB_PASSWORD", "test-password")
 web_app = importlib.import_module("web.web_app")
 from src.core.subtitles import SubtitleOptions  # noqa: E402
 from src.services import transcription_service  # noqa: E402
+from web import auth  # noqa: E402
 from web.state import state, validated_login_rate_limit  # noqa: E402
 from web.task_registry import registry  # noqa: E402
 
@@ -61,7 +62,7 @@ def web_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "api_keys_file", tmp_path / ".api_keys")
     monkeypatch.setattr(state, "loader_factory", _FakeLoader)
     monkeypatch.setattr(state, "hf_token", "")
-    web_app.limiter.reset()  # лимит входа — в памяти процесса, общий для всех тестов
+    auth.limiter.reset()  # лимит входа — в памяти процесса, общий для всех тестов
     registry.tasks.clear()
     registry.logs.clear()
     registry.deleted.clear()
@@ -259,7 +260,7 @@ def test_invalid_token_is_rejected_before_body(web_dirs):
 
 
 def test_oversized_upload_is_rejected_by_headers(web_dirs):
-    token = web_app._create_token(state.username)
+    token = auth.create_token(state.username)
     status, reads = _asgi_request("POST", "/api/upload", {
         "content-type": "multipart/form-data; boundary=b",
         "content-length": str(state.max_file_size + 64 * 1024 * 1024),
@@ -321,7 +322,7 @@ def test_same_origin_cookie_requests_pass(client, web_dirs, fake_processor, head
 
 def test_bearer_requests_skip_origin_check(anon_client, web_dirs, fake_processor):
     # Токен в заголовке браузер сам не подставит — CSRF тут невозможен
-    token = web_app._create_token(state.username)
+    token = auth.create_token(state.username)
     response = _upload(anon_client, {"Authorization": f"Bearer {token}", "Origin": "https://tool.example"})
     assert response.status_code == 200
 

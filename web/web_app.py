@@ -6,7 +6,6 @@ GigaAM v3 Transcriber - Web GUI
 
 import asyncio
 import contextlib
-import hashlib
 import hmac
 import logging
 import shutil
@@ -15,15 +14,13 @@ import uuid
 import warnings
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from platform import machine
 from platform import platform as runtime_platform
 from typing import Final
-from urllib.parse import urlsplit
 
 import aiofiles
-import jwt
 from fastapi import (
     Depends,
     FastAPI,
@@ -38,9 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from src import __version__
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
@@ -59,6 +54,7 @@ from src.utils.media_downloader import MediaDownloader
 from src.utils.output_naming import find_result_file, output_filename
 from src.utils.processing_stats import ProcessingStats
 from src.utils.time_formatter import TimeFormatter
+from web import auth
 from web.state import STATIC_DIR, state
 from web.task_registry import ALL_TASK_STATUSES, registry
 
@@ -93,31 +89,6 @@ TASKS_PROMPT = (
 )
 
 
-# ==================== АВТОРИЗАЦИЯ ====================
-
-def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def _create_token(username: str) -> str:
-    payload = {
-        "sub": username,
-        "exp": datetime.utcnow() + timedelta(hours=state.jwt_expire_hours),
-        "iat": datetime.utcnow(),
-    }
-    return jwt.encode(payload, state.secret, algorithm="HS256")
-
-
-def _verify_token(token: str) -> str | None:
-    try:
-        payload = jwt.decode(token, state.secret, algorithms=["HS256"])
-        return payload.get("sub")
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
-
-
 def _asr_health() -> dict[str, object]:
     # Публичный /health: без путей сервера (cache_root, repo)
     return health_service.public_asr_health(state.model_loader)
@@ -125,145 +96,6 @@ def _asr_health() -> dict[str, object]:
 
 def _runtime_info() -> dict[str, object]:
     return health_service.runtime_info(runtime_platform, machine)
-
-
-def _bearer_user(request: Request) -> str | None:
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return _verify_token(auth_header[7:])
-    return None
-
-
-def _authenticated_user(request: Request) -> str | None:
-    """Пользователь из JWT в cookie или в `Authorization: Bearer`; None — не авторизован."""
-    token = request.cookies.get("gigaam_token")
-    if token:
-        username = _verify_token(token)
-        if username:
-            return username
-    return _bearer_user(request)
-
-
-def _hostname(value: str | None) -> str | None:
-    """Имя хоста без порта из `Host`/`X-Forwarded-Host` (первого из списка)."""
-    if not value:
-        return None
-    try:
-        return urlsplit("//" + value.split(",")[0].strip()).hostname
-    except ValueError:
-        return None
-
-
-def _same_origin(request: Request) -> bool:
-    """Запрос пришёл со страницы самой панели (или из WEB_TRUSTED_ORIGINS).
-
-    Главный признак — `Sec-Fetch-Site`: его ставит сам браузер (страница
-    подделать не может), и он не зависит от того, передаёт ли reverse proxy
-    `Host` (nginx без `proxy_set_header Host` шлёт 127.0.0.1:8001).
-    Старые браузеры его не шлют — тогда источник берётся из Origin, иначе
-    Referer, и сравнивается только имя хоста с `Host`/`X-Forwarded-Host`:
-    схема и порт за TLS-прокси у браузера и у приложения разные. Без Origin и
-    Referer запрос не из браузера (curl, скрипт): CSRF — атака через чужой
-    браузер, а он на POST/DELETE шлёт Origin.
-    """
-    source = request.headers.get("origin") or request.headers.get("referer")
-    source_origin = None
-    source_host = None
-    if source and source != "null":
-        try:
-            parsed = urlsplit(source)
-            source_origin = f"{parsed.scheme}://{parsed.netloc}"
-            source_host = parsed.hostname
-        except ValueError:
-            pass
-    if source_origin in state.trusted_origins:
-        return True
-
-    fetch_site = request.headers.get("sec-fetch-site")
-    if fetch_site is not None:
-        return fetch_site in ("same-origin", "none")
-
-    if not source:
-        return True
-    own_hosts = {_hostname(request.headers.get("host")), _hostname(request.headers.get("x-forwarded-host"))}
-    return source_host is not None and source_host in own_hosts - {None}
-
-
-async def require_auth(request: Request) -> str:
-    """Зависимость: проверяет авторизацию через cookie или заголовок."""
-    username = _authenticated_user(request)
-    if username:
-        return username
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Не авторизован",
-    )
-
-
-# Запас над лимитом тела на multipart-обвязку (как в api.py)
-_CONTENT_LENGTH_SLACK = 1024 * 1024
-# Тело запросов /api без файлов (форма URL, проверка CLI и т.п.)
-_SMALL_BODY_LIMIT = 1024 * 1024
-_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-# Без сессии: вход и выход
-_AUTH_EXEMPT_PATHS = frozenset({"/api/auth/login", "/api/auth/logout"})
-
-
-def _body_limit(path: str) -> int:
-    if path == "/api/upload":
-        return state.max_file_size + _CONTENT_LENGTH_SLACK
-    if path == "/api/llm/process":
-        return state.max_llm_body_size + _CONTENT_LENGTH_SLACK
-    return _SMALL_BODY_LIMIT
-
-
-class _BodyGuard:
-    """Авторизация, источник и Content-Length изменяющих запросов /api ДО чтения тела.
-
-    Чистый ASGI, как `_UploadGuard` в api.py. FastAPI разбирает тело формы
-    (multipart спулится во временную директорию — в Docker это tmpfs /tmp)
-    раньше, чем выполняется Depends(require_auth), поэтому без гарда любой
-    без сессии мог залить сколько угодно байт и получить 401 только после
-    записи. Здесь — та же проверка JWT, что у require_auth, и лимит по
-    заголовку; точный размер файла по-прежнему считает _save_upload при
-    записи (тело без Content-Length, chunked, проверяется только им).
-
-    Запрос, авторизованный cookie, должен прийти со страницы панели
-    (`_same_origin`), иначе 403: cookie браузер подставит и в запрос с чужого
-    сайта. SameSite=Lax этого не закрывает для соседних поддоменов (один
-    «сайт»). Действующий `Authorization: Bearer` проверку снимает — его
-    чужая страница подставить не может; мусорный Bearer при живой cookie — нет.
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if (
-            scope["type"] == "http"
-            and scope.get("method") in _UNSAFE_METHODS
-            and scope.get("path", "").startswith("/api/")
-            and scope.get("path") not in _AUTH_EXEMPT_PATHS
-        ):
-            request = Request(scope)
-            if _authenticated_user(request) is None:
-                await JSONResponse({"detail": "Не авторизован"}, status_code=401)(scope, receive, send)
-                return
-            if _bearer_user(request) is None and not _same_origin(request):
-                await JSONResponse(
-                    {"detail": "Запрос с чужого источника (Origin) отклонён; см. WEB_TRUSTED_ORIGINS"},
-                    status_code=403,
-                )(scope, receive, send)
-                return
-            content_length = request.headers.get("content-length", "")
-            limit = _body_limit(scope["path"])
-            if content_length.isdigit() and int(content_length) > limit:
-                await JSONResponse(
-                    {"detail": f"Запрос слишком большой (макс. {limit / 1024 / 1024:.0f} MB)"},
-                    status_code=413,
-                )(scope, receive, send)
-                return
-        await self.app(scope, receive, send)
 
 
 # ==================== УТИЛИТЫ ====================
@@ -659,15 +491,15 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
-limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
-app.state.limiter = limiter
+app.state.limiter = auth.limiter
 
-app.add_middleware(_BodyGuard)
+app.add_middleware(auth.BodyGuard)
+app.add_exception_handler(RateLimitExceeded, auth.login_rate_limited)
 
 # Панель и её API — один origin, CORS ей не нужен. Отдельно поднятый фронтенд
 # (разработка) перечисляется в WEB_TRUSTED_ORIGINS; раньше здесь был зашитый
 # localhost:8001 с credentials — любая страница на этом порту читала API панели.
-# Добавляется после _BodyGuard, т.е. снаружи: его 401/403/413 тоже с CORS-заголовками.
+# Добавляется после BodyGuard, т.е. снаружи: его 401/403/413 тоже с CORS-заголовками.
 if state.trusted_origins:
     app.add_middleware(
         CORSMiddleware,
@@ -736,24 +568,14 @@ def _run_llm_provider(llm_settings: dict, transcript_text: str, prompt: str) -> 
         raise RuntimeError(f"Неизвестный провайдер: {exc.provider}") from exc
 
 
-@app.exception_handler(RateLimitExceeded)
-async def _login_rate_limited(request: Request, exc: RateLimitExceeded):
-    response = JSONResponse({"detail": "Слишком много попыток входа. Повторите позже."}, status_code=429)
-    # Retry-After / X-RateLimit-* — как у api.py
-    view_rate_limit = getattr(request.state, "view_rate_limit", None)
-    if view_rate_limit is not None:
-        response = request.app.state.limiter._inject_headers(response, view_rate_limit)
-    return response
-
-
 @app.post("/api/auth/login")
-@limiter.limit(state.login_rate_limit)
+@auth.limiter.limit(state.login_rate_limit)
 async def login(request: Request, req: LoginRequest):
     # Лимит считает все попытки с адреса: без него пароль единственной учётной
     # записи перебирался со скоростью сети. За прокси без доверенного
     # X-Forwarded-For адрес у всех общий — лимит тогда общий на панель.
-    if req.username == state.username and hmac.compare_digest(_hash_password(req.password), _hash_password(state.password)):
-        token = _create_token(req.username)
+    if req.username == state.username and hmac.compare_digest(auth.hash_password(req.password), auth.hash_password(state.password)):
+        token = auth.create_token(req.username)
         response = JSONResponse({"ok": True, "username": req.username})
         response.set_cookie(
             key="gigaam_token",
@@ -778,26 +600,26 @@ async def logout():
 
 
 @app.get("/api/auth/check")
-async def auth_check(user: str = Depends(require_auth)):
+async def auth_check(user: str = Depends(auth.require_auth)):
     return {"ok": True, "username": user}
 
 
 # ==================== ЭНДПОИНТЫ GUI ====================
 
 @app.get("/api/formats")
-async def get_formats(user: str = Depends(require_auth)):
+async def get_formats(user: str = Depends(auth.require_auth)):
     return {"formats": OUTPUT_FORMATS}
 
 
 @app.get("/api/device")
-async def get_device(user: str = Depends(require_auth)):
+async def get_device(user: str = Depends(auth.require_auth)):
     if state.model_loader and state.model_loader.device:
         return {"device": state.model_loader.device.upper()}
     return {"device": "CPU"}
 
 
 @app.get("/api/asr-options")
-async def get_asr_options(user: str = Depends(require_auth)):
+async def get_asr_options(user: str = Depends(auth.require_auth)):
     if state.model_loader is None:
         raise HTTPException(status_code=503, detail="ASR model loader не инициализирован")
     return {
@@ -913,7 +735,7 @@ async def upload_files(
     subtitle_sentence_split: bool = Form(True),
     subtitle_max_lines: int = Form(2),
     subtitle_max_width: int = Form(64),
-    user: str = Depends(require_auth),
+    user: str = Depends(auth.require_auth),
 ):
     """Загрузка одного или нескольких файлов для транскрибации."""
     if len(files) > 20:
@@ -976,7 +798,7 @@ async def upload_files(
 @app.post("/api/download-url")
 async def download_from_url(
     request: Request,
-    user: str = Depends(require_auth),
+    user: str = Depends(auth.require_auth),
     url: str = Form(...),
     output_formats: str = Form("txt,txt_timecodes"),
     enable_diarization: bool = Form(False),
@@ -1119,26 +941,26 @@ async def _download_and_process(
 # ==================== ЭНДПОИНТЫ ЗАДАЧ ====================
 
 @app.get("/api/tasks")
-async def list_tasks(user: str = Depends(require_auth)):
+async def list_tasks(user: str = Depends(auth.require_auth)):
     tasks = [registry.visible_copy(task) for task in registry.tasks.values() if task.get('user') == user]
     tasks.sort(key=lambda x: x.get('created_at') or '', reverse=True)
     return {"total": len(tasks), "tasks": tasks}
 
 
 @app.get("/api/tasks/{task_id}")
-async def get_task(task_id: str, user: str = Depends(require_auth)):
+async def get_task(task_id: str, user: str = Depends(auth.require_auth)):
     # Без result_files: там абсолютные пути сервера; файлы отдают /result и /download
     return registry.visible_copy(_user_task_or_404(task_id, user))
 
 
 @app.get("/api/tasks/{task_id}/logs")
-async def get_task_logs(task_id: str, user: str = Depends(require_auth)):
+async def get_task_logs(task_id: str, user: str = Depends(auth.require_auth)):
     _user_task_or_404(task_id, user)
     return {"logs": registry.logs.get(task_id, [])}
 
 
 @app.get("/api/tasks/{task_id}/result")
-async def get_task_result(task_id: str, user: str = Depends(require_auth)):
+async def get_task_result(task_id: str, user: str = Depends(auth.require_auth)):
     task = _user_task_or_404(task_id, user)
     if task['status'] != 'completed':
         raise HTTPException(status_code=400, detail=f"Задача не завершена (статус: {task['status']})")
@@ -1176,7 +998,7 @@ async def get_task_result(task_id: str, user: str = Depends(require_auth)):
 async def download_result_file(
     task_id: str,
     format: str = "txt",
-    user: str = Depends(require_auth),
+    user: str = Depends(auth.require_auth),
 ):
     task = _user_task_or_404(task_id, user)
     if task['status'] != 'completed':
@@ -1199,7 +1021,7 @@ async def download_result_file(
 
 
 @app.delete("/api/tasks/{task_id}")
-async def delete_task(task_id: str, user: str = Depends(require_auth)):
+async def delete_task(task_id: str, user: str = Depends(auth.require_auth)):
     task = _user_task_or_404(task_id, user)
     if task['status'] == 'processing':
         raise HTTPException(status_code=400, detail="Нельзя удалить задачу в процессе обработки")
@@ -1214,7 +1036,7 @@ async def delete_task(task_id: str, user: str = Depends(require_auth)):
 
 
 @app.get("/api/llm/tools")
-async def llm_tools(fresh: bool = False, user: str = Depends(require_auth)):
+async def llm_tools(fresh: bool = False, user: str = Depends(auth.require_auth)):
     """Реестр LLM-провайдеров и статусы CLI-инструментов на сервере (скан — в пуле потоков)."""
     statuses = await asyncio.to_thread(cli_tools.scan, None, fresh=fresh)
     return {
@@ -1229,7 +1051,7 @@ async def llm_tools(fresh: bool = False, user: str = Depends(require_auth)):
 async def llm_tool_check(
     provider: str = Form(...),
     path: str = Form(""),
-    user: str = Depends(require_auth),
+    user: str = Depends(auth.require_auth),
 ):
     try:
         spec = cli_tools.provider_by_name(provider)
@@ -1290,7 +1112,7 @@ async def llm_process(
     manual_text: str = Form(""),
     export_formats: str = Form("txt"),
     transcript_files: list[UploadFile] = File(default=[]),
-    user: str = Depends(require_auth),
+    user: str = Depends(auth.require_auth),
 ):
     try:
         temperature_value = float((temperature or "0.2").strip())
@@ -1399,7 +1221,7 @@ async def llm_process(
     return {"job_id": job_id, "provider": provider, "result_text": result_text, "saved_files": saved_files}
 
 @app.get("/api/llm/download/{job_id}/{filename}")
-async def llm_download(job_id: str, filename: str, user: str = Depends(require_auth)):
+async def llm_download(job_id: str, filename: str, user: str = Depends(auth.require_auth)):
     job_dir = state.llm_results_dir / job_id
     meta = load_json(str(job_dir / "meta.json"), {})
     if not job_dir.exists() or not isinstance(meta, dict) or meta.get("user") != user:
@@ -1412,7 +1234,7 @@ async def llm_download(job_id: str, filename: str, user: str = Depends(require_a
 @app.delete("/api/tasks")
 async def delete_all_tasks(
     status_filter: str = "completed,failed",
-    user: str = Depends(require_auth),
+    user: str = Depends(auth.require_auth),
 ):
     statuses = {status.strip() for status in status_filter.split(",") if status.strip()}
     if "all" in statuses:
@@ -1498,7 +1320,7 @@ class ProgressFeed:
 
 
 @app.get("/api/progress")
-async def progress_stream(request: Request, user: str = Depends(require_auth)):
+async def progress_stream(request: Request, user: str = Depends(auth.require_auth)):
     """SSE-стрим прогресса всех задач в реальном времени."""
     import json as json_mod
 
