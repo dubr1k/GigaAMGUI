@@ -604,6 +604,41 @@ def test_summarize_provider_and_model_overrides(backend, fake_provider):
     assert err.code == "unsupported_parameter" and err.param == "provider"
 
 
+def _codex_commands(monkeypatch) -> list:
+    """Настоящий llm_service до subprocess: команды Codex записываются, ответ — JSON agent_message."""
+    import subprocess
+
+    commands = []
+
+    def run_command(command, *, input_text=None, cancel_check=None):
+        commands.append(list(command))
+        event = '{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}'
+        return subprocess.CompletedProcess(command, 0, event + "\n", "")
+
+    monkeypatch.setattr(llm_service, "_run_command", run_command)
+    return commands
+
+
+def test_summarize_codex_model_override_reaches_the_command(backend, tmp_path, monkeypatch):
+    # Codex читает только codex_model (общий `model` — это модель API); раньше model=X
+    # из summarize молча терялся, а в ответе всё равно стояло "model": X
+    commands = _codex_commands(monkeypatch)
+    out = _run(backend.summarize("t", "summary", None, "Codex", "o3"))
+    assert out["provider"] == "Codex" and out["model"] == "o3"
+    command = commands[0]
+    assert command[command.index("-m") + 1] == "o3"
+
+
+def test_summarize_codex_ignores_shared_api_model_and_reports_it_honestly(backend, tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "user_settings.json").write_text('{"llm_provider": "Codex", "llm_model": "gpt-4.1-mini"}')
+    commands = _codex_commands(monkeypatch)
+    out = _run(backend.summarize("t", "summary", None, None, None))
+    assert "-m" not in commands[0]  # модель API не уходит в Codex
+    assert out["model"] == ""       # и не выдаётся за использованную
+
+
 def test_summarize_provider_from_settings(backend, fake_provider, tmp_path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()

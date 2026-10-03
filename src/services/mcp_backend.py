@@ -494,6 +494,10 @@ class LocalBackend:
                                    f"Unknown provider '{settings.get('provider')}'. Use one of: {', '.join(cli_tools.canonical_provider_names())}.",
                                    param="provider") from exc
             settings["provider"] = canonical
+            if canonical == "Codex":
+                # Codex берёт модель только из codex_model: общий `model` — модель API-провайдера
+                # (так же у PyQt и TUI). Явный model из вызова — для Codex, иначе его дефолт.
+                settings["codex_model"] = model or ""
             if self.http_mode:
                 # Удалённый держатель ключа не должен получать CLI-агента с инструментами
                 # через summarize(prompt=...), даже если чекбокс включён в настройках хоста
@@ -511,7 +515,8 @@ class LocalBackend:
             if self.logger:
                 self.logger.error(f"[summarize] {canonical} failed: {exc}", exc_info=True)
             raise BackendError("llm_failed", f"LLM provider '{canonical}' failed: {_first_line(exc)}", 502) from exc
-        return {"mode": mode, "provider": canonical, "model": settings.get("model") or "", "answer": answer}
+        used_model = settings.get("codex_model") if canonical == "Codex" else settings.get("model")
+        return {"mode": mode, "provider": canonical, "model": used_model or "", "answer": answer}
 
     # ---------- introspection ----------
 

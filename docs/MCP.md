@@ -225,7 +225,7 @@ curl -N -X POST https://gigaam-site.dubr1k.space/mcp \
 | `mode` | `summary` \| `tasks` \| `terms` \| `custom` | `summary` | Выжимка, список задач, глоссарий или свой промпт. |
 | `prompt` | string | — | Инструкция для `mode="custom"`; иначе игнорируется. |
 | `provider` | string | настройки сервера | `API`, `Claude Code`, `Codex`, `OpenCode`, `Pi`, `oh-my-pi`, `Other`; список с доступностью — `list_llm_providers`. |
-| `model` | string | настройки сервера | Имя модели для выбранного провайдера. |
+| `model` | string | настройки сервера | Имя модели для выбранного провайдера. Для `Codex` модель из настроек сервера (она общая с `API`) не применяется: без `model` Codex берёт свою по умолчанию, и в ответе `model` пустой. |
 
 ```json
 {"name": "summarize", "arguments": {"text": "<транскрипт>", "mode": "tasks"}}
