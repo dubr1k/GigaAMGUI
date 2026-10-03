@@ -113,6 +113,28 @@ def generate_diarized_text(utterances: list) -> str:
     return "\n\n".join(blocks)
 
 
+def generate_timecoded_text(utterances: list, time_formatter, *, with_speakers: bool = False) -> str:
+    """TXT с таймкодами: строка `[MM:SS - MM:SS] текст` на каждый сегмент.
+
+    ``with_speakers`` добавляет `Спикер: ` перед текстом сегментов, у которых
+    есть метка (только после реально успешной диаризации). Пустые сегменты
+    пропускаются.
+    """
+    lines = []
+    for utt in utterances:
+        text = utt.get('transcription', '')
+        if not text or not text.strip():
+            continue
+        start, end = utt.get('boundaries', (0.0, 0.0))
+        speaker = utt.get('speaker') if with_speakers else None
+        prefix = f"{speaker}: " if speaker else ""
+        lines.append(
+            f"[{time_formatter.format_timestamp(start)} - "
+            f"{time_formatter.format_timestamp(end)}] {prefix}{text}"
+        )
+    return "\n".join(lines)
+
+
 def format_timestamp(seconds: float, ms_sep: str) -> str:
     """Форматирует время как HH:MM:SS<ms_sep>mmm. ms_sep=',' для SRT, '.' для VTT."""
     total_millis = max(0, int(round(seconds * 1000)))

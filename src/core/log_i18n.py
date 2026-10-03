@@ -130,6 +130,9 @@ LOG_TRANSLATIONS: tuple[tuple[str, str], ...] = (
     # Результат
     (r"^Объём текста: (\d+) символов$", r"Text size: \1 characters"),
     (r"^Сохранён файл: (.+)$", r"Saved file: \1"),
+    (r"^Не удалось создать папку для результатов (.+?): (.+)$", r"Could not create the output folder \1: \2"),
+    (r"^Не удалось сохранить результаты: (.+)$", r"Could not save the results: \1"),
+    (r"^Не удалось сохранить (.+?): (.+)$", r"Could not save \1: \2"),
     (r"^Готово за (.+?) \(подготовка звука (.+?) с, распознавание (.+?) с\)$", r"Done in \1 (audio preparation \2 s, recognition \3 s)"),
     # Длительности из TimeFormatter.format_duration
     (r"^(\d+) ч (\d+) мин$", r"\1 h \2 min"),

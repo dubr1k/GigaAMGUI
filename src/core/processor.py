@@ -17,9 +17,9 @@ from ..config import DIARIZATION_BACKEND
 from ..utils.audio_converter import AudioConverter
 from ..utils.audio_preprocessing import AudioPreprocessor, FFmpegAudioPreprocessingBackend
 from ..utils.deepfilter_backend import DeepFilterNetBinaryBackend
-from ..utils.output_naming import output_path
+from ..utils.output_naming import output_filename
 from ..utils.time_formatter import TimeFormatter
-from . import formatters
+from . import export, formatters
 from .progress import ProgressEvent, ProgressPlan
 from .subtitles import SubtitleOptions
 
@@ -369,6 +369,8 @@ class TranscriptionProcessor:
                 'error': None,
             },
             'saved_files': [],
+            # Формат → причина, если отдельный формат не удалось сохранить.
+            'export_errors': {},
             # Причина неуспеха одной строкой для клиентов, которые не видят журнал
             # (web, MCP, OpenAI-совместимый API). None при success.
             'error': None,
@@ -587,7 +589,8 @@ class TranscriptionProcessor:
                         self.logger("Причина указана выше.")
 
             # Проверка результатов транскрибации
-            if not utterances or len(utterances) == 0:
+            utterances = utterances or []
+            if not utterances:
                 error_msg = (
                     f"Внимание: в файле {filename} не найдено речи.\n"
                     f"Возможные причины:\n"
@@ -598,142 +601,53 @@ class TranscriptionProcessor:
                     f"https://huggingface.co/pyannote/segmentation-3.0"
                 )
                 self.logger(error_msg)
-                # Сохраняем пустые файлы, но логируем предупреждение
-                full_text = ""
-                timecoded_lines = []
-                full_text_diarized = ""
-                timecoded_lines_diarized = []
             else:
                 self.logger(f"Реплик в тексте: {len(utterances)}")
-
-                # Таймкодированные форматы — строка на сегмент; обычный и
-                # диаризованный TXT собираются в абзацы форматтерами ниже.
-                timecoded_lines_plain = []
-                timecoded_lines_diarized = []
-
                 for utt in utterances:
                     text = utt.get('transcription', '')
-                    boundaries = utt.get('boundaries', (0.0, 0.0))
-                    speaker = utt.get('speaker', None)
-
-                    # Проверка на пустой текст
                     if not text or not text.strip():
-                        self.logger(f"Внимание: фрагмент {boundaries} распознан без текста")
-                        continue
+                        self.logger(f"Внимание: фрагмент {utt.get('boundaries', (0.0, 0.0))} распознан без текста")
 
-                    start, end = boundaries
+            # Декодерные/VAD-границы не являются абзацами: они режут фразы
+            # посередине каждые 10–20 секунд. Абзацы TXT закрываются только на
+            # конце предложения (пауза или длина), см. formatters._paragraphs.
+            full_text = formatters.generate_plain_text(utterances)
+            if utterances and not full_text.strip():
+                self.logger("Внимание: речь не распознана — все фрагменты пустые")
 
-                    ts_str_plain = (f"[{self.time_formatter.format_timestamp(start)} - "
-                                    f"{self.time_formatter.format_timestamp(end)}] {text}")
-                    timecoded_lines_plain.append(ts_str_plain)
-
-                    # Диаризованный текст — с метками спикеров только после
-                    # реально успешного запуска модели и маппинга.
-                    if diarization_applied and speaker:
-                        ts_str_diarized = (f"[{self.time_formatter.format_timestamp(start)} - "
-                                           f"{self.time_formatter.format_timestamp(end)}] {speaker}: {text}")
-                        timecoded_lines_diarized.append(ts_str_diarized)
-                    else:
-                        ts_str_diarized = (f"[{self.time_formatter.format_timestamp(start)} - "
-                                           f"{self.time_formatter.format_timestamp(end)}] {text}")
-                        timecoded_lines_diarized.append(ts_str_diarized)
-
-                # Декодерные/VAD-границы не являются абзацами: они режут фразы
-                # посередине каждые 10–20 секунд. Абзацы TXT закрываются только на
-                # конце предложения (пауза или длина), см. formatters._paragraphs.
-                full_text = formatters.generate_plain_text(utterances)
-                timecoded_lines = timecoded_lines_plain
-
-                # Диаризованный текст — для _diarize.txt (только после успешной диаризации)
-                full_text_diarized = (
-                    formatters.generate_diarized_text(utterances) if diarization_applied else ""
-                )
-
-                if not full_text.strip():
-                    self.logger("Внимание: речь не распознана — все фрагменты пустые")
-
-            # Определяем форматы вывода (по умолчанию txt). Если пользователь
-            # запросил диаризацию и она действительно сработала, всегда создаём
-            # хотя бы один явно диаризованный файл — обычный TXT намеренно остаётся
-            # без меток спикеров и раньше создавал впечатление, что функция не работает.
-            if output_formats is None:
-                output_formats = ['txt']
-            else:
-                output_formats = list(output_formats)
-            if diarization_applied and 'txt_diarize' not in output_formats:
-                output_formats.append('txt_diarize')
-            if (
-                diarization_applied
-                and 'txt_timecodes' in output_formats
-                and 'txt_diarize_timecodes' not in output_formats
-            ):
-                output_formats.append('txt_diarize_timecodes')
+            # Реплики нужны API, который собирает ответ в памяти, не читая файлы,
+            # в том числе когда какой-то формат не удалось сохранить.
+            result['utterances'] = utterances
+            formats = export.resolve_output_formats(
+                output_formats,
+                diarization_applied=diarization_applied,
+            )
             self._update_progress("export", 0.0)
-
-            # Сохранение в выбранных форматах
-            saved_files = []
-            total_formats = max(len(output_formats), 1)
-
-            for fmt_index, fmt in enumerate(output_formats, start=1):
-                if fmt == 'txt':
-                    # Чистый текст без таймкодов и меток спикеров
-                    path_txt = output_path(output_dir, name_without_ext, 'txt')
-                    with open(path_txt, "w", encoding="utf-8") as f:
-                        f.write(full_text)
-                    saved_files.append(path_txt)
-
-                elif fmt == 'txt_timecodes':
-                    # Текст с таймкодами, без меток спикеров
-                    path_ts = output_path(output_dir, name_without_ext, 'txt_timecodes')
-                    with open(path_ts, "w", encoding="utf-8") as f:
-                        f.write("\n".join(timecoded_lines))
-                    saved_files.append(path_ts)
-
-                elif fmt == 'txt_diarize':
-                    # Текст с метками спикеров (только при включённой диаризации)
-                    if diarization_applied and full_text_diarized.strip():
-                        path_diarize = output_path(output_dir, name_without_ext, 'txt_diarize')
-                        with open(path_diarize, "w", encoding="utf-8") as f:
-                            f.write(full_text_diarized)
-                        saved_files.append(path_diarize)
-                    elif enable_diarization:
-                        self.logger("Внимание: говорящих определить не удалось, файл _diarize.txt не создан")
-
-                elif fmt == 'txt_diarize_timecodes':
-                    # Текст с метками спикеров (только после успешной диаризации)
-                    if diarization_applied and timecoded_lines_diarized:
-                        path_diarize_ts = output_path(output_dir, name_without_ext, 'txt_diarize_timecodes')
-                        with open(path_diarize_ts, "w", encoding="utf-8") as f:
-                            f.write("\n".join(timecoded_lines_diarized))
-                        saved_files.append(path_diarize_ts)
-                    elif enable_diarization:
-                        self.logger("Внимание: говорящих определить не удалось, файл _diarize_timecodes.txt не создан")
-
-                elif fmt == 'md':
-                    # Markdown формат
-                    path_md = output_path(output_dir, name_without_ext, 'md')
-                    md_content = self._generate_markdown(utterances, filename)
-                    with open(path_md, "w", encoding="utf-8") as f:
-                        f.write(md_content)
-                    saved_files.append(path_md)
-
-                elif fmt == 'srt':
-                    # SRT субтитры
-                    path_srt = output_path(output_dir, name_without_ext, 'srt')
-                    srt_content = self._generate_srt(utterances, subtitle_options)
-                    with open(path_srt, "w", encoding="utf-8") as f:
-                        f.write(srt_content)
-                    saved_files.append(path_srt)
-
-                elif fmt == 'vtt':
-                    # VTT субтитры
-                    path_vtt = output_path(output_dir, name_without_ext, 'vtt')
-                    vtt_content = self._generate_vtt(utterances, subtitle_options)
-                    with open(path_vtt, "w", encoding="utf-8") as f:
-                        f.write(vtt_content)
-                    saved_files.append(path_vtt)
-
-                self._update_progress("export", fmt_index / total_formats)
+            outcome = export.write_outputs(
+                output_dir,
+                name_without_ext,
+                formats,
+                self._output_renderers(
+                    utterances,
+                    filename=filename,
+                    full_text=full_text,
+                    diarization_applied=diarization_applied,
+                    diarization_requested=enable_diarization,
+                    subtitle_options=subtitle_options,
+                ),
+                on_format_done=lambda done, total: self._update_progress("export", done / total),
+            )
+            saved_files = outcome.saved_files
+            result['saved_files'] = saved_files
+            result['export_errors'] = outcome.errors
+            for fmt, reason in outcome.errors.items():
+                self.logger(f"Не удалось сохранить {output_filename(name_without_ext, fmt)}: {reason}")
+            if outcome.errors and not saved_files:
+                result['error'] = "Не удалось сохранить результаты: " + "; ".join(
+                    f"{fmt}: {reason}" for fmt, reason in outcome.errors.items()
+                )
+                result['total_time'] = time.time() - file_start_time
+                return result
 
             # Проверка сохраненных данных
             if not full_text.strip():
@@ -741,11 +655,8 @@ class TranscriptionProcessor:
             else:
                 self.logger(f"Объём текста: {len(full_text)} символов")
 
-            # Успех
+            # Успех (отдельные несохранённые форматы — в export_errors)
             result['success'] = True
-            result['saved_files'] = saved_files
-            # Реплики нужны API, который собирает ответ в памяти, не читая файлы.
-            result['utterances'] = utterances
             result['total_time'] = time.time() - file_start_time
 
             # Логируем сохраненные файлы
@@ -766,6 +677,47 @@ class TranscriptionProcessor:
             _module_logger.error("Processing failed for %s", filepath, exc_info=True)
 
         return result
+
+    def _output_renderers(
+        self,
+        utterances: list,
+        *,
+        filename: str,
+        full_text: str,
+        diarization_applied: bool,
+        diarization_requested: bool,
+        subtitle_options: SubtitleOptions | None,
+    ) -> dict[str, export.Renderer]:
+        """Рендер каждого формата; None — файл не создаётся."""
+
+        def diarized(render: Callable[[], str], file_label: str) -> export.Renderer:
+            # Файлы с метками спикеров — только после реально успешной
+            # диаризации: иначе обычный текст под именем _diarize.txt.
+            def run() -> str | None:
+                if diarization_applied:
+                    content = render()
+                    if content.strip():
+                        return content
+                if diarization_requested:
+                    self.logger(f"Внимание: говорящих определить не удалось, файл {file_label} не создан")
+                return None
+
+            return run
+
+        return {
+            'txt': lambda: full_text,
+            'txt_timecodes': lambda: formatters.generate_timecoded_text(utterances, self.time_formatter),
+            'txt_diarize': diarized(lambda: formatters.generate_diarized_text(utterances), "_diarize.txt"),
+            'txt_diarize_timecodes': diarized(
+                lambda: formatters.generate_timecoded_text(
+                    utterances, self.time_formatter, with_speakers=True
+                ),
+                "_diarize_timecodes.txt",
+            ),
+            'md': lambda: self._generate_markdown(utterances, filename),
+            'srt': lambda: self._generate_srt(utterances, subtitle_options),
+            'vtt': lambda: self._generate_vtt(utterances, subtitle_options),
+        }
 
     def _apply_diarization(
         self,
