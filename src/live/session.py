@@ -15,7 +15,12 @@ from src.core.asr.types import normalize_window_audio
 
 from .capture.base import CaptureAdapter
 from .diagnostics import SessionLog
-from .diarization import LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS, label_event
+from .diarization import (
+    LIVE_ESTIMATE_BACKEND,
+    LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS,
+    BuiltinDiarizers,
+    label_event,
+)
 from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .recorder import SessionRecorder
@@ -117,7 +122,7 @@ class LiveSession:
             sample_rate=settings.asr_sample_rate,
         )
         self._recorder_factory = recorder_factory
-        self._diarization_factory = diarization_factory
+        self._diarization_factory = diarization_factory or BuiltinDiarizers()
         self._translate = translate or (lambda _ru, en: en)
         self._session_dir = LiveSessionStore(root_dir).create(settings)
         self._log_sink = log
@@ -734,10 +739,20 @@ class LiveSession:
         """Runs without the session lock; only the ASR thread of `source` calls it."""
         if source in self._live_diarization_unavailable:
             return {}
+        if not getattr(self._diarization_factory, "supports_live_estimate", True):
+            with self._lock:
+                self._report_live_diarization_unavailable(
+                    source,
+                    self._translate(
+                        "Оценка спикеров во время записи недоступна с установленными движками диаризации.",
+                        "Live speaker estimates are not available with the installed diarization backends.",
+                    ),
+                )
+            return {}
         diarizer = self._live_diarizers.get(source)
         if diarizer is None:
             try:
-                diarizer = self._create_diarizer("sortformer")
+                diarizer = self._create_diarizer(LIVE_ESTIMATE_BACKEND)
                 self._live_diarizers[source] = diarizer
             except Exception as exc:
                 with self._lock:
@@ -763,9 +778,12 @@ class LiveSession:
             return {}
 
     def _diarize_recordings(self, recordings: dict[CaptureSource, Path]) -> None:
+        diarizer = None
         for source, path in recordings.items():
             try:
-                diarizer = self._create_diarizer("onnx")
+                # One model for every source: it used to be loaded per source.
+                if diarizer is None:
+                    diarizer = self._create_diarizer(self._settings.diarization_backend)
                 segments = diarizer.diarize(str(path))
                 events = [event for event in self._journal.latest_events() if event.source is source]
                 for revised in self._revised_speakers(events, self._segment_speakers(events, segments)):
@@ -782,11 +800,7 @@ class LiveSession:
                 ))
 
     def _create_diarizer(self, backend: str):
-        if self._diarization_factory is not None:
-            return self._diarization_factory(backend)
-        from src.core.diarization.factory import create_diarization_backend
-
-        return create_diarization_backend(backend)
+        return self._diarization_factory(backend)
 
     def _segment_speakers(self, events, segments) -> dict[str, str]:
         speakers = {}

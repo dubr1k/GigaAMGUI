@@ -307,6 +307,48 @@ def test_live_ask_without_session_or_transcript_errors(service):
     assert errors == ["No live session is running", "No final transcript events are available yet"]
 
 
+def test_live_estimate_in_the_worker_loads_no_diarization_model(service, monkeypatch):
+    """The worker ignored the backend the session asked for and loaded the
+    user's after-stop backend (pyannote by default) for a live estimate that
+    no backend can make."""
+    created = []
+    monkeypatch.setattr(
+        "src.core.diarization.factory.create_diarization_backend",
+        lambda backend, **kwargs: created.append(backend) or object(),
+    )
+    svc, output, tmp_path = service
+    _start(svc, tmp_path, diarization_mode="live_estimate", diarization_backend="pyannote")
+    svc.audio({"type": "live_audio", "source": "mic", "seq": 0, "sample_offset": 0, "timestamp_ns": 0, "pcm": _pcm()})
+    FakeScheduler.instances[0].final("привет")
+
+    assert created == []
+    assert any(
+        m["type"] == "live_capture_event" and "After stop" in m["detail"] for m in _messages(output)
+    )
+    svc.stop()
+
+
+def test_after_stop_in_the_worker_uses_the_requested_backend(service, monkeypatch):
+    created = []
+
+    class Diarizer:
+        def diarize(self, path):
+            return []
+
+    monkeypatch.setattr(
+        "src.core.diarization.factory.create_diarization_backend",
+        lambda backend, **kwargs: created.append(backend) or Diarizer(),
+    )
+    svc, output, tmp_path = service
+    _start(svc, tmp_path, diarization_mode="after_stop", diarization_backend="sortformer")
+    svc.audio({"type": "live_audio", "source": "mic", "seq": 0, "sample_offset": 0, "timestamp_ns": 0, "pcm": _pcm()})
+    FakeScheduler.instances[0].final("привет")
+
+    svc.stop()
+
+    assert created == ["sortformer"]
+
+
 def test_live_stop_with_failed_stages_reports_saved_files_and_the_error(tmp_path):
     """stop() now finishes despite failed stages; the client must still hear about them."""
 

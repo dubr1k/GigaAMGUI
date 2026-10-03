@@ -14,6 +14,7 @@ import numpy as np
 from src.live.asr import LiveAsrScheduler
 from src.live.asr_backend import LazyModelBackend
 from src.live.capture.push import PushCaptureAdapter
+from src.live.diarization import BuiltinDiarizers
 from src.live.exports import ExportSelection
 from src.live.journal import default_session_root
 from src.live.session import LiveSession, LiveStatus
@@ -94,10 +95,12 @@ class LiveWorkerService:
             self._emit("error", message=f"Unknown diarization mode: {command.get('diarization_mode')!r}")
             return
         self._sample_rate = int(command.get("sample_rate") or 16_000)
+        diarization_backend = str(command.get("diarization_backend") or "pyannote")
         record_mic = bool(command.get("record_mic", True))
         record_system = bool(command.get("record_system", True))
         settings = LiveSettings(
             diarization_mode=mode,
+            diarization_backend=diarization_backend,
             source_sample_rate=self._sample_rate,
             asr_sample_rate=16_000,
             record_mic_audio=CaptureSource.MIC in sources and record_mic,
@@ -120,13 +123,14 @@ class LiveWorkerService:
             scheduler_factory = self._prepare_scheduler_factory(command)
             if scheduler_factory is None:
                 return
-        backend = str(command.get("diarization_backend") or "pyannote")
         try:
             session = self._session_factory(
                 root, settings, adapters,
                 scheduler_factory=scheduler_factory,
                 export_selection=exports,
-                diarization_factory=lambda _requested, backend=backend: self._create_diarizer(backend),
+                # The session asks for the backend it needs: the user's choice
+                # (via settings) after stop, nothing it cannot use live.
+                diarization_factory=BuiltinDiarizers(),
                 log=lambda message: self._emit("log", message=message),
             )
             session.subscribe(lambda value, session=session: self._on_update(value, session))
@@ -346,9 +350,3 @@ class LiveWorkerService:
             model_revision=str(command.get("model") or "v3_e2e_rnnt"),
             onnx_provider=str(command.get("onnx_provider") or "auto"),
         )
-
-    @staticmethod
-    def _create_diarizer(backend: str):
-        from src.core.diarization.factory import create_diarization_backend
-
-        return create_diarization_backend(backend)

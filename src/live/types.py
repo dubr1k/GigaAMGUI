@@ -90,6 +90,8 @@ class LiveSettings:
     mic_device_id: str | None = None
     system_device_id: str | None = None
     diarization_mode: DiarizationMode = DiarizationMode.OFF
+    diarization_backend: str = "onnx"
+    """Backend for after-stop diarization (pyannote, onnx or sortformer)."""
     source_sample_rate: int = 48_000
     asr_sample_rate: int = 16_000
     record_source_audio: bool = True
