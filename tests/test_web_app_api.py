@@ -7,8 +7,10 @@
 import asyncio
 import importlib
 import os
+from pathlib import Path
 
 import pytest
+import yt_dlp
 
 pytest.importorskip("fastapi")
 
@@ -255,6 +257,118 @@ def test_result_skips_unknown_formats_persisted_by_older_versions(client, web_di
     response = client.get("/api/tasks/done2/result")
     assert response.status_code == 200
     assert [item["format"] for item in response.json()["result_files"]] == ["txt"]
+
+
+# ==================== загрузка по URL ====================
+
+
+class _FakeDownloader:
+    """MediaDownloader-подделка: пишет в target_dir как yt-dlp; `fail` — упасть, оставив .part."""
+
+    def __init__(self, *, fail: bool = False, name: str = "Song title.m4a"):
+        self.fail = fail
+        self.name = name
+        self.calls = []
+
+    def download(self, url, target_dir, progress_callback=None, **kwargs):
+        from src.utils.media_downloader import DownloadResult
+
+        self.calls.append({"url": url, "target_dir": target_dir, **kwargs})
+        target = Path(target_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        if progress_callback:
+            progress_callback(50)
+        if self.fail:
+            (target / f"{self.name}.part").write_bytes(b"partial")
+            raise RuntimeError("yt-dlp завершился с кодом 1")
+        (target / self.name).write_bytes(b"audio")
+        return DownloadResult(files=[str(target / self.name)])
+
+
+class _FakeYoutubeDL:
+    """На случай прямого вызова yt-dlp: ведёт себя как оборванная загрузка, без сети."""
+
+    def __init__(self, opts):
+        self.opts = opts
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def download(self, urls):
+        template = self.opts["outtmpl"]
+        Path(template.replace("%(title)s", "Song").replace("%(ext)s", "m4a.part")).write_bytes(b"partial")
+        raise RuntimeError("network down")
+
+
+def _run_download(task_id: str, url: str = "https://example.invalid/watch?v=1"):
+    web_app._register_task(task_id, "watch", 0, "alice")
+    web_app.tasks_storage[task_id]["status"] = "downloading"
+    asyncio.run(web_app._download_and_process(
+        task_id, url, ["txt"], False, "pyannote", None,
+        web_app.transcription_service.AsrSelection("auto", "v3_e2e_rnnt", "auto"),
+        web_app.SubtitleOptions(),
+    ))
+
+
+def test_url_download_failure_leaves_no_partial_files(web_dirs, monkeypatch):
+    upload_dir, _ = web_dirs
+    downloader = _FakeDownloader(fail=True)
+    monkeypatch.setattr(web_app, "media_downloader", downloader)
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _FakeYoutubeDL)
+
+    _run_download("dl1")
+
+    assert web_app.tasks_storage["dl1"]["status"] == "failed"
+    assert [p.name for p in upload_dir.iterdir()] == []
+
+
+def test_url_download_is_capped_and_handed_to_processing(web_dirs, monkeypatch):
+    upload_dir, _ = web_dirs
+    downloader = _FakeDownloader()
+    monkeypatch.setattr(web_app, "media_downloader", downloader)
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _FakeYoutubeDL)
+    processed = {}
+
+    async def fake_process(task_id, file_path, filename, *args):
+        processed.update(task_id=task_id, file_path=file_path, filename=filename, exists=file_path.exists())
+
+    monkeypatch.setattr(web_app, "process_transcription", fake_process)
+
+    _run_download("dl2")
+
+    # Тот же лимит размера, что у загрузки файлом и у MCP
+    assert downloader.calls[0]["max_filesize"] == web_app.MAX_FILE_SIZE
+    assert processed["filename"] == "Song title.m4a"
+    assert processed["file_path"] == upload_dir / "dl2_Song title.m4a" and processed["exists"]
+    # Временная папка загрузки убрана; в uploads — только файл задачи в обычном виде
+    assert [p.name for p in upload_dir.iterdir()] == ["dl2_Song title.m4a"]
+    assert web_app.tasks_storage["dl2"]["file_size"] == 5
+
+
+def test_url_download_with_nothing_downloaded_fails_with_reason(web_dirs, monkeypatch):
+    # yt-dlp молча пропускает файл больше max_filesize — пустой результат должен стать понятной ошибкой
+    upload_dir, _ = web_dirs
+
+    class _Empty(_FakeDownloader):
+        def download(self, url, target_dir, progress_callback=None, **kwargs):
+            from src.utils.media_downloader import DownloadResult
+
+            self.calls.append(kwargs)
+            Path(target_dir).mkdir(parents=True, exist_ok=True)
+            return DownloadResult(files=[])
+
+    monkeypatch.setattr(web_app, "media_downloader", _Empty())
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _FakeYoutubeDL)
+
+    _run_download("dl3")
+
+    task = web_app.tasks_storage["dl3"]
+    assert task["status"] == "failed"
+    assert "лимит" in task["message"]
+    assert list(upload_dir.iterdir()) == []
 
 
 # ==================== SSE прогресса ====================

@@ -23,7 +23,6 @@ from typing import Final
 
 import aiofiles
 import jwt
-import yt_dlp
 from dotenv import load_dotenv
 from fastapi import (
     Depends,
@@ -229,7 +228,10 @@ def _task_result_dir(task_id: str) -> Path:
 
 def _remove_task_files(task_id: str, filename: str | None = None) -> None:
     for upload_path in UPLOAD_DIR.glob(f"{task_id}_*"):
-        if upload_path.is_file():
+        if upload_path.is_dir():
+            # `{task_id}_download` — загрузка по URL, оборванная падением сервера
+            shutil.rmtree(upload_path, ignore_errors=True)
+        elif upload_path.is_file():
             try:
                 upload_path.unlink()
             except OSError:
@@ -1160,41 +1162,28 @@ async def _download_and_process(
     asr_selection: transcription_service.AsrSelection,
     subtitle_options: SubtitleOptions,
 ):
-    """Скачивает медиа по URL и запускает обработку."""
+    """Скачивает медиа по URL и запускает обработку.
+
+    Через общий MediaDownloader (как у MCP): лимит MAX_FILE_SIZE доходит до
+    yt-dlp, схема URL проверяется там же. Загрузка идёт в свою папку
+    `{task_id}_download`, которая убирается в любом исходе — с .part/.ytdl
+    оборванной загрузки; готовый файл переносится в обычное
+    `{task_id}_<имя>` загрузок.
+    """
+    download_dir = UPLOAD_DIR / f"{task_id}_download"
     try:
-        download_dir = UPLOAD_DIR
-        download_dir.mkdir(exist_ok=True)
+        def on_percent(percent) -> None:  # MediaDownloader отдаёт 0..100; 95+ — уже обработка
+            if task_id in tasks_storage and isinstance(percent, (int, float)):
+                tasks_storage[task_id]['progress'] = max(0, min(95, int(percent)))
 
-        def progress_hook(data):
-            status = data.get("status")
-            if status == "downloading":
-                total = data.get("total_bytes") or data.get("total_bytes_estimate")
-                downloaded = data.get("downloaded_bytes")
-                if total and downloaded is not None:
-                    pct = max(0, min(95, int(downloaded * 100 / total)))
-                    if task_id in tasks_storage:
-                        tasks_storage[task_id]['progress'] = pct
-            elif status == "finished":
-                if task_id in tasks_storage:
-                    tasks_storage[task_id]['progress'] = 95
-
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": str(download_dir / f"{task_id}_%(title)s.%(ext)s"),
-            "progress_hooks": [progress_hook],
-            "ignoreerrors": False,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-        }
-
+        downloader = media_downloader or MediaDownloader()
         loop = asyncio.get_running_loop()
-
-        def do_download():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-        await loop.run_in_executor(None, do_download)
+        downloaded = await loop.run_in_executor(
+            None,
+            lambda: downloader.download(
+                url, str(download_dir), progress_callback=on_percent, max_filesize=MAX_FILE_SIZE,
+            ),
+        )
 
         if task_id in deleted_task_ids or task_id not in tasks_storage:
             if task_id in deleted_task_ids:
@@ -1203,18 +1192,18 @@ async def _download_and_process(
                 _remove_task_files(task_id)
             return
 
-        # Найти скачанный файл
-        downloaded_files = [
-            p for p in download_dir.iterdir()
-            if p.name.startswith(f"{task_id}_") and p.is_file()
-            and not p.name.endswith((".part", ".ytdl"))
-        ]
+        files = [Path(p) for p in (getattr(downloaded, "files", None) or []) if Path(p).is_file()]
+        if not files:
+            # yt-dlp молча пропускает файл больше max_filesize
+            max_gb = MAX_FILE_SIZE / 1024 / 1024 / 1024
+            raise RuntimeError(f"Ничего не скачано: медиа недоступно или больше лимита {max_gb:.1f} GB")
+        if files[0].stat().st_size > MAX_FILE_SIZE:
+            raise RuntimeError("Скачанный файл больше лимита MAX_FILE_SIZE")
 
-        if not downloaded_files:
-            raise RuntimeError("yt-dlp не вернул файл")
-
-        file_path = downloaded_files[0]
-        filename = file_path.name[len(task_id) + 1:]
+        filename = safe_filename(files[0].name)
+        file_path = UPLOAD_DIR / f"{task_id}_{filename}"
+        files[0].replace(file_path)
+        shutil.rmtree(download_dir, ignore_errors=True)
         file_size = file_path.stat().st_size
 
         tasks_storage[task_id].update({
@@ -1247,6 +1236,7 @@ async def _download_and_process(
             _persist_tasks_index()
 
     finally:
+        shutil.rmtree(download_dir, ignore_errors=True)
         if task_id in deleted_task_ids and task_id not in tasks_storage:
             _finalize_deleted_task(task_id)
 
