@@ -5,7 +5,6 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from time import monotonic
@@ -16,13 +15,14 @@ from src.core.asr.types import normalize_window_audio
 from .capture.base import CaptureAdapter
 from .conversation import ConversationLog, ConversationTurn
 from .diagnostics import SessionLog
-from .diarization import LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS, BuiltinDiarizers, SpeakerLabeler
+from .diarization import BuiltinDiarizers, SpeakerLabeler
 from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .mixing import MAX_MIX_SKEW_NS, MAX_PENDING_MIX_CHUNKS, MixCoordinator
 from .recorder import SessionRecorder
 from .recording_policy import MAX_RECORDING_FAILURES, RecordingGuard
 from .timeline import SourceTimeline
+from .transcript import TranscriptState
 from .types import (
     CaptureEvent,
     CaptureEventKind,
@@ -115,6 +115,7 @@ class LiveSession:
         self._log_sink = log
         self._session_log = SessionLog(self._session_dir / "live.log")
         self._journal = EventJournal(self._session_dir / "events.jsonl")
+        self._transcript = TranscriptState(self._journal, asr_sample_rate=settings.asr_sample_rate)
         self._conversation = ConversationLog(ConversationJournal(self._session_dir / "conversation.jsonl"))
         self._recorder = recorder_factory(
             self._session_dir,
@@ -141,8 +142,6 @@ class LiveSession:
             translate=self._translate,
         )
         self._schedulers: dict[CaptureSource, AsrScheduler] = {}
-        self._finalized_revisions: dict[tuple[CaptureSource, str], int] = {}
-        self._partials: dict[CaptureSource, TranscriptEvent] = {}
         self._subscribers: list[Callable[[TranscriptEvent | CaptureEvent | LiveStatus], None]] = []
         self._recording = RecordingGuard(
             self._recorder.write, notify=self._notify, log=self.log, translate=self._translate,
@@ -275,9 +274,7 @@ class LiveSession:
                     self._attempt(errors, "diarize", lambda: self._speakers.diarize_recordings(
                         recordings,
                         recording_files,
-                        events_for=lambda source: [
-                            event for event in self._journal.latest_events() if event.source is source
-                        ],
+                        events_for=self._transcript.events_of,
                         publish=self._publish_revision,
                         work_dir=self._session_dir,
                     ))
@@ -359,24 +356,9 @@ class LiveSession:
             return LiveStatus(self._state, set(self._active_sources), set(self._failed_sources))
 
     def ask_context(self) -> str:
-        # Called from the assistant's thread while ASR threads publish: the
-        # drafts are copied under the lock instead of iterated live.
+        # Called from the assistant's thread while ASR threads publish.
         with self._lock:
-            events = self._journal.latest_events()
-            partials = list(self._partials.items())
-        final_text = "\n".join(
-            f"[{datetime.fromtimestamp(event.timestamp_ns / 1_000_000_000, timezone.utc).isoformat()}] "
-            f"{event.source_label}{f' / {event.speaker}' if event.speaker else ''}: {event.text}"
-            for event in events
-            if event.status == "final"
-        )
-        drafts = "\n".join(
-            f"[{source.value.upper()} draft] {event.text}"
-            for source, event in partials
-        )
-        if not drafts:
-            return final_text
-        return f"Final transcript:\n{final_text}\n\nDraft transcript:\n{drafts}"
+            return self._transcript.context()
 
     def begin_conversation(self, question: str) -> ConversationTurn:
         return self._conversation.begin(question)
@@ -455,13 +437,11 @@ class LiveSession:
 
     def _on_final(self, event: TranscriptEvent) -> None:
         with self._lock:
-            self._partials.pop(event.source, None)
-            self._record_finalized(event)
-            self._journal.append(event)
+            self._transcript.record_final(event)
             self._notify(event)
             if self._settings.diarization_mode is not DiarizationMode.LIVE_ESTIMATE:
                 return
-            recent = self._recent_events(event)
+            recent = self._transcript.recent(event)
         # Creating the diarizer loads a model. Under the session lock that
         # stalled _on_chunk for every source, and the native client's backlog
         # overflowed and dropped audio meanwhile.
@@ -472,30 +452,12 @@ class LiveSession:
 
     def _on_partial(self, event: TranscriptEvent) -> None:
         with self._lock:
-            # A final is terminal for its event: a draft of it that arrives
-            # later — whatever its revision — would show the finished phrase
-            # again as text still being spoken.
-            if (event.source, event.event_id) in self._finalized_revisions:
-                return
-            self._partials[event.source] = event
-            self._notify(event)
+            if self._transcript.accept_partial(event):
+                self._notify(event)
 
     def _publish_revision(self, event: TranscriptEvent) -> None:
-        self._record_finalized(event)
-        self._journal.append(event)
+        self._transcript.record_revision(event)
         self._notify(event)
-
-    def _record_finalized(self, event: TranscriptEvent) -> None:
-        key = (event.source, event.event_id)
-        self._finalized_revisions[key] = max(event.revision, self._finalized_revisions.get(key, -1))
-
-    def _recent_events(self, event: TranscriptEvent) -> list[TranscriptEvent]:
-        horizon_samples = LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS * self._settings.asr_sample_rate
-        return [
-            item
-            for item in self._journal.latest_events()
-            if item.source is event.source and event.sample_end - item.sample_end <= horizon_samples
-        ]
 
     def _on_asr_error(self, source: CaptureSource, error: Exception) -> None:
         self.log(f"asr error [{source.value}]: {type(error).__name__}: {error}")
