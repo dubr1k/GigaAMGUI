@@ -88,6 +88,12 @@ class LiveUiMixin:
         self.combo_live_system_device = QComboBox()
         self.lbl_live_system_device = QLabel(self._t("Системный звук:", "System audio:"))
         source_form.addRow(self.lbl_live_system_device, self.combo_live_system_device)
+        for combo in (self.combo_live_mic_device, self.combo_live_system_device):
+            # Список приходит из фонового потока; пустой комбо не должен
+            # схлопываться до пары символов, пока устройства не ответили.
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setPlaceholderText(self._t("Поиск устройств…", "Looking for devices…"))
 
         # Short captions: the row label already says "Дорожки:" and the long
         # "Записывать дорожку …" was cut to "Записыв" in the side pane.
@@ -363,7 +369,7 @@ class LiveUiMixin:
         self.combo_live_diarization.currentIndexChanged.connect(self._update_live_export_controls)
         for checkbox in self.live_export_checkboxes.values():
             checkbox.stateChanged.connect(self._update_live_export_controls)
-        self._refresh_live_devices()
+        # Устройства перечитывает _restore_live_settings (в фоне, с сохранённым выбором).
         self._update_live_output_folder_label(self.live_output_dir.text())
         self._update_live_source_controls()
         self._update_live_export_controls()

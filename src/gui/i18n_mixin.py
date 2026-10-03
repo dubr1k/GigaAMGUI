@@ -256,6 +256,8 @@ class I18nMixin:
             self.lbl_live_source.setText("Источник:" if is_ru else "Source:")
             self.lbl_live_mic_device.setText("Микрофон:" if is_ru else "Microphone:")
             self.lbl_live_system_device.setText("Системный звук:" if is_ru else "System audio:")
+            for combo in (self.combo_live_mic_device, self.combo_live_system_device):
+                combo.setPlaceholderText("Поиск устройств…" if is_ru else "Looking for devices…")
             self.lbl_live_tracks.setText("Дорожки:" if is_ru else "Tracks:")
             self.lbl_live_diarization.setText("Диаризация:" if is_ru else "Diarization:")
             self.lbl_live_gain.setText("Усиление:" if is_ru else "Gain:")

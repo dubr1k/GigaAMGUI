@@ -73,6 +73,7 @@ class WorkerSignals(QObject):
     live_backend_prepared = pyqtSignal(object, object)  # запрос старта, текст ошибки или None
     live_answer = pyqtSignal(str, str)
     api_status_checked = pyqtSignal(str, bool)  # адрес API, отвечает ли /health
+    live_devices_probed = pyqtSignal(int, object)  # поколение запроса, {CaptureSource: [CaptureDevice]}
 
 
 class GigaTranscriberQtApp(
@@ -175,6 +176,7 @@ class GigaTranscriberQtApp(
         self.signals.live_backend_prepared.connect(self._on_live_backend_prepared)
         self.signals.live_answer.connect(self._update_live_answer)
         self.signals.api_status_checked.connect(self._on_api_status_checked)
+        self.signals.live_devices_probed.connect(self._on_live_devices_probed)
 
         saved_output_dir = self.user_settings.get_last_output_dir()
         saved_input_dir = self.user_settings.get_last_files_dir()

@@ -234,3 +234,34 @@ def test_live_estimate_diarization_is_shown_as_unavailable(window):
     window._restore_live_settings()
 
     assert combo.currentData() == "off"
+
+
+def test_device_enumeration_does_not_block_the_window_and_restores_the_saved_device(monkeypatch, tmp_path):
+    from src.live.types import CaptureDevice
+    from src.utils import UserSettings
+
+    def slow_probe(source):
+        time.sleep(1.5)
+        return [
+            CaptureDevice(f"{source.value}-default", "Built-in", source, 48_000, 1, True),
+            CaptureDevice(f"{source.value}-usb", "USB", source, 48_000, 1, False),
+        ]
+
+    monkeypatch.setattr("src.gui.live_mixin.LiveMixin._probe_devices", staticmethod(slow_probe))
+    UserSettings().set_value("live_settings", {"mic_device_id": "mic-usb"})
+    app = QApplication.instance() or QApplication([])
+
+    started = time.monotonic()
+    instance = GigaTranscriberQtApp()
+    try:
+        assert time.monotonic() - started < 2.5, "device enumeration blocked the window"
+        # До ответа устройств сохранение не должно затирать выбранный микрофон.
+        instance._save_live_settings()
+        assert instance.user_settings.get_value("live_settings")["mic_device_id"] == "mic-usb"
+
+        assert _pump_until(lambda: not instance._live_devices_probing)
+        assert instance.combo_live_mic_device.currentData() == "mic-usb"
+        assert instance.combo_live_system_device.currentData() == "system-default"
+    finally:
+        instance.close()
+        app.processEvents()

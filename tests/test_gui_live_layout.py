@@ -5,6 +5,7 @@ spinners showed no digits (seen on the Windows runner render, issue #54)."""
 
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -27,6 +28,10 @@ def window(monkeypatch, tmp_path):
     instance.resize(968, 850)
     instance.show()
     instance.tabs.setCurrentIndex(1)
+    deadline = time.monotonic() + 30
+    while instance._live_devices_probing and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
     app.processEvents()
     app.processEvents()
     yield instance

@@ -51,12 +51,14 @@ class LiveMixin:
         self._live_conversation_id: str | None = None
         self._live_stop_thread: threading.Thread | None = None
         self._live_starting = False
+        # Перечисление устройств идёт в фоне; до ответа выбор хранится здесь.
+        self._live_devices_probing = False
+        self._live_devices_generation = 0
+        self._live_device_selection: dict[CaptureSource, str | None] = {}
 
     def _restore_live_settings(self) -> None:
         settings = self._live_settings
         self._set_live_combo_value(self.combo_live_source, settings.get("source", "mic"))
-        self._set_live_combo_value(self.combo_live_mic_device, settings.get("mic_device_id"))
-        self._set_live_combo_value(self.combo_live_system_device, settings.get("system_device_id"))
         self.cb_live_mic_audio.setChecked(bool(settings.get("record_mic_audio", True)))
         self.cb_live_system_audio.setChecked(bool(settings.get("record_system_audio", True)))
         self._set_live_combo_value(self.combo_live_diarization, settings.get("diarization_mode", "off"))
@@ -77,7 +79,10 @@ class LiveMixin:
         if bool(settings.get("overlay_visible", False)):
             self.btn_live_overlay.setChecked(True)
             self._show_live_overlay()
-        self._refresh_live_devices()
+        self._refresh_live_devices({
+            CaptureSource.MIC: settings.get("mic_device_id"),
+            CaptureSource.SYSTEM: settings.get("system_device_id"),
+        })
         self._update_live_source_controls()
         self._update_live_export_controls()
 
@@ -93,8 +98,8 @@ class LiveMixin:
     def _save_live_settings(self) -> None:
         self._live_settings = {
             "source": self.combo_live_source.currentData(),
-            "mic_device_id": self.combo_live_mic_device.currentData(),
-            "system_device_id": self.combo_live_system_device.currentData(),
+            "mic_device_id": self._selected_live_device(CaptureSource.MIC),
+            "system_device_id": self._selected_live_device(CaptureSource.SYSTEM),
             "record_mic_audio": self.cb_live_mic_audio.isChecked(),
             "record_system_audio": self.cb_live_system_audio.isChecked(),
             "export_txt": self.cb_live_export_txt.isChecked(),
@@ -150,29 +155,62 @@ class LiveMixin:
         ):
             widget.setEnabled(subtitles_enabled)
 
-    def _refresh_live_devices(self) -> None:
-        selected = {
-            CaptureSource.MIC: self.combo_live_mic_device.currentData(),
-            CaptureSource.SYSTEM: self.combo_live_system_device.currentData(),
-        }
-        for source, combo in (
+    def _live_device_combos(self):
+        return (
             (CaptureSource.MIC, self.combo_live_mic_device),
             (CaptureSource.SYSTEM, self.combo_live_system_device),
-        ):
-            combo.clear()
+        )
+
+    def _selected_live_device(self, source: CaptureSource) -> str | None:
+        """Выбранное устройство; пока список перечитывается — то, что будет выбрано."""
+        if self._live_devices_probing:
+            return self._live_device_selection.get(source)
+        combo = dict(self._live_device_combos())[source]
+        return combo.currentData()
+
+    def _refresh_live_devices(self, selected: dict | None = None) -> None:
+        """Перечислить устройства захвата в фоновом потоке.
+
+        ScreenCaptureKit отдаёт список системного звука через completion
+        handler и ждёт его до 5 с; в Qt-потоке это дважды замораживало окно
+        при каждом старте (вкладка Live и восстановление настроек).
+        """
+        if selected is None:
+            selected = {source: self._selected_live_device(source) for source, _combo in self._live_device_combos()}
+        self._live_device_selection = dict(selected)
+        self._live_devices_probing = True
+        self._live_devices_generation += 1
+        generation = self._live_devices_generation
+        signals = self.signals
+        probe = self._probe_devices
+
+        def work():
+            found = {}
+            for source in (CaptureSource.MIC, CaptureSource.SYSTEM):
+                try:
+                    found[source] = probe(source)
+                except Exception:
+                    found[source] = []
             try:
-                devices = self._probe_devices(source)
-            except Exception:
-                devices = []
+                signals.live_devices_probed.emit(generation, found)
+            except RuntimeError:
+                pass  # окно закрыли раньше, чем ответили устройства
+
+        threading.Thread(target=work, name="live-devices", daemon=True).start()
+
+    def _on_live_devices_probed(self, generation: int, found: dict) -> None:
+        if generation != self._live_devices_generation:
+            return  # ответ на прежний запрос: уже идёт новый
+        self._live_devices_probing = False
+        for source, combo in self._live_device_combos():
+            devices = found.get(source) or []
+            combo.clear()
             for device in devices:
                 combo.addItem(device.name, device.id)
-            index = combo.findData(selected[source])
+            index = combo.findData(self._live_device_selection.get(source))
             if index < 0:
-                index = next(
-                    (item for item in range(combo.count()) if devices[item].is_default),
-                    0,
-                )
-            if index >= 0 and combo.count():
+                index = next((item for item, device in enumerate(devices) if device.is_default), 0)
+            if combo.count():
                 combo.setCurrentIndex(index)
 
     @staticmethod
@@ -295,8 +333,8 @@ class LiveMixin:
         """Снимок настроек Live на момент нажатия и адаптеры захвата."""
         sources = self._selected_live_sources()
         settings = LiveSettings(
-            mic_device_id=self.combo_live_mic_device.currentData(),
-            system_device_id=self.combo_live_system_device.currentData(),
+            mic_device_id=self._selected_live_device(CaptureSource.MIC),
+            system_device_id=self._selected_live_device(CaptureSource.SYSTEM),
             diarization_mode=DiarizationMode(self.combo_live_diarization.currentData()),
             record_mic_audio=CaptureSource.MIC in sources and self.cb_live_mic_audio.isChecked(),
             record_system_audio=CaptureSource.SYSTEM in sources and self.cb_live_system_audio.isChecked(),

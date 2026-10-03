@@ -58,6 +58,16 @@ def _wait_for_live_start(window, timeout=30.0):
     assert not window._live_starting, "live session did not finish starting"
 
 
+def _wait_for_live_devices(window, timeout=30.0):
+    """Devices are enumerated off the Qt thread; wait for the combos."""
+    deadline = time.monotonic() + timeout
+    while window._live_devices_probing and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    QApplication.processEvents()
+    assert not window._live_devices_probing, "live devices were not enumerated"
+
+
 def _wait_for_live_stop(window, timeout=5.0):
     """Stopping drains queued decodes off the Qt thread; wait it out."""
     deadline = time.monotonic() + timeout
@@ -517,6 +527,7 @@ def test_live_uses_actual_default_device_and_live_scheduler(window, tmp_path, mo
     monkeypatch.setattr("src.gui.live_mixin.LiveSession", Session)
     window.model_loader = LoadedModel()
     window._refresh_live_devices()
+    _wait_for_live_devices(window)
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
