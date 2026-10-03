@@ -207,6 +207,11 @@ class LiveWorkerService:
                 "session_dir": str(result.session_dir),
                 "saved_files": [str(path) for path in result.exports],
                 "recordings": {source.value: str(path) for source, path in result.recordings.items()},
+                # Additive: `recordings` keeps one path per source for old
+                # clients; this lists every segment of every track, mix too.
+                "recording_files": {
+                    track: [str(path) for path in paths] for track, paths in result.recording_files.items()
+                },
             }
             # stop() finishes even when a stage fails; `message` is what clients
             # already show as the stop error next to whatever was saved.

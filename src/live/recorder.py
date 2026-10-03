@@ -94,6 +94,19 @@ class SessionRecorder:
             raise RecorderCloseError(failures, recordings)
         return recordings
 
+    def recording_files(self) -> dict[str, list[Path]]:
+        """Every segment of every track ("mic", "system", "mix"), in order.
+
+        A track rolls over to `<name>-002.flac` after `segment_max_bytes` —
+        about 15.5 min of 48 kHz stereo — so the first file alone is not the
+        recording.
+        """
+        return {
+            track.value if isinstance(track, CaptureSource) else track: list(paths)
+            for track, paths in self._paths.items()
+            if paths
+        }
+
     def artifacts(self) -> dict[str, dict[str, Any]]:
         return {
             source.value if isinstance(source, CaptureSource) else source: {
@@ -173,3 +186,21 @@ class SessionRecorder:
         bytes_limit = self._segment_max_bytes // (chunk.channels * 3)
         duration_limit = chunk.sample_rate * self._segment_max_duration_seconds
         return max(1, min(bytes_limit, duration_limit))
+
+
+def join_segments(paths: list[Path], destination: Path, *, block_frames: int = 480_000) -> Path:
+    """Concatenate one track's segments into a single file, block by block.
+
+    Diarization labels speakers per file; diarizing segments one by one would
+    give the same person a new label in every segment.
+    """
+    with sf.SoundFile(str(paths[0])) as first:
+        rate, channels = first.samplerate, first.channels
+    with sf.SoundFile(
+        str(destination), mode="w", samplerate=rate, channels=channels, format="FLAC", subtype="PCM_16",
+    ) as output:
+        for path in paths:
+            with sf.SoundFile(str(path)) as part:
+                for block in part.blocks(blocksize=block_frames, dtype="float32", always_2d=True):
+                    output.write(block)
+    return destination

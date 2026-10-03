@@ -23,7 +23,7 @@ from .diarization import (
 )
 from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
-from .recorder import SessionRecorder
+from .recorder import SessionRecorder, join_segments
 from .timeline import AlignedMixer, SourceTimeline
 from .types import (
     CaptureEvent,
@@ -59,6 +59,8 @@ class SessionResult:
     exports: list[Path]
     errors: list[str] = field(default_factory=list)
     """Stages of stop() that failed; the rest still ran (see `LiveSession.stop`)."""
+    recording_files: dict[str, list[Path]] = field(default_factory=dict)
+    """Every segment of every track, "mix" included; `recordings` has the first only."""
 
 
 @dataclass(frozen=True)
@@ -250,6 +252,7 @@ class LiveSession:
             schedulers = list(self._schedulers.items())
         errors: list[str] = []
         recordings: dict[CaptureSource, Path] = {}
+        recording_files: dict[str, list[Path]] = {}
         exports: list[Path] = []
         try:
             self._notify_status()
@@ -269,9 +272,10 @@ class LiveSession:
             with self._lock:
                 self._attempt(errors, "flush mix", self._flush_mix_inputs)
                 recordings = self._close_recorder(errors)
+                recording_files = self._recording_files(recordings)
                 self._attempt(errors, "update metadata", self._record_artifacts)
                 if self._settings.diarization_mode is DiarizationMode.AFTER_STOP:
-                    self._attempt(errors, "diarize", lambda: self._diarize_recordings(recordings))
+                    self._attempt(errors, "diarize", lambda: self._diarize_recordings(recordings, recording_files))
                 self._attempt(errors, "freeze conversation", self._freeze_conversation)
                 exports = self._attempt(
                     errors, "export",
@@ -293,7 +297,7 @@ class LiveSession:
                 ),
             ))
         self._notify_status()
-        return SessionResult(self._session_dir, recordings, exports, errors)
+        return SessionResult(self._session_dir, recordings, exports, errors, recording_files)
 
     def _attempt(self, errors: list[str], stage: str, action: Callable[[], object]):
         try:
@@ -327,6 +331,15 @@ class LiveSession:
             errors.append(detail)
             self.log(f"stop stage failed: {detail}")
             return dict(getattr(exc, "recordings", {}) or {})
+
+    def _recording_files(self, recordings: dict[CaptureSource, Path]) -> dict[str, list[Path]]:
+        files = getattr(self._recorder, "recording_files", None)
+        if callable(files):
+            try:
+                return {track: list(paths) for track, paths in files().items()}
+            except Exception as exc:
+                self.log(f"recording list unavailable: {type(exc).__name__}: {exc}")
+        return {source.value: [path] for source, path in recordings.items()}
 
     def _record_artifacts(self) -> None:
         artifacts = getattr(self._recorder, "artifacts", None)
@@ -777,14 +790,24 @@ class LiveSession:
                 self._report_live_diarization_unavailable(source, str(exc))
             return {}
 
-    def _diarize_recordings(self, recordings: dict[CaptureSource, Path]) -> None:
+    def _diarize_recordings(
+        self,
+        recordings: dict[CaptureSource, Path],
+        files: Mapping[str, list[Path]] | None = None,
+    ) -> None:
         diarizer = None
         for source, path in recordings.items():
+            parts = list((files or {}).get(source.value) or [path])
+            joined = None
             try:
                 # One model for every source: it used to be loaded per source.
                 if diarizer is None:
                     diarizer = self._create_diarizer(self._settings.diarization_backend)
-                segments = diarizer.diarize(str(path))
+                # A rolled-over track is diarized as one file: the first
+                # segment alone left everything after ~15 min unlabelled.
+                if len(parts) > 1:
+                    joined = join_segments(parts, self._session_dir / f".{source.value}-diarize.flac")
+                segments = diarizer.diarize(str(joined or parts[0]))
                 events = [event for event in self._journal.latest_events() if event.source is source]
                 for revised in self._revised_speakers(events, self._segment_speakers(events, segments)):
                     self._record_finalized(revised)
@@ -798,6 +821,9 @@ class LiveSession:
                     0,
                     f"After-stop diarization unavailable: {exc}. Retaining source labels.",
                 ))
+            finally:
+                if joined is not None:
+                    joined.unlink(missing_ok=True)
 
     def _create_diarizer(self, backend: str):
         return self._diarization_factory(backend)
