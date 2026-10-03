@@ -547,3 +547,72 @@ def test_emit_never_writes_invalid_json_or_unencodable_text():
     assert progress["stage"] == "/x"
     assert progress["nested"] == {"values": [None, 1.5]}
     assert json.loads(lines[1]) == {"type": "pong"}
+
+
+# ---------- пакет на подделках: _run_batch без модели и процессора ----------
+
+
+class _FakeBatchLoader:
+    def __init__(self, **_kwargs):
+        pass
+
+    def load_model(self, logger=None):
+        return True
+
+
+@pytest.fixture
+def fake_batch(monkeypatch):
+    """`_run_batch` с поддельными загрузчиком, процессором и статистикой.
+
+    Поведение файла задаёт тест: ``fake_batch.process(kwargs, progress_callback)``.
+    """
+    import types
+
+    from src.core import model_loader
+    from src.services import transcription_service
+    from src.utils import processing_stats
+
+    state = types.SimpleNamespace(calls=[], process=None, callback=None)
+
+    class Processor:
+        def process_file(self, **kwargs):
+            state.calls.append(kwargs)
+            return state.process(kwargs, state.callback)
+
+    def build_processor(_loader, _stats, *, logger=None, progress_callback=None, **_kwargs):
+        state.callback = progress_callback
+        return Processor()
+
+    monkeypatch.setattr(model_loader, "ModelLoader", _FakeBatchLoader)
+    monkeypatch.setattr(transcription_service, "build_processor", build_processor)
+    monkeypatch.setattr(processing_stats, "ProcessingStats",
+                        lambda *_a, **_k: types.SimpleNamespace(add_processing_record=lambda **_kw: None))
+    return state
+
+
+def _ok(kwargs):
+    return {"file_path": kwargs["filepath"], "success": True, "error": None, "saved_files": [], "media_duration": 0}
+
+
+def _run_fake_batch(worker, files):
+    worker._run_batch(files, "", ["txt"], False, "pyannote", None, "auto", "v3_e2e_rnnt", "auto", "auto", True, 2, 64)
+
+
+def test_batch_progress_line_keeps_its_wire_format(fake_batch):
+    """`progress` разбирают TUI (serde) и Liquid: те же поля в том же порядке."""
+    from src.core.progress import ProgressEvent
+
+    def process(kwargs, callback):
+        callback(ProgressEvent("transcription", 0.5, 0.42, 10.0, 20.0))
+        return _ok(kwargs)
+
+    fake_batch.process = process
+    output = io.StringIO()
+    _run_fake_batch(TuiWorker(output=output), ["/a.wav"])
+
+    line = next(text for text in output.getvalue().splitlines() if text.startswith('{"type": "progress"'))
+    assert line == (
+        '{"type": "progress", "file": "/a.wav", "file_index": 0, "total_files": 1, "stage": "transcription", '
+        '"stage_progress": 0.5, "file_progress": 0.42, "processed_seconds": 10.0, "total_seconds": 20.0, '
+        '"message": null}'
+    )

@@ -63,7 +63,7 @@ from src.config import (
 )
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
-from src.core.progress import ProgressEvent
+from src.core.progress import coerce_progress, stage_label
 from src.core.subtitles import SubtitleOptions
 from src.services import transcription_service
 from src.utils.audio_converter import ffmpeg_available
@@ -151,19 +151,9 @@ def process_files_with_progress(
 
         # Текущий файл
         current_task = progress.add_task(
-            "[green]Подготовка...",
+            f"[green]{stage_label('preparing')}",
             total=100
         )
-
-        stage_names = {
-            "preparing": "Подготовка...",
-            "conversion": "Конвертация...",
-            "preprocessing": "Анализ и подготовка аудио...",
-            "transcription": "Распознавание речи...",
-            "diarization": "Диаризация...",
-            "export": "Экспорт...",
-            "finalizing": "Завершение...",
-        }
 
         batch_state = {"completed": 0.0}
         for filepath in files:
@@ -176,43 +166,21 @@ def process_files_with_progress(
             )
             def _normalize_progress_event(event_or_stage, prog=None, *, _filename=filename):
                 nonlocal current_file_progress
-                if isinstance(event_or_stage, ProgressEvent):
-                    event = event_or_stage
-                    stage = event.stage
-                    file_progress = float(event.file_progress)
-                    stage_progress = event.stage_progress
-                elif isinstance(event_or_stage, dict):
-                    stage = event_or_stage.get("stage", "preparing")
-                    file_progress = float(event_or_stage.get("file_progress", 0.0) or 0.0)
-                    stage_progress = event_or_stage.get("stage_progress")
-                else:
-                    stage = str(event_or_stage)
-                    file_progress = float(prog or 0.0)
-                    stage_progress = None
-
-                file_progress = max(0.0, min(file_progress, 1.0))
+                snapshot = coerce_progress(event_or_stage, prog)
+                # Без доли файла полоса стоит на месте, а не падает в ноль
+                file_progress = current_file_progress if snapshot.file_progress is None else snapshot.file_progress
                 current_file_progress = max(current_file_progress, file_progress)
-                task_total = 100
-                kwargs = {
-                    "description": f"[green]{_filename} — {stage_names.get(stage, stage)}",
-                    "completed": int(file_progress * 100),
-                }
-                if stage_progress is not None:
-                    kwargs["total"] = task_total
-                else:
-                    kwargs["total"] = None
-
-                progress.update(current_task, **kwargs)
+                progress.update(
+                    current_task,
+                    description=f"[green]{_filename} — {stage_label(snapshot.stage or 'preparing')}",
+                    completed=int(file_progress * 100),
+                    # Неопределённая стадия (диаризация, конвертация без длительности) — спиннер
+                    total=None if snapshot.indeterminate else 100,
+                )
                 progress.update(
                     main_task,
                     completed=int((batch_state["completed"] + current_file_progress) / len(files) * 100),
                 )
-
-                if stage == "finalizing":
-                    progress.update(
-                        current_task,
-                        description=f"[green]{_filename} — {stage_names.get(stage, stage)}"
-                    )
 
             # Процессор
             processor = transcription_service.build_processor(

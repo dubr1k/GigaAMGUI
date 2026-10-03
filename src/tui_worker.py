@@ -329,7 +329,7 @@ class TuiWorker:
             # when a batch actually starts.
             from src.config import STATS_FILE
             from src.core.model_loader import ModelLoader
-            from src.core.progress import ProgressEvent
+            from src.core.progress import coerce_progress
             from src.services.transcription_service import build_processor
             from src.utils.processing_stats import ProcessingStats
 
@@ -348,20 +348,9 @@ class TuiWorker:
             current: dict[str, Any] = {"index": 0, "file": files[0]}
 
             def progress(event_or_stage, value=None):
-                if isinstance(event_or_stage, ProgressEvent):
-                    event = event_or_stage
-                    payload = {
-                        "stage": event.stage,
-                        "stage_progress": event.stage_progress,
-                        "file_progress": event.file_progress,
-                        "processed_seconds": event.processed_seconds,
-                        "total_seconds": event.total_seconds,
-                        "message": event.message,
-                    }
-                elif isinstance(event_or_stage, dict):
-                    payload = dict(event_or_stage)
-                else:
-                    payload = {"stage": str(event_or_stage), "file_progress": float(value or 0.0)}
+                # Поля события в прежнем порядке: stage, stage_progress, file_progress,
+                # processed_seconds, total_seconds, message (их разбирают TUI и Liquid).
+                payload = coerce_progress(event_or_stage, value).as_dict()
                 self.emit("progress", file=current["file"], file_index=current["index"], total_files=len(files), **payload)
 
             processor = build_processor(loader, stats, logger=self._log, progress_callback=progress)
