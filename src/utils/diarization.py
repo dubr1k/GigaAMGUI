@@ -71,6 +71,31 @@ def normalize_diarization_backend(backend: str | None) -> str:
         ) from exc
 
 
+def _annotation_from_pipeline_output(output):
+    """pyannote.core.Annotation из результата pipeline любой версии.
+
+    pyannote.audio 2.x–3.x возвращает Annotation. В 4.x ``apply`` отдаёт
+    ``DiarizeOutput`` (если pipeline не собран с ``legacy=True``, а конфиг 3.1
+    этого не задаёт): ``speaker_diarization`` с наложениями речи и
+    ``exclusive_speaker_diarization`` — не больше одного говорящего в каждый
+    момент. Берём exclusive: маппинг назначает каждому слову одного говорящего,
+    а на наложениях обычной разметки выбор зависел бы от порядка сегментов
+    (``_find_speaker_at_time`` вернул бы того, кто начал раньше, — как правило,
+    перебитого). Ровно для сведения со словами STT pyannote её и строит.
+    """
+    if hasattr(output, "itertracks"):
+        return output
+    for attribute in ("exclusive_speaker_diarization", "speaker_diarization"):
+        annotation = getattr(output, attribute, None)
+        if annotation is not None and hasattr(annotation, "itertracks"):
+            return annotation
+    raise ValueError(
+        f"Неожиданный тип результата диаризации: {type(output).__name__} "
+        "(ожидался pyannote.core.Annotation с методом itertracks "
+        "или DiarizeOutput pyannote.audio 4.x)"
+    )
+
+
 def diagnose_hf_access(token: str | None) -> str:
     """Дополняет ошибку pyannote проверкой доступа к нужным репозиториям.
 
@@ -330,14 +355,7 @@ class DiarizationManager(SpeakerMappingMixin):
 
             # Преобразование результатов
             segments = []
-
-            # Pipeline возвращает pyannote.core.Annotation — итерируем через itertracks.
-            # Поддерживается всеми версиями pyannote.audio 2.x–3.x.
-            if not hasattr(diarization, 'itertracks'):
-                raise ValueError(
-                    f"Неожиданный тип результата диаризации: {type(diarization).__name__} "
-                    "(ожидался pyannote.core.Annotation с методом itertracks)"
-                )
+            diarization = _annotation_from_pipeline_output(diarization)
             for turn, _, speaker in diarization.itertracks(yield_label=True):
                 segments.append(SpeakerSegment(
                     start=turn.start,
