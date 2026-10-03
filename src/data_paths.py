@@ -116,8 +116,9 @@ def apply_data_dir(
         "NEMO_HOME": layout.nemo_home,
         "GIGAAM_DEEPFILTER_DIR": layout.deepfilter_dir,
     }
-    # Офлайн-сборка читает готовые ONNX snapshots рядом с бинарником. Передача
-    # пустого user-каталога как явного model_dir отключает этот поиск.
+    # Офлайн-сборка читает готовые ONNX snapshots рядом с бинарником, корень
+    # для докачки ей не нужен. В остальных сборках ONNX_MODEL_DIR — корень:
+    # каждая модель скачивается в свой подкаталог (model_cache.onnx_model_location).
     if bundled_hf_cache_dir() is None:
         values["ONNX_MODEL_DIR"] = layout.onnx_model_dir
     for key, value in values.items():

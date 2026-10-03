@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from ...config import ASR_SEGMENTATION_MODE
-from ...utils.model_cache import resolve_model_dir
+from ...utils.model_cache import OnnxModelLocation, onnx_model_location
 from .chunking import (
     normalize_chunk_words,
     plan_audio_chunks,
@@ -17,6 +17,7 @@ from .chunking import (
     vad_regions_miss_active_audio,
 )
 from .models import onnx_model_name, onnx_model_repo, validate_asr_model
+from .onnx_loading import load_asr_model
 from .onnx_provider import (
     ProviderSelection,
     available_onnx_providers,
@@ -51,6 +52,8 @@ class OnnxBackend:
         self.requested_provider = (provider or "auto").strip().lower() or "auto"
         normalized_quantization = (quantization or "").strip().lower()
         self.quantization = normalized_quantization or None
+        # Корень ONNX-моделей (ONNX_MODEL_DIR), а не каталог одной модели:
+        # ASR, VAD и диаризация берут в нём свои подкаталоги.
         self.model_dir = model_dir
         self.vad_model = vad_model
         self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
@@ -74,23 +77,33 @@ class OnnxBackend:
 
     @staticmethod
     def _load_onnx_model(*args, **kwargs):
-        import onnx_asr  # noqa: PLC0415
+        return load_asr_model(*args, **kwargs)
 
-        return onnx_asr.load_model(*args, **kwargs)
+    def model_location(self) -> OnnxModelLocation:
+        """Каталог ASR-модели: подкаталог ONNX_MODEL_DIR, офлайн-набор или HF-кэш."""
+        return onnx_model_location(
+            onnx_model_repo(self.model_revision),
+            root=self.model_dir,
+            accept_flat_root=True,
+        )
 
     def _bundled_download_root(self) -> str | None:
-        return self.model_dir or resolve_model_dir(onnx_model_repo(self.model_revision))
+        # Строка: попадает в diagnostics()/health, которые сериализуются в JSON.
+        path = self.model_location().path
+        return str(path) if path is not None else None
 
     def _create_model(self, selection: ProviderSelection) -> Any:
         factory = self._model_factory or self._load_onnx_model
-        model_dir = self.model_dir or resolve_model_dir(onnx_model_repo(self.model_revision))
-        raw_model = factory(
-            onnx_model_name(self.model_revision),
-            path=model_dir,
-            quantization=self.quantization,
-            providers=onnx_session_providers(selection),
-            preprocessor_config={"use_numpy_preprocessors": False},
-        )
+        location = self.model_location()
+        kwargs: dict[str, Any] = {
+            "path": location.path,
+            "quantization": self.quantization,
+            "providers": onnx_session_providers(selection),
+            "preprocessor_config": {"use_numpy_preprocessors": False},
+        }
+        if location.offline is not None:
+            kwargs["offline"] = location.offline
+        raw_model = factory(onnx_model_name(self.model_revision), **kwargs)
         return raw_model.with_timestamps()
 
     def load(self, logger: Callable[[str], None] | None = None) -> bool:

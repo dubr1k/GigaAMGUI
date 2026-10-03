@@ -190,12 +190,13 @@ class ModelLoader:
             return ()
 
         if backend.name == "onnx":
-            explicit = getattr(backend, "model_dir", None)
-            if explicit is not None:
-                directory = Path(explicit)
-                if directory.is_dir() and any(path.is_file() for path in directory.rglob("*")):
-                    return ()
             repo_id = onnx_model_repo(backend.model_revision)
+            location = backend.model_location()
+            directory = location.path
+            if directory is not None and Path(directory).is_dir() and any(
+                path.is_file() for path in Path(directory).rglob("*")
+            ):
+                return ()
             return () if hf_repo_is_cached(repo_id) else (f"ONNX ASR: {repo_id}",)
 
         if backend.name == "mlx":

@@ -7,7 +7,8 @@ from typing import Any
 
 import numpy as np
 
-from ...utils.model_cache import resolve_model_dir
+from ...utils.model_cache import onnx_model_location
+from ..asr.onnx_loading import load_vad_model
 from ..asr.onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
@@ -49,16 +50,16 @@ class OnnxSegmentation:
     def _ensure_session(self):
         if self._session is not None:
             return self._session
-        import onnx_asr  # noqa: PLC0415
 
         selection = resolve_onnx_providers(
             self.provider,
             available=available_onnx_providers(self.provider),
         )
-        model_dir = self.model_dir or resolve_model_dir(ONNX_SEGMENTATION_REPO)
-        vad = onnx_asr.load_vad(
+        location = onnx_model_location(ONNX_SEGMENTATION_REPO, root=self.model_dir)
+        vad = load_vad_model(
             ONNX_SEGMENTATION_REPO,
-            path=model_dir,
+            location.path,
+            offline=location.offline,
             providers=onnx_session_providers(selection),
         )
         session = getattr(vad, "_model", None)

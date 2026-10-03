@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from ...utils.model_cache import resolve_bundled_snapshot
+from ...utils.model_cache import onnx_model_subdir, resolve_bundled_snapshot
 from ...utils.runtime_manager import hf_cache_dir
 from ..asr.onnx_provider import (
     available_onnx_providers,
@@ -54,10 +54,18 @@ _SILENCE_THRESHOLD = 0.2
 
 def _cached_sortformer_artifact(model_dir: str | Path | None = None) -> Path | None:
     if model_dir is not None:
-        candidate = Path(model_dir)
-        if candidate.is_dir():
-            candidate /= SORTFORMER_ONNX_FILENAME
-        return candidate if candidate.is_file() else None
+        # model_dir — корень ONNX_MODEL_DIR: файл ищется в подкаталоге
+        # репозитория, в самом корне (старая раскладка) или указан прямо.
+        # Отсутствие файла там не повод игнорировать офлайн-набор и HF-кэш.
+        root = Path(model_dir)
+        candidates = (
+            [onnx_model_subdir(root, SORTFORMER_ONNX_REPO_ID) / SORTFORMER_ONNX_FILENAME, root / SORTFORMER_ONNX_FILENAME]
+            if root.is_dir()
+            else [root]
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
 
     bundled = resolve_bundled_snapshot(SORTFORMER_ONNX_REPO_ID)
     if bundled is not None:

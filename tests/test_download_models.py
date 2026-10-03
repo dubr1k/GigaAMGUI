@@ -1,7 +1,12 @@
 import download_models
 
 
-def test_download_onnx_models_uses_public_names_and_runtime_options(tmp_path):
+def test_download_onnx_models_uses_public_names_and_runtime_options(tmp_path, monkeypatch):
+    from src.utils import model_cache
+
+    monkeypatch.setattr(model_cache, "resolve_bundled_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(model_cache, "hf_repo_is_cached", lambda *_a, **_k: False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     calls = []
 
     class Model:
@@ -16,12 +21,16 @@ def test_download_onnx_models_uses_public_names_and_runtime_options(tmp_path):
 
     assert downloaded == ["v3_e2e_rnnt", "multilingual_ctc"]
     assert failed == []
+    # Корень ONNX_MODEL_DIR: у каждой модели свой подкаталог, который
+    # onnx-asr дозагружает (offline=False), а не пустой общий каталог.
     assert calls[0] == (("gigaam-v3-e2e-rnnt",), {
-        "path": str(tmp_path),
+        "path": tmp_path / "istupakov--gigaam-v3-onnx",
         "quantization": None,
         "providers": ["CPUExecutionProvider"],
         "preprocessor_config": {"use_numpy_preprocessors": False},
+        "offline": False,
     })
+    assert calls[1][1]["path"] == tmp_path / "istupakov--gigaam-multilingual-ctc-onnx"
 
 
 def test_download_onnx_models_reports_individual_failure():
