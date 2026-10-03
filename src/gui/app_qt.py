@@ -33,6 +33,7 @@ from .i18n_mixin import I18nMixin
 from .journal_mixin import JournalMixin
 from .lifecycle_mixin import LifecycleMixin, install_exception_hook
 from .live_assistant_mixin import LiveAssistantMixin
+from .live_display_mixin import LiveDisplayMixin
 from .live_mixin import LiveMixin
 from .live_ui_mixin import LiveUiMixin
 from .llm_mixin import LlmMixin
@@ -85,7 +86,7 @@ class WorkerSignals(QObject):
 class GigaTranscriberQtApp(
     LlmMixin, LlmUiMixin, LlmToolsMixin, LlmSettingsDialogMixin, DownloadMixin, ProcessingMixin, ResultViewMixin, FilesMixin,
     I18nMixin, SettingsMixin, JournalMixin, PreferencesMixin, ApiSurfaceMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
-    LiveMixin, LiveAssistantMixin, LiveUiMixin, LifecycleMixin, MenuActionsMixin,
+    LiveMixin, LiveAssistantMixin, LiveUiMixin, LiveDisplayMixin, LifecycleMixin, MenuActionsMixin,
     UiBuildMixin, QMainWindow,
 ):
     """Главное окно приложения для транскрибации на PyQt6"""

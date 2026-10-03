@@ -22,8 +22,8 @@ from ..live.types import (
     DiarizationMode,
     LiveSettings,
 )
+from .live_display_mixin import LIVE_SAVED_PREFIX, LIVE_STATE_LABELS
 from .live_transcript import LiveTranscriptPresenter
-from .live_ui_mixin import LIVE_SAVED_PREFIX, LIVE_STATE_LABELS
 
 
 class LiveMixin:
