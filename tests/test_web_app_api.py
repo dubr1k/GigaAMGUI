@@ -26,6 +26,7 @@ from src.core.subtitles import SubtitleOptions  # noqa: E402
 from src.services import transcription_service  # noqa: E402
 from web import auth, jobs  # noqa: E402
 from web.routes import llm as llm_routes  # noqa: E402
+from web.routes import progress as progress_routes  # noqa: E402
 from web.routes import transcribe as transcribe_routes  # noqa: E402
 from web.state import state, validated_login_rate_limit  # noqa: E402
 from web.task_registry import registry  # noqa: E402
@@ -738,7 +739,7 @@ def test_progress_feed_starts_with_snapshot_without_history(web_dirs):
                                        "filename": "b.wav", "message": "", "user": "bob"}
     registry.logs["mine"] = ["старая строка 1", "старая строка 2"]
     registry.logs["theirs"] = ["чужая"]
-    feed = web_app.ProgressFeed("alice")
+    feed = progress_routes.ProgressFeed("alice")
 
     first = feed.next_payload()
     # Снимок: состояние своих задач, без журнала — клиент не повторяет историю на каждом подключении
@@ -758,7 +759,7 @@ def test_progress_feed_starts_with_snapshot_without_history(web_dirs):
 
 def test_progress_feed_sends_snapshot_even_without_tasks(web_dirs):
     # Без задач первое сообщение всё равно уходит: иначе клиент счёл бы снимком первое настоящее событие
-    feed = web_app.ProgressFeed("alice")
+    feed = progress_routes.ProgressFeed("alice")
     assert feed.next_payload() == {"snapshot": True, "tasks": {}, "logs": {}}
     registry.register("fresh", "c.wav", 1, "alice")
     registry.log("fresh", "первая строка")
