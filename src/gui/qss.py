@@ -395,6 +395,9 @@ def build_stylesheet(
             QPushButton#live_record_button {{ background-color: #e05050; color: #ffffff; border: none; font-weight: bold; }}
             QPushButton#live_record_button:hover {{ background-color: #c43c3c; }}
             QPushButton#live_stop_button {{ color: {c["clear_hover_text"]}; border: 1px solid {c["clear_hover_border"]}; }}
+            QPushButton#live_record_button:disabled, QPushButton#live_stop_button:disabled {{
+                background-color: {c["input_dis"]}; color: {c["text_mute"]}; border: 1px solid {c["border"]};
+            }}
             QPushButton#journal_filter:checked, QPushButton#api_doc_toggle:checked {{
                 background-color: {c["accent_dis"]}; border: 1px solid {c["accent"]}; color: {c["text"]};
             }}
