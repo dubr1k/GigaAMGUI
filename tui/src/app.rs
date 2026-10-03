@@ -286,6 +286,24 @@ impl App {
         }
     }
 
+    /// The worker's Python traceback, one log line per line. Its end names the
+    /// failing call and the real exception; the head is bounded so one error
+    /// cannot push the whole session out of the 200-line log.
+    fn log_traceback(&mut self, trace: &str) {
+        const TRACEBACK_LINES: usize = 12;
+        let lines: Vec<&str> = trace
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        let skipped = lines.len().saturating_sub(TRACEBACK_LINES);
+        if skipped > 0 {
+            self.log(format!("  … ({skipped})"));
+        }
+        for line in &lines[skipped..] {
+            self.log(format!("  {}", line.trim_end()));
+        }
+    }
+
     /// Lookup by path for the tests; drawing uses each row's own state.
     #[cfg(test)]
     pub(crate) fn file_state(&self, path: &str) -> FileState {
@@ -487,19 +505,35 @@ impl App {
                 }
             }
             "error" => {
-                if let Some(batch) = &mut self.batch {
-                    batch.error = value["message"].as_str().map(str::to_owned);
+                // Newer workers name the command an error answers. Without that,
+                // a late reply to `cancel` arriving during the next start was taken
+                // as the start's rejection: the TUI went idle and then ignored the
+                // `started` that followed. Old workers send no `request`, and for
+                // them any error during a start still rejects it.
+                let request = value["request"].as_str();
+                let message = value["message"].as_str().map(str::to_owned);
+                if matches!(request, None | Some("start")) {
+                    if let Some(batch) = &mut self.batch {
+                        batch.error = message.clone();
+                    }
                 }
-                if self.activity.is_starting() {
-                    self.finish_batch(false, value["message"].as_str().map(str::to_owned), None);
-                    self.activity = Activity::Idle;
+                if let Some(kind) = self.activity.starting_kind() {
+                    if request.is_none_or(|request| request == kind.start_command()) {
+                        self.finish_batch(false, message.clone(), None);
+                        self.activity = Activity::Idle;
+                    }
                 }
-                self.status = value["message"]
-                    .as_str()
-                    .unwrap_or(t(self.lang, "status.worker_error"))
-                    .into();
+                self.status = message.unwrap_or_else(|| t(self.lang, "status.worker_error").into());
                 self.log(tf(self.lang, "log.error", &[("error", &self.status)]));
-                if !self.pending_inputs.is_empty() && self.status.contains("resolve_inputs") {
+                if let Some(trace) = value["traceback"].as_str() {
+                    self.log_traceback(trace);
+                }
+                let resolver_failed = match request {
+                    Some(request) => request == "resolve_inputs",
+                    // An old worker without `resolve_inputs` says so only in English.
+                    None => self.status.contains("resolve_inputs"),
+                };
+                if !self.pending_inputs.is_empty() && resolver_failed {
                     self.resolver_unavailable();
                 }
             }

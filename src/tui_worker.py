@@ -116,6 +116,10 @@ class TuiWorker:
         self._compact_file_events = False
         # Только `completed`: клиентам, которые берут полные результаты из `file_completed`.
         self._compact_completed = False
+        # Команда, которую handle() сейчас обрабатывает в этом потоке. Её `error`
+        # получает поле `request`: поздний ответ на `cancel` («Nothing is being
+        # processed») клиент иначе принимал за отказ следующего `start`.
+        self._handling = threading.local()
         self._llm = LLMWorkerService(self.emit)
         self._live = LiveWorkerService(self.emit)
         self._inputs = InputResolver(self.emit)
@@ -130,6 +134,10 @@ class TuiWorker:
             payload["result"] = self._result_metadata(payload["result"])
         elif self._compact_completed and message_type == "completed" and isinstance(payload.get("results"), list):
             payload["results"] = [self._result_metadata(result) for result in payload["results"]]
+        if message_type == "error" and "request" not in payload:
+            request = getattr(self._handling, "command", None)
+            if request is not None:
+                payload["request"] = request
         line = protocol_line({"type": message_type, **payload})
         with self._write_lock:
             self._output.write(line + "\n")
@@ -144,6 +152,13 @@ class TuiWorker:
 
     def handle(self, command: dict[str, Any]) -> None:
         command_type = command.get("type")
+        self._handling.command = command_type if isinstance(command_type, str) else None
+        try:
+            self._handle(command, command_type)
+        finally:
+            self._handling.command = None
+
+    def _handle(self, command: dict[str, Any], command_type: Any) -> None:
         if command_type == "hello":
             tui = command.get("client") == "tui"
             self._compact_file_events = tui
@@ -396,10 +411,12 @@ class TuiWorker:
                     "or launch TUI with GIGAAM_PYTHON pointing to the configured environment."
                 ),
                 traceback=traceback.format_exc(),
+                # The batch thread answers the `start` that launched it.
+                request="start",
             )
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
         except Exception as exc:  # Keep JSONL valid even for startup failures.
-            self.emit("error", message=str(exc), traceback=traceback.format_exc())
+            self.emit("error", message=str(exc), traceback=traceback.format_exc(), request="start")
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
 
 
@@ -466,7 +483,9 @@ def main() -> int:
             try:
                 worker.handle(command)
             except Exception as exc:
-                worker.emit("error", message=f"{command.get('type', 'command')} failed: {exc}")
+                command_type = command.get("type")
+                tag = {"request": command_type} if isinstance(command_type, str) else {}
+                worker.emit("error", message=f"{command_type or 'command'} failed: {exc}", **tag)
     finally:
         worker.close()
     return 0

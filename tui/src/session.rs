@@ -509,6 +509,57 @@ mod tests {
     }
 
     #[test]
+    fn a_late_reply_to_another_command_does_not_reject_the_next_start() {
+        use crate::lifecycle::{Activity, JobKind};
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/a.wav".into());
+        app.begin_batch(RunSelection::Pending, false);
+        // The reply to a cancel sent for the previous batch arrives late.
+        app.handle_message(
+            json!({"type":"error","message":"Nothing is being processed",
+            "request":"cancel"}),
+        );
+        assert_eq!(app.activity, Activity::Starting(JobKind::Asr));
+        assert!(app.batch.as_ref().unwrap().error.is_none());
+        app.handle_message(json!({"type":"started","total_files":1}));
+        assert_eq!(app.activity, Activity::Running(JobKind::Asr));
+
+        // The worker's own rejection of this start still ends it.
+        let mut app = crate::test_support::ready_app();
+        app.queue.add("/a.wav".into());
+        app.begin_batch(RunSelection::Pending, false);
+        app.handle_message(json!({"type":"error","message":"Input file does not exist",
+            "request":"start", "traceback":"Traceback (most recent call last):\n  File \"w.py\"\nValueError: deep cause"}));
+        assert_eq!(app.activity, Activity::Idle);
+        assert!(app
+            .logs
+            .iter()
+            .any(|line| line.contains("ValueError: deep cause")));
+
+        // An LLM start is rejected only by an error for `llm_start`.
+        let mut app = crate::test_support::ready_app();
+        app.llm_extra_files.push("/a.txt".into());
+        crate::app::request_llm(&mut app);
+        app.handle_message(json!({"type":"error","message":"x","request":"start"}));
+        assert_eq!(app.activity, Activity::Starting(JobKind::Llm));
+        app.handle_message(json!({"type":"error","message":"x","request":"llm_start"}));
+        assert_eq!(app.activity, Activity::Idle);
+    }
+
+    #[test]
+    fn resolver_failure_is_recognized_by_request_not_by_english_text() {
+        let mut app = crate::test_support::ready_app();
+        app.submit_paths("/a.wav".into());
+        app.handle_message(json!({"type":"error","request":"llm_tool_check",
+            "message":"resolve_inputs is mentioned but unrelated"}));
+        assert_eq!(app.pending_inputs.len(), 1);
+        app.handle_message(json!({"type":"error","request":"resolve_inputs",
+            "message":"resolve_inputs failed: boom"}));
+        assert!(app.pending_inputs.is_empty());
+        assert_eq!(app.input.text(), "/a.wav");
+    }
+
+    #[test]
     fn an_unanswered_input_request_times_out_and_unlocks_start() {
         use std::time::{Duration, Instant};
         let mut app = crate::test_support::ready_app();

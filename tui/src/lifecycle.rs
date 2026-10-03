@@ -66,6 +66,16 @@ pub(crate) enum JobKind {
     Llm,
 }
 
+impl JobKind {
+    /// The command that starts this job; the worker names it in `error.request`.
+    pub(crate) fn start_command(self) -> &'static str {
+        match self {
+            Self::Asr => "start",
+            Self::Llm => "llm_start",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Activity {
     #[default]
@@ -85,12 +95,16 @@ impl Activity {
         self.kind() == Some(JobKind::Llm)
     }
 
-    pub(crate) fn is_starting(self) -> bool {
-        matches!(self, Self::Starting(_) | Self::CancellingStart(_))
-    }
-
     pub(crate) fn is_stopping(self) -> bool {
         matches!(self, Self::CancellingStart(_) | Self::Stopping(_))
+    }
+
+    /// The job whose start the worker has not acknowledged yet.
+    pub(crate) fn starting_kind(self) -> Option<JobKind> {
+        match self {
+            Self::Starting(kind) | Self::CancellingStart(kind) => Some(kind),
+            _ => None,
+        }
     }
 
     fn kind(self) -> Option<JobKind> {

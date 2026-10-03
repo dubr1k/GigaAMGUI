@@ -284,7 +284,54 @@ def test_tui_worker_routes_llm_cancel_without_job():
 
     worker.handle({"type": "llm_cancel"})
 
-    assert _messages(output) == [{"type": "error", "message": "No LLM request is running"}]
+    assert _messages(output) == [
+        {"type": "error", "message": "No LLM request is running", "request": "llm_cancel"},
+    ]
+
+
+@pytest.mark.parametrize(("command", "answered"), [
+    ({"type": "cancel"}, "cancel"),  # the late reply that used to reject a new start
+    ({"type": "start", "files": []}, "start"),
+    ({"type": "llm_cancel"}, "llm_cancel"),
+    ({"type": "llm_tool_check", "provider": "Nope"}, "llm_tool_check"),
+    ({"type": "bogus"}, "bogus"),
+])
+def test_command_errors_name_the_command_they_answer(command, answered):
+    """A late "Nothing is being processed" (the reply to `cancel`) arrived while
+    the TUI was starting the next batch and was taken as that start's rejection:
+    the TUI went idle and ignored the `started` that followed."""
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+    try:
+        worker.handle(command)
+        error = _messages(output)[-1]
+        assert error["type"] == "error"
+        assert error["request"] == answered
+        worker.emit("error", message="from a background thread")
+        assert "request" not in _messages(output)[-1], "only replies to a command are tagged"
+    finally:
+        worker.close()
+
+
+def test_batch_failure_before_started_is_tagged_as_the_start(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "src.core.model_loader":
+            raise ModuleNotFoundError("No module named 'torch'", name="torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    output = io.StringIO()
+    worker = TuiWorker(output=output)
+    worker._run_batch(["/a.wav"], "", ["txt"], False, "pyannote", None, "auto",
+                      "v3_e2e_rnnt", "auto", "auto", True, 2, 64)
+    error, completed = _messages(output)[-2:]
+    assert error["type"] == "error" and error["request"] == "start"
+    assert "torch" in error["message"] and "traceback" in error
+    assert completed["type"] == "completed"
 
 
 def test_tui_worker_routes_live_commands_to_service():
@@ -317,8 +364,8 @@ def test_tui_worker_batch_start_is_rejected_while_live_session_runs(tmp_path):
     worker.handle({"type": "llm_start", "text": "t", "modes": ["summary"], "settings": {}})
 
     assert _messages(output) == [
-        {"type": "error", "message": "Processing is already running"},
-        {"type": "error", "message": "Processing is already running"},
+        {"type": "error", "message": "Processing is already running", "request": "start"},
+        {"type": "error", "message": "Processing is already running", "request": "llm_start"},
     ]
 
 
@@ -378,6 +425,7 @@ def test_tui_worker_rejects_invalid_subtitle_limits(tmp_path):
     assert _messages(output)[0] == {
         "type": "error",
         "message": "max_line_count должен быть от 1 до 4",
+        "request": "start",
     }
 
 
