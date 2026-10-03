@@ -9,6 +9,7 @@ use crate::{
     app::{llm_input_files, on_off, request_llm, App, Page},
     i18n::{t, tf, Lang},
     input::{local_path, split_paths, InputMode, BACKSLASH_ESCAPES},
+    results::canonical_path,
     settings::save_app_settings,
     theme::Theme,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
@@ -83,8 +84,7 @@ pub(crate) fn user_path(raw: &str) -> Result<PathBuf, PathError> {
 /// An existing regular file, canonical.
 pub(crate) fn normalize_path(raw: &str) -> Result<String, PathError> {
     let path = user_path(raw)?;
-    let path =
-        fs::canonicalize(&path).map_err(|_| PathError::Missing(path.display().to_string()))?;
+    let path = canonical_path(&path).map_err(|_| PathError::Missing(path.display().to_string()))?;
     if !path.is_file() {
         return Err(PathError::NotAFile(path.display().to_string()));
     }
@@ -96,7 +96,7 @@ pub(crate) fn normalize_path(raw: &str) -> Result<String, PathError> {
 pub(crate) fn prepare_output_dir(raw: &str, lang: Lang) -> Result<String, String> {
     let path = user_path(raw).map_err(|error| error.message(lang))?;
     fs::create_dir_all(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let path = fs::canonicalize(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let path = canonical_path(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -1470,12 +1470,7 @@ mod tests {
     fn output_command_reads_the_path_like_every_other_path_and_persists_it() {
         let config = isolated_config_dir();
         let mut app = crate::test_support::ready_app();
-        let canonical = |path: &Path| {
-            fs::canonicalize(path)
-                .unwrap()
-                .to_string_lossy()
-                .into_owned()
-        };
+        let canonical = |path: &Path| canonical_path(path).unwrap().to_string_lossy().into_owned();
 
         let quoted = config.join("Quoted Dir");
         app.input

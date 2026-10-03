@@ -859,7 +859,7 @@ mod tests {
         let HeadlessCommand::Transcribe(parsed) = &command else {
             panic!("transcribe")
         };
-        let canonical = fs::canonicalize(&directory).unwrap();
+        let canonical = crate::results::canonical_path(&directory).unwrap();
         assert_eq!(
             parsed.files,
             vec![canonical.join("a.wav").to_string_lossy().into_owned()]
