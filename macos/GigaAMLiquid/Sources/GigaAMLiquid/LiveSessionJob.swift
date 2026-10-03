@@ -249,8 +249,13 @@ final class LiveSessionJob {
         case "live_answer_chunk":
             emit(.answerChunk(turnID: object["turn_id"] as? String ?? "", text: object["text"] as? String ?? ""))
         case "live_answer":
-            emit(.answer(turnID: object["turn_id"] as? String ?? "", status: object["status"] as? String ?? "",
-                         text: safe(object["text"] as? String ?? "")))
+            // A completed answer is the user's content and replaces the streamed text:
+            // the log redaction would cut it to its last 8 KiB and rewrite prose such
+            // as "Bearer token". Only an error message is a diagnostic.
+            let status = object["status"] as? String ?? ""
+            let text = object["text"] as? String ?? ""
+            emit(.answer(turnID: object["turn_id"] as? String ?? "", status: status,
+                         text: status == "error" ? safe(text) : text))
         case "live_stopped":
             let exports = object["saved_files"] as? [String] ?? []
             let recordings = (object["recordings"] as? [String: String] ?? [:]).sorted { $0.key < $1.key }.map(\.value)
