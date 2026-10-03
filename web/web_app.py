@@ -45,6 +45,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from src import __version__
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
@@ -994,7 +995,7 @@ def _mcp_backend() -> LocalBackend:
 
 app = FastAPI(
     title="GigaAM v3 Transcriber - Web GUI",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
 )
 limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
@@ -1887,6 +1888,7 @@ async def index():
 async def health():
     return {
         "status": "healthy",
+        "version": __version__,
         "model_loaded": model_loader is not None and model_loader.is_loaded(),
         "runtime": _runtime_info(),
         "asr": _asr_health(),

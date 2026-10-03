@@ -165,6 +165,13 @@ def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_process
 # ==================== /health ====================
 
 
+def test_app_reports_release_version(anon_client):
+    from src import __version__
+
+    assert web_app.app.version == __version__
+    assert anon_client.get("/health").json()["version"] == __version__
+
+
 def test_public_health_has_no_server_paths(anon_client):
     response = anon_client.get("/health")
     assert response.status_code == 200
