@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from queue import Empty, SimpleQueue
 from threading import Event, Lock, Thread
-from time import time_ns
+from time import monotonic, time_ns
 from typing import Any, Protocol
 
 import numpy as np
 
+from ..reporting import ReportOnce
 from ..types import CaptureDevice, CaptureEvent, CaptureEventKind, CaptureSource, PcmChunk
 from .factory import CaptureUnavailable
 from .queue import BoundedChunkQueue
@@ -33,6 +34,22 @@ MAX_CAPTURE_CHANNELS = 2
 """Pulse/PipeWire aggregates advertise 32 input channels; FLAC tops out at 8 and
 recognition needs mono, so opening a stream that wide only breaks the session
 recording and floods the capture queue."""
+OVERFLOW_REPORT_INTERVAL_SECONDS = 5.0
+"""Dropped audio is reported at most this often, as a count since the last report.
+
+One event per dropped chunk was a log line per 10 ms while a consumer stalled,
+the same flood issue #48 had with recording failures."""
+
+
+def select_device(devices: list[dict[str, Any]], device_id: str | None) -> dict[str, Any] | None:
+    """The requested device; without a request the default one, else the first.
+
+    A requested id that is gone yields None rather than a substitute: capture
+    from a device the user did not pick is worse than a clear failure.
+    """
+    if device_id:
+        return next((item for item in devices if item["id"] == device_id), None)
+    return next((item for item in devices if item["is_default"]), devices[0] if devices else None)
 
 
 class SoundDeviceCapture:
@@ -86,10 +103,7 @@ class SoundDeviceCapture:
             raise
 
     def _select(self, source: CaptureSource, device_id: str | None) -> dict[str, Any]:
-        devices = self.devices(source)
-        selected = next((item for item in devices if item["id"] == device_id), None) if device_id else next(
-            (item for item in devices if item["is_default"]), devices[0] if devices else None
-        )
+        selected = select_device(self.devices(source), device_id)
         if selected is None:
             if source is CaptureSource.SYSTEM:
                 raise CaptureUnavailable(self.no_system_source_message())
@@ -151,7 +165,10 @@ class QueuedCaptureAdapter:
         self._worker: Thread | None = None
         self._on_chunk: Callable[[PcmChunk], None] | None = None
         self._on_event: Callable[[CaptureEvent], None] | None = None
-        self._reported_failures: set[str] = set()
+        self._reported_failures = ReportOnce()
+        self._overflow_lock = Lock()
+        self._unreported_drops = 0
+        self._last_overflow_report = float("-inf")
         self.dispatch_failures = 0
 
     def devices(self) -> list[CaptureDevice]:
@@ -186,7 +203,7 @@ class QueuedCaptureAdapter:
                 set_error_handler(self._emit_native_error)
             api.start(self.source, self._device_id, self._capture)
         except Exception as exc:
-            self._emit_native_error(exc)
+            self._emit_start_failure(exc)
 
     def pause(self) -> None:
         self._paused.set()
@@ -204,6 +221,7 @@ class QueuedCaptureAdapter:
     def stop(self) -> None:
         if self._worker is None:
             return
+        self._report_overflow(0, None, force=True)
         self._stopped.set()
         if self._api is not None:
             self._api.stop()
@@ -232,7 +250,19 @@ class QueuedCaptureAdapter:
             timestamp_ns or time_ns(),
         )
         if not self._queue.put(chunk):
-            self._emit(CaptureEventKind.OVERFLOW, f"capture queue full; dropped_frames={len(copied)}", chunk)
+            self._report_overflow(len(copied), chunk)
+
+    def _report_overflow(self, frames: int, chunk: PcmChunk | None, *, force: bool = False) -> None:
+        now = monotonic()
+        with self._overflow_lock:
+            self._unreported_drops += frames
+            if not self._unreported_drops:
+                return
+            if not force and now - self._last_overflow_report < OVERFLOW_REPORT_INTERVAL_SECONDS:
+                return
+            dropped, self._unreported_drops = self._unreported_drops, 0
+            self._last_overflow_report = now
+        self._emit(CaptureEventKind.OVERFLOW, f"capture queue full; dropped_frames={dropped}", chunk)
 
     def release(self) -> None:
         """Drop the native handle acquired for device enumeration."""
@@ -253,10 +283,23 @@ class QueuedCaptureAdapter:
             self._api = self._api_loader()
         return self._api
 
+    def _emit_start_failure(self, exc: Exception) -> None:
+        """A source whose stream never opened has failed, whatever raised.
+
+        Only OSError used to count: PortAudioError derives from Exception and
+        CaptureUnavailable from RuntimeError, so a missing monitor source or a
+        busy device came out as STATUS, the source stayed active and the
+        session reported RECORDING while nothing was captured.
+        """
+        detail = str(exc) or type(exc).__name__
+        if isinstance(exc, PermissionError) or looks_like_permission_denial(detail):
+            self._emit(CaptureEventKind.PERMISSION_DENIED, detail)
+        else:
+            self._emit(CaptureEventKind.DEVICE_REMOVED, detail)
+
     def _emit_native_error(self, exc: Exception) -> None:
         detail = str(exc)
-        permission_words = ("permission", "screen recording", "tcc", "not authorized")
-        if isinstance(exc, PermissionError) or any(word in detail.casefold() for word in permission_words):
+        if isinstance(exc, PermissionError) or looks_like_permission_denial(detail):
             self._emit(CaptureEventKind.PERMISSION_DENIED, detail)
         elif isinstance(exc, OSError):
             self._emit(CaptureEventKind.DEVICE_REMOVED, detail)
@@ -291,7 +334,15 @@ class QueuedCaptureAdapter:
                 except Exception as exc:
                     self._report_dispatch_failure(exc, chunk)
             if self._stopped.is_set() and chunk is None:
-                return
+                # Events raised while stopping (the last drop summary) still
+                # belong to the session log.
+                while True:
+                    try:
+                        event = self._events.get_nowait()
+                    except Empty:
+                        return
+                    if self._on_event is not None:
+                        self._deliver_event(event)
 
     def _deliver_event(self, event: CaptureEvent) -> None:
         try:
@@ -303,9 +354,8 @@ class QueuedCaptureAdapter:
     def _report_dispatch_failure(self, exc: Exception, chunk: PcmChunk) -> None:
         self.dispatch_failures += 1
         detail = f"chunk delivery failed: {type(exc).__name__}: {exc}"
-        if detail in self._reported_failures:
+        if not self._reported_failures.first(detail):
             return
-        self._reported_failures.add(detail)
         if self._on_event is None:
             return
         self._deliver_event(
@@ -317,3 +367,12 @@ class QueuedCaptureAdapter:
                 detail,
             )
         )
+
+
+PERMISSION_WORDS = ("permission", "screen recording", "tcc", "not authorized")
+
+
+def looks_like_permission_denial(detail: str) -> bool:
+    """Native APIs rarely raise PermissionError; their messages say it instead."""
+    text = detail.casefold()
+    return any(word in text for word in PERMISSION_WORDS)

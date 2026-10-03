@@ -97,3 +97,17 @@ def test_live_exports_materialize_each_selected_processing_format(tmp_path):
     assert paths[2].read_text(encoding="utf-8") == "Speaker 1: one\n"
     assert paths[3].read_text(encoding="utf-8") == "[00:00.000] Speaker 1: one\n"
     assert "# Транскрипция: Live transcript" in paths[4].read_text(encoding="utf-8")
+
+
+def test_diarized_exports_keep_events_without_a_speaker_under_their_source(tmp_path):
+    """Unlabelled events were dropped, so with diarization unavailable the
+    diarized transcript came out empty despite "retaining source labels"."""
+    unlabelled = TranscriptEvent("two", 0, CaptureSource.SYSTEM, 48_000, 96_000, 1, "two", "final")
+    paths = export_session(
+        tmp_path,
+        [event("one", 0, "one"), unlabelled],
+        ExportSelection(txt_diarize=True, txt_diarize_timecodes=True),
+    )
+
+    assert paths[0].read_text(encoding="utf-8") == "Speaker 1: one\nSYSTEM: two\n"
+    assert paths[1].read_text(encoding="utf-8") == "[00:00.000] Speaker 1: one\n[00:01.000] SYSTEM: two\n"

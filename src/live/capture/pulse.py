@@ -156,7 +156,9 @@ def attach_to_monitor(name: str, pid: int, timeout: float = 2.0, known: frozense
     """
     deadline = monotonic() + timeout
     while True:
-        new = sorted(source_outputs(pid) - known)
+        # Индексы — числа: строкой "99" сортировался после "100", и
+        # перецеплялась более старая запись.
+        new = sorted(source_outputs(pid) - known, key=int)
         if new and _pactl("move-source-output", new[-1], name) is not None:
             return True
         if monotonic() >= deadline:

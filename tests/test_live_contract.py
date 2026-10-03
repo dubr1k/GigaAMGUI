@@ -63,3 +63,32 @@ def test_capture_event_preserves_source_offset_and_metadata():
 
     assert event.sample_offset == 48_000
     assert event.detail == "queue full"
+
+
+def test_settings_for_sources_record_tracks_only_for_captured_sources():
+    from src.live.types import LiveSettings
+
+    both = LiveSettings.for_sources([CaptureSource.MIC, CaptureSource.SYSTEM], record_system=False)
+    mic_only = LiveSettings.for_sources([CaptureSource.MIC], diarization_backend="pyannote")
+
+    assert (both.record_mic_audio, both.record_system_audio, both.record_mix_audio) == (True, False, True)
+    assert (mic_only.record_mic_audio, mic_only.record_system_audio, mic_only.record_mix_audio) == (True, False, False)
+    assert mic_only.diarization_backend == "pyannote"
+    assert LiveSettings.for_sources([CaptureSource.MIC], record_mic=False, record_system=False).record_source_audio is False
+
+
+def test_asr_scheduler_factory_shares_one_backend_and_honours_the_given_class():
+    from src.live.asr import asr_scheduler_factory
+
+    made = []
+
+    class Scheduler:
+        def __init__(self, backend, **callbacks):
+            made.append((backend, sorted(callbacks)))
+
+    backend = object()
+    factory = asr_scheduler_factory(backend, scheduler_class=Scheduler)
+    factory(CaptureSource.MIC, print, print, print)
+    factory(CaptureSource.SYSTEM, print, print, print)
+
+    assert made == [(backend, ["on_error", "on_final", "on_partial"])] * 2

@@ -10,10 +10,27 @@ from typing import Any
 import numpy as np
 
 from ..types import CaptureSource
-from .common import NativeCaptureApi, QueuedCaptureAdapter, SoundDeviceCapture
+from .common import NativeCaptureApi, QueuedCaptureAdapter, SoundDeviceCapture, looks_like_permission_denial
 from .factory import CaptureUnavailable
 
 _SCREEN_CAPTURE_OUTPUT_CLASS: type[Any] | None = None
+_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED = 1 << 5
+"""kAudioFormatFlagIsNonInterleaved from CoreAudio's AudioStreamBasicDescription."""
+
+
+def float_pcm_frames(data: bytes, channels: int, *, non_interleaved: bool) -> np.ndarray:
+    """Float32 PCM bytes as (frames, channels).
+
+    Interleaved data alternates channels sample by sample; non-interleaved
+    (planar) data holds every sample of channel 0, then of channel 1.
+    """
+    channels = max(1, channels)
+    if len(data) % (4 * channels):
+        raise OSError(f"ScreenCaptureKit audio buffer has invalid PCM frame size: {len(data)} bytes")
+    samples = np.frombuffer(data, dtype=np.float32)
+    if non_interleaved:
+        return samples.reshape(channels, -1).T
+    return samples.reshape(-1, channels)
 
 
 def _screen_capture_output_class(foundation: Any, objc: Any) -> type[Any]:
@@ -172,7 +189,8 @@ class _ScreenCaptureKitCapture:
             length = self._coremedia.CMBlockBufferGetDataLength(block)
             if length <= 0:
                 return
-            if length % 8:
+            channels, non_interleaved, sample_rate = self._audio_layout(sample_buffer)
+            if length % (4 * channels):
                 raise OSError(f"ScreenCaptureKit audio buffer has invalid PCM frame size: {length} bytes")
             status, data = self._coremedia.CMBlockBufferCopyDataBytes(block, 0, length, None)
             if status != 0:
@@ -182,17 +200,38 @@ class _ScreenCaptureKitCapture:
                 raise OSError(
                     f"ScreenCaptureKit audio buffer copy returned {actual_length} bytes; expected {length} bytes"
                 )
-            frames = np.frombuffer(data, dtype=np.float32).reshape(-1, 2)
+            frames = float_pcm_frames(data, channels, non_interleaved=non_interleaved)
         except Exception as exc:
             self._report_audio_failure(exc)
             return
         self._audio_failure_count = 0
         self._audio_failure_reported = False
         try:
-            callback(frames, None, 48_000)
+            callback(frames, None, sample_rate)
         except Exception as exc:
             if self._error_handler is not None:
                 self._error_handler(exc)
+
+    def _audio_layout(self, sample_buffer: Any) -> tuple[int, bool, int]:
+        """(channels, non-interleaved, rate) from the buffer's own format description.
+
+        ScreenCaptureKit hands out non-interleaved float32 — all left samples,
+        then all right ones, as OBS reads it — and the buffer was read as
+        interleaved, pairing neighbouring samples of one channel. Without a
+        readable description the configured interleaved stereo is assumed.
+        """
+        get_format = getattr(self._coremedia, "CMSampleBufferGetFormatDescription", None)
+        get_description = getattr(self._coremedia, "CMAudioFormatDescriptionGetStreamBasicDescription", None)
+        if not callable(get_format) or not callable(get_description):
+            return 2, False, 48_000
+        description = get_format(sample_buffer)
+        asbd = get_description(description) if description is not None else None
+        flags = getattr(asbd, "mFormatFlags", None)
+        if flags is None:
+            return 2, False, 48_000
+        channels = int(getattr(asbd, "mChannelsPerFrame", 0) or 2)
+        sample_rate = int(getattr(asbd, "mSampleRate", 0) or 48_000)
+        return channels, bool(int(flags) & _AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED), sample_rate
 
     def _report_audio_failure(self, error: Exception) -> None:
         self._audio_failure_count += 1
@@ -205,7 +244,7 @@ class _ScreenCaptureKitCapture:
     @staticmethod
     def _raise_capture_error(error: Any) -> None:
         detail = str(error)
-        if any(word in detail.casefold() for word in ("permission", "screen recording", "tcc", "not authorized")):
+        if looks_like_permission_denial(detail):
             raise PermissionError(f"Screen Recording permission denied: {detail}")
         raise OSError(f"ScreenCaptureKit capture failed: {detail}")
 

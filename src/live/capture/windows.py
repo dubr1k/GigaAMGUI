@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from ..types import CaptureSource
-from .common import NativeCaptureApi, QueuedCaptureAdapter
+from .common import NativeCaptureApi, QueuedCaptureAdapter, select_device
 from .factory import CaptureUnavailable
 
 
@@ -69,10 +69,7 @@ class _PyAudioWASAPI:
         return None
 
     def start(self, source: CaptureSource, device_id: str | None, callback: Callable[..., None]) -> None:
-        devices = self.devices(source)
-        selected = next((item for item in devices if item["id"] == device_id), None) if device_id else next(
-            (item for item in devices if item["is_default"]), devices[0] if devices else None
-        )
+        selected = select_device(self.devices(source), device_id)
         if selected is None:
             if source is CaptureSource.SYSTEM:
                 raise OSError(

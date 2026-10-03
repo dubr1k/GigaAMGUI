@@ -470,8 +470,8 @@ def test_live_session_localizes_speaker_and_diarization_messages(tmp_path, trans
     )
     session.subscribe(updates.append)
 
-    assert session._anonymous_speaker(CaptureSource.MIC, "model-speaker") == speaker
-    session._report_live_diarization_unavailable(CaptureSource.MIC, "Sortformer unavailable.")
+    assert session._speakers.anonymous(CaptureSource.MIC, "model-speaker") == speaker
+    session._speakers.report_live_unavailable(CaptureSource.MIC, "Sortformer unavailable.")
 
     assert updates[-1].detail == detail
 
@@ -488,4 +488,4 @@ def test_after_stop_diarization_leaves_events_outside_every_segment_unlabelled(t
     outside = TranscriptEvent("outside", 0, CaptureSource.MIC, 160_000, 176_000, 1, "Нет", "final")
     segments = [SpeakerSegment(0.0, 1.0, "SPEAKER_00"), SpeakerSegment(2.0, 3.0, "SPEAKER_01")]
 
-    assert session._segment_speakers([inside, outside], segments) == {"inside": "SPEAKER_00"}
+    assert session._speakers.segment_speakers([inside, outside], segments) == {"inside": "SPEAKER_00"}
