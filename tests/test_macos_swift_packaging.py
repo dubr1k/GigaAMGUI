@@ -107,7 +107,9 @@ def test_hugging_face_token_uses_keychain_instead_of_user_defaults() -> None:
     main = _liquid_sources()
     secure_store = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/SecureStore.swift").read_text(encoding="utf-8")
     assert 'SecureStore.string(for: "hfToken")' in main
-    assert 'SecureStore.set(sender.stringValue' in main
+    assert '"settings.hfToken": ("hfToken", ' in main
+    commit = _swift_block(main, "func commitSecret(_ sender: NSTextField) {")
+    assert "try SecureStore.set(value.trimmingCharacters(in: .whitespacesAndNewlines), for: secret.account)" in commit
     assert 'defaults.set(sender.stringValue, forKey: key)' in main
     assert "kSecClassGenericPassword" in secure_store
 
@@ -361,10 +363,20 @@ def test_swift_llm_tools_query_uses_worker_protocol() -> None:
 
 def test_swift_llm_api_key_uses_keychain() -> None:
     main = _liquid_sources()
-    text_changed = _swift_block(main, "@objc private func textChanged(_ sender: NSTextField) {")
-    assert 'key == "llm.apiKey"' in text_changed
-    assert 'SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "llmApiKey")' in text_changed
+    assert '"llm.apiKey": ("llmApiKey", ' in main
     assert 'defaults.set(sender.stringValue, forKey: "llm.apiKey")' not in main
+    # A secret is written when its editing ends (or on Return), not per keystroke:
+    # each keystroke was a Keychain write and, on failure, an alert.
+    record = _swift_block(main, "func recordText(_ sender: NSTextField) {")
+    assert "pendingSecrets[key] = sender.stringValue" in record
+    assert record.index("pendingSecrets[key] = sender.stringValue") < record.index("defaults.set(sender.stringValue, forKey: key)")
+    assert "SecureStore.set" not in record
+    assert "commitSecret(sender)" in _swift_block(main, "@objc private func textChanged(_ sender: NSTextField) {")
+    end_editing = _swift_block(main, "func controlTextDidEndEditing(_ notification: Notification) {")
+    assert "commitSecret(control)" in end_editing and "defaults.set" not in end_editing
+    # Only what was typed in this field is written (the stale-field rule).
+    assert "let value = pendingSecrets.removeValue(forKey: key)" in _swift_block(main, "func commitSecret(_ sender: NSTextField) {")
+    assert "window.makeFirstResponder(nil)" in _swift_block(main, "private func show(page: Page) {")
     terminate = _swift_block(main, "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {")
     assert "llmJob?.terminate()" in terminate
 
@@ -635,3 +647,19 @@ def test_swift_every_russian_ui_string_has_an_english_translation() -> None:
         assert key.count("%@") == value.count("%@"), key
     assert table["Отменить"] == "Undo"  # the Edit menu; the Live button has its own key
     assert table["Отменить вопрос"] == "Cancel question"
+
+
+def test_swift_cli_path_edits_check_the_latest_path() -> None:
+    # Each keystroke in a CLI path field started a check with the partial path,
+    # and the one-check-at-a-time guard dropped the later ones: the badge kept
+    # the verdict for "/opt". Checks now wait for typing to pause, and a newer
+    # check replaces one still running.
+    main = _liquid_sources()
+    record = _swift_block(main, "func recordText(_ sender: NSTextField) {")
+    assert "scheduleLLMToolCheck(tool.name)" in record and "checkLLMTool(" not in record
+    schedule = _swift_block(main, "func scheduleLLMToolCheck(_ provider: String) {")
+    assert "pendingToolChecks[provider]?.cancel()" in schedule and "asyncAfter" in schedule
+    check = _swift_block(main, "func checkLLMTool(_ provider: String) {")
+    assert "llmToolChecks.removeValue(forKey: provider)?.cancel()" in check
+    assert "guard llmToolChecks[provider] == nil" not in check
+    assert "self.llmToolChecks[provider] === current" in check

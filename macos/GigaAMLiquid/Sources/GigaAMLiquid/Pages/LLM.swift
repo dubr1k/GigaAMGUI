@@ -246,13 +246,31 @@ extension AppController {
         refreshLLMTools(fresh: true)
     }
 
+    /// Re-checks a tool once its path field has been still for a moment, so typing
+    /// "/opt/homebrew/bin/claude" probes that path, not "/", "/o", "/op"…
+    func scheduleLLMToolCheck(_ provider: String) {
+        pendingToolChecks[provider]?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingToolChecks[provider] = nil
+            self?.checkLLMTool(provider)
+        }
+        pendingToolChecks[provider] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    /// Probes the tool at its current path. A check still running for an older
+    /// path is cancelled and replaced: the badge must describe the latest path,
+    /// and the old "one check at a time" guard dropped the later edits instead.
     func checkLLMTool(_ provider: String) {
-        guard llmToolChecks[provider] == nil, !isClosing,
-              let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
+        guard !isClosing, let tool = Self.llmCliProviders.first(where: { $0.name == provider }) else { return }
+        llmToolChecks.removeValue(forKey: provider)?.cancel()
         let path = (defaults.string(forKey: "llm.\(tool.prefix)Path") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         llmToolRows[provider]?.check.isEnabled = false
+        // Weak: the query holds this closure, so a strong reference would keep it alive.
+        weak var issued: LLMToolsQuery?
         let query = LLMToolsQuery.check(provider: provider, path: path) { [weak self] result in
-            guard let self else { return }
+            // A replaced check may still answer; only the latest one counts.
+            guard let self, let current = issued, self.llmToolChecks[provider] === current else { return }
             self.llmToolChecks[provider] = nil
             self.llmToolRows[provider]?.check.isEnabled = true
             if case .tool(let status) = result {
@@ -264,6 +282,7 @@ extension AppController {
             self.refreshLLMToolRows()
             self.refreshLLMProviderStatus()
         }
+        issued = query
         query.onLog = { [weak self] line in self?.appendProcessingLog("LLM tools: " + line) }
         llmToolChecks[provider] = query
         query.start()

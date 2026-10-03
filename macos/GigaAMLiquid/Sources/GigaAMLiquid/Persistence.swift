@@ -34,32 +34,50 @@ extension AppController {
         refreshProcessingControls()
     }
 
+    /// Fields whose value lives in the Keychain: control identifier → (account, failure title).
+    static let secretFields: [String: (account: String, failure: String)] = [
+        "settings.hfToken": ("hfToken", "Не удалось сохранить HF Token"),
+        "llm.apiKey": ("llmApiKey", "Не удалось сохранить API Key"),
+    ]
+
+    /// Return in a field: the edit is complete.
     @objc func textChanged(_ sender: NSTextField) {
+        recordText(sender)
+        commitSecret(sender)
+    }
+
+    /// Every keystroke. Plain settings go to UserDefaults at once; a secret only
+    /// waits for the end of editing — a Keychain write per keystroke meant a
+    /// SecItemUpdate per character and, if the Keychain refused, an alert per key.
+    func recordText(_ sender: NSTextField) {
         guard let key = sender.identifier?.rawValue else { return }
-        if key == "settings.hfToken" {
-            do {
-                try SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "hfToken")
-            } catch {
-                showNotice("Не удалось сохранить HF Token", error.localizedDescription)
-            }
-        } else if key == "llm.apiKey" {
-            do {
-                try SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "llmApiKey")
-            } catch {
-                showNotice("Не удалось сохранить API Key", error.localizedDescription)
-            }
-        } else {
-            defaults.set(sender.stringValue, forKey: key)
+        if Self.secretFields[key] != nil {
+            pendingSecrets[key] = sender.stringValue
+            return
         }
+        defaults.set(sender.stringValue, forKey: key)
         if key == "output.path" { refreshProcessingControls() }
         if key == "live.sessionRoot", liveJob == nil {
             liveSessionDir = nil
             refreshLiveFolderLabel()
         }
-        // An edited CLI path invalidates its badge: re-probe just that tool.
+        // An edited CLI path invalidates its badge: re-probe that tool once typing pauses.
         if key.hasPrefix("llm."), key.hasSuffix("Path"),
            let tool = Self.llmCliProviders.first(where: { "llm.\($0.prefix)Path" == key }) {
-            checkLLMTool(tool.name)
+            scheduleLLMToolCheck(tool.name)
+        }
+    }
+
+    /// Writes a secret the user typed in this field, once. Only an edit made in
+    /// the field is written: ending the editing of an untouched field (it is
+    /// removed when a page is rebuilt) never writes its possibly stale text.
+    func commitSecret(_ sender: NSTextField) {
+        guard let key = sender.identifier?.rawValue, let secret = Self.secretFields[key],
+              let value = pendingSecrets.removeValue(forKey: key) else { return }
+        do {
+            try SecureStore.set(value.trimmingCharacters(in: .whitespacesAndNewlines), for: secret.account)
+        } catch {
+            showNotice(secret.failure, error.localizedDescription)
         }
     }
 }
@@ -74,14 +92,20 @@ extension AppController: NSTextViewDelegate {
 
 /// Single-line fields (and the page search field) report every edit here.
 extension AppController: NSSearchFieldDelegate {
-    /// No controlTextDidEndEditing: every edit is already persisted here. Saving
-    /// again on end-editing let a stale field win — show(page:) removes the old,
-    /// still-focused field only after the new page has read the stored value, and
+    /// Plain fields persist here, on every edit, and never again on end-editing:
+    /// saving on end-editing let a stale field win — show(page:) removed the old,
+    /// still-focused field only after the new page had read the stored value, and
     /// AppKit ends its editing on removal, so a folder picked with «Изменить» was
     /// overwritten by the old empty text while the new field still displayed it.
     func controlTextDidChange(_ notification: Notification) {
         guard let control = notification.object as? NSTextField else { return }
-        if control.identifier != nil { textChanged(control) }
+        if control.identifier != nil { recordText(control) }
         if let field = control as? NSSearchField, field === searchField { updateSearchResults(for: field) }
+    }
+
+    /// Only secrets are written here, and only what was typed in this field.
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let control = notification.object as? NSTextField else { return }
+        commitSecret(control)
     }
 }

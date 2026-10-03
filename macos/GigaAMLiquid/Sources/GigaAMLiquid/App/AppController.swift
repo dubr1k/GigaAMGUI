@@ -91,6 +91,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     var searchResults = NSView()
     var searchCapsule: GlassView?
     var searchWidth: NSLayoutConstraint?
+    /// Secrets typed but not yet written to the Keychain, by control identifier.
+    var pendingSecrets: [String: String] = [:]
+    /// A tool re-check waiting for the user to stop typing its path, by provider.
+    var pendingToolChecks: [String: DispatchWorkItem] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         for (old, current) in [("settings.sentences", "subtitle.sentences"), ("settings.subtitleLines", "subtitle.lines"), ("settings.subtitleCharacters", "subtitle.characters")] {
@@ -446,6 +450,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func show(page: Page) {
+        // End editing first: a typed secret is committed before the new page reads
+        // it, and no field of the old page is still editing when it is removed.
+        window.makeFirstResponder(nil)
         currentPage = page
         pageTitle.stringValue = L10n.text(page.title)
         pageSubtitle.stringValue = L10n.text(page.subtitle)
@@ -512,6 +519,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        window?.makeFirstResponder(nil)  // commit a secret still being typed
         isClosing = true
         guard mediaDownloadJob != nil || transcriptionJob != nil || llmJob != nil || liveJob != nil else { return .terminateNow }
         isTerminating = true
@@ -616,6 +624,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 // the Objective-C runtime sees it as the protocol's witness.
 extension AppController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
+        window.makeFirstResponder(nil)  // commit a secret still being typed
         isClosing = true
         mediaImportAlert = nil
         mediaDownloadJob?.cancel()
@@ -625,6 +634,7 @@ extension AppController: NSWindowDelegate {
         liveJob?.terminate()
         llmToolsQuery?.cancel()
         llmToolChecks.values.forEach { $0.cancel() }
+        pendingToolChecks.values.forEach { $0.cancel() }
         cleanupDownloadedMedia()
     }
 }
