@@ -66,6 +66,12 @@ LIVE_SAVED_PREFIX = ("Сохранено: ", "Saved: ")
 # stop() доводит сессию до конца и при сбое этапа, а ошибки отдаёт в
 # SessionResult.errors: такая сессия сохранена, но не полностью.
 LIVE_SAVED_WITH_ERRORS_PREFIX = ("Сохранено с ошибками: ", "Saved with errors: ")
+# Дорожки записи (ключи SessionResult.recording_files).
+LIVE_TRACK_LABELS = {
+    "mic": ("микрофон", "microphone"),
+    "system": ("системный звук", "system audio"),
+    "mix": ("микс", "mix"),
+}
 LIVE_WAVEFORM_TEXTS = {
     "idle": ("Аудиосигнал появится во время записи", "Audio signal appears during capture"),
     "recording": ("Захват аудио", "Capturing audio"),
@@ -162,6 +168,14 @@ class LiveDisplayMixin:
         if result.exports:
             self._log_live(
                 self._t("Расшифровка: ", "Transcript: ") + _session_file_names(result.exports, session_dir)
+            )
+        # Все сегменты каждой дорожки: длинная запись переходит на mic-002.flac
+        # и дальше, а result.recordings называет только первый файл.
+        for track, paths in result.recording_files.items():
+            label = LIVE_TRACK_LABELS.get(track, (track, track))
+            self._log_live(
+                self._t(f"Аудио ({label[0]}): ", f"Audio ({label[1]}): ")
+                + _session_file_names(paths, session_dir)
             )
 
     def _update_live_event(self, event) -> None:

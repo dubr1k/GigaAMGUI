@@ -260,6 +260,32 @@ def test_a_clean_stop_lists_the_saved_files(window):
     assert "transcript.txt" in log and "transcript_timecodes.txt" in log
 
 
+def test_every_recording_segment_is_listed_in_the_journal(window, tmp_path):
+    """Длинная сессия переходит на mic-002.flac и дальше; первый файл — не вся запись."""
+    from src.live.session import SessionResult
+
+    session_dir = tmp_path / "sessions" / "2026-10-03_12-00-00"
+    session_dir.mkdir()
+    result = SessionResult(
+        session_dir,
+        {CaptureSource.MIC: session_dir / "mic.flac", CaptureSource.SYSTEM: session_dir / "system.flac"},
+        [session_dir / "transcript.txt"],
+        recording_files={
+            "mic": [session_dir / "mic.flac", session_dir / "mic-002.flac", session_dir / "mic-003.flac"],
+            "system": [session_dir / "system.flac"],
+            "mix": [session_dir / "mix.flac", session_dir / "mix-002.flac"],
+        },
+    )
+
+    window._on_live_finished(result)
+    QApplication.processEvents()
+
+    lines = window.log_text.toPlainText().splitlines()
+    assert ">> [live] Аудио (микрофон): mic.flac, mic-002.flac, mic-003.flac" in lines
+    assert ">> [live] Аудио (системный звук): system.flac" in lines
+    assert ">> [live] Аудио (микс): mix.flac, mix-002.flac" in lines
+
+
 @pytest.mark.parametrize(
     ("source", "record_mic", "record_system"),
     [("mic", True, True), ("system", True, False), ("both", False, True), ("both", True, True)],
