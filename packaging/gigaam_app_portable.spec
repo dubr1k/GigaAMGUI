@@ -16,7 +16,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package, collect_required
+from _spec_common import collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package, collect_required, editable_package_roots
 runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
 onnx_d, onnx_b, onnx_h = collect_onnx_runtime_deps()
 live_d, live_b, live_h = collect_live_capture_deps()
@@ -129,7 +129,8 @@ hiddenimports = list(set(
 
 a = Analysis(
     [os.path.join(project_root, 'app.py')],
-    pathex=[project_root],
+    # editable gigaam (`pip install -e`) иначе невидим анализу — см. _spec_common.
+    pathex=[project_root, *editable_package_roots(["gigaam", "gigaam_mlx"])],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

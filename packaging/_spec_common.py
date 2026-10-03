@@ -231,3 +231,29 @@ def windows_conda_extra_binaries(dll_names=("_lzma.pyd", "_bz2.pyd", "_sqlite3.p
             found.append((str(liblzma), "."))
             break
     return found
+
+
+def editable_package_roots(packages):
+    """Каталоги, через которые анализ PyInstaller увидит пакеты из `pip install -e`.
+
+    PEP 660 editable-установка (так ставит gigaam строка `-e git+…` в
+    requirements.txt) кладёт в site-packages не путь, а import-finder.
+    Python пакет находит, а modulegraph PyInstaller ищет модули только по путям:
+    он пишет «ERROR: Hidden import 'gigaam.model' not found» и продолжает, и
+    локальные сборки уходили без кода модели, хотя в CI (обычная установка)
+    всё было на месте. Корень такого пакета надо явно добавить в pathex.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    roots = []
+    for name in packages:
+        spec = importlib.util.find_spec(name)
+        if spec is None or not spec.origin or spec.origin == "namespace":
+            continue
+        if importlib.machinery.PathFinder.find_spec(name, sys.path) is not None:
+            continue  # и так виден по путям (обычная установка)
+        root = str(Path(spec.origin).resolve().parent.parent)
+        if root not in roots:
+            roots.append(root)
+    return roots

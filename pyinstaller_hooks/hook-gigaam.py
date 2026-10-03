@@ -11,7 +11,9 @@ PyTorch-бэкенд падает уже у пользователя. Такой
 локальную установку Liquid, поэтому сборка обязана упасть здесь.
 """
 
+import importlib.machinery
 import importlib.util
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -31,6 +33,15 @@ def _require_real_gigaam_package() -> None:
         )
     if "def load_model(" not in Path(origin).read_text(encoding="utf-8", errors="replace"):
         raise SystemExit(f"hook-gigaam: в {origin} нет gigaam.load_model — пакет повреждён.")
+    # modulegraph ищет модули только по путям (sys.path, куда PyInstaller уже
+    # добавил pathex). Editable-установка видна Python через import-finder, но не
+    # анализу: тогда сборка «зелёная», а gigaam.model в бандле нет.
+    if importlib.machinery.PathFinder.find_spec("gigaam", sys.path) is None:
+        raise SystemExit(
+            "hook-gigaam: gigaam установлен editable из "
+            f"{Path(origin).resolve().parent.parent}, а этого каталога нет в pathex; "
+            "добавьте editable_package_roots(['gigaam']) из packaging/_spec_common.py в Analysis(pathex=…)."
+        )
 
 
 def _without_sync_conflicts(entries):

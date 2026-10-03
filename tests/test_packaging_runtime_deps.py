@@ -332,3 +332,26 @@ def test_release_specs_do_not_skip_required_packages_silently():
         text = (PACKAGING_DIR / name).read_text(encoding="utf-8")
         assert "safe_collect" not in text, name
         assert "collect_required" in text, name
+
+
+def test_editable_package_roots_point_the_analysis_at_editable_sources(monkeypatch, tmp_path):
+    import importlib.machinery
+
+    common = _load_spec_common(monkeypatch)
+    editable_init = tmp_path / "venv" / "src" / "gigaam" / "gigaam" / "__init__.py"
+    regular_init = tmp_path / "site-packages" / "numpy" / "__init__.py"
+    specs = {
+        "gigaam": importlib.machinery.ModuleSpec("gigaam", None, origin=str(editable_init), is_package=True),
+        "numpy": importlib.machinery.ModuleSpec("numpy", None, origin=str(regular_init), is_package=True),
+    }
+    on_paths = {"numpy"}
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: specs.get(name))
+    monkeypatch.setattr(
+        importlib.machinery.PathFinder,
+        "find_spec",
+        classmethod(lambda cls, name, path=None: specs[name] if name in on_paths else None),
+    )
+
+    roots = common.editable_package_roots(["gigaam", "numpy", "missing"])
+
+    assert roots == [str((tmp_path / "venv" / "src" / "gigaam").resolve())]
