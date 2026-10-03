@@ -303,3 +303,32 @@ def test_conda_extra_binaries_are_empty_outside_conda(monkeypatch, tmp_path):
     common = _load_spec_common(monkeypatch)
     monkeypatch.setattr(common.sys, "prefix", str(tmp_path / "venv"))
     assert common.windows_conda_extra_binaries() == []
+
+
+def test_collect_required_refuses_missing_or_empty_packages(monkeypatch):
+    import pytest
+
+    common = _load_spec_common(monkeypatch)
+    monkeypatch.setattr(common, "collect_all", lambda package: ([], [], []))
+    with pytest.raises(SystemExit, match="gigaam"):
+        common.collect_required("gigaam")
+
+    def broken(package):
+        raise RuntimeError("metadata not found")
+
+    monkeypatch.setattr(common, "collect_all", broken)
+    with pytest.raises(SystemExit, match="transformers"):
+        common.collect_required("transformers")
+    assert common.collect_optional("transformers") == ([], [], [])
+
+    monkeypatch.setattr(common, "collect_all", lambda package: ([("a", "b")], [], [package]))
+    assert common.collect_required("einops") == ([("a", "b")], [], ["einops"])
+
+
+def test_release_specs_do_not_skip_required_packages_silently():
+    # safe_collect печатал «[skip]» и возвращал пустоту: сборка зеленела без
+    # gigaam/transformers/PyQt6. Релизные спеки собирают через collect_required.
+    for name in ("gigaam_app_portable.spec", "gigaam_app_mac.spec", "gigaam_app_mac_x86_64.spec"):
+        text = (PACKAGING_DIR / name).read_text(encoding="utf-8")
+        assert "safe_collect" not in text, name
+        assert "collect_required" in text, name

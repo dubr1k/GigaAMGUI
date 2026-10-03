@@ -16,7 +16,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package
+from _spec_common import collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package, collect_required
 runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
 onnx_d, onnx_b, onnx_h = collect_onnx_runtime_deps()
 live_d, live_b, live_h = collect_live_capture_deps()
@@ -30,27 +30,20 @@ project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в 
 _icon = os.path.join(project_root, 'assets', 'icon.ico') if sys.platform == 'win32' else None
 
 
-def safe_collect(pkg):
-    try:
-        return collect_all(pkg)
-    except Exception as e:
-        print(f"[skip] {pkg}: {e}")
-        return [], [], []
-
 
 # Собираем пакеты БЕЗ torch/torchaudio/torchvision — они ставятся при первом запуске.
-transformers_d, transformers_b, transformers_h = safe_collect('transformers')
-gigaam_d,       gigaam_b,       gigaam_h       = safe_collect('gigaam')
-hf_d,           hf_b,           hf_h           = safe_collect('huggingface_hub')
-safetensors_d,  safetensors_b,  safetensors_h  = safe_collect('safetensors')
-tokenizers_d,   tokenizers_b,   tokenizers_h   = safe_collect('tokenizers')
-pyqt6_d,        pyqt6_b,        pyqt6_h        = safe_collect('PyQt6')
-einops_d,       einops_b,       einops_h       = safe_collect('einops')
-omegaconf_d,    omegaconf_b,    omegaconf_h    = safe_collect('omegaconf')
-accelerate_d,   accelerate_b,   accelerate_h   = safe_collect('accelerate')
+transformers_d, transformers_b, transformers_h = collect_required('transformers')
+gigaam_d,       gigaam_b,       gigaam_h       = collect_required('gigaam')
+hf_d,           hf_b,           hf_h           = collect_required('huggingface_hub')
+safetensors_d,  safetensors_b,  safetensors_h  = collect_required('safetensors')
+tokenizers_d,   tokenizers_b,   tokenizers_h   = collect_required('tokenizers')
+pyqt6_d,        pyqt6_b,        pyqt6_h        = collect_required('PyQt6')
+einops_d,       einops_b,       einops_h       = collect_required('einops')
+omegaconf_d,    omegaconf_b,    omegaconf_h    = collect_required('omegaconf')
+accelerate_d,   accelerate_b,   accelerate_h   = collect_required('accelerate')
 pyannote_d,     pyannote_b,     pyannote_h     = collect_static_package('pyannote.audio')
-lightning_d,    lightning_b,    lightning_h    = safe_collect('lightning_fabric')
-ptl_d,          ptl_b,          ptl_h          = safe_collect('pytorch_lightning')
+lightning_d,    lightning_b,    lightning_h    = collect_required('lightning_fabric')
+ptl_d,          ptl_b,          ptl_h          = collect_required('pytorch_lightning')
 
 datas = list(
     transformers_d + gigaam_d + hf_d +

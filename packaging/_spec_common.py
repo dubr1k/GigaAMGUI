@@ -165,6 +165,32 @@ def collect_pure_runtime_deps():
     return datas, binaries, hiddenimports
 
 
+def collect_required(package):
+    """collect_all() для пакета, без которого бандл неработоспособен.
+
+    Спеки собирали всё через safe_collect(), который при ошибке печатал
+    `[skip]` и возвращал пустые списки: сборка зеленела, а у пользователя
+    падал импорт (тот же класс ошибок, что #19). Пустой результат тоже
+    ошибка — collect_all() не бросает исключение для неустановленного пакета.
+    """
+    try:
+        datas, binaries, hiddenimports = collect_all(package)
+    except Exception as exc:
+        raise SystemExit(f"Не удалось собрать обязательный пакет {package}: {exc}") from exc
+    if not (datas or binaries or hiddenimports):
+        raise SystemExit(f"Обязательный пакет {package} собрался пустым — он не установлен в окружении сборки?")
+    return datas, binaries, hiddenimports
+
+
+def collect_optional(package):
+    """collect_all() для необязательного пакета: отсутствие — не ошибка."""
+    try:
+        return collect_all(package)
+    except Exception as exc:
+        print(f"[skip] {package}: {exc}")
+        return [], [], []
+
+
 def collect_onnx_runtime_deps():
     """Собирает Python-код, model metadata/data и native-библиотеки ONNX runtime."""
     datas, binaries, hiddenimports = [], [], []
