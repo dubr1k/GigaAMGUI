@@ -21,6 +21,8 @@ except Exception:  # pragma: no cover
 pytestmark = pytest.mark.skipif(not _HAS_CLIENT, reason="нужен fastapi TestClient")
 
 api = importlib.import_module("api")
+from src.services import openai_stream  # noqa: E402
+
 VALID_KEY = "gam_openai_test"
 
 
@@ -609,7 +611,7 @@ def test_progress_comment_survives_closed_loop():
     # Сервер остановлен (loop закрыт), а процессор в executor ещё шлёт прогресс — не падаем
     loop = asyncio.new_event_loop()
     loop.close()
-    api._queue_progress(loop, asyncio.Queue(), "transcription", 0.5)
+    openai_stream.queue_progress(loop, asyncio.Queue(), "transcription", 0.5)
 
 
 def test_progress_comment_formats_event_and_legacy_pair():
@@ -619,9 +621,9 @@ def test_progress_comment_formats_event_and_legacy_pair():
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.new_event_loop()
     try:
-        api._queue_progress(loop, queue, Event())
-        api._queue_progress(loop, queue, "transcription", 0.5)
-        api._queue_progress(loop, queue, "diarization", None)
+        openai_stream.queue_progress(loop, queue, Event())
+        openai_stream.queue_progress(loop, queue, "transcription", 0.5)
+        openai_stream.queue_progress(loop, queue, "diarization", None)
         loop.run_until_complete(asyncio.sleep(0))
     finally:
         loop.close()
