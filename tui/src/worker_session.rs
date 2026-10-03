@@ -177,6 +177,8 @@ fn controller(
         readers.push(reader(stderr, None, data_tx, fault_tx));
     }
     let mut pending = None;
+    // The event that followed a folded chunk; it goes out next, keeping the order.
+    let mut held = None;
     let failure = loop {
         match control.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break None,
@@ -191,15 +193,20 @@ fn controller(
             Ok(None) => {}
         }
         if pending.is_none() {
-            pending = data_rx.recv_timeout(TICK).ok();
+            pending = held.take().or_else(|| data_rx.recv_timeout(TICK).ok());
         }
         if let Some(kind) = pending.take() {
             match events.try_send(WorkerEvent { generation, kind }) {
                 Ok(()) => {}
                 Err(TrySendError::Disconnected(_)) => break None,
                 Err(TrySendError::Full(event)) => {
-                    pending = Some(event.kind);
-                    thread::sleep(TICK);
+                    let mut kind = event.kind;
+                    if held.is_none() {
+                        fold_chunks(&mut kind, &data_rx, &mut held);
+                    } else {
+                        thread::sleep(TICK);
+                    }
+                    pending = Some(kind);
                 }
             }
         }
@@ -225,7 +232,7 @@ fn controller(
             publish(&events, &control, generation, other);
         }
     };
-    if let Some(kind) = pending {
+    for kind in [pending, held].into_iter().flatten() {
         collect(kind);
     }
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -294,6 +301,63 @@ fn controller(
             thread::sleep(TICK);
         }
         result = join_finished(&mut readers, result);
+    }
+}
+
+/// Text one folded `llm_chunk` may grow to before it waits like any other event.
+const MAX_FOLDED_TEXT: usize = 64 * 1024;
+
+/// The text of an `llm_chunk` message and its mode.
+fn chunk(kind: &mut WorkerEventKind) -> Option<(&mut String, Value)> {
+    let WorkerEventKind::Message(Value::Object(message)) = kind else {
+        return None;
+    };
+    if message.get("type").and_then(Value::as_str) != Some("llm_chunk") {
+        return None;
+    }
+    let mode = message.get("mode").cloned().unwrap_or(Value::Null);
+    match message.get_mut("text") {
+        Some(Value::String(text)) => Some((text, mode)),
+        _ => None,
+    }
+}
+
+/// While the consumer has no room, the token-stream chunks that arrive join the
+/// one waiting for it (same mode, bounded size), for up to one tick. One queue
+/// slot per token used to back the stream up into the pipe until the worker
+/// blocked in `emit`, holding its write lock, which delayed every other
+/// message. The first event that is not such a chunk is `held` and goes out
+/// right after the folded one, so the order never changes.
+fn fold_chunks(
+    kind: &mut WorkerEventKind,
+    data: &Receiver<WorkerEventKind>,
+    held: &mut Option<WorkerEventKind>,
+) {
+    let deadline = Instant::now() + TICK;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        let Some((text, mode)) = chunk(kind) else {
+            thread::sleep(deadline - now);
+            return;
+        };
+        if text.len() >= MAX_FOLDED_TEXT {
+            thread::sleep(deadline - now);
+            return;
+        }
+        match data.recv_timeout(deadline - now) {
+            Ok(mut next) => match chunk(&mut next) {
+                Some((more, next_mode)) if next_mode == mode => text.push_str(more),
+                _ => {
+                    *held = Some(next);
+                    thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                    return;
+                }
+            },
+            Err(_) => return,
+        }
     }
 }
 

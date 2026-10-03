@@ -179,6 +179,51 @@ time.sleep(30)
     stopped(&rx);
 }
 
+/// A token-level `llm_chunk` stream used to cost one queue slot per token: with a
+/// UI that drains slowly, the pipe filled up and the worker blocked inside
+/// `emit` (holding its write lock), delaying every other message.
+#[test]
+fn a_token_stream_is_folded_while_the_consumer_is_busy() {
+    let (tx, rx) = mpsc::sync_channel(EVENT_CAPACITY);
+    let session = WorkerSession::spawn_with_command(
+        7,
+        python(
+            r#"
+import json, sys
+for index in range(3000):
+    sys.stdout.write(json.dumps({'type':'llm_chunk','mode':'summary','text':str(index)+','}) + '\n')
+print(json.dumps({'type':'llm_completed','success':True}), flush=True)
+sys.stdin.readline()
+"#,
+        ),
+        tx,
+    );
+    let started = Instant::now();
+    let mut text = String::new();
+    let mut chunks = 0;
+    loop {
+        std::thread::sleep(Duration::from_millis(10)); // a slow consumer
+        match receive(&rx) {
+            WorkerEventKind::Message(value) if value["type"] == "llm_chunk" => {
+                assert_eq!(value["mode"], "summary");
+                text.push_str(value["text"].as_str().unwrap());
+                chunks += 1;
+            }
+            WorkerEventKind::Message(value) => {
+                assert_eq!(value["type"], "llm_completed", "order is kept");
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    session.stop();
+    stopped(&rx);
+    let expected: String = (0..3000).map(|index| format!("{index},")).collect();
+    assert_eq!(text, expected);
+    assert!(chunks < 3000, "{chunks} events for 3000 tokens");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
 #[test]
 fn exit_and_stdout_eof_report_one_failure_then_reap() {
     for script in [
