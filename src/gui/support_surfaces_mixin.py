@@ -607,7 +607,8 @@ class SupportSurfacesMixin:
 
     def _set_settings_model(self) -> None:
         model = self.settings_model_combo.currentData()
-        if not self._can_change_processing_settings():
+        if self._refuse_model_change_while_busy(self._t("Смена модели", "Model change")):
+            self._sync_support_surface_settings()
             return
         if not model or model == self.model_loader.requested_model:
             return

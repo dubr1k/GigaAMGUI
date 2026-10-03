@@ -22,7 +22,6 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
-    QMessageBox,
 )
 
 from ..config import (
@@ -41,6 +40,7 @@ from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from .download_mixin import DownloadMixin
 from .files_mixin import FilesMixin
 from .i18n_mixin import I18nMixin
+from .lifecycle_mixin import LifecycleMixin
 from .live_mixin import LiveMixin
 from .live_ui_mixin import LiveUiMixin
 from .llm_mixin import LlmMixin
@@ -75,6 +75,7 @@ class WorkerSignals(QObject):
     live_status = pyqtSignal(object)
     live_event = pyqtSignal(object)
     live_finished = pyqtSignal(object)
+    live_stop_failed = pyqtSignal(str)
     live_answer = pyqtSignal(str, str)
 
 
@@ -116,7 +117,7 @@ class GigaApplication(QApplication):
 class GigaTranscriberQtApp(
     LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, FilesMixin,
     I18nMixin, SettingsMixin, SupportSurfacesMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
-    LiveMixin, LiveUiMixin,
+    LiveMixin, LiveUiMixin, LifecycleMixin,
     UiBuildMixin, QMainWindow,
 ):
     """Главное окно приложения для транскрибации на PyQt6"""
@@ -132,6 +133,10 @@ class GigaTranscriberQtApp(
         self._cancel_requested = False
         self._processing_cancel_event = None
         self._processing_thread = None
+        # Выход ждёт экспорта live-сессии: см. LifecycleMixin.closeEvent.
+        self._close_confirmed = False
+        self._close_pending = False
+        self._close_forced = False
         self.start_time = None
         self.files_processed = 0
         self.total_files = 0
@@ -203,6 +208,7 @@ class GigaTranscriberQtApp(
         self.signals.live_status.connect(self._update_live_status)
         self.signals.live_event.connect(self._update_live_event)
         self.signals.live_finished.connect(self._on_live_finished)
+        self.signals.live_stop_failed.connect(self._on_live_stop_failed)
         self.signals.live_answer.connect(self._update_live_answer)
 
         saved_output_dir = self.user_settings.get_last_output_dir()
@@ -332,8 +338,7 @@ class GigaTranscriberQtApp(
     }
 
     def _select_asr_model(self):
-        if self.is_processing:
-            QMessageBox.information(self, self._t("Смена модели", "Model change"), self._t("Дождитесь завершения обработки.", "Wait for processing to finish."))
+        if self._refuse_model_change_while_busy(self._t("Смена модели", "Model change")):
             return
         from PyQt6.QtWidgets import QInputDialog
 
@@ -350,15 +355,7 @@ class GigaTranscriberQtApp(
             self.log(f"ASR model selected: {model}")
 
     def _select_asr_backend(self):
-        if self.is_processing:
-            QMessageBox.information(
-                self,
-                self._t("Смена backend", "Backend change"),
-                self._t(
-                    "Дождитесь завершения обработки перед сменой backend.",
-                    "Wait for processing to finish before changing backend.",
-                ),
-            )
+        if self._refuse_model_change_while_busy(self._t("Смена backend", "Backend change")):
             return
 
         selected = ASRBackendDialog.pick_configuration(
@@ -389,16 +386,11 @@ class GigaTranscriberQtApp(
 
     def _change_device(self):
         """Смена вычислительного устройства (CPU / GPU / GPU 50xx) из меню."""
-        from PyQt6.QtWidgets import QMessageBox
-
         from .device_dialog import change_device_interactive
 
-        if self.is_processing:
-            QMessageBox.information(
-                self,
-                self._t("Устройство", "Device"),
-                self._t("Дождитесь окончания обработки перед сменой устройства.", "Wait for processing to finish before changing the device."),
-            )
+        # Смена устройства выгружает модель и подменяет torch-runtime —
+        # из-под идущей Live-записи тоже, не только из-под пакетной обработки.
+        if self._refuse_model_change_while_busy(self._t("Устройство", "Device")):
             return
 
         chosen = change_device_interactive(self)

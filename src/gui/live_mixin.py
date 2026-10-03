@@ -387,11 +387,26 @@ class LiveMixin:
         try:
             result = session.stop()
         except Exception as exc:
-            self.signals.live_event.emit(
-                CaptureEvent(CaptureEventKind.STATUS, CaptureSource.MIC, 0, 0, str(exc))
-            )
+            # Раньше здесь уходил только статус: Start и Stop оставались
+            # выключенными до перезапуска приложения.
+            self.signals.live_stop_failed.emit(str(exc) or type(exc).__name__)
             return
         self.signals.live_finished.emit(result)
+
+    def _on_live_stop_failed(self, detail: str) -> None:
+        if self._live_llm_cancel_event is not None:
+            self._live_llm_cancel_event.set()
+        self._live_conversation_id = None
+        # Сессия остановилась наполовину; спасать её нечем, а новая запись
+        # должна быть доступна без перезапуска.
+        self.live_session = None
+        self.lbl_live_status.setText(self._t("Ошибка остановки", "Stop failed"))
+        self._report_live_problem(self._t(
+            f"Не удалось сохранить live-сессию: {detail}",
+            f"Could not save the live session: {detail}",
+        ))
+        self._update_live_control_state(CaptureState.STOPPED)
+        self._continue_pending_close()
 
     def _on_live_session_update(self, value) -> None:
         if isinstance(value, LiveStatus):
@@ -631,6 +646,7 @@ class LiveMixin:
         self.lbl_live_status.setToolTip(str(result.session_dir))
         self._update_live_control_state(CaptureState.STOPPED)
         self._sync_live_conversation()
+        self._continue_pending_close()
 
     def _update_live_control_state(self, state: CaptureState | None = None) -> None:
         state = state or (self.live_session.status().state if self.live_session else CaptureState.IDLE)

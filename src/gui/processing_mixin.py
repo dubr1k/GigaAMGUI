@@ -890,26 +890,3 @@ class ProcessingMixin:
         dlg.exec()
         if clicked["open"]:
             self._open_results_folder()
-
-    def closeEvent(self, event):
-        if self.is_processing or self.is_downloading:
-            reply = QMessageBox.question(
-                self,
-                self._t("Внимание", "Attention"),
-                self._t("Идёт обработка/загрузка. Закрыть приложение и прервать её?", "Processing/download is in progress. Close the app and interrupt it?"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.No:
-                event.ignore()
-                return
-            self._abandon_processing_run()
-            self.is_processing = False
-        if self.output_dir:
-            self.user_settings.set_last_output_dir(self.output_dir)
-        if self.input_dir:
-            self.user_settings.set_last_files_dir(self.input_dir)
-        self._save_ui_settings()
-        self._save_geometry()
-        self.app_logger.log_session_end()
-        event.accept()
