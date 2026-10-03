@@ -683,8 +683,8 @@ def test_unload_resets_vad_state_and_releases_device_cache(monkeypatch):
     backend = PyTorchBackend()
     backend.model = object()
     backend.device = "cuda"
-    backend._vad_segmenter = FakeSegmenter()
-    backend._vad_segmenter_key = (b"fingerprint", "cpu")
+    backend._vad_cache.segmenter = FakeSegmenter()
+    backend._vad_cache.key = (b"fingerprint", "cpu")
     backend.segmentation_mode = "vad"
     backend.segmentation_fallback_reason = "stale"
     cache_calls = []
@@ -694,8 +694,8 @@ def test_unload_resets_vad_state_and_releases_device_cache(monkeypatch):
     backend.unload()
 
     assert backend.model is None
-    assert backend._vad_segmenter is None
-    assert backend._vad_segmenter_key is None
+    assert backend._vad_cache.segmenter is None
+    assert backend._vad_cache.key is None
     assert backend.segmentation_mode == "not_run"
     assert backend.segmentation_fallback_reason is None
     assert cache_calls == [True]
