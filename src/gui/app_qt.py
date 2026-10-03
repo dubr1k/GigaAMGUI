@@ -30,6 +30,7 @@ from .asr_backend_dialog import ASRBackendDialog, is_mlx_supported
 from .download_mixin import DownloadMixin
 from .files_mixin import FilesMixin
 from .i18n_mixin import I18nMixin
+from .journal_mixin import JournalMixin
 from .lifecycle_mixin import LifecycleMixin, install_exception_hook
 from .live_mixin import LiveMixin
 from .live_ui_mixin import LiveUiMixin
@@ -78,7 +79,7 @@ class WorkerSignals(QObject):
 
 class GigaTranscriberQtApp(
     LlmMixin, LlmUiMixin, DownloadMixin, ProcessingMixin, FilesMixin,
-    I18nMixin, SettingsMixin, SupportSurfacesMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
+    I18nMixin, SettingsMixin, JournalMixin, SupportSurfacesMixin, StyleMixin, ThemeMixin, ProcessingOptionsUiMixin,
     LiveMixin, LiveUiMixin, LifecycleMixin,
     UiBuildMixin, QMainWindow,
 ):

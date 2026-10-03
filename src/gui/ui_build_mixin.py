@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -26,7 +25,6 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpinBox,
     QStackedWidget,
-    QTableWidget,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -314,98 +312,7 @@ class UiBuildMixin:
         api_tab = self._create_api_tab()
         tabs.addTab(api_tab, "API")
 
-        # ── Вкладка «Журнал» (2.0: таблица событий + технический журнал) ──
-        log_tab = QWidget()
-        log_tab.setObjectName("log_page")
-        log_layout = QVBoxLayout(log_tab)
-        log_layout.setContentsMargins(self._px(8), self._px(14), self._px(8), self._px(8))
-        log_layout.setSpacing(self._px(8))
-        journal_heading = QVBoxLayout()
-        journal_heading.setSpacing(self._px(2))
-        self.journal_title = QLabel("Журнал")
-        self.journal_title.setObjectName("page_title")
-        journal_heading.addWidget(self.journal_title)
-        self.journal_subtitle = QLabel("Текущие события обработки из журнала приложения.")
-        self.journal_subtitle.setObjectName("page_subtitle")
-        journal_heading.addWidget(self.journal_subtitle)
-        log_layout.addLayout(journal_heading)
-
-        journal_controls = QHBoxLayout()
-        journal_controls.setSpacing(self._px(6))
-        self._journal_filter_buttons = {}
-        for key, text in (("all", "Все"), ("ready", "Готово"), ("processing", "В обработке"), ("error", "Ошибка")):
-            button = QPushButton(text)
-            button.setObjectName("journal_filter")
-            button.setCheckable(True)
-            button.setAutoExclusive(True)
-            button.setProperty("journal_filter", key)
-            button.clicked.connect(self._filter_journal_rows)
-            journal_controls.addWidget(button)
-            self._journal_filter_buttons[key] = button
-        self._journal_filter_buttons["all"].setChecked(True)
-        journal_controls.addStretch()
-        self.journal_search = QLineEdit()
-        self.journal_search.setObjectName("journal_search")
-        self.journal_search.setPlaceholderText("Поиск…")
-        self.journal_search.setClearButtonEnabled(True)
-        self.journal_search.setFixedHeight(self._px(32))
-        self.journal_search.setMinimumWidth(self._px(210))
-        self.journal_search.textChanged.connect(self._filter_journal_rows)
-        journal_controls.addWidget(self.journal_search)
-        log_layout.addLayout(journal_controls)
-
-        self.journal_table = QTableWidget(0, 4)
-        self.journal_table.setObjectName("journal_table")
-        self.journal_table.setHorizontalHeaderLabels(("Файл", "Длительность", "Статус", "Дата"))
-        self.journal_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.journal_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.journal_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.journal_table.setShowGrid(False)
-        self.journal_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.journal_table.verticalHeader().hide()
-        header = self.journal_table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in (1, 2, 3):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.journal_table.setMinimumHeight(self._px(220))
-        log_layout.addWidget(self.journal_table, 1)
-        self.journal_empty = QLabel("События обработки появятся здесь после запуска.")
-        self.journal_empty.setObjectName("journal_empty")
-        self.journal_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        log_layout.addWidget(self.journal_empty, 1)
-
-        technical_log = QFrame()
-        technical_log.setObjectName("progress_card")
-        technical_log_layout = QVBoxLayout(technical_log)
-        technical_log_layout.setContentsMargins(self._px(14), self._px(10), self._px(14), self._px(10))
-        technical_log_layout.setSpacing(self._px(6))
-        log_toolbar = QHBoxLayout()
-        self.journal_technical_title = QLabel("Технический журнал")
-        self.journal_technical_title.setObjectName("section_title")
-        log_toolbar.addWidget(self.journal_technical_title)
-        log_toolbar.addStretch()
-        self.btn_log_copy = QPushButton("Копировать")
-        self.btn_log_copy.setObjectName("text_button")
-        self.btn_log_copy.clicked.connect(self._copy_log)
-        log_toolbar.addWidget(self.btn_log_copy)
-        self.btn_log_save = QPushButton("Сохранить…")
-        self.btn_log_save.setObjectName("text_button")
-        self.btn_log_save.clicked.connect(self._save_log)
-        log_toolbar.addWidget(self.btn_log_save)
-        self.btn_log_clear = QPushButton("Очистить журнал")
-        self.btn_log_clear.setObjectName("text_button")
-        self.btn_log_clear.clicked.connect(self._clear_log)
-        log_toolbar.addWidget(self.btn_log_clear)
-        technical_log_layout.addLayout(log_toolbar)
-        self.log_text = QTextEdit()
-        self.log_text.setObjectName("log_document")
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(self._font(10, fixed=True))
-        self.log_text.setMaximumHeight(self._px(150))
-        technical_log_layout.addWidget(self.log_text)
-        log_layout.addWidget(technical_log)
-        self._refresh_journal_labels()
+        log_tab = self._create_journal_tab()
         tabs.addTab(log_tab, "Журнал")
         settings_tab = self._create_settings_tab()
         tabs.addTab(settings_tab, "Настройки")
