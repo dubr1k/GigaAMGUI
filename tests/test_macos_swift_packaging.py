@@ -591,8 +591,16 @@ def test_swift_settings_choices_match_the_worker() -> None:
         literal = config.split(anchor, 1)[1].split("{", 1)[1].split("}", 1)[0]
         return set(re.findall(r'"([^"]+)"', literal))
 
-    assert set(swift_list("backends")) == python_set("def _validate_backend_name")
-    assert set(swift_list("onnxProviders")) == python_set("def _validate_onnx_provider")
+    # Списки бэкендов и провайдеров живут в src/core/runtime_options.py (его же
+    # читает src.config); тоже как текст — импорт src.core тянет пакет целиком.
+    options = Path("src/core/runtime_options.py").read_text(encoding="utf-8")
+
+    def python_tuple(name: str) -> set[str]:
+        literal = options.split(f"{name} = (", 1)[1].split(")", 1)[0]
+        return set(re.findall(r'"([^"]+)"', literal))
+
+    assert set(swift_list("backends")) == python_tuple("ASR_BACKENDS")
+    assert set(swift_list("onnxProviders")) == python_tuple("ONNX_PROVIDERS")
     assert set(swift_list("audioPreprocessing")) == python_set("AUDIO_PREPROCESSING_MODE not in")
     worker = Path("src/tui_worker.py").read_text(encoding="utf-8")
     assert '{"auto", "off", "light", "denoise"}' in worker
