@@ -205,9 +205,18 @@ extension AppController {
         settings.subtitleSentenceSplit = enabledOption("subtitle.sentences", defaultValue: true)
         settings.subtitleMaxLines = Int(option("subtitle.lines", values: SettingsSchema.subtitleLines)) ?? 2
         settings.subtitleMaxWidth = Int(option("subtitle.characters", values: SettingsSchema.subtitleCharacters)) ?? 64
-        let token = (SecureStore.string(for: "hfToken") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.hfToken = token.isEmpty ? nil : token
         return settings
+    }
+
+    /// The HF token from the Keychain; nil when none is stored (the worker then
+    /// uses HF_TOKEN from the environment). Throws when the Keychain cannot be read.
+    func storedHFToken() throws -> String? {
+        do {
+            let token = (try SecureStore.string(for: "hfToken") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return token.isEmpty ? nil : token
+        } catch {
+            throw WorkerFailure(L10n.format("Не удалось прочитать HF Token из Связки ключей: %@", error.localizedDescription))
+        }
     }
 
     /// The field persists on every keystroke, so a cleared field stores "" rather
@@ -290,9 +299,13 @@ extension AppController {
     @objc func startProcessing(_ sender: Any?) {
         window.makeFirstResponder(nil)
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
-        let settings = transcriptionSettings()
+        var settings = transcriptionSettings()
         guard !selectedFileURLs.isEmpty, !settings.formats.isEmpty, let destination = outputDestination else {
             showNotice("Не удалось начать обработку", "Выберите файлы, доступную папку и хотя бы один формат.")
+            return
+        }
+        do { settings.hfToken = try storedHFToken() } catch {
+            showNotice("Не удалось начать обработку", error.localizedDescription)
             return
         }
         // The worker's own rule (find_output_collisions): same normalised stem in the

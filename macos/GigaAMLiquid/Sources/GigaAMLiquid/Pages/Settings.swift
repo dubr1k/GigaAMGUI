@@ -57,22 +57,7 @@ extension AppController {
             body.addArrangedSubview(settingsField("Движок диаризации", control: popup(SettingsSchema.diarizationEngines, key: "settings.diarizationEngine")))
             body.addArrangedSubview(settingsField("Кол-во спикеров", control: speakerCountPopup()))
             body.addArrangedSubview(wrappedLabel("Sortformer определяет спикеров автоматически (до 4). Pyannote и ONNX принимают известное число спикеров.", size: 12, color: Palette.muted))
-            let value = SecureStore.string(for: "hfToken") ?? ""
-            let token = RoundedSecureTextField(string: value)
-            token.cell = CenteredSecureTextCell(textCell: value)
-            token.isEditable = true
-            token.isSelectable = true
-            token.isBezeled = false
-            token.drawsBackground = false
-            token.wantsLayer = true
-            token.layer?.cornerRadius = 18
-            token.layer?.masksToBounds = true
-            token.placeholderString = L10n.text("Не настроен")
-            token.identifier = NSUserInterfaceItemIdentifier("settings.hfToken")
-            token.target = self
-            token.delegate = self
-            token.action = #selector(textChanged(_:))
-            body.addArrangedSubview(settingsField("HF Token", control: token))
+            body.addArrangedSubview(settingsField("HF Token", control: secureField(account: "hfToken", key: "settings.hfToken")))
             body.addArrangedSubview(wrappedLabel("Pyannote требует токен и принятые лицензии моделей Hugging Face. Пустое поле использует HF_TOKEN из окружения.", size: 12, color: Palette.muted))
         case "Аудио":
             body.addArrangedSubview(wrappedLabel("Параметры аудиосигнала для обработки.", size: 13, color: Palette.body))

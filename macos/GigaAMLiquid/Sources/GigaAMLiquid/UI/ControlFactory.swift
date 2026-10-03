@@ -287,7 +287,9 @@ extension AppController {
 
     /// Secure text field whose value lives in the Keychain (`SecureStore`) under `account`; `key` is only the control identifier.
     func secureField(account: String, key: String) -> NSTextField {
-        let value = SecureStore.string(for: account) ?? ""
+        var value = ""
+        var failure: String?
+        do { value = try SecureStore.string(for: account) ?? "" } catch { failure = error.localizedDescription }
         let field = RoundedSecureTextField(string: value)
         field.cell = CenteredSecureTextCell(textCell: value)
         field.isEditable = true
@@ -298,6 +300,11 @@ extension AppController {
         field.cornerRadius = 18
         field.layer?.masksToBounds = true
         field.placeholderString = L10n.text("Не настроен")
+        if let failure {
+            // An unreadable Keychain is not an empty one: say so where the value would be.
+            field.placeholderString = L10n.text("Связка ключей недоступна")
+            field.toolTip = failure
+        }
         field.identifier = NSUserInterfaceItemIdentifier(key)
         field.target = self
         field.delegate = self

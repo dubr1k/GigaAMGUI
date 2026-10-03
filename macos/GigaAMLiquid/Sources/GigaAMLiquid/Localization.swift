@@ -439,6 +439,9 @@ enum L10n {
         "Другое — аргументы": "Other — arguments",
         "Разрешить инструменты и сессии агента": "Allow agent tools and sessions",
         "Выключено: claude/codex/opencode/pi/omp запускаются как чистый запрос к модели — без доступа к файлам и без записи в историю сессий агента.": "Off: claude/codex/opencode/pi/omp run as a plain model request, with no file access and nothing written to the agent's session history.",
-        "Выключено — CLI работает как чистый запрос к модели: агент не читает файлы и не сохраняет сессию. Включайте, только если хотите, чтобы он мог пользоваться своими инструментами. Ключ API хранится в Связке ключей.": "Off: the CLI runs as a plain model request; the agent reads no files and keeps no session. Turn it on only if you want it to use its own tools. The API key is stored in the Keychain."
+        "Выключено — CLI работает как чистый запрос к модели: агент не читает файлы и не сохраняет сессию. Включайте, только если хотите, чтобы он мог пользоваться своими инструментами. Ключ API хранится в Связке ключей.": "Off: the CLI runs as a plain model request; the agent reads no files and keeps no session. Turn it on only if you want it to use its own tools. The API key is stored in the Keychain.",
+        "Связка ключей недоступна": "Keychain unavailable",
+        "Не удалось прочитать HF Token из Связки ключей: %@": "Could not read the HF Token from the Keychain: %@",
+        "Не удалось прочитать API Key из Связки ключей: %@": "Could not read the API Key from the Keychain: %@"
     ]
 }

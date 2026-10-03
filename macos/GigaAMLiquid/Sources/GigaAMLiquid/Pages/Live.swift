@@ -209,7 +209,11 @@ extension AppController {
         settings.backend = option("settings.backend", values: SettingsSchema.backends)
         settings.model = option("settings.model", values: SettingsSchema.models)
         settings.onnxProvider = option("settings.onnxProvider", values: SettingsSchema.onnxProviders)
-        settings.hfToken = SecureStore.string(for: "hfToken")
+        do { settings.hfToken = try storedHFToken() } catch {
+            liveStatusLabel?.stringValue = L10n.text("Запись не начата")
+            showNotice("Не удалось начать запись", error.localizedDescription)
+            return
+        }
         // Captures forward audio to the job, which owns them: the job hands them a
         // sink that holds it weakly, so a finished session (worker, AVAudioEngine) is freed.
         let microphoneID = settings.microphoneDeviceID

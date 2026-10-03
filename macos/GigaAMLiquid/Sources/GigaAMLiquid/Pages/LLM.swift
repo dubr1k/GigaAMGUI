@@ -168,7 +168,10 @@ extension AppController {
             return value.isEmpty ? fallback : value
         }
         let apiURL = text("llm.apiUrl")
-        let apiKey = (SecureStore.string(for: "llmApiKey") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey: String
+        do { apiKey = (try SecureStore.string(for: "llmApiKey") ?? "").trimmingCharacters(in: .whitespacesAndNewlines) } catch {
+            throw WorkerFailure(L10n.format("Не удалось прочитать API Key из Связки ключей: %@", error.localizedDescription))
+        }
         let model = text("llm.model")
         guard let temperature = Double(text("llm.temperature", "0.2")), (0...2).contains(temperature) else {
             throw WorkerFailure(L10n.text("Temperature должно быть числом в диапазоне 0..2"))
