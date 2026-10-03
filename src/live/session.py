@@ -336,15 +336,20 @@ class LiveSession:
             return LiveStatus(self._state, set(self._active_sources), set(self._failed_sources))
 
     def ask_context(self) -> str:
+        # Called from the assistant's thread while ASR threads publish: the
+        # drafts are copied under the lock instead of iterated live.
+        with self._lock:
+            events = self._journal.latest_events()
+            partials = list(self._partials.items())
         final_text = "\n".join(
             f"[{datetime.fromtimestamp(event.timestamp_ns / 1_000_000_000, timezone.utc).isoformat()}] "
             f"{event.source_label}{f' / {event.speaker}' if event.speaker else ''}: {event.text}"
-            for event in self._journal.latest_events()
+            for event in events
             if event.status == "final"
         )
         drafts = "\n".join(
             f"[{source.value.upper()} draft] {event.text}"
-            for source, event in self._partials.items()
+            for source, event in partials
         )
         if not drafts:
             return final_text

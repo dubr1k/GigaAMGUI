@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
@@ -62,38 +63,49 @@ class EventJournal:
     to parse every line strictly, so one torn line made every later read
     raise — including the one stop() exports from — and the next append was
     glued onto the fragment, losing that event too.
+
+    The latest revision of each event is kept in memory once the file has
+    been read: the session asks for it on every final (speaker estimates)
+    and for every assistant question, and re-parsing the whole file under
+    the session lock each time grew with the session.
     """
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
         self._tail_checked = False
+        self._lock = threading.Lock()
+        self._latest: dict[str, TranscriptEvent] | None = None
 
     def append(self, event: TranscriptEvent) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = asdict(event)
         payload.pop("source_label", None)
         payload["source"] = event.source.value
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
-        prefix = "" if self._tail_checked or self._ends_with_newline() else "\n"
-        self._tail_checked = False
-        with self._path.open("a", encoding="utf-8") as file:
-            file.write(prefix + line)
-            file.flush()
-        # Only a write that completed leaves the file ending in a newline.
-        self._tail_checked = True
+        with self._lock:
+            latest = self._loaded()
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            prefix = "" if self._tail_checked or self._ends_with_newline() else "\n"
+            self._tail_checked = False
+            with self._path.open("a", encoding="utf-8") as file:
+                file.write(prefix + line)
+                file.flush()
+            # Only a write that completed leaves the file ending in a newline.
+            self._tail_checked = True
+            _keep_latest(latest, event)
 
     def latest_events(self) -> list[TranscriptEvent]:
-        latest: dict[str, TranscriptEvent] = {}
-        if not self._path.exists():
-            return []
-        for line in self._path.read_text(encoding="utf-8", errors="replace").splitlines():
-            event = _parse_event(line)
-            if event is None:
-                continue
-            prior = latest.get(event.event_id)
-            if prior is None or event.revision >= prior.revision:
-                latest[event.event_id] = event
-        return list(latest.values())
+        with self._lock:
+            return list(self._loaded().values())
+
+    def _loaded(self) -> dict[str, TranscriptEvent]:
+        if self._latest is None:
+            self._latest = {}
+            if self._path.exists():
+                for line in self._path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    event = _parse_event(line)
+                    if event is not None:
+                        _keep_latest(self._latest, event)
+        return self._latest
 
     def _ends_with_newline(self) -> bool:
         try:
@@ -105,6 +117,12 @@ class EventJournal:
                 return file.read(1) == b"\n"
         except FileNotFoundError:
             return True
+
+
+def _keep_latest(latest: dict[str, TranscriptEvent], event: TranscriptEvent) -> None:
+    prior = latest.get(event.event_id)
+    if prior is None or event.revision >= prior.revision:
+        latest[event.event_id] = event
 
 
 def _parse_event(line: str) -> TranscriptEvent | None:

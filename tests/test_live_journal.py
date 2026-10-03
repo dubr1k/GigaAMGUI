@@ -101,6 +101,55 @@ def test_invalid_lines_are_skipped(tmp_path):
     assert [item.text for item in EventJournal(path).latest_events()] == ["one", "four"]
 
 
+def test_latest_events_are_served_from_memory_after_the_first_read(tmp_path, monkeypatch):
+    """Every final re-read and re-parsed the whole events.jsonl under the session lock."""
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e0", revision=0, text="before"))
+    journal = EventJournal(path)
+    journal.append(event("e1", revision=0, text="one"))
+    assert [item.text for item in journal.latest_events()] == ["before", "one"]
+
+    def no_disk_reads(self, *args, **kwargs):
+        raise AssertionError("events.jsonl was read again")
+
+    monkeypatch.setattr("pathlib.Path.read_text", no_disk_reads)
+    journal.append(event("e1", revision=1, text="one, revised"))
+    journal.append(event("e2", revision=0, text="two"))
+
+    assert [item.text for item in journal.latest_events()] == ["before", "one, revised", "two"]
+
+
+def test_concurrent_appends_and_reads_stay_consistent(tmp_path):
+    import threading
+
+    journal = EventJournal(tmp_path / "events.jsonl")
+    errors = []
+
+    def writer(prefix):
+        try:
+            for index in range(200):
+                journal.append(event(f"{prefix}{index}", revision=0, text="x"))
+        except Exception as exc:
+            errors.append(exc)
+
+    def reader():
+        try:
+            for _ in range(200):
+                journal.latest_events()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(name,)) for name in "ab"] + [threading.Thread(target=reader)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(journal.latest_events()) == 400
+    assert len(EventJournal(tmp_path / "events.jsonl").latest_events()) == 400
+
+
 def test_torn_multibyte_character_does_not_break_the_read(tmp_path):
     path = tmp_path / "events.jsonl"
     EventJournal(path).append(event("e1", revision=0, text="привет"))
