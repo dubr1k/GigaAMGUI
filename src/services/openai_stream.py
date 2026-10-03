@@ -11,6 +11,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from src.core.progress import coerce_progress
 from src.services import transcript_formats
 from src.services.openai_errors import openai_error, type_for_status
 from src.services.transcription_api import BackendError
@@ -19,13 +20,11 @@ from src.services.transcription_api import BackendError
 def queue_progress(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, event_or_stage, progress=None) -> None:
     """SSE-комментарий о прогрессе. Процессор шлёт ProgressEvent одним аргументом
     (или (stage, value) — legacy) из executor-потока — переключаемся в loop."""
-    stage = getattr(event_or_stage, "stage", None) or (event_or_stage if isinstance(event_or_stage, str) else "processing")
-    value = getattr(event_or_stage, "file_progress", None)
-    if value is None:
-        value = progress
-    pct = f"{int(float(value) * 100)}%" if isinstance(value, (int, float)) else "…"
+    snapshot = coerce_progress(event_or_stage, progress)
+    percent = snapshot.percent()
+    pct = "…" if percent is None else f"{percent}%"
     try:
-        loop.call_soon_threadsafe(queue.put_nowait, f": progress {stage} {pct}\n\n")
+        loop.call_soon_threadsafe(queue.put_nowait, f": progress {snapshot.stage or 'processing'} {pct}\n\n")
     except RuntimeError:
         pass  # loop закрыт (сервер останавливается) — прогресс уже некому отдавать
 

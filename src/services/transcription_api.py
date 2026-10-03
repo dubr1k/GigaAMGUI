@@ -20,6 +20,7 @@ from typing import Any
 
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN
 from src.core.asr.models import ASR_MODELS
+from src.core.progress import coerce_progress
 from src.services import transcript_formats, transcription_service
 from src.utils.audio_preprocessing import normalize_preprocessing_mode
 from src.utils.diarization import normalize_diarization_backend
@@ -154,16 +155,16 @@ def prepare_options(opts: TranscribeOptions, model_loader, *, hf_token: str | No
 
 
 def _adapt_progress(progress: ProgressFn | None):
-    """Колбэк для процессора: он шлёт `ProgressEvent` одним аргументом либо (stage, value) — legacy."""
+    """Колбэк для процессора: он шлёт `ProgressEvent` одним аргументом либо (stage, value) — legacy.
+
+    Клиенту уходит id стадии (в MCP — текст уведомления) и доля файла 0..1 или None.
+    """
     if progress is None:
         return None
 
     def callback(event_or_stage, value=None, **_):
-        stage = getattr(event_or_stage, "stage", None) or (event_or_stage if isinstance(event_or_stage, str) else "processing")
-        fraction = getattr(event_or_stage, "file_progress", None)
-        if fraction is None:
-            fraction = value
-        progress(stage, float(fraction) if isinstance(fraction, (int, float)) else None)
+        snapshot = coerce_progress(event_or_stage, value)
+        progress(snapshot.stage or "processing", snapshot.file_progress)
 
     return callback
 

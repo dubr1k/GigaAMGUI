@@ -168,6 +168,45 @@ def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_process
     assert registry.tasks["t2"]["message"] == "Обработка не удалась"
 
 
+def test_progress_fields_keep_their_wire_format(web_dirs, monkeypatch):
+    """Поля прогресса задачи уходят в SSE и /api/tasks: нормализация общая
+    (coerce_progress), а значения — прежние, вплоть до ASCII «...» в подписи."""
+    from src.core.progress import ProgressEvent
+
+    upload_dir, _ = web_dirs
+    monkeypatch.setattr(state, "model_loader", _FakeLoader())
+    source = upload_dir / "t3_voice.wav"
+    source.write_bytes(b"RIFF")
+    registry.register("t3", "voice.wav", 4, "alice")
+    seen = []
+    fields = ("progress", "stage", "stage_progress", "processed_seconds", "total_seconds", "progress_indeterminate")
+
+    class _Processor:
+        def __init__(self, *_a, progress_callback=None, **_kw):
+            self.progress_callback = progress_callback
+
+        def process_file(self, *_a, **_kw):
+            seen.append({key: registry.tasks["t3"][key] for key in fields})
+            self.progress_callback(ProgressEvent("transcription", 0.5, 0.42, 10.0, 20.0))
+            seen.append({key: registry.tasks["t3"][key] for key in fields})
+            self.progress_callback("diarization", None)  # legacy-пара без доли файла
+            seen.append({key: registry.tasks["t3"][key] for key in fields})
+            return {"success": False, "error": "stop"}
+
+    monkeypatch.setattr(transcription_service, "build_processor", lambda *a, **kw: _Processor(*a, **kw))
+
+    _run_processing("t3", source, "voice.wav")
+
+    assert seen == [
+        {"progress": 5, "stage": "Подготовка...", "stage_progress": 0.0, "processed_seconds": 0.0,
+         "total_seconds": None, "progress_indeterminate": False},
+        {"progress": 42, "stage": "Распознавание речи...", "stage_progress": 0.5, "processed_seconds": 10.0,
+         "total_seconds": 20.0, "progress_indeterminate": False},
+        {"progress": 42, "stage": "Диаризация...", "stage_progress": None, "processed_seconds": None,
+         "total_seconds": None, "progress_indeterminate": True},
+    ]
+
+
 # ==================== /health ====================
 
 
