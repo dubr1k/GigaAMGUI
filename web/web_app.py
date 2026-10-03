@@ -101,6 +101,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
 
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(2 * 1024 * 1024 * 1024)))
+# Транскрипты для LLM-вкладки — текст; лимит на всё тело запроса /api/llm/process
+MAX_LLM_BODY_SIZE = int(os.getenv("WEB_MAX_LLM_BODY_SIZE", str(50 * 1024 * 1024)))
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
 # Ключи для /mcp — тот же файл, что у api.py (в контейнере API_KEYS_FILE=/data/.api_keys, persist)
 API_KEYS_FILE = Path(__file__).parent.parent / os.getenv("API_KEYS_FILE", ".api_keys")
@@ -175,27 +177,85 @@ def _runtime_info() -> dict[str, object]:
     return health_service.runtime_info(runtime_platform, machine)
 
 
-async def require_auth(request: Request) -> str:
-    """Зависимость: проверяет авторизацию через cookie или заголовок."""
-    # Проверяем JWT в cookie
+def _authenticated_user(request: Request) -> str | None:
+    """Пользователь из JWT в cookie или в `Authorization: Bearer`; None — не авторизован."""
     token = request.cookies.get("gigaam_token")
     if token:
         username = _verify_token(token)
         if username:
             return username
 
-    # Проверяем Bearer токен в заголовке
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        username = _verify_token(token)
+        username = _verify_token(auth_header[7:])
         if username:
             return username
+    return None
 
+
+async def require_auth(request: Request) -> str:
+    """Зависимость: проверяет авторизацию через cookie или заголовок."""
+    username = _authenticated_user(request)
+    if username:
+        return username
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Не авторизован",
     )
+
+
+# Запас над лимитом тела на multipart-обвязку (как в api.py)
+_CONTENT_LENGTH_SLACK = 1024 * 1024
+# Тело запросов /api без файлов (форма URL, проверка CLI и т.п.)
+_SMALL_BODY_LIMIT = 1024 * 1024
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Без сессии: вход и выход
+_AUTH_EXEMPT_PATHS = frozenset({"/api/auth/login", "/api/auth/logout"})
+
+
+def _body_limit(path: str) -> int:
+    if path == "/api/upload":
+        return MAX_FILE_SIZE + _CONTENT_LENGTH_SLACK
+    if path == "/api/llm/process":
+        return MAX_LLM_BODY_SIZE + _CONTENT_LENGTH_SLACK
+    return _SMALL_BODY_LIMIT
+
+
+class _BodyGuard:
+    """Авторизация и Content-Length для изменяющих запросов /api ДО чтения тела.
+
+    Чистый ASGI, как `_UploadGuard` в api.py. FastAPI разбирает тело формы
+    (multipart спулится во временную директорию — в Docker это tmpfs /tmp)
+    раньше, чем выполняется Depends(require_auth), поэтому без гарда любой
+    без сессии мог залить сколько угодно байт и получить 401 только после
+    записи. Здесь — та же проверка JWT, что у require_auth, и лимит по
+    заголовку; точный размер файла по-прежнему считает _save_upload при
+    записи (тело без Content-Length, chunked, проверяется только им).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] == "http"
+            and scope.get("method") in _UNSAFE_METHODS
+            and scope.get("path", "").startswith("/api/")
+            and scope.get("path") not in _AUTH_EXEMPT_PATHS
+        ):
+            request = Request(scope)
+            if _authenticated_user(request) is None:
+                await JSONResponse({"detail": "Не авторизован"}, status_code=401)(scope, receive, send)
+                return
+            content_length = request.headers.get("content-length", "")
+            limit = _body_limit(scope["path"])
+            if content_length.isdigit() and int(content_length) > limit:
+                await JSONResponse(
+                    {"detail": f"Запрос слишком большой (макс. {limit / 1024 / 1024:.0f} MB)"},
+                    status_code=413,
+                )(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 # ==================== УТИЛИТЫ ====================
@@ -840,6 +900,8 @@ app.add_middleware(
     session_cookie="gigaam_session",
     max_age=72 * 3600,
 )
+
+app.add_middleware(_BodyGuard)
 
 app.add_middleware(
     CORSMiddleware,

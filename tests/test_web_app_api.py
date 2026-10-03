@@ -160,6 +160,76 @@ def test_failed_file_without_reason_keeps_generic_message(web_dirs, fake_process
     assert web_app.tasks_storage["t2"]["message"] == "Обработка не удалась"
 
 
+# ==================== тело запроса до авторизации ====================
+
+
+def _asgi_request(method: str, path: str, headers: dict[str, str], body: bytes = b"") -> tuple[int, int]:
+    """Запрос прямо в ASGI-приложение; возвращает (статус, сколько раз читали тело)."""
+    reads = 0
+    sent = []
+
+    async def receive():
+        nonlocal reads
+        reads += 1
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
+        "scheme": "https", "path": path, "raw_path": path.encode(), "root_path": "", "query_string": b"",
+        "headers": [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in headers.items()],
+        "server": ("testserver", 443), "client": ("127.0.0.1", 50000),
+    }
+    asyncio.run(web_app.app(scope, receive, send))
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    return status, reads
+
+
+_MULTIPART = (
+    b"--b\r\nContent-Disposition: form-data; name=\"files\"; filename=\"a.wav\"\r\n"
+    b"Content-Type: audio/wav\r\n\r\nRIFF\r\n--b--\r\n"
+)
+
+
+@pytest.mark.parametrize("path", ["/api/upload", "/api/llm/process", "/api/download-url"])
+def test_unauthenticated_body_is_rejected_before_it_is_read(web_dirs, path):
+    # FastAPI разбирает multipart (и спулит файлы в /tmp) раньше Depends(require_auth):
+    # без гарда любой мог залить гигабайты, получив 401 только после записи
+    status, reads = _asgi_request("POST", path, {
+        "content-type": "multipart/form-data; boundary=b", "content-length": str(len(_MULTIPART)),
+    }, _MULTIPART)
+    assert status == 401
+    assert reads == 0
+
+
+def test_invalid_token_is_rejected_before_body(web_dirs):
+    status, reads = _asgi_request("POST", "/api/upload", {
+        "content-type": "multipart/form-data; boundary=b", "content-length": str(len(_MULTIPART)),
+        "cookie": "gigaam_token=forged", "authorization": "Bearer nope",
+    }, _MULTIPART)
+    assert (status, reads) == (401, 0)
+
+
+def test_oversized_upload_is_rejected_by_headers(web_dirs):
+    token = web_app._create_token(web_app.WEB_USERNAME)
+    status, reads = _asgi_request("POST", "/api/upload", {
+        "content-type": "multipart/form-data; boundary=b",
+        "content-length": str(web_app.MAX_FILE_SIZE + 64 * 1024 * 1024),
+        "authorization": f"Bearer {token}",
+    })
+    assert (status, reads) == (413, 0)
+
+
+def test_login_and_authenticated_upload_still_pass_the_guard(client, web_dirs, fake_processor):
+    # client уже вошёл через POST /api/auth/login (тело без авторизации — исключение гарда)
+    response = client.post("/api/upload", files={"files": ("voice.wav", b"RIFF", "audio/wav")},
+                           data={"output_formats": "txt"})
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 1
+
+
 # ==================== форматы вывода ====================
 
 

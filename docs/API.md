@@ -24,6 +24,7 @@ Obsidian, n8n, Home Assistant, Open WebUI — работает с GigaAM, есл
 - [Расширения GigaAM](#расширения-gigaam)
 - [Postman](#postman)
 - [Переменные окружения](#переменные-окружения)
+- [Веб-панель (web/web_app.py)](#веб-панель-webweb_apppy)
 
 ## Быстрый старт
 
@@ -458,3 +459,27 @@ curl http://127.0.0.1:8000/v1/audio/transcriptions \
 | `HF_TOKEN` | пусто | Токен Hugging Face для `diarization_backend=pyannote`. |
 | `AUDIO_PREPROCESSING_MODE` | `auto` | Режим подготовки аудио по умолчанию (`off`/`auto`/`light`/`denoise`). |
 | `GIGAAM_MCP_ALLOW_PATHS`, `GIGAAM_MCP_PATH_ROOT`, `GIGAAM_MCP_MAX_INLINE_MB` | см. [MCP.md](MCP.md) | Политика источника `path` и лимит base64 для `/mcp`. |
+
+## Веб-панель (web/web_app.py)
+
+Docker-образ запускает не `api.py`, а веб-панель (`web.web_app:app`): вход по
+логину и паролю (`WEB_USERNAME`/`WEB_PASSWORD`, JWT в cookie `gigaam_token` или
+`Authorization: Bearer <jwt>`), внутренний JSON-API под `/api/*` для
+`web/static/app.js` и тот же `/mcp`, что у `api.py` (по API-ключу). Внутренний
+`/api/*` — не публичный контракт, но его защита важна для развёртываний.
+
+**Тело запроса — только после авторизации.** Изменяющие запросы к `/api/*`
+(кроме `/api/auth/login` и `/api/auth/logout`) проверяются ASGI-гардом по
+заголовкам, до чтения тела: без действующей сессии — `401`, `Content-Length`
+больше лимита — `413`. Иначе FastAPI успевал разобрать multipart (и записать
+файлы во временную директорию) раньше, чем срабатывала авторизация.
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `WEB_SECRET`, `WEB_USERNAME`, `WEB_PASSWORD` | — (обязательны) | Подпись JWT (не короче 32 байт) и единственная учётная запись. |
+| `JWT_EXPIRE_HOURS` | `72` | Срок жизни сессии. |
+| `COOKIE_SECURE` | `1` | `0` — cookie без `Secure`, только для доступа по чистому HTTP. |
+| `MAX_FILE_SIZE` | `2147483648` (2 ГБ) | Лимит файла и всего тела `POST /api/upload` (+1 МиБ на multipart), а также загрузки по URL. |
+| `WEB_MAX_LLM_BODY_SIZE` | `52428800` (50 МБ) | Лимит тела `POST /api/llm/process` (транскрипты для LLM). |
+| `MAX_CONCURRENT_TASKS` | `3` | Одновременные транскрибации (общий семафор с `/mcp`). |
+
