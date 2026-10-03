@@ -276,6 +276,16 @@ class InstallProgressDialog(QDialog):
         else:
             super().closeEvent(event)
 
+    def reject(self):
+        # Esc приходит сюда, минуя closeEvent. Закрытое окно возвращало
+        # «failed», пока установщик продолжал качать, и повторный выбор
+        # запускал вторую установку в тот же каталог. Пока поток жив, Esc —
+        # это «Отменить загрузку»; закрыться можно после его завершения.
+        if self._worker.isRunning():
+            self._request_cancel()
+            return
+        super().reject()
+
 
 def _install_with_progress(variant: str, parent=None) -> str:
     """Показывает окно загрузки и ждёт завершения. Возвращает success/cancelled/failed."""
