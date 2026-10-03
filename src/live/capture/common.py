@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from queue import Empty, SimpleQueue
 from threading import Event, Lock, Thread
-from time import time_ns
+from time import monotonic, time_ns
 from typing import Any, Protocol
 
 import numpy as np
@@ -33,6 +33,11 @@ MAX_CAPTURE_CHANNELS = 2
 """Pulse/PipeWire aggregates advertise 32 input channels; FLAC tops out at 8 and
 recognition needs mono, so opening a stream that wide only breaks the session
 recording and floods the capture queue."""
+OVERFLOW_REPORT_INTERVAL_SECONDS = 5.0
+"""Dropped audio is reported at most this often, as a count since the last report.
+
+One event per dropped chunk was a log line per 10 ms while a consumer stalled,
+the same flood issue #48 had with recording failures."""
 
 
 class SoundDeviceCapture:
@@ -152,6 +157,9 @@ class QueuedCaptureAdapter:
         self._on_chunk: Callable[[PcmChunk], None] | None = None
         self._on_event: Callable[[CaptureEvent], None] | None = None
         self._reported_failures: set[str] = set()
+        self._overflow_lock = Lock()
+        self._unreported_drops = 0
+        self._last_overflow_report = float("-inf")
         self.dispatch_failures = 0
 
     def devices(self) -> list[CaptureDevice]:
@@ -204,6 +212,7 @@ class QueuedCaptureAdapter:
     def stop(self) -> None:
         if self._worker is None:
             return
+        self._report_overflow(0, None, force=True)
         self._stopped.set()
         if self._api is not None:
             self._api.stop()
@@ -232,7 +241,19 @@ class QueuedCaptureAdapter:
             timestamp_ns or time_ns(),
         )
         if not self._queue.put(chunk):
-            self._emit(CaptureEventKind.OVERFLOW, f"capture queue full; dropped_frames={len(copied)}", chunk)
+            self._report_overflow(len(copied), chunk)
+
+    def _report_overflow(self, frames: int, chunk: PcmChunk | None, *, force: bool = False) -> None:
+        now = monotonic()
+        with self._overflow_lock:
+            self._unreported_drops += frames
+            if not self._unreported_drops:
+                return
+            if not force and now - self._last_overflow_report < OVERFLOW_REPORT_INTERVAL_SECONDS:
+                return
+            dropped, self._unreported_drops = self._unreported_drops, 0
+            self._last_overflow_report = now
+        self._emit(CaptureEventKind.OVERFLOW, f"capture queue full; dropped_frames={dropped}", chunk)
 
     def release(self) -> None:
         """Drop the native handle acquired for device enumeration."""
@@ -304,7 +325,15 @@ class QueuedCaptureAdapter:
                 except Exception as exc:
                     self._report_dispatch_failure(exc, chunk)
             if self._stopped.is_set() and chunk is None:
-                return
+                # Events raised while stopping (the last drop summary) still
+                # belong to the session log.
+                while True:
+                    try:
+                        event = self._events.get_nowait()
+                    except Empty:
+                        return
+                    if self._on_event is not None:
+                        self._deliver_event(event)
 
     def _deliver_event(self, event: CaptureEvent) -> None:
         try:

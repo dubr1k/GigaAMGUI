@@ -1,7 +1,8 @@
-"""Native capture failures: a source that never started is failed."""
+"""Native capture failures: a source that never started is failed, drops are summarized."""
 
 import time
 
+import numpy as np
 import pytest
 
 from src.live.capture.common import QueuedCaptureAdapter
@@ -121,3 +122,41 @@ def test_session_fails_a_source_that_could_not_open_its_device(tmp_path):
         assert session.status().state is CaptureState.RECORDING
     finally:
         session.stop()
+
+
+def test_queue_overflow_is_reported_once_per_interval_with_a_count(monkeypatch):
+    """Every dropped chunk was its own OVERFLOW event and log line — the #48 flood."""
+    clock = [1_000.0]
+    monkeypatch.setattr("src.live.capture.common.monotonic", lambda: clock[0])
+    api = SilentApi()
+    events = []
+    adapter = QueuedCaptureAdapter(CaptureSource.MIC, api, max_queue_bytes=16)
+    adapter.start(lambda chunk: None, events.append)
+    for _ in range(50):
+        api.callback(np.ones((8, 1), dtype=np.float32), None, 48_000)
+    clock[0] += 6.0
+    api.callback(np.ones((8, 1), dtype=np.float32), None, 48_000)
+    wait_until(lambda: len(events) >= 2)
+    adapter.stop()
+
+    overflows = [event for event in events if event.kind is CaptureEventKind.OVERFLOW]
+    assert len(overflows) == 2
+    assert "dropped_frames=8" in overflows[0].detail
+    assert "dropped_frames=400" in overflows[1].detail
+
+
+def test_drops_not_yet_reported_are_summarized_at_stop(monkeypatch):
+    clock = [1_000.0]
+    monkeypatch.setattr("src.live.capture.common.monotonic", lambda: clock[0])
+    api = SilentApi()
+    events = []
+    adapter = QueuedCaptureAdapter(CaptureSource.MIC, api, max_queue_bytes=16)
+    adapter.start(lambda chunk: None, events.append)
+    for _ in range(3):
+        api.callback(np.ones((8, 1), dtype=np.float32), None, 48_000)
+
+    adapter.stop()
+
+    overflows = [event for event in events if event.kind is CaptureEventKind.OVERFLOW]
+    assert ["dropped_frames=8" in event.detail for event in overflows] == [True, False]
+    assert "dropped_frames=16" in overflows[1].detail
