@@ -20,13 +20,8 @@ use crate::{
     worker::llm_tool_for,
 };
 
-/// The mode checkboxes, top to bottom: the worker's mode id and its label key.
-pub(crate) const MODES: [(&str, &str); 4] = [
-    ("summary", "llm.mode_summary"),
-    ("tasks", "llm.mode_tasks"),
-    ("terms", "llm.mode_terms"),
-    ("custom", "llm.mode_custom"),
-];
+/// The mode checkboxes, top to bottom.
+use crate::options::LLM_MODES as MODES;
 
 /// Rows of the «Что сделать» block plus its border: four modes, prompt, provider.
 const TASKS_HEIGHT: u16 = MODES.len() as u16 + 2 + 2;

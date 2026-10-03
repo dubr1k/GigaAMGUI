@@ -11,21 +11,10 @@ use crate::{
     app::{App, FileState, Focus},
     commands::{parent_name, short_name},
     i18n::{t, tf},
+    options::PARAM_ROWS,
     queue::QueueItem,
     ui::{Action, AreaId, ButtonId},
 };
-
-/// The rows of the parameter panel, top to bottom: the label key and the command
-/// whose menu (or pre-filled command line) the row opens.
-pub(crate) const PARAM_ROWS: [(&str, &str); 7] = [
-    ("params.backend", "/backend"),
-    ("params.model", "/model"),
-    ("params.formats", "/formats"),
-    ("params.diarize", "/diarize"),
-    ("params.speakers", "/speakers"),
-    ("params.audio", "/audio-mode"),
-    ("params.output", "/output"),
-];
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let [top, bottom] = Layout::vertical([Constraint::Min(6), Constraint::Length(5)]).areas(area);

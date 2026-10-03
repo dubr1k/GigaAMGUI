@@ -17,6 +17,7 @@ mod i18n;
 mod input;
 mod keys;
 mod lifecycle;
+mod options;
 mod pets;
 mod queue;
 mod results;

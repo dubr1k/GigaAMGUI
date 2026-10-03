@@ -17,8 +17,9 @@ use crate::{
     },
     i18n::{t, tf},
     input::InputMode,
+    options::{LLM_MODES, PARAM_ROWS},
     settings::save_app_settings,
-    ui::{llm::MODES, processing::PARAM_ROWS, Action, AreaId, ButtonId},
+    ui::{Action, AreaId, ButtonId},
 };
 
 /// Lines `PgUp` / `PgDn` move the LLM answer, the log and the help by.
@@ -231,7 +232,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
             }
         },
         KeyCode::Down if idle && on_page(Page::Llm) => match app.llm_mode_cursor {
-            Some(index) => app.llm_mode_cursor = Some((index + 1).min(MODES.len() - 1)),
+            Some(index) => app.llm_mode_cursor = Some((index + 1).min(LLM_MODES.len() - 1)),
             None if app.llm_input_cursor + 1 < crate::app::llm_input_files(app).len() => {
                 return dispatch(app, Action::LlmInput(app.llm_input_cursor + 1));
             }
@@ -239,7 +240,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Vec<Value> {
         },
         KeyCode::Char(' ') if idle && on_page(Page::Llm) => {
             if let Some(index) = app.llm_mode_cursor {
-                return dispatch(app, Action::ToggleMode(MODES[index.min(MODES.len() - 1)].0));
+                return dispatch(
+                    app,
+                    Action::ToggleMode(LLM_MODES[index.min(LLM_MODES.len() - 1)].0),
+                );
             }
         }
         KeyCode::Delete | KeyCode::Backspace

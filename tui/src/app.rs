@@ -21,11 +21,12 @@ use crate::{
     },
     i18n::{t, tf, tn, Lang},
     lifecycle::{Activity, Connection, ConnectionState, JobKind},
+    options::LLM_MODES,
     queue::{QueueState, RunSelection},
     session::PendingInput,
     settings::save_app_settings,
     theme::{Palette, Theme},
-    ui::{llm::MODES, settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
+    ui::{settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
     worker::{llm_start_payload, LlmTool},
 };
 
@@ -802,7 +803,7 @@ pub(crate) fn dispatch(app: &mut App, action: Action) -> Vec<Value> {
             }
         }
         Action::ToggleMode(mode) => {
-            app.llm_mode_cursor = MODES.iter().position(|(id, _)| *id == mode);
+            app.llm_mode_cursor = LLM_MODES.iter().position(|(id, _)| *id == mode);
             if let Some(position) = app.llm_modes.iter().position(|item| item == mode) {
                 app.llm_modes.remove(position);
             } else {
@@ -958,7 +959,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        commands::{command_menu_options, selectable_backends, BACK_MENU_OPTION},
+        commands::{command_menu_options, BACK_MENU_OPTION},
+        options::selectable_backends,
         settings::isolated_config_dir,
         ui::{Action, ButtonId},
         worker::provider_from_menu_option,

@@ -11,11 +11,12 @@ use std::{
 use serde_json::{json, Value};
 
 use crate::{
-    commands::{
-        backend_is_supported, normalize_path, prepare_output_dir, selectable_backends, short_name,
-        FORMAT_KEYS, MODEL_OPTIONS,
-    },
+    commands::{normalize_path, prepare_output_dir, short_name},
     i18n::Lang,
+    options::{
+        alternatives, backend_is_supported, is_llm_mode, is_model, llm_mode_ids, model_ids,
+        selectable_backends, AUDIO_MODES, DIARIZATION_BACKENDS, FORMAT_KEYS,
+    },
     settings::{load_settings, TuiSettings},
     signals,
     worker::{llm_settings_from, worker_command},
@@ -245,14 +246,15 @@ fn parse_headless_args(argv: &[String]) -> Result<HeadlessCommand, String> {
         };
         for (flag, value) in options {
             match flag.as_str() {
-                "--mode" if matches!(value.as_str(), "summary" | "tasks" | "terms" | "custom") => {
+                "--mode" if is_llm_mode(&value) => {
                     if !args.modes.contains(&value) {
                         args.modes.push(value);
                     }
                 }
                 "--mode" => {
                     return Err(format!(
-                        "--mode must be summary|tasks|terms|custom, got `{value}`"
+                        "--mode must be {}, got `{value}`",
+                        alternatives(&llm_mode_ids())
                     ))
                 }
                 "--prompt" => args.prompt = value,
@@ -260,7 +262,10 @@ fn parse_headless_args(argv: &[String]) -> Result<HeadlessCommand, String> {
             }
         }
         if args.modes.is_empty() {
-            return Err("llm needs at least one --mode (summary|tasks|terms|custom)".into());
+            return Err(format!(
+                "llm needs at least one --mode ({})",
+                alternatives(&llm_mode_ids())
+            ));
         }
         let custom = args.modes.iter().any(|mode| mode == "custom");
         if custom && args.prompt.trim().is_empty() {
@@ -314,14 +319,13 @@ fn parse_headless_args(argv: &[String]) -> Result<HeadlessCommand, String> {
                     ))
                 }
             },
-            "--diarization-backend"
-                if matches!(value.as_str(), "pyannote" | "onnx" | "sortformer") =>
-            {
+            "--diarization-backend" if DIARIZATION_BACKENDS.contains(&value.as_str()) => {
                 args.diarization_backend = Some(value)
             }
             "--diarization-backend" => {
                 return Err(format!(
-                    "--diarization-backend must be pyannote|onnx|sortformer, got `{value}`"
+                    "--diarization-backend must be {}, got `{value}`",
+                    alternatives(&DIARIZATION_BACKENDS)
                 ))
             }
             "--backend" if backend_is_supported(&value.to_ascii_lowercase()) => {
@@ -330,28 +334,23 @@ fn parse_headless_args(argv: &[String]) -> Result<HeadlessCommand, String> {
             "--backend" => {
                 return Err(format!(
                     "--backend must be one of {}, got `{value}`",
-                    selectable_backends().join("|")
+                    alternatives(selectable_backends())
                 ))
             }
-            "--model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == value) => {
-                args.model = Some(value)
-            }
+            "--model" if is_model(&value) => args.model = Some(value),
             "--model" => {
                 return Err(format!(
                     "--model must be one of {}, got `{value}`",
-                    MODEL_OPTIONS
-                        .iter()
-                        .map(|(id, _)| *id)
-                        .collect::<Vec<_>>()
-                        .join("|")
+                    alternatives(&model_ids())
                 ))
             }
-            "--audio-mode" if matches!(value.as_str(), "auto" | "off" | "light" | "denoise") => {
+            "--audio-mode" if AUDIO_MODES.contains(&value.as_str()) => {
                 args.audio_mode = Some(value)
             }
             _ => {
                 return Err(format!(
-                    "--audio-mode must be auto|off|light|denoise, got `{value}`"
+                    "--audio-mode must be {}, got `{value}`",
+                    alternatives(&AUDIO_MODES)
                 ))
             }
         }
@@ -369,12 +368,7 @@ fn headless_start_payload(settings: &TuiSettings, args: &TranscribeArgs) -> Valu
     let model = args
         .model
         .clone()
-        .or_else(|| {
-            MODEL_OPTIONS
-                .iter()
-                .any(|(id, _)| *id == settings.model)
-                .then(|| settings.model.clone())
-        })
+        .or_else(|| is_model(&settings.model).then(|| settings.model.clone()))
         .unwrap_or_else(|| "v3_e2e_rnnt".into());
     let diarization_backend = args
         .diarization_backend

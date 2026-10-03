@@ -12,8 +12,11 @@ use serde_json::{json, Value};
 
 use crate::{
     app::App,
-    commands::{backend_is_supported, FORMAT_KEYS, MODEL_OPTIONS},
     i18n::{t, tf, Lang},
+    options::{
+        backend_is_supported, is_model, AUDIO_MODES, DIARIZATION_BACKENDS, FORMAT_KEYS,
+        ONNX_PROVIDERS,
+    },
     theme::{Theme, DEFAULT_THEME},
 };
 
@@ -417,25 +420,16 @@ pub(crate) fn apply_settings(app: &mut App, settings: TuiSettings, lang_override
     if backend_is_supported(&settings.backend) {
         app.backend = settings.backend;
     }
-    if matches!(
-        settings.onnx_provider.as_str(),
-        "auto" | "cpu" | "cuda" | "tensorrt" | "coreml" | "directml"
-    ) {
+    if ONNX_PROVIDERS.contains(&settings.onnx_provider.as_str()) {
         app.onnx_provider = settings.onnx_provider;
     }
-    if matches!(
-        settings.diarization_backend.as_str(),
-        "pyannote" | "onnx" | "sortformer"
-    ) {
+    if DIARIZATION_BACKENDS.contains(&settings.diarization_backend.as_str()) {
         app.diarization_backend = settings.diarization_backend;
     }
-    if MODEL_OPTIONS.iter().any(|(id, _)| *id == settings.model) {
+    if is_model(&settings.model) {
         app.model = settings.model;
     }
-    if matches!(
-        settings.audio_preprocessing_mode.as_str(),
-        "auto" | "off" | "light" | "denoise"
-    ) {
+    if AUDIO_MODES.contains(&settings.audio_preprocessing_mode.as_str()) {
         app.audio_preprocessing_mode = settings.audio_preprocessing_mode;
     }
     app.llm_provider = settings.llm_provider;

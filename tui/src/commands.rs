@@ -9,21 +9,16 @@ use crate::{
     app::{llm_input_files, on_off, request_llm, App, Page},
     i18n::{t, tf, Lang},
     input::{local_path, split_paths, InputMode, BACKSLASH_ESCAPES},
+    options::{
+        alternatives, backend_is_supported, is_llm_mode, is_model, selectable_backends,
+        AUDIO_MODES, DIARIZATION_BACKENDS, FORMAT_KEYS, LLM_MODES, MODEL_OPTIONS, ONNX_PROVIDERS,
+        SPEAKER_CHOICES,
+    },
     results::canonical_path,
     settings::save_app_settings,
     theme::Theme,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
 };
-
-pub(crate) const FORMAT_KEYS: [&str; 7] = [
-    "txt",
-    "txt_timecodes",
-    "txt_diarize",
-    "txt_diarize_timecodes",
-    "md",
-    "srt",
-    "vtt",
-];
 
 pub(crate) fn short_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
@@ -208,12 +203,6 @@ pub(crate) fn complete_path(raw: &str) -> Option<String> {
 pub(crate) const BACK_MENU_OPTION: &str = "← Back";
 pub(crate) const ENTER_MANUALLY_OPTION: &str = "Enter manually";
 
-pub(crate) const MODEL_OPTIONS: [(&str, &str); 3] = [
-    ("v3_e2e_rnnt", "GigaAM v3 e2e RNNT (current)"),
-    ("multilingual_ctc", "Multilingual CTC (220M)"),
-    ("multilingual_large_ctc", "Multilingual Large CTC (600M)"),
-];
-
 pub(crate) const COMMANDS: [(&str, &str); 39] = [
     (
         "/reconnect",
@@ -280,33 +269,11 @@ pub(crate) const COMMANDS: [(&str, &str); 39] = [
     ("/exit", "exit the terminal UI"),
 ];
 
-pub(crate) fn selectable_backends() -> &'static [&'static str] {
-    #[cfg(target_os = "macos")]
-    {
-        &["auto", "pytorch", "mlx", "onnx"]
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        &["auto", "pytorch", "onnx"]
-    }
-}
-
-pub(crate) fn backend_is_supported(backend: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        matches!(backend, "auto" | "pytorch" | "mlx" | "onnx")
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        matches!(backend, "auto" | "pytorch" | "onnx")
-    }
-}
-
 pub(crate) fn backend_usage(lang: Lang) -> String {
     tf(
         lang,
         "usage.backend",
-        &[("backends", &selectable_backends().join("|"))],
+        &[("backends", &alternatives(selectable_backends()))],
     )
 }
 
@@ -390,55 +357,17 @@ pub(crate) fn command_menu_options(app: &App) -> Vec<String> {
         .map(|key| t(app.lang, key).to_owned())
         .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
         .collect(),
-        Some("/backend") => selectable_backends()
-            .iter()
-            .map(|backend| (*backend).to_owned())
-            .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
-            .collect(),
-        Some("/onnx-provider") => [
-            "auto",
-            "cpu",
-            "cuda",
-            "tensorrt",
-            "coreml",
-            "directml",
-            BACK_MENU_OPTION,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect(),
+        Some("/backend") => with_back(selectable_backends().iter().copied()),
+        Some("/onnx-provider") => with_back(ONNX_PROVIDERS),
         Some("/model") => MODEL_OPTIONS
             .iter()
             .map(|(id, label)| format!("{id} · {label}"))
             .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
             .collect(),
-        Some("/diarize") => ["on", "off", BACK_MENU_OPTION]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-        Some("/audio-mode") => ["auto", "off", "light", "denoise", BACK_MENU_OPTION]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-        Some("/diarization-backend") => ["pyannote", "onnx", "sortformer", BACK_MENU_OPTION]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-        Some("/speakers") => [
-            "auto",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "7",
-            "8",
-            BACK_MENU_OPTION,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect(),
+        Some("/diarize") => with_back(["on", "off"]),
+        Some("/audio-mode") => with_back(AUDIO_MODES),
+        Some("/diarization-backend") => with_back(DIARIZATION_BACKENDS),
+        Some("/speakers") => with_back(SPEAKER_CHOICES),
         Some("/settings-provider") => provider_menu_options(app),
         Some("/settings-model") => llm_model_options(&app.llm_provider),
         Some("/lang") => vec![
@@ -446,49 +375,36 @@ pub(crate) fn command_menu_options(app: &App) -> Vec<String> {
             t(Lang::En, "lang.name").to_owned(),
             BACK_MENU_OPTION.to_owned(),
         ],
-        Some("/theme") => Theme::names()
-            .into_iter()
-            .map(str::to_owned)
-            .chain([BACK_MENU_OPTION.to_owned()])
-            .collect(),
-        Some("/llm-mode") => ["summary", "tasks", "terms", "custom"]
-            .into_iter()
-            .map(|mode| {
-                format!(
-                    "[{}] {mode}",
-                    if app.llm_modes.iter().any(|item| item == mode) {
-                        "x"
-                    } else {
-                        " "
-                    }
-                )
-            })
-            .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
-            .collect(),
-        Some("/formats") => [
-            "txt",
-            "txt_timecodes",
-            "txt_diarize",
-            "txt_diarize_timecodes",
-            "md",
-            "srt",
-            "vtt",
-        ]
-        .into_iter()
-        .map(|format| {
-            format!(
-                "[{}] {format}",
-                if app.formats.iter().any(|selected| selected == format) {
-                    "x"
-                } else {
-                    " "
-                }
-            )
-        })
-        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
-        .collect(),
+        Some("/theme") => with_back(Theme::names()),
+        Some("/llm-mode") => checkboxes(LLM_MODES.iter().map(|(id, _)| *id), &app.llm_modes),
+        Some("/formats") => checkboxes(FORMAT_KEYS, &app.formats),
         _ => Vec::new(),
     }
+}
+
+/// Menu values followed by the Back entry.
+fn with_back<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(str::to_owned)
+        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+        .collect()
+}
+
+/// A multi-select menu: `[x] value` / `[ ] value`, then Back.
+fn checkboxes<'a>(values: impl IntoIterator<Item = &'a str>, selected: &[String]) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| {
+            let mark = if selected.iter().any(|item| item == value) {
+                "x"
+            } else {
+                " "
+            };
+            format!("[{mark}] {value}")
+        })
+        .chain(std::iter::once(BACK_MENU_OPTION.to_owned()))
+        .collect()
 }
 
 fn llm_model_options(provider: &str) -> Vec<String> {
@@ -846,7 +762,7 @@ pub(crate) fn run_command(app: &mut App) {
                 app.status = t(app.lang, "usage.mouse").into();
             }
         },
-        "/llm-mode" if matches!(argument, "summary" | "tasks" | "terms" | "custom") => {
+        "/llm-mode" if is_llm_mode(argument) => {
             app.llm_modes = vec![argument.into()];
             app.status = tf(
                 app.lang,
@@ -1015,12 +931,7 @@ pub(crate) fn run_command(app: &mut App) {
             accepted = false;
             app.status = backend_usage(app.lang);
         }
-        "/onnx-provider"
-            if matches!(
-                argument.to_ascii_lowercase().as_str(),
-                "auto" | "cpu" | "cuda" | "tensorrt" | "coreml" | "directml"
-            ) =>
-        {
+        "/onnx-provider" if ONNX_PROVIDERS.contains(&argument.to_ascii_lowercase().as_str()) => {
             app.onnx_provider = argument.to_ascii_lowercase();
             app.status = tf(
                 app.lang,
@@ -1033,7 +944,7 @@ pub(crate) fn run_command(app: &mut App) {
             accepted = false;
             app.status = t(app.lang, "usage.onnx-provider").into();
         }
-        "/model" if MODEL_OPTIONS.iter().any(|(id, _)| *id == argument) => {
+        "/model" if is_model(argument) => {
             app.model = argument.into();
             app.status = tf(app.lang, "status.model", &[("value", &app.model)]);
             save_app_settings(app);
@@ -1046,18 +957,7 @@ pub(crate) fn run_command(app: &mut App) {
             let formats: Vec<String> = argument
                 .split(',')
                 .map(str::trim)
-                .filter(|format| {
-                    matches!(
-                        *format,
-                        "txt"
-                            | "txt_timecodes"
-                            | "txt_diarize"
-                            | "txt_diarize_timecodes"
-                            | "md"
-                            | "srt"
-                            | "vtt"
-                    )
-                })
+                .filter(|format| FORMAT_KEYS.contains(format))
                 .map(str::to_owned)
                 .collect();
             if formats.is_empty() {
@@ -1122,7 +1022,7 @@ pub(crate) fn run_command(app: &mut App) {
             accepted = false;
             app.status = t(app.lang, "usage.diarize").into();
         }
-        "/audio-mode" if matches!(argument, "auto" | "off" | "light" | "denoise") => {
+        "/audio-mode" if AUDIO_MODES.contains(&argument) => {
             app.audio_preprocessing_mode = argument.into();
             app.status = tf(app.lang, "status.audio_mode", &[("value", argument)]);
             save_app_settings(app);
@@ -1131,7 +1031,7 @@ pub(crate) fn run_command(app: &mut App) {
             accepted = false;
             app.status = t(app.lang, "usage.audio-mode").into();
         }
-        "/diarization-backend" if matches!(argument, "pyannote" | "onnx" | "sortformer") => {
+        "/diarization-backend" if DIARIZATION_BACKENDS.contains(&argument) => {
             app.diarization_backend = argument.into();
             if app.diarization_backend == "sortformer" {
                 app.num_speakers = None;
