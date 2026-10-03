@@ -318,6 +318,7 @@ class I18nMixin:
             self._act_device.setText("Устройство (CPU / GPU)…" if is_ru else "Device (CPU / GPU)…")
             self._act_llm.setText("LLM API…")
             self._act_about.setText("О программе" if is_ru else "About")
+        self._sync_support_surface_settings()
 
     def _translate_runtime_text(self, message: str) -> str:
         if self._lang == "ru" or not message:

@@ -53,6 +53,26 @@ def test_language_switch_translates_idle_llm_and_status_bar_messages(window):
     assert window.statusBar().currentMessage() == "Ready to work"
 
 
+def test_settings_provider_choice_survives_a_language_switch(window):
+    window._toggle_language()
+    other = window.settings_llm_provider.findText("Other")
+    assert other >= 0, [window.settings_llm_provider.itemText(i) for i in range(window.settings_llm_provider.count())]
+
+    window.settings_llm_provider.setCurrentIndex(other)
+
+    assert window.combo_llm_provider.currentData() == "Other"
+    assert window.user_settings.get_value("llm_provider") == "Other"
+
+    window.combo_llm_provider.setCurrentIndex(window.combo_llm_provider.findData("Codex"))
+    window._sync_support_surface_settings()
+    assert window.settings_llm_provider.currentText() == "Codex"
+
+    window._toggle_language()
+    window.combo_llm_provider.setCurrentIndex(window.combo_llm_provider.findData("Other"))
+    window._sync_support_surface_settings()
+    assert window.settings_llm_provider.currentText() == "Другое"
+
+
 def test_cancelled_hf_token_prompt_does_not_persist_diarization(window, monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setattr(window, "_show_hf_token_dialog", lambda: False)

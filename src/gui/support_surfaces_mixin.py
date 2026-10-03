@@ -514,9 +514,13 @@ class SupportSurfacesMixin:
         form.setSpacing(self._px(12))
         self.settings_llm_provider = QComboBox()
         if hasattr(self, "combo_llm_provider"):
+            # Провайдер узнаётся по каноническому имени в itemData: подпись
+            # «Другое»/«Other» меняется с языком, и findText по ней терял выбор.
             for index in range(self.combo_llm_provider.count()):
-                self.settings_llm_provider.addItem(self.combo_llm_provider.itemText(index))
-        self.settings_llm_provider.currentTextChanged.connect(self._set_settings_llm_provider)
+                self.settings_llm_provider.addItem(
+                    self.combo_llm_provider.itemText(index), self.combo_llm_provider.itemData(index),
+                )
+        self.settings_llm_provider.currentIndexChanged.connect(self._set_settings_llm_provider)
         self._form_row(form, self._t("Провайдер", "Provider"), self.settings_llm_provider)
         self.settings_llm_api_url = QLineEdit()
         self.settings_llm_api_url.editingFinished.connect(self._save_settings_llm_fields)
@@ -656,14 +660,15 @@ class SupportSurfacesMixin:
             self.entry_num_speakers.setValue(count)
         self.user_settings.set_value("num_speakers", count)
 
-    def _set_settings_llm_provider(self, provider: str) -> None:
+    def _set_settings_llm_provider(self, _index: int | None = None) -> None:
+        provider = self.settings_llm_provider.currentData()
         if not provider:
             return
         if hasattr(self, "combo_llm_provider"):
-            index = self.combo_llm_provider.findText(provider)
+            index = self.combo_llm_provider.findData(provider)
             if index >= 0:
                 self.combo_llm_provider.setCurrentIndex(index)
-                self._update_llm_provider_fields(provider)
+                self._update_llm_provider_fields(self.combo_llm_provider.currentText())
         self.user_settings.set_value("llm_provider", self._normalize_llm_provider(provider))
 
     def _save_settings_llm_fields(self) -> None:
@@ -715,11 +720,15 @@ class SupportSurfacesMixin:
             self.settings_speakers.setValue(self.entry_num_speakers.value())
             self.settings_speakers.blockSignals(False)
         if hasattr(self, "combo_llm_provider"):
-            index = self.settings_llm_provider.findText(self.combo_llm_provider.currentText())
+            self.settings_llm_provider.blockSignals(True)
+            for index in range(self.settings_llm_provider.count()):
+                source = self.combo_llm_provider.findData(self.settings_llm_provider.itemData(index))
+                if source >= 0:
+                    self.settings_llm_provider.setItemText(index, self.combo_llm_provider.itemText(source))
+            index = self.settings_llm_provider.findData(self.combo_llm_provider.currentData())
             if index >= 0:
-                self.settings_llm_provider.blockSignals(True)
                 self.settings_llm_provider.setCurrentIndex(index)
-                self.settings_llm_provider.blockSignals(False)
+            self.settings_llm_provider.blockSignals(False)
         for source_name, target_name in (
             ("entry_llm_api_url", "settings_llm_api_url"),
             ("entry_llm_model", "settings_llm_model"),
