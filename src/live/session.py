@@ -24,6 +24,7 @@ from .diarization import (
 from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
 from .recorder import SessionRecorder, join_segments
+from .recording_policy import MAX_RECORDING_FAILURES, RecordingGuard
 from .timeline import AlignedMixer, SourceTimeline
 from .types import (
     CaptureEvent,
@@ -35,6 +36,17 @@ from .types import (
     PcmChunk,
     TranscriptEvent,
 )
+
+__all__ = [
+    "MAX_MIX_SKEW_NS",
+    "MAX_PENDING_MIX_CHUNKS",
+    "MAX_RECORDING_FAILURES",
+    "AsrScheduler",
+    "ConversationTurn",
+    "LiveSession",
+    "LiveStatus",
+    "SessionResult",
+]
 
 
 class AsrScheduler(Protocol):
@@ -71,12 +83,6 @@ MAX_MIX_SKEW_NS = 1_000_000_000
 MAX_SOURCE_START_DELAY_NS = 5_000_000_000
 """Largest start delay between sources that is taken from their clocks."""
 MAX_PENDING_MIX_CHUNKS = 100
-MAX_RECORDING_FAILURES = 5
-"""Consecutive write failures before a source's recording is given up on.
-
-A writer that cannot open its file does not start working later, and retrying
-per chunk turns one fault into thousands of identical log lines — issue #48
-produced 15 255 of them in a single session."""
 CHECKPOINT_INTERVAL_SECONDS = 2.0
 STOP_DRAIN_TIMEOUT_SECONDS = 120.0
 """How long stop() waits for each source's queued decodes.
@@ -157,9 +163,9 @@ class LiveSession:
         self._finalized_revisions: dict[tuple[CaptureSource, str], int] = {}
         self._partials: dict[CaptureSource, TranscriptEvent] = {}
         self._subscribers: list[Callable[[TranscriptEvent | CaptureEvent | LiveStatus], None]] = []
-        self._reported_recording_failures: set[str] = set()
-        self._recording_failures: dict[CaptureSource, int] = {}
-        self._recording_disabled: set[CaptureSource] = set()
+        self._recording = RecordingGuard(
+            self._recorder.write, notify=self._notify, log=self.log, translate=self._translate,
+        )
         self._last_checkpoint_at = float("-inf")
         self._lock = RLock()
 
@@ -393,15 +399,7 @@ class LiveSession:
                 SourceTimeline(chunk.source, chunk.sample_rate, chunk.channels, self._on_event),
             )
             for aligned in timeline.ingest(chunk):
-                # Recording is best-effort: losing the FLAC track must not cost
-                # us the recognition stream that the user actually came for.
-                if aligned.source not in self._recording_disabled:
-                    try:
-                        self._recorder.write(aligned)
-                    except Exception as exc:
-                        self._report_recording_failure(aligned, exc)
-                    else:
-                        self._recording_failures.pop(aligned.source, None)
+                self._recording.write(aligned)
                 if self._mix_recording_enabled:
                     pending = self._mix_inputs.setdefault(aligned.source, [])
                     pending.append(self._normalize_mix_timestamp(aligned))
@@ -595,49 +593,6 @@ class LiveSession:
             f"{reason}. Separate microphone and system recording and recognition continue.",
         )
         self._notify(CaptureEvent(CaptureEventKind.STATUS, source, 0, timestamp_ns, detail))
-
-    def _report_recording_failure(self, chunk: PcmChunk, exc: Exception) -> None:
-        detail = f"{type(exc).__name__}: {exc}"
-        self.log(f"recording write failed [{chunk.source.value}]: {detail}")
-        failures = self._recording_failures.get(chunk.source, 0) + 1
-        self._recording_failures[chunk.source] = failures
-        if failures >= MAX_RECORDING_FAILURES:
-            self._disable_source_recording(chunk, detail)
-            return
-        if detail in self._reported_recording_failures:
-            return
-        self._reported_recording_failures.add(detail)
-        self._notify(CaptureEvent(
-            CaptureEventKind.STATUS,
-            chunk.source,
-            chunk.sample_offset,
-            chunk.timestamp_ns,
-            self._translate(
-                f"Запись аудио источника прервана: {detail}. Распознавание продолжается.",
-                f"Source audio recording failed: {detail}. Recognition continues.",
-            ),
-        ))
-
-    def _disable_source_recording(self, chunk: PcmChunk, reason: str) -> None:
-        if chunk.source in self._recording_disabled:
-            return
-        self._recording_disabled.add(chunk.source)
-        self.log(
-            f"source recording disabled [{chunk.source.value}] after "
-            f"{MAX_RECORDING_FAILURES} consecutive failures: {reason}"
-        )
-        self._notify(CaptureEvent(
-            CaptureEventKind.STATUS,
-            chunk.source,
-            chunk.sample_offset,
-            chunk.timestamp_ns,
-            self._translate(
-                f"Запись аудио источника отключена для этой сессии: {reason}. "
-                "Распознавание продолжается.",
-                f"Source audio recording disabled for this session: {reason}. "
-                "Recognition continues.",
-            ),
-        ))
 
     def _on_event(self, event: CaptureEvent) -> None:
         with self._lock:

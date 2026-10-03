@@ -112,12 +112,12 @@ def test_worker_reports_every_recording_file(tmp_path):
 
     service = LiveWorkerService(
         lambda message_type, **payload: messages.append({"type": message_type, **payload}),
+        # 16 kHz mono: SEGMENT_BYTES holds 3 s per segment.
+        session_factory=lambda *args, **kwargs: LiveSession(*args, recorder_factory=small_segments, **kwargs),
         scheduler_factory=Scheduler,
     )
     service.start({"type": "live_start", "session_root": str(tmp_path), "sources": ["mic"]})
     session_dir = service.session.session_dir
-    # 16 kHz mono: SEGMENT_BYTES holds 3 s per segment.
-    service.session._recorder = small_segments(session_dir, {CaptureSource.MIC}, False)
     pcm = base64.b64encode(np.full(1_600, 3_276, dtype=np.int16).tobytes()).decode("ascii")
     for seq in range(40):
         service.audio({
