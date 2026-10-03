@@ -146,6 +146,47 @@ def test_live_capture_events_reach_the_processing_log(window, tmp_path, monkeypa
     assert "queue full" in window.log_text.toPlainText()
 
 
+def test_idle_gap_goes_to_the_journal_not_the_status_line(window, tmp_path, monkeypatch):
+    """Тихий WASAPI loopback, возобновляясь, даёт DISCONTINUITY «idle gap=…».
+
+    Это штатная диагностика выравнивания, а не проблема: в строке статуса
+    она вытесняла «Идёт запись» техническим текстом.
+    """
+    _start_live(window, tmp_path, monkeypatch)
+    status = window.lbl_live_status.text()
+
+    window.live_session._on_event(
+        CaptureEvent(CaptureEventKind.DISCONTINUITY, CaptureSource.SYSTEM, 0, 1, "idle gap=1.250s")
+    )
+    QApplication.processEvents()
+
+    assert window.lbl_live_status.text() == status
+    assert window.lbl_live_problem.isHidden() is True
+    assert "idle gap=1.250s" in window.log_text.toPlainText()
+
+
+@pytest.mark.parametrize(
+    ("lang", "detail", "expected"),
+    [
+        ("ru", "capture queue full; dropped_frames=480",
+         "Системный звук: очередь захвата переполнена, потеряно кадров: 480"),
+        ("en", "capture queue full; dropped_frames=480",
+         "System audio: capture queue full, 480 frames dropped"),
+        ("ru", "queue full", "Системный звук: очередь захвата переполнена"),
+        ("en", "queue full", "System audio: capture queue full"),
+    ],
+)
+def test_overflow_is_shown_briefly_in_the_interface_language(window, lang, detail, expected):
+    window._lang = lang
+    window._apply_language()
+
+    window._update_live_event(CaptureEvent(CaptureEventKind.OVERFLOW, CaptureSource.SYSTEM, 0, 1, detail))
+
+    assert window.lbl_live_status.text() == expected
+    assert window.lbl_live_problem.isHidden() is False
+    assert window.lbl_live_problem.text() == expected
+
+
 def test_live_problem_banner_persists_after_status_updates(window, tmp_path, monkeypatch):
     _start_live(window, tmp_path, monkeypatch)
 

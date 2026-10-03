@@ -10,7 +10,7 @@ from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QFileDialog
 
-from ..live.asr import LiveAsrScheduler
+from ..live.asr import LiveAsrScheduler, asr_scheduler_factory
 from ..live.asr_backend import LazyModelBackend
 from ..live.capture.factory import CaptureUnavailable, create_capture_adapter
 from ..live.exports import ExportSelection
@@ -22,8 +22,14 @@ from ..live.types import (
     DiarizationMode,
     LiveSettings,
 )
-from .live_display_mixin import LIVE_SAVED_PREFIX, LIVE_STATE_LABELS
+from .live_display_mixin import LIVE_STATE_LABELS
 from .live_transcript import LiveTranscriptPresenter
+
+# Состояния, в которых Stop сохраняет сессию.
+_LIVE_STOPPABLE_STATES = (CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FAILED)
+# Текст RuntimeError из LiveSession.stop(), когда сессия уже не идёт
+# (вызов повторный, в том числе во время STOPPING).
+_SESSION_NOT_RUNNING = "session is not running"
 
 
 class LiveMixin:
@@ -37,6 +43,10 @@ class LiveMixin:
         self._live_conversation_id: str | None = None
         self._live_stop_thread: threading.Thread | None = None
         self._live_starting = False
+        # Stop нажат, итог (live_finished / live_stop_failed) ещё не пришёл.
+        # Флаг Qt-потока, а не is_alive() потока: тот может ещё не завершиться,
+        # когда его последний сигнал уже обработан.
+        self._live_stopping = False
         # Перечисление устройств идёт в фоне; до ответа выбор хранится здесь.
         self._live_devices_probing = False
         self._live_devices_generation = 0
@@ -284,17 +294,16 @@ class LiveMixin:
     def _live_start_request(self, output_dir: Path) -> dict | None:
         """Снимок настроек Live на момент нажатия и адаптеры захвата."""
         sources = self._selected_live_sources()
-        settings = LiveSettings(
+        # Дорожки и микс выводятся так же, как в worker (Liquid/TUI). Бэкенд
+        # диаризации не передаём: после остановки работает встроенный onnx,
+        # pyannote потребовал бы HF-токен.
+        settings = LiveSettings.for_sources(
+            sources,
+            record_mic=self.cb_live_mic_audio.isChecked(),
+            record_system=self.cb_live_system_audio.isChecked(),
             mic_device_id=self._selected_live_device(CaptureSource.MIC),
             system_device_id=self._selected_live_device(CaptureSource.SYSTEM),
             diarization_mode=DiarizationMode(self.combo_live_diarization.currentData()),
-            record_mic_audio=CaptureSource.MIC in sources and self.cb_live_mic_audio.isChecked(),
-            record_system_audio=CaptureSource.SYSTEM in sources and self.cb_live_system_audio.isChecked(),
-            record_source_audio=any(
-                checkbox.isChecked()
-                for checkbox in (self.cb_live_mic_audio, self.cb_live_system_audio)
-            ),
-            record_mix_audio=sources == {CaptureSource.MIC, CaptureSource.SYSTEM},
         )
         try:
             adapters = {
@@ -373,12 +382,9 @@ class LiveMixin:
                 request["output_dir"],
                 request["settings"],
                 request["adapters"],
-                scheduler_factory=lambda source, on_final, on_partial, on_error: LiveAsrScheduler(
-                    backend,
-                    on_final=on_final,
-                    on_partial=on_partial,
-                    on_error=on_error,
-                ),
+                # Имя модуля, а не класс из src.live.asr: тесты подменяют
+                # src.gui.live_mixin.LiveAsrScheduler.
+                scheduler_factory=asr_scheduler_factory(backend, scheduler_class=LiveAsrScheduler),
                 export_selection=request["export_selection"],
                 translate=self._t,
                 log=self._log_live,
@@ -452,14 +458,18 @@ class LiveMixin:
 
     def _stop_live_session(self) -> None:
         session = self.live_session
-        if session is None:
+        if session is None or self._live_stopping:
+            # Остановка уже идёт. Сессия переходит в STOPPING только внутри
+            # stop() в фоновом потоке, и до того проверка состояния ниже ещё
+            # видит запись; второй stop() той же сессии отказал бы с
+            # «session is not running».
             return
-        if session.status().state not in (CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FAILED):
+        if session.status().state not in _LIVE_STOPPABLE_STATES:
             return
         # Stopping now drains every queued decode, which can outlast a frame.
         # Run it off the Qt thread so the window stays responsive meanwhile.
-        self.btn_live_stop.setEnabled(False)
-        self.btn_live_pause.setEnabled(False)
+        self._live_stopping = True
+        self._update_live_control_state()
         self.lbl_live_status.setText(
             self._t("Завершение расшифровки…", "Finishing transcription…")
         )
@@ -479,17 +489,27 @@ class LiveMixin:
         self.signals.live_finished.emit(result)
 
     def _on_live_stop_failed(self, detail: str) -> None:
+        self._live_stopping = False
         if self._live_llm_cancel_event is not None:
             self._live_llm_cancel_event.set()
         self._live_conversation_id = None
         # Сессия остановилась наполовину; спасать её нечем, а новая запись
         # должна быть доступна без перезапуска.
         self.live_session = None
-        self.lbl_live_status.setText(self._t("Ошибка остановки", "Stop failed"))
-        self._report_live_problem(self._t(
-            f"Не удалось сохранить live-сессию: {detail}",
-            f"Could not save the live session: {detail}",
-        ))
+        if detail == _SESSION_NOT_RUNNING:
+            # Сессию уже остановили до этого stop(): её итог не потерян, и
+            # «не удалось сохранить» было бы неправдой.
+            self.lbl_live_status.setText(self._t(*LIVE_STATE_LABELS[CaptureState.STOPPED]))
+            self._log_live(self._t(
+                f"Повторная остановка пропущена: {detail}",
+                f"Repeated stop skipped: {detail}",
+            ))
+        else:
+            self.lbl_live_status.setText(self._t("Ошибка остановки", "Stop failed"))
+            self._report_live_problem(self._t(
+                f"Не удалось сохранить live-сессию: {detail}",
+                f"Could not save the live session: {detail}",
+            ))
         self._update_live_control_state(CaptureState.STOPPED)
         self._continue_pending_close()
 
@@ -500,20 +520,20 @@ class LiveMixin:
             self.signals.live_event.emit(value)
 
     def _update_live_status(self, status: LiveStatus) -> None:
-        self.lbl_live_status.setText(self._t(*LIVE_STATE_LABELS[status.state]))
+        if not (self._live_stopping and status.state in _LIVE_STOPPABLE_STATES):
+            # Поздний статус «запись» из очереди не перекрывает «Завершение расшифровки…».
+            self.lbl_live_status.setText(self._t(*LIVE_STATE_LABELS[status.state]))
         self._update_live_control_state(status.state)
 
     def _on_live_finished(self, result) -> None:
+        self._live_stopping = False
         self._last_result_dir = str(result.session_dir)
         # A question still in flight belongs to a conversation that stop() froze.
         if self._live_llm_cancel_event is not None:
             self._live_llm_cancel_event.set()
         self._live_conversation_id = None
         self._show_live_session_folder(result.session_dir)
-        self.lbl_live_status.setText(
-            self._t(*LIVE_SAVED_PREFIX) + Path(result.session_dir).name
-        )
-        self.lbl_live_status.setToolTip(str(result.session_dir))
+        self._report_live_result(result)
         self._update_live_control_state(CaptureState.STOPPED)
         self._sync_live_conversation()
         self._continue_pending_close()
@@ -523,6 +543,9 @@ class LiveMixin:
         if self._live_starting:
             # Модель для новой сессии ещё грузится: ни второго старта, ни стопа.
             state = CaptureState.STARTING
+        elif self._live_stopping:
+            # Stop уже нажат: поздний статус не должен снова включить кнопки.
+            state = CaptureState.STOPPING
         # Not FAILED: starting over a failed session abandoned it unstopped —
         # no exports, open FLAC writers, scheduler threads left running. Stop
         # (enabled in FAILED) saves what there is first.

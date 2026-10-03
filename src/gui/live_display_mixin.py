@@ -9,6 +9,7 @@ Mixin: методы работают со `self` главного окна.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -25,6 +26,17 @@ def _display_path(path: str | Path) -> str:
         return str(Path("~") / path.relative_to(Path.home()))
     except ValueError:
         return str(path)
+
+
+def _session_file_names(paths, session_dir: Path) -> str:
+    """Файлы сессии через запятую: имена внутри папки сессии, иначе полный путь."""
+    names = []
+    for path in paths:
+        try:
+            names.append(str(Path(path).relative_to(session_dir)))
+        except ValueError:
+            names.append(str(path))
+    return ", ".join(names)
 
 
 # Подписи, которые меняются по ходу сессии. При смене языка их переводит
@@ -52,6 +64,15 @@ LIVE_STATUS_TEXTS = (
     ("Папка ещё не создана", "The folder does not exist yet"),
 )
 LIVE_SAVED_PREFIX = ("Сохранено: ", "Saved: ")
+# stop() доводит сессию до конца и при сбое этапа, а ошибки отдаёт в
+# SessionResult.errors: такая сессия сохранена, но не полностью.
+LIVE_SAVED_WITH_ERRORS_PREFIX = ("Сохранено с ошибками: ", "Saved with errors: ")
+# Дорожки записи (ключи SessionResult.recording_files).
+LIVE_TRACK_LABELS = {
+    "mic": ("микрофон", "microphone"),
+    "system": ("системный звук", "system audio"),
+    "mix": ("микс", "mix"),
+}
 LIVE_WAVEFORM_TEXTS = {
     "idle": ("Аудиосигнал появится во время записи", "Audio signal appears during capture"),
     "recording": ("Захват аудио", "Capturing audio"),
@@ -131,6 +152,33 @@ class LiveDisplayMixin:
         self._live_shown_session_dir = Path(session_dir)
         self._update_live_output_folder_label(self.live_output_dir.text().strip())
 
+    def _report_live_result(self, result) -> None:
+        """Итог Stop: статус, ошибки этапов остановки и сохранённые файлы в журнале."""
+        session_dir = Path(result.session_dir)
+        prefix = LIVE_SAVED_WITH_ERRORS_PREFIX if result.errors else LIVE_SAVED_PREFIX
+        self.lbl_live_status.setText(self._t(*prefix) + session_dir.name)
+        self.lbl_live_status.setToolTip(str(session_dir))
+        if result.errors:
+            # Баннер, а не только статус: статус перепишет следующая сессия.
+            details = "; ".join(result.errors)
+            self._report_live_problem(self._t(
+                f"Ошибки при остановке: {details}",
+                f"Errors while stopping: {details}",
+            ))
+        self._log_live(self._t("Сессия сохранена: ", "Session saved: ") + str(session_dir))
+        if result.exports:
+            self._log_live(
+                self._t("Расшифровка: ", "Transcript: ") + _session_file_names(result.exports, session_dir)
+            )
+        # Все сегменты каждой дорожки: длинная запись переходит на mic-002.flac
+        # и дальше, а result.recordings называет только первый файл.
+        for track, paths in result.recording_files.items():
+            label = LIVE_TRACK_LABELS.get(track, (track, track))
+            self._log_live(
+                self._t(f"Аудио ({label[0]}): ", f"Audio ({label[1]}): ")
+                + _session_file_names(paths, session_dir)
+            )
+
     def _update_live_event(self, event) -> None:
         if isinstance(event, TranscriptEvent):
             presenter = self._live_transcript_presenter
@@ -146,17 +194,34 @@ class LiveDisplayMixin:
         self._update_live_overlay(event)
 
     def _show_live_capture_status(self, event: CaptureEvent) -> None:
+        if event.kind is CaptureEventKind.DISCONTINUITY:
+            # Разрыв потока («idle gap=…» у возобновлённого после тишины WASAPI
+            # loopback) — штатная диагностика выравнивания, а не проблема.
+            # В журнал его уже пишет сама сессия через log-sink (_log_live).
+            return
         key = (event.source, event.detail)
         now = time.monotonic()
         if now - self._live_capture_status_times.get(key, float("-inf")) < 5:
             return
         self._live_capture_status_times[key] = now
-        self.lbl_live_status.setText(event.detail)
+        text = self._live_overflow_text(event) if event.kind is CaptureEventKind.OVERFLOW else event.detail
+        self.lbl_live_status.setText(text)
         # State updates overwrite the status line, so problems get their own
         # banner that survives until the next session starts.
-        if event.kind is not CaptureEventKind.DISCONTINUITY:
-            self.lbl_live_problem.setText(event.detail)
-            self.lbl_live_problem.show()
+        self.lbl_live_problem.setText(text)
+        self.lbl_live_problem.show()
+
+    def _live_overflow_text(self, event: CaptureEvent) -> str:
+        """«capture queue full; dropped_frames=480» → коротко и на языке интерфейса."""
+        ru, en = (label.capitalize() for label in LIVE_TRACK_LABELS[event.source.value])
+        dropped = re.search(r"dropped_frames=(\d+)", event.detail)
+        if dropped is None:
+            return self._t(f"{ru}: очередь захвата переполнена", f"{en}: capture queue full")
+        count = dropped.group(1)
+        return self._t(
+            f"{ru}: очередь захвата переполнена, потеряно кадров: {count}",
+            f"{en}: capture queue full, {count} frames dropped",
+        )
 
     def _append_live_transcript(self, text: str) -> None:
         scrollbar = self.live_transcript.verticalScrollBar()
@@ -241,9 +306,10 @@ class LiveDisplayMixin:
         self._update_live_control_state()
         self._retranslate_known(self.lbl_live_status.setText, self.lbl_live_status.text(), LIVE_STATUS_TEXTS)
         status = self.lbl_live_status.text()
-        for prefix in LIVE_SAVED_PREFIX:
-            if status.startswith(prefix):
-                self.lbl_live_status.setText(self._t(*LIVE_SAVED_PREFIX) + status[len(prefix):])
+        for pair in (LIVE_SAVED_PREFIX, LIVE_SAVED_WITH_ERRORS_PREFIX):
+            prefix = next((prefix for prefix in pair if status.startswith(prefix)), None)
+            if prefix is not None:
+                self.lbl_live_status.setText(self._t(*pair) + status[len(prefix):])
                 break
         self._retranslate_known(
             self.lbl_live_waveform.setText, self.lbl_live_waveform.text(), LIVE_WAVEFORM_TEXTS.values(),

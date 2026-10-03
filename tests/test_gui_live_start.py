@@ -211,6 +211,123 @@ def test_pause_and_resume_failures_are_reported(window):
     window.live_session = None
 
 
+def test_stop_errors_are_shown_next_to_what_was_saved(window, monkeypatch):
+    """stop() больше не бросает при сбое этапа: ошибки приходят в SessionResult.errors.
+
+    Окно показывало на них обычное «Сохранено», будто всё записалось.
+    """
+    class BrokenScheduler(_Scheduler):
+        def close(self):
+            raise RuntimeError("decoder crashed")
+
+    monkeypatch.setattr("src.gui.live_mixin.LiveAsrScheduler", BrokenScheduler)
+    window.model_loader = _ReadyLoader()
+    window._start_live_session()
+    assert _pump_until(lambda: window.live_session is not None)
+    session_dir = window.live_session.session_dir
+
+    window._stop_live_session()
+    assert _pump_until(lambda: not window._live_stopping)
+
+    assert window.live_session.status().state is CaptureState.STOPPED
+    assert window.lbl_live_status.text() == "Сохранено с ошибками: " + session_dir.name
+    assert window.lbl_live_problem.isHidden() is False
+    assert "decoder crashed" in window.lbl_live_problem.text()
+    log = window.log_text.toPlainText()
+    assert "decoder crashed" in log
+    # Сохранённое всё равно перечислено: экспорт прошёл, несмотря на сбой распознавания.
+    assert "transcript.txt" in log and "transcript_timecodes.txt" in log
+    assert window.btn_live_start.isEnabled() is True
+
+    window._lang = "en"
+    window._apply_language()
+    assert window.lbl_live_status.text() == "Saved with errors: " + session_dir.name
+
+
+def test_a_clean_stop_lists_the_saved_files(window):
+    window.model_loader = _ReadyLoader()
+    window._start_live_session()
+    assert _pump_until(lambda: window.live_session is not None)
+    session_dir = window.live_session.session_dir
+
+    window._stop_live_session()
+    assert _pump_until(lambda: not window._live_stopping)
+
+    assert window.lbl_live_status.text() == "Сохранено: " + session_dir.name
+    assert window.lbl_live_problem.isHidden() is True
+    log = window.log_text.toPlainText()
+    assert str(session_dir) in log
+    assert "transcript.txt" in log and "transcript_timecodes.txt" in log
+
+
+def test_every_recording_segment_is_listed_in_the_journal(window, tmp_path):
+    """Длинная сессия переходит на mic-002.flac и дальше; первый файл — не вся запись."""
+    from src.live.session import SessionResult
+
+    session_dir = tmp_path / "sessions" / "2026-10-03_12-00-00"
+    session_dir.mkdir()
+    result = SessionResult(
+        session_dir,
+        {CaptureSource.MIC: session_dir / "mic.flac", CaptureSource.SYSTEM: session_dir / "system.flac"},
+        [session_dir / "transcript.txt"],
+        recording_files={
+            "mic": [session_dir / "mic.flac", session_dir / "mic-002.flac", session_dir / "mic-003.flac"],
+            "system": [session_dir / "system.flac"],
+            "mix": [session_dir / "mix.flac", session_dir / "mix-002.flac"],
+        },
+    )
+
+    window._on_live_finished(result)
+    QApplication.processEvents()
+
+    lines = window.log_text.toPlainText().splitlines()
+    assert ">> [live] Аудио (микрофон): mic.flac, mic-002.flac, mic-003.flac" in lines
+    assert ">> [live] Аудио (системный звук): system.flac" in lines
+    assert ">> [live] Аудио (микс): mix.flac, mix-002.flac" in lines
+
+
+@pytest.mark.parametrize(
+    ("source", "record_mic", "record_system"),
+    [("mic", True, True), ("system", True, False), ("both", False, True), ("both", True, True)],
+)
+def test_live_settings_are_derived_like_in_every_other_front_end(window, tmp_path, source, record_mic, record_system):
+    """PyQt собирал LiveSettings вручную и мог разойтись с worker (Liquid/TUI)."""
+    from src.live.types import DiarizationMode, LiveSettings
+
+    window.combo_live_source.setCurrentIndex(window.combo_live_source.findData(source))
+    window.cb_live_mic_audio.setChecked(record_mic)
+    window.cb_live_system_audio.setChecked(record_system)
+    window.combo_live_diarization.setCurrentIndex(window.combo_live_diarization.findData("after_stop"))
+
+    request = window._live_start_request(tmp_path)
+    try:
+        assert request["settings"] == LiveSettings.for_sources(
+            window._selected_live_sources(),
+            record_mic=record_mic,
+            record_system=record_system,
+            mic_device_id=window._selected_live_device(CaptureSource.MIC),
+            system_device_id=window._selected_live_device(CaptureSource.SYSTEM),
+            diarization_mode=DiarizationMode.AFTER_STOP,
+        )
+        # PyQt не спрашивает HF-токен: после остановки — встроенная onnx-диаризация.
+        assert request["settings"].diarization_backend == "onnx"
+    finally:
+        window._release_live_adapters(request["adapters"])
+
+
+def test_every_source_gets_the_module_scheduler_on_one_shared_backend(window):
+    window.model_loader = _ReadyLoader()
+    window.combo_live_source.setCurrentIndex(window.combo_live_source.findData("both"))
+
+    window._start_live_session()
+    assert _pump_until(lambda: window.live_session is not None)
+
+    schedulers = window.live_session._schedulers
+    # Тесты подменяют src.gui.live_mixin.LiveAsrScheduler — подмена должна доходить до сессии.
+    assert {type(scheduler) for scheduler in schedulers.values()} == {_Scheduler}
+    assert schedulers[CaptureSource.MIC].backend is schedulers[CaptureSource.SYSTEM].backend
+
+
 def test_exception_hook_logs_slot_errors_instead_of_aborting(window, monkeypatch):
     from src.gui.lifecycle_mixin import install_exception_hook
 
