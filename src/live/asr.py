@@ -192,11 +192,7 @@ class LiveAsrScheduler:
                     run.silence_start = chunk.sample_offset
                 run.silence_samples += len(audio)
                 if run.silence_samples >= self._final_silence_seconds * chunk.sample_rate:
-                    self._final_jobs.append(
-                        self._job(chunk.source, run, is_final=True, paragraph_break_after=True)
-                    )
-                    del self._runs[chunk.source]
-                    self._condition.notify()
+                    self._queue_final(chunk.source, run, paragraph_break_after=True)
                 elif (
                     run.silence_samples >= PAUSE_PARTIAL_SECONDS * chunk.sample_rate
                     and (run.last_partial_end is None or run.last_partial_end <= run.silence_start)
@@ -210,8 +206,7 @@ class LiveAsrScheduler:
     def flush(self) -> None:
         with self._condition:
             for source, run in list(self._runs.items()):
-                self._final_jobs.append(self._job(source, run, is_final=True))
-                del self._runs[source]
+                self._queue_final(source, run)
             self._condition.notify_all()
 
     def record_decode_duration(self, seconds: float) -> None:
@@ -252,6 +247,25 @@ class LiveAsrScheduler:
     def pending_jobs(self) -> int:
         with self._condition:
             return len(self._final_jobs) + (0 if self._partial_job is None else 1)
+
+    def _queue_final(
+        self, source: CaptureSource, run: _SpeechRun, *, paragraph_break_after: bool = False,
+    ) -> None:
+        """End `run` with a final; its queued draft must not outlive it.
+
+        The worker takes finals before the pending partial, so a draft queued
+        for the same run used to be decoded after its final and published as
+        a newer revision — Liquid showed it as a draft repeating the phrase.
+        """
+        self._final_jobs.append(
+            self._job(source, run, is_final=True, paragraph_break_after=paragraph_break_after)
+        )
+        partial = self._partial_job
+        if partial is not None and partial.source is source and partial.event_start == run.start:
+            self._partial_job = None
+        if self._runs.get(source) is run:
+            del self._runs[source]
+        self._condition.notify()
 
     def _schedule_partial(self, source: CaptureSource, run: _SpeechRun) -> None:
         self._partial_job = self._job(source, run, is_final=False)

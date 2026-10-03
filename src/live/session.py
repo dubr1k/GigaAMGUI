@@ -682,7 +682,10 @@ class LiveSession:
 
     def _on_partial(self, event: TranscriptEvent) -> None:
         with self._lock:
-            if event.revision <= self._finalized_revisions.get((event.source, event.event_id), -1):
+            # A final is terminal for its event: a draft of it that arrives
+            # later — whatever its revision — would show the finished phrase
+            # again as text still being spoken.
+            if (event.source, event.event_id) in self._finalized_revisions:
                 return
             self._partials[event.source] = event
             self._notify(event)
