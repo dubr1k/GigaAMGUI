@@ -86,3 +86,45 @@ def test_pyqt_about_displays_release_version():
     assert "APP_VERSION" in about
     assert "Версия {APP_VERSION}" in about
     assert "Version {APP_VERSION}" in about
+
+
+def _spec_common_literal(name: str) -> str:
+    import ast
+
+    spec = ast.parse((ROOT / "packaging/_spec_common.py").read_text(encoding="utf-8"))
+    return next(
+        ast.literal_eval(node.value)
+        for node in spec.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+    )
+
+
+def expected_bundle_build_version(release: str) -> str:
+    """CFBundleVersion = MAJOR.MINOR.(PATCH*10 + номер пересборки из «-N»)."""
+    import re
+
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-(\d))?", release)
+    assert match, f"unexpected release version {release!r}"
+    major, minor, patch, rebuild = match.groups()
+    return f"{major}.{minor}.{int(patch) * 10 + int(rebuild or 0)}"
+
+
+def test_bundle_build_version_follows_release_version():
+    # APP_BUILD_VERSION остаётся литералом (CI и install_liquid_local.sh читают
+    # его sed'ом), но бампается руками — забытый бамп выпустил бы два релиза с
+    # одинаковым CFBundleVersion, и macOS не заменил бы старую копию.
+    release = _spec_common_literal("APP_VERSION")
+    assert _spec_common_literal("APP_BUILD_VERSION") == expected_bundle_build_version(release)
+
+
+def test_build_version_scheme_matches_history_and_ci_accepts_it():
+    import re
+
+    history = {"2.5.3-2": "2.5.32", "2.5.3-3": "2.5.33", "2.5.4": "2.5.40", "2.5.7": "2.5.70"}
+    assert {release: expected_bundle_build_version(release) for release in history} == history
+    workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+    pattern = re.search(r'\[\[ "\$BUILD_VERSION" =~ (\S+) \]\]', workflow).group(1)
+    # Патч 10+ даёт трёхзначный третий компонент (2.5.10 → 2.5.100).
+    for build in ("2.5.70", "2.5.100", "2.10.995"):
+        assert re.fullmatch(pattern, build), (pattern, build)
