@@ -536,10 +536,15 @@ class LlmMixin:
         manual_text = self.txt_llm_transcript.toPlainText().strip()
         items = []
         if manual_text:
-            base_name = "manual_transcript"
-            if self.transcript_files_for_llm:
-                base_name = Path(self.transcript_files_for_llm[0]).stem
-            items.append({"name": base_name, "text": manual_text, "source_path": self.transcript_files_for_llm[0] if self.transcript_files_for_llm else None})
+            # Своё имя, даже если рядом выбраны файлы: с именем первого файла
+            # результат вставленного текста и результат самого файла писались
+            # в один <имя>_llm_<режим>.<формат>, и второй затирал первый.
+            # Папка — по-прежнему рядом с первым транскриптом.
+            items.append({
+                "name": "manual_transcript",
+                "text": manual_text,
+                "source_path": self.transcript_files_for_llm[0] if self.transcript_files_for_llm else None,
+            })
         for path in self.transcript_files_for_llm:
             try:
                 with open(path, encoding="utf-8") as f:

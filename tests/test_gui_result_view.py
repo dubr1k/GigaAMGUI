@@ -3,6 +3,7 @@
 import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -86,3 +87,22 @@ def test_finished_batch_lists_its_transcripts_on_the_llm_tab(window, tmp_path, m
     assert window.transcript_files_for_llm == [str(transcript)]
     assert window.llm_files_list.count() == 1
     assert window.llm_files_list.isHidden() is False
+
+
+def test_pasted_text_and_transcript_file_get_separate_llm_results(window, tmp_path):
+    transcript = tmp_path / "meeting.txt"
+    transcript.write_text("текст встречи", encoding="utf-8")
+    window.transcript_files_for_llm = [str(transcript)]
+    window.txt_llm_transcript.setPlainText("вставленный вручную текст")
+    window.llm_output_dir = ""
+
+    inputs = window._collect_llm_inputs()
+    saved = [
+        path
+        for entry in inputs
+        for path in window._save_llm_result(entry, f"ответ для {entry['name']}", "summary", ["txt"])
+    ]
+
+    assert len(inputs) == 2
+    assert len(set(saved)) == 2, saved
+    assert len({Path(path).read_text(encoding="utf-8") for path in saved}) == 2
