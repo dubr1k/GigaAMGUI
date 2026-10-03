@@ -1,18 +1,8 @@
 import numpy as np
 
 from src.core.diarization.base import SpeakerSegment
-from src.live.diarization import label_event
 from src.live.session import LiveSession
 from src.live.types import CaptureEvent, CaptureSource, DiarizationMode, LiveSettings, PcmChunk, TranscriptEvent
-
-
-def test_off_mode_keeps_stable_source_label():
-    event = TranscriptEvent("mic-0", 0, CaptureSource.MIC, 0, 16_000, 1, "hello", "final")
-
-    labeled = label_event(event, DiarizationMode.OFF)
-
-    assert labeled.source_label == "MIC"
-    assert labeled.speaker is None
 
 
 class FakeAdapter:
@@ -52,6 +42,15 @@ def session_with(tmp_path, settings, **kwargs):
         scheduler_factory=lambda source, on_final, on_partial, on_error: NullScheduler(),
         **kwargs,
     )
+
+
+def test_off_mode_journals_finals_with_their_source_label_and_no_speaker(tmp_path):
+    session = session_with(tmp_path, LiveSettings(diarization_mode=DiarizationMode.OFF, record_mix_audio=False))
+
+    session._on_final(final())
+
+    journaled = session._journal.latest_events()
+    assert [(event.source_label, event.speaker, event.revision) for event in journaled] == [("MIC", None, 0)]
 
 
 def test_live_estimate_does_not_load_a_model_no_backend_can_estimate_with(tmp_path, monkeypatch):

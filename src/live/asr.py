@@ -190,11 +190,6 @@ class LiveAsrScheduler:
         self._worker.start()
 
     @property
-    def pending_partial_offset(self) -> int | None:
-        with self._condition:
-            return None if self._partial_job is None else self._partial_job.end
-
-    @property
     def refresh_seconds(self) -> float:
         with self._condition:
             return self._refresh_seconds
@@ -288,11 +283,6 @@ class LiveAsrScheduler:
             self._partial_job = None
             self._runs.clear()
             self._condition.notify_all()
-
-    @property
-    def pending_jobs(self) -> int:
-        with self._condition:
-            return len(self._final_jobs) + (0 if self._partial_job is None else 1)
 
     def _queue_final(
         self, source: CaptureSource, run: _SpeechRun, *, paragraph_break_after: bool = False,

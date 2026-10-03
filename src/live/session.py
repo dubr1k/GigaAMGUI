@@ -19,7 +19,6 @@ from .diarization import (
     LIVE_ESTIMATE_BACKEND,
     LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS,
     BuiltinDiarizers,
-    label_event,
 )
 from .exports import ExportSelection, export_session
 from .journal import ConversationJournal, EventJournal, LiveSessionStore
@@ -157,7 +156,6 @@ class LiveSession:
         self._mix_started_at = float("inf")
         self._mix_session_origin_ns: int | None = None
         self._mixer = AlignedMixer(max_skew_seconds=MAX_MIX_SKEW_NS / 1_000_000_000)
-        self._last_mix_error_ns: int | None = None
         self._mix_recording_enabled = settings.record_mix_audio
         self._schedulers: dict[CaptureSource, AsrScheduler] = {}
         self._live_diarizers: dict[CaptureSource, object] = {}
@@ -623,13 +621,6 @@ class LiveSession:
         )
         self._notify(CaptureEvent(CaptureEventKind.STATUS, source, 0, timestamp_ns, detail))
 
-    def _report_mix_error(self, chunks: Mapping[CaptureSource, PcmChunk], detail: str) -> None:
-        timestamp_ns = min(chunk.timestamp_ns for chunk in chunks.values())
-        if self._last_mix_error_ns is None or timestamp_ns - self._last_mix_error_ns >= 5_000_000_000:
-            self._last_mix_error_ns = timestamp_ns
-            source = next(iter(chunks))
-            self._notify(CaptureEvent(CaptureEventKind.STATUS, source, 0, timestamp_ns, detail))
-
     def _report_recording_failure(self, chunk: PcmChunk, exc: Exception) -> None:
         detail = f"{type(exc).__name__}: {exc}"
         self.log(f"recording write failed [{chunk.source.value}]: {detail}")
@@ -688,17 +679,16 @@ class LiveSession:
     def _on_final(self, event: TranscriptEvent) -> None:
         with self._lock:
             self._partials.pop(event.source, None)
-            finalized = label_event(event, self._settings.diarization_mode)
-            self._record_finalized(finalized)
-            self._journal.append(finalized)
-            self._notify(finalized)
+            self._record_finalized(event)
+            self._journal.append(event)
+            self._notify(event)
             if self._settings.diarization_mode is not DiarizationMode.LIVE_ESTIMATE:
                 return
-            recent = self._recent_events(finalized)
+            recent = self._recent_events(event)
         # Creating the diarizer loads a model. Under the session lock that
         # stalled _on_chunk for every source, and the native client's backlog
         # overflowed and dropped audio meanwhile.
-        estimates = self._estimate_live_speakers(finalized.source, recent)
+        estimates = self._estimate_live_speakers(event.source, recent)
         with self._lock:
             for revised in self._revised_speakers(recent, estimates):
                 self._record_finalized(revised)

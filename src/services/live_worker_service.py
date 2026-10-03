@@ -101,7 +101,6 @@ class LiveWorkerService:
         settings = LiveSettings(
             diarization_mode=mode,
             diarization_backend=diarization_backend,
-            source_sample_rate=self._sample_rate,
             asr_sample_rate=16_000,
             record_mic_audio=CaptureSource.MIC in sources and record_mic,
             record_system_audio=CaptureSource.SYSTEM in sources and record_system,

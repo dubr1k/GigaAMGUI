@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from .types import DiarizationMode, TranscriptEvent
-
 LIVE_ESTIMATE_STABILIZATION_HORIZON_SECONDS = 10
 LIVE_ESTIMATE_BACKEND = "sortformer"
 """The only backend family designed for streaming speaker estimates."""
@@ -26,9 +24,3 @@ class BuiltinDiarizers:
 
         return create_diarization_backend(backend)
 
-
-def label_event(event: TranscriptEvent, mode: DiarizationMode) -> TranscriptEvent:
-    """Keep source labels stable when diarization is disabled."""
-    if mode is DiarizationMode.OFF:
-        return event
-    return event
