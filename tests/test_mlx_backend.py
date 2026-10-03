@@ -413,8 +413,8 @@ def test_mlx_vad_segmenter_is_reused_and_unload_resets_state(monkeypatch):
 
     assert [call["token"] for call in factory_calls] == ["hf_first", "hf_second"]
     backend.unload()
-    assert backend._vad_segmenter is None
-    assert backend._vad_segmenter_key is None
+    assert backend._vad_cache.segmenter is None
+    assert backend._vad_cache.key is None
     assert backend.capabilities().segmentation_mode == "not_run"
 
 

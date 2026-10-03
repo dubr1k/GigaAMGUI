@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import os
 import threading
 from collections.abc import Callable
 
@@ -12,12 +10,10 @@ import numpy as np
 from ...config import ASR_SEGMENTATION_MODE, ASR_VAD_DEVICE
 from .chunking import (
     AudioChunk,
-    normalize_chunk_words,
     plan_audio_chunks,
-    stitch_chunk,
     vad_regions_miss_active_audio,
 )
-from .longform import VadFailureMemo, call_logger
+from .longform import VadSegmenterCache, assemble_segments, call_logger, pyannote_vad_key
 from .token_timestamps import tokens_to_words
 from .types import BackendCapabilities, TranscriptionSegment, normalize_window_audio
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
@@ -55,11 +51,7 @@ class MLXBackend:
         self.device = "mps"
         self._lock = threading.Lock()
         self._gigaam_mlx = None
-        self._vad_segmenter_factory = vad_segmenter_factory or PyannoteVadSegmenter
-        self._vad_segmenter: VadSegmenter | None = None
-        self._vad_segmenter_key: tuple[bytes, str] | None = None
-        self._vad_failure = VadFailureMemo()
-        self._vad_retry_pending = False
+        self._vad_cache = VadSegmenterCache(vad_segmenter_factory or PyannoteVadSegmenter)
         self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
         if self.segmentation_strategy not in {"vad", "overlap_chunks", "fixed_chunks"}:
             raise ValueError(f"Неизвестный режим сегментации: {self.segmentation_strategy}")
@@ -158,24 +150,12 @@ class MLXBackend:
         window = normalize_window_audio(audio, sample_rate)
         start = offset_samples / sample_rate
         with self._lock:
-            gm = self._gigaam_mlx
-            mx = __import__("mlx.core", fromlist=["array"])
-            mel = gm.audio.compute_mel(window)
-            encoded, sequence_length = self.model.encode(mx.array(mel[None, :]))
-            mx.eval(encoded)
-            decoded = self._decode_with_frames(encoded, sequence_length, mx)
-            if decoded is None:
-                token_ids = self.model.decode(encoded, sequence_length)
-                frames = None
-            else:
-                token_ids, frames = decoded
-            text = str(self.tokenizer.decode(token_ids) if self.tokenizer is not None else "").strip()
-            words = self._words_from_frames(
-                token_ids,
-                frames,
+            text, words = self._decode_samples(
+                window,
                 decode_start_sec=start,
                 duration=len(window) / 16_000,
             )
+            text = text.strip()
         if not text:
             return []
         segment: TranscriptionSegment = {
@@ -185,6 +165,34 @@ class MLXBackend:
         if words is not None:
             segment["words"] = words
         return [segment]
+
+    def _decode_samples(
+        self,
+        samples,
+        *,
+        decode_start_sec: float,
+        duration: float,
+    ) -> tuple[str, list[dict] | None]:
+        """mel → энкодер → greedy RNNT; слова с абсолютными временами, если есть."""
+        gm = self._gigaam_mlx
+        mx = __import__("mlx.core", fromlist=["array"])  # lazy import
+        mel = gm.audio.compute_mel(samples)
+        encoded, seq_len = self.model.encode(mx.array(mel[None, :]))  # type: ignore[union-attr]
+        mx.eval(encoded)
+        decoded = self._decode_with_frames(encoded, seq_len, mx)
+        if decoded is None:
+            token_ids = self.model.decode(encoded, seq_len)  # type: ignore[union-attr]
+            frames = None
+        else:
+            token_ids, frames = decoded
+        text = str(self.tokenizer.decode(token_ids) if self.tokenizer is not None else "")
+        words = self._words_from_frames(
+            token_ids,
+            frames,
+            decode_start_sec=decode_start_sec,
+            duration=duration,
+        )
+        return text, words
 
     def _fixed_chunks(self, audio) -> list[dict]:
         gm = self._gigaam_mlx
@@ -243,30 +251,6 @@ class MLXBackend:
             max_chunk_seconds=20.0,
         )
 
-    def _vad_context(self) -> tuple[str | None, tuple[bytes, str]]:
-        hf_token = os.getenv("HF_TOKEN", "").strip() or None
-        token_fingerprint = hashlib.sha256((hf_token or "").encode()).digest()
-        return hf_token, (token_fingerprint, resolve_vad_device(ASR_VAD_DEVICE))
-
-    def _get_vad_segmenter(
-        self,
-        *,
-        token: str | None,
-        segmenter_key: tuple[bytes, str],
-    ) -> VadSegmenter:
-        self._vad_retry_pending = False
-        if self._vad_failure.blocked(segmenter_key) is not None:
-            self._vad_retry_pending = True
-            raise VadUnavailableError("previous VAD initialization failed")
-        if self._vad_segmenter is None or self._vad_segmenter_key != segmenter_key:
-            self._vad_segmenter = self._vad_segmenter_factory(
-                token=token,
-                device=segmenter_key[1],
-            )
-            self._vad_segmenter_key = segmenter_key
-            self._vad_failure.clear()
-        return self._vad_segmenter
-
     @staticmethod
     def _vad_fallback_reason(exc: Exception) -> str:
         recovery_hint = ""
@@ -301,25 +285,17 @@ class MLXBackend:
                 "использовано разбиение MLX по тихим точкам с перекрытием",
             )
 
-        hf_token, segmenter_key = self._vad_context()
+        vad_device = resolve_vad_device(ASR_VAD_DEVICE)
+        hf_token, segmenter_key = pyannote_vad_key(vad_device)
         try:
-            segmenter = self._get_vad_segmenter(
-                token=hf_token,
-                segmenter_key=segmenter_key,
-            )
-            boundaries = segmenter.segment_file(
+            boundaries = self._vad_cache.segment(
+                segmenter_key,
                 audio_path,
                 audio_duration=total_seconds,
+                token=hf_token,
+                device=vad_device,
             )
         except Exception as exc:
-            self._vad_segmenter = None
-            self._vad_segmenter_key = None
-            # Отказ «ещё рано повторять» не продлевает паузу перед повтором.
-            if not self._vad_retry_pending:
-                if isinstance(exc, VadUnavailableError):
-                    self._vad_failure.remember(segmenter_key, str(exc))
-                else:
-                    self._vad_failure.clear()
             return self._use_overlap_chunks(
                 audio,
                 self._vad_fallback_reason(exc),
@@ -464,104 +440,37 @@ class MLXBackend:
             total_seconds=total_seconds,
         )
 
-        result_segments: list[dict] = []
-        previous_result_index: int | None = None
-        previous_group: int | None = None
-        reported = 0.0
-        for chunk_index, chunk in enumerate(chunks):
+        def decode(chunk: AudioChunk) -> tuple[str, list[dict] | None]:
             start_sample = chunk.decode_start_sample
             end_sample = chunk.decode_end_sample
-            chunk_audio = audio[start_sample:end_sample]
-            mel = gm.audio.compute_mel(chunk_audio)
-
-            mx = __import__("mlx.core", fromlist=["array"])  # lazy import
-            mel_mx = mx.array(mel[None, :])
-
-            encoded, seq_len = self.model.encode(mel_mx)  # type: ignore[union-attr]
-            mx.eval(encoded)
-            decoded = self._decode_with_frames(encoded, seq_len, mx)
-            if decoded is None:
-                token_ids = self.model.decode(encoded, seq_len)  # type: ignore[union-attr]
-                frames = None
-            else:
-                token_ids, frames = decoded
-            text = self.tokenizer.decode(token_ids) if self.tokenizer is not None else ""
-            words = self._words_from_frames(
-                token_ids,
-                frames,
+            return self._decode_samples(
+                audio[start_sample:end_sample],
                 decode_start_sec=float(start_sample) / sample_rate,
                 duration=float(end_sample - start_sample) / sample_rate,
             )
 
-            text = str(text).strip()
-            if text:
-                overlap_words = 0
-                if (
-                    chunk.overlaps_previous
-                    and previous_result_index is not None
-                    and previous_group == chunk.group
-                ):
-                    previous = result_segments[previous_result_index]
-                    stitched = stitch_chunk(
-                        previous["text"],
-                        previous.get("words"),
-                        text,
-                        words,
-                    )
-                    previous["text"] = stitched.previous_text
-                    if stitched.previous_words is not None:
-                        previous["words"] = stitched.previous_words
-                    text = stitched.text
-                    overlap_words = stitched.trim_words
-                start_time = max(0.0, float(chunk.start_sec))
-                end_time = min(total_seconds, float(chunk.end_sec))
-                if end_time < start_time:
-                    continue
-                if words is not None:
-                    words = normalize_chunk_words(
-                        words,
-                        start_sec=start_time,
-                        end_sec=end_time,
-                        trim_prefix_words=overlap_words,
-                    )
-                    if words is not None:
-                        text = " ".join(word["text"] for word in words).strip()
-                if not text and overlap_words and previous_result_index is not None:
-                    result_segments[previous_result_index]["end"] = end_time
-                if text:
-                    segment: dict = {
-                        "start": start_time,
-                        "end": end_time,
-                        "text": text,
-                    }
-                    if words is not None:
-                        segment["words"] = words
-                    result_segments.append(segment)
-                    previous_result_index = len(result_segments) - 1
-                    previous_group = chunk.group
-            else:
-                previous_result_index = None
-                previous_group = None
-
-            if progress_callback is not None and total_samples > 0:
-                processed = min(float(chunk.end_sec) / total_seconds, 1.0)
-                if processed >= reported:
-                    progress_callback(
-                        min(processed, 1.0),
-                        min(float(chunk.end_sec), total_seconds),
-                        total_seconds,
-                    )
-                    reported = processed
-
+        def trim_cache(chunk_index: int) -> None:
             # Окна разной длины дают буферы разного размера, и MLX кэширует
             # каждый размер отдельно. На часовой записи это сотни окон, поэтому
             # пул нужно подрезать по ходу, а не только в конце файла.
             if (chunk_index + 1) % self._CACHE_TRIM_INTERVAL == 0:
                 self._empty_cache()
 
-        if progress_callback is not None and total_samples > 0 and reported < 1.0:
-            progress_callback(1.0, total_seconds, total_seconds)
-
+        segments = assemble_segments(
+            chunks,
+            decode,
+            total_seconds=total_seconds,
+            progress_callback=progress_callback,
+            on_chunk_done=trim_cache,
+        )
+        # Исторический формат MLX-цикла: start/end/text (+words).
+        result_segments: list[dict] = []
+        for segment in segments:
+            start_time, end_time = segment["boundaries"]
+            item: dict = {"start": start_time, "end": end_time, "text": segment["transcription"]}
+            if "words" in segment:
+                item["words"] = segment["words"]
+            result_segments.append(item)
         return result_segments
 
     def _empty_cache(self) -> None:
@@ -584,9 +493,7 @@ class MLXBackend:
         with self._lock:
             self.model = None
             self.tokenizer = None
-            self._vad_segmenter = None
-            self._vad_segmenter_key = None
-            self._vad_failure.clear()
+            self._vad_cache.reset()
             self.segmentation_mode = "not_run"
             self.segmentation_fallback_reason = None
             self._empty_cache()
