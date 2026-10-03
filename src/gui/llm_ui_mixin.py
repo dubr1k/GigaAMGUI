@@ -797,19 +797,6 @@ class LlmUiMixin:
         group.setLayout(layout)
         return group
 
-    def _create_llm_prompt_group(self) -> QGroupBox:
-        group = QGroupBox("2. Промпт")
-        layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(9))
-        layout.setSpacing(self._px(6))
-
-        hint = QLabel("Все промпты настраиваются в меню «Настройки → LLM API…». Здесь достаточно выбрать режимы обработки. Для режима «Свой промпт» заранее заполните пользовательский промпт в настройках.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
-        layout.addWidget(hint)
-        group.setLayout(layout)
-        return group
-
     def _create_llm_result_group(self) -> QGroupBox:
         group = QGroupBox("Результат")
         group.setObjectName("llm_result_panel")

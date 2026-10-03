@@ -509,12 +509,6 @@ class ProcessingMixin:
         else:
             self.progress_bar_file.setFormat("")
 
-    def _update_total_progress(self, value: int):
-        self.progress_bar_total.setValue(value)
-
-    def _update_file_progress(self, value: int):
-        self.progress_bar_file.setValue(value)
-
     def _update_current_file_info(self, info: str):
         self.current_stage = None
         self.current_stage_progress = 0.0
@@ -860,10 +854,3 @@ class ProcessingMixin:
         self._save_geometry()
         self.app_logger.log_session_end()
         event.accept()
-
-    # ──────────────────────────────────────────────────────────────
-    # Ошибки загрузки модели
-    # ──────────────────────────────────────────────────────────────
-
-    def _show_model_error(self, message: str):
-        QMessageBox.warning(self, self._t("Ошибка загрузки", "Model loading error"), message)

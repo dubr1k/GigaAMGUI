@@ -42,9 +42,6 @@ TASKS_PROMPT = (
 
 
 class LlmMixin:
-    def _build_llm_prompt_text(self, transcript_text: str, prompt: str) -> str:
-        return llm_service.build_prompt_text(transcript_text, prompt)
-
     def _run_llm_provider(
         self,
         llm_settings: dict,
@@ -215,9 +212,6 @@ class LlmMixin:
                 "LLM response received, saving result…",
             )
         )
-
-    def _on_llm_stream_chunk(self, _chunk: str):
-        self.lbl_llm_status.setText(self._t("LLM выдаёт текст…", "LLM is streaming text…"))
 
     def _on_llm_finished(self, success: bool, message: str, result_text: str):
         self.is_llm_processing = False

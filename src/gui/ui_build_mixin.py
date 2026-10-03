@@ -404,7 +404,6 @@ class UiBuildMixin:
         self.log_text.setMaximumHeight(self._px(150))
         technical_log_layout.addWidget(self.log_text)
         log_layout.addWidget(technical_log)
-        self._journal_entries = []
         self._refresh_journal_labels()
         tabs.addTab(log_tab, "Журнал")
         tabs.addTab(self._create_settings_tab(), "Настройки")
@@ -557,9 +556,6 @@ class UiBuildMixin:
                 "Supported input formats: mp3, wav, m4a, aac, flac, ogg, mp4, avi, mov, mkv, webm, wma, 3gp."
             )
         )
-
-    _ACCENT_LIGHT = "#3b82f6"
-    _CONVERSION_BAND = 0.15
 
     def _make_progress_bar(self, height: int, font_pt: int) -> QProgressBar:
         c = self._colors()

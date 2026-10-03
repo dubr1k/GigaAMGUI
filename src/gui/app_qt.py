@@ -60,8 +60,6 @@ _OPEN_REQUESTS_NAME = "open_requests.jsonl"
 class WorkerSignals(QObject):
     """Сигналы для потока обработки"""
     log_message = pyqtSignal(str)
-    progress_update = pyqtSignal(int)
-    file_progress_update = pyqtSignal(int)
     current_file_info = pyqtSignal(str)
     processing_finished = pyqtSignal(bool, str)
     stage_update = pyqtSignal(object)
@@ -72,7 +70,6 @@ class WorkerSignals(QObject):
     llm_progress_update = pyqtSignal(int, int)
     llm_progress_started = pyqtSignal(int, int)
     llm_response_ready = pyqtSignal()
-    llm_stream_chunk = pyqtSignal(str)
     llm_tools_scanned = pyqtSignal(object)  # list[ToolStatus] из cli_tools.scan
     llm_tool_checked = pyqtSignal(object)  # ToolStatus одного инструмента
     live_status = pyqtSignal(object)
@@ -147,6 +144,10 @@ class GigaTranscriberQtApp(
         self.is_downloading = False
         self.start_processing_after_download = False
         self._last_result_dir = ""
+        self._last_processing_results = []
+        # Строки таблицы «Журнал»: заполняются из сообщений лога ещё до того,
+        # как построена сама вкладка, поэтому список живёт с самого начала.
+        self._journal_entries = []
 
         self.transcript_files_for_llm = []
         self.llm_output_dir = ""
@@ -185,8 +186,6 @@ class GigaTranscriberQtApp(
 
         self.signals = WorkerSignals()
         self.signals.log_message.connect(self._append_log)
-        self.signals.progress_update.connect(self._update_total_progress)
-        self.signals.file_progress_update.connect(self._update_file_progress)
         self.signals.current_file_info.connect(self._update_current_file_info)
         self.signals.processing_finished.connect(self._on_processing_finished)
         self.signals.stage_update.connect(self._on_stage_update)
@@ -197,7 +196,6 @@ class GigaTranscriberQtApp(
         self.signals.llm_progress_update.connect(self._update_llm_progress)
         self.signals.llm_progress_started.connect(self._start_llm_progress)
         self.signals.llm_response_ready.connect(self._on_llm_response_ready)
-        self.signals.llm_stream_chunk.connect(self._on_llm_stream_chunk)
         self.signals.llm_tools_scanned.connect(self._on_llm_tools_scanned)
         self.signals.llm_tool_checked.connect(self._on_llm_tool_checked)
         self.signals.live_status.connect(self._update_live_status)
@@ -331,21 +329,6 @@ class GigaTranscriberQtApp(
         "theme_btn": "☀️",
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def _select_asr_model(self):
         if self.is_processing:
             QMessageBox.information(self, self._t("Смена модели", "Model change"), self._t("Дождитесь завершения обработки.", "Wait for processing to finish."))
@@ -438,52 +421,6 @@ class GigaTranscriberQtApp(
     def _is_headless() -> bool:
         app = QApplication.instance()
         return bool(app) and app.platformName() in ("offscreen", "minimal")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _argv_open_paths(argv: list) -> list:

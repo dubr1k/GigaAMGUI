@@ -45,8 +45,6 @@ class LiveMixin:
         self.live_session = None
         self.live_overlay = None
         self._live_settings = self.user_settings.get_value("live_settings", {}) or {}
-        self._live_partial_range = None
-        self._live_partial_text = ""
         self._live_transcript_presenter = LiveTranscriptPresenter()
         self._live_capture_status_times: dict[tuple[CaptureSource, str], float] = {}
         self._live_llm_cancel_event: threading.Event | None = None
@@ -474,14 +472,8 @@ class LiveMixin:
         self.live_transcript.setPlainText("".join(f"{piece}\n" for piece in pieces))
         scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
 
-    def _clear_live_partial(self) -> None:
-        self._live_partial_text = ""
-        self._live_partial_range = None
-
     def _clear_live_display(self) -> None:
         self.live_transcript.clear()
-        self._live_partial_range = None
-        self._live_partial_text = ""
         self._live_transcript_presenter.clear()
         if self.live_session is not None and self.live_session.status().state not in {CaptureState.STOPPED, CaptureState.IDLE}:
             self.live_session.clear_conversation()
@@ -490,53 +482,6 @@ class LiveMixin:
             self.live_overlay.set_conversation(
                 self.live_session.conversation() if self.live_session is not None else []
             )
-
-    def _replace_live_partial(self, text: str) -> None:
-        previous = self._live_partial_text
-        scrollbar = self.live_transcript.verticalScrollBar()
-        at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
-        position = scrollbar.value()
-        cursor = self.live_transcript.textCursor()
-        if self._live_partial_range is None:
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            if cursor.position() > 0:
-                cursor.insertText("\n\n")
-            start = cursor.position()
-        else:
-            start, end = self._live_partial_range
-            stable = self._stable_text_prefix_length(previous, text)
-            cursor.setPosition(start + stable)
-            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-            text = text[stable:]
-        cursor.insertText(text)
-        self._live_partial_text = previous[:stable] + text if previous else text
-        self._live_partial_range = (start, start + len(text))
-        if previous:
-            self._live_partial_range = (start, start + len(self._live_partial_text))
-        scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
-
-    @staticmethod
-    def _stable_text_prefix_length(previous: str, current: str) -> int:
-        shared = 0
-        for previous_char, current_char in zip(previous, current, strict=False):
-            if previous_char != current_char:
-                break
-            shared += 1
-        if shared == len(previous) or shared == len(current):
-            return shared
-        return min(previous.rfind(" ", 0, shared), current.rfind(" ", 0, shared)) + 1
-
-    def _render_live_transcript(self) -> None:
-        scrollbar = self.live_transcript.verticalScrollBar()
-        at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
-        position = scrollbar.value()
-        rendered = self._live_transcript_presenter.rendered_paragraphs()
-        self.live_transcript.setPlainText(
-            f"{rendered}\n\n{self._live_partial_text}"
-            if rendered and self._live_partial_text
-            else rendered or self._live_partial_text
-        )
-        scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
 
     def _update_live_overlay(self, event) -> None:
         if self.live_overlay is not None and isinstance(event, TranscriptEvent):

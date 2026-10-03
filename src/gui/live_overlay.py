@@ -166,13 +166,6 @@ class LiveOverlay(QWidget):
         self.final_text.clear()
         self.partial_label.clear()
 
-    def _render_final_text(self) -> None:
-        scrollbar = self.final_text.verticalScrollBar()
-        at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
-        position = scrollbar.value()
-        self.final_text.setPlainText(self._transcript_presenter.rendered_paragraphs())
-        scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
-
     def toggle_collapsed(self) -> None:
         collapsed = self.content.isVisible()
         self.content.setVisible(not collapsed)
