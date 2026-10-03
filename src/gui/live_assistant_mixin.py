@@ -18,7 +18,7 @@ from .live_overlay import LiveOverlay
 class LiveAssistantMixin:
     def _show_live_overlay(self) -> None:
         if self.live_overlay is None:
-            self.live_overlay = LiveOverlay(self)
+            self.live_overlay = LiveOverlay(self, language=self._lang)
             self.live_overlay.question_submitted.connect(self._answer_live_question)
             self.live_overlay.cancel_requested.connect(self._cancel_live_question)
             self.live_overlay.visibility_changed.connect(self._on_live_overlay_visibility)

@@ -104,9 +104,7 @@ class LlmSettingsDialogMixin:
 
         self.cb_llm_allow_tools = QCheckBox("Разрешить инструменты и сессии агента")
         self.cb_llm_allow_tools.setObjectName("llm_allow_tools")
-        self.cb_llm_allow_tools.setToolTip(
-            "Выключено: CLI запускается без инструментов и без сохранения сессии (--no-tools/--no-session и аналоги)."
-        )
+        self._bilingual(self.cb_llm_allow_tools.setToolTip, "Выключено: CLI запускается без инструментов и без сохранения сессии (--no-tools/--no-session и аналоги).", "Off: the CLI runs without tools and without saving a session (--no-tools/--no-session or equivalents).")
         layout.addWidget(self.cb_llm_allow_tools)
 
         self.lbl_llm_provider_info = QLabel()
@@ -220,9 +218,7 @@ class LlmSettingsDialogMixin:
         prompts_layout.addWidget(self.lbl_llm_custom_prompt)
         self.txt_llm_custom_prompt = QTextEdit()
         self.txt_llm_custom_prompt.setMinimumHeight(self._px(100))
-        self.txt_llm_custom_prompt.setPlaceholderText(
-            "Текст для режима «Свой промпт». Транскрипт будет добавлен ниже автоматически."
-        )
+        self._bilingual(self.txt_llm_custom_prompt.setPlaceholderText, "Текст для режима «Свой промпт». Транскрипт будет добавлен ниже автоматически.", "Text for the “Custom prompt” mode. The transcript is appended below automatically.")
         prompts_layout.addWidget(self.txt_llm_custom_prompt)
         self.prompts_group.setLayout(prompts_layout)
         layout.addWidget(self.prompts_group)

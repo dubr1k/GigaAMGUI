@@ -546,8 +546,10 @@ def main():
     # Для PyTorch всегда активируем сохранённый целый runtime до импорта модели.
     # Это также удаляет namespace-заглушку torch, которую может оставить PyInstaller.
     if _boot_requires_torch():
-        from src.gui.device_dialog import ensure_device_ready
+        from src.gui.device_dialog import ensure_device_ready, set_default_language
 
+        # Окна ещё нет, язык диалогу берём из сохранённых настроек.
+        set_default_language(settings.get_value("language", "ru"))
         if not _prepare_torch_runtime(rm, ensure_device_ready):
             sys.exit(0)
 

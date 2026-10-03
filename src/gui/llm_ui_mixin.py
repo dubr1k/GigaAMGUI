@@ -46,7 +46,8 @@ class LlmUiMixin:
         title.setObjectName("llm_workspace_title")
         heading.addWidget(title)
         heading.addStretch()
-        self.btn_llm_settings = QPushButton("Настройки…")
+        self.btn_llm_settings = QPushButton()
+        self._bilingual(self.btn_llm_settings.setText, "Настройки…", "Settings…")
         self.btn_llm_settings.setObjectName("llm_settings_button")
         self.btn_llm_settings.setFixedHeight(self._px(22))
         self.btn_llm_settings.clicked.connect(self._open_llm_settings_dialog)
@@ -141,14 +142,14 @@ class LlmUiMixin:
         self.llm_action_checkboxes = {}
 
         for key, label, description, checked in (
-            ("summary", "Выжимка", "Сжать текст до основных тезисов", True),
-            ("tasks", "Задачи", "Найти поручения и action items", False),
-            ("custom", "Свой промпт", "Использовать пользовательскую инструкцию", False),
+            ("summary", "Выжимка", ("Сжать текст до основных тезисов", "Condense the text to its key points"), True),
+            ("tasks", "Задачи", ("Найти поручения и action items", "Find assignments and action items"), False),
+            ("custom", "Свой промпт", ("Использовать пользовательскую инструкцию", "Use your own instruction"), False),
         ):
             cb = QCheckBox(label)
             cb.setObjectName("llm_template_checkbox")
             cb.setChecked(checked)
-            cb.setToolTip(description)
+            self._bilingual(cb.setToolTip, *description)
             layout.addWidget(cb)
             self.llm_action_checkboxes[key] = cb
 
@@ -179,7 +180,7 @@ class LlmUiMixin:
         group.setObjectName("llm_export_destination")
         group.setTitle("")
         group.setFlat(True)
-        group.setToolTip("Сохранение результата")
+        self._bilingual(group.setToolTip, "Сохранение результата", "Saving the result")
         self.grp_llm_output = group
         group.setMinimumWidth(0)
         group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
@@ -190,7 +191,7 @@ class LlmUiMixin:
         self.btn_llm_output = QPushButton("Папка")
         self.btn_llm_output.setObjectName("llm_output_folder_button")
         self.btn_llm_output.setFixedHeight(self._px(20))
-        self.btn_llm_output.setToolTip("Выбрать папку для результатов")
+        self._bilingual(self.btn_llm_output.setToolTip, "Выбрать папку для результатов", "Choose the results folder")
         self.btn_llm_output.clicked.connect(self._select_llm_output_folder)
         layout.addWidget(self.btn_llm_output)
         self.lbl_llm_output = QLabel("Рядом с транскриптом")
@@ -209,7 +210,7 @@ class LlmUiMixin:
         group.setObjectName("llm_export_formats")
         group.setTitle("")
         group.setFlat(True)
-        group.setToolTip("Форматы сохранения")
+        self._bilingual(group.setToolTip, "Форматы сохранения", "Save formats")
         self.grp_llm_save = group
         group.setMinimumWidth(0)
         group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
@@ -240,7 +241,7 @@ class LlmUiMixin:
         self.btn_select_transcripts = QPushButton("Выбрать")
         self.btn_select_transcripts.setObjectName("llm_upload_button")
         self.btn_select_transcripts.setFixedHeight(self._px(22))
-        self.btn_select_transcripts.setToolTip("Выбрать транскрипты")
+        self._bilingual(self.btn_select_transcripts.setToolTip, "Выбрать транскрипты", "Choose transcripts")
         self.btn_select_transcripts.clicked.connect(self._select_llm_transcript_files)
         layout.addWidget(self.btn_select_transcripts)
 
@@ -313,7 +314,8 @@ class LlmUiMixin:
         result_toolbar = QHBoxLayout(toolbar)
         result_toolbar.setContentsMargins(0, 0, 0, 0)
         result_toolbar.setSpacing(self._px(4))
-        self.btn_llm_copy = QPushButton("Копия")
+        self.btn_llm_copy = QPushButton()
+        self._bilingual(self.btn_llm_copy.setText, "Копия", "Copy")
         self.btn_llm_copy.setObjectName("llm_result_action")
         self.btn_llm_copy.setFixedHeight(self._px(20))
         self.btn_llm_copy.clicked.connect(self._copy_llm_result)
@@ -405,8 +407,9 @@ class LlmUiMixin:
             self.llm_action_checkboxes["custom"].setText("Свой промпт" if is_ru else "Custom prompt")
         if hasattr(self, "lbl_llm_actions_note"):
             self.lbl_llm_actions_note.setText("Отметьте один или несколько режимов обработки. Для «Свой промпт» текст задается в меню «Настройки → LLM API…»." if is_ru else "Select one or more processing modes. For 'Custom prompt', set the text in Settings → LLM API…")
-        if hasattr(self, "lbl_llm_output") and (self.lbl_llm_output.text().startswith("Папка не выбрана") or self.lbl_llm_output.text().startswith("Folder not selected")):
-            self.lbl_llm_output.setText("Папка не выбрана (по умолчанию - рядом с транскриптом)" if is_ru else "Folder not selected (default: next to the transcript)")
+        if not self.llm_output_dir:
+            # Без выбранной папки результат ложится рядом с транскриптом.
+            self.lbl_llm_output.setText("Рядом с транскриптом" if is_ru else "Next to the transcript")
         if hasattr(self, "lbl_llm_output_note"):
             self.lbl_llm_output_note.setText("Если папка не выбрана, результат будет сохранен рядом с исходным транскриптом." if is_ru else "If no folder is selected, the result will be saved next to the source transcript.")
         if hasattr(self, "llm_export_checkboxes"):

@@ -42,7 +42,8 @@ class PreferencesMixin:
         root.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
         root.setSpacing(self._px(10))
 
-        title = QLabel(self._t("Настройки", "Settings"))
+        title = QLabel()
+        self._bilingual(title.setText, "Настройки", "Settings")
         title.setObjectName("support_heading")
         title.setFont(self._font(18))
         root.addWidget(title)
@@ -64,17 +65,18 @@ class PreferencesMixin:
 
         self.settings_stack = QStackedWidget()
         self.settings_stack.setObjectName("settings_preferences_stack")
-        for name, builder in (
-            (self._t("Общие", "General"), self._create_general_settings),
-            (self._t("Модели", "Models"), self._create_models_settings),
-            (self._t("Аудио", "Audio"), self._create_audio_settings),
-            ("LLM", self._create_llm_settings),
-            ("API", self._create_api_settings),
-            (self._t("Интерфейс", "Interface"), self._create_interface_settings),
-            (self._t("Экспериментальные", "Experimental"), self._create_experimental_settings),
+        for (name_ru, name_en), builder in (
+            (("Общие", "General"), self._create_general_settings),
+            (("Модели", "Models"), self._create_models_settings),
+            (("Аудио", "Audio"), self._create_audio_settings),
+            (("LLM", "LLM"), self._create_llm_settings),
+            (("API", "API"), self._create_api_settings),
+            (("Интерфейс", "Interface"), self._create_interface_settings),
+            (("Экспериментальные", "Experimental"), self._create_experimental_settings),
         ):
-            item = QListWidgetItem(name)
+            item = QListWidgetItem()
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._bilingual(item.setText, name_ru, name_en)
             self.settings_categories.addItem(item)
             self.settings_stack.addWidget(builder())
         self.settings_categories.currentRowChanged.connect(self._set_settings_category)
@@ -84,17 +86,26 @@ class PreferencesMixin:
         self.settings_categories.setCurrentRow(max(0, min(initial_category, self.settings_stack.count() - 1)))
         return page
 
-    def _settings_page(self, title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
+    def _settings_text(self, apply, text) -> None:
+        """Подпись страницы настроек: строка как есть или пара (ru, en) с переводом."""
+        if isinstance(text, tuple):
+            self._bilingual(apply, *text)
+        else:
+            apply(text)
+
+    def _settings_page(self, title, subtitle) -> tuple[QScrollArea, QVBoxLayout]:
         content = QFrame()
         content.setObjectName("settings_form_panel")
         layout = QVBoxLayout(content)
         layout.setContentsMargins(self._px(16), self._px(14), self._px(16), self._px(14))
         layout.setSpacing(self._px(10))
-        heading = QLabel(title)
+        heading = QLabel()
+        self._settings_text(heading.setText, title)
         heading.setObjectName("settings_section_heading")
         heading.setFont(self._font(13))
         layout.addWidget(heading)
-        description = QLabel(subtitle)
+        description = QLabel()
+        self._settings_text(description.setText, subtitle)
         description.setObjectName("settings_section_description")
         description.setWordWrap(True)
         layout.addWidget(description)
@@ -105,8 +116,9 @@ class PreferencesMixin:
         scroll.setWidget(content)
         return scroll, layout
 
-    def _form_row(self, form: QFormLayout, label: str, control: QWidget) -> None:
-        label_widget = QLabel(label)
+    def _form_row(self, form: QFormLayout, label, control: QWidget) -> None:
+        label_widget = QLabel()
+        self._settings_text(label_widget.setText, label)
         label_widget.setObjectName("settings_field_label")
         if not control.objectName():
             control.setObjectName("settings_field_control")
@@ -114,25 +126,29 @@ class PreferencesMixin:
 
     def _create_general_settings(self) -> QWidget:
         page, layout = self._settings_page(
-            self._t("Общие", "General"),
-            self._t("Язык, тема и папки, которые использует приложение.", "Language, theme, and application folders."),
+            ("Общие", "General"),
+            ("Язык, тема и папки, которые использует приложение.", "Language, theme, and application folders."),
         )
         form = QFormLayout()
         form.setObjectName("settings_preferences_form")
         form.setSpacing(self._px(10))
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.settings_language = QComboBox()
-        self.settings_language.addItem(self._t("Русский", "Russian"), "ru")
-        self.settings_language.addItem(self._t("English", "English"), "en")
+        # Название языка — на самом этом языке, независимо от текущего.
+        self.settings_language.addItem("Русский", "ru")
+        self.settings_language.addItem("English", "en")
         self.settings_language.currentIndexChanged.connect(self._set_settings_language)
-        self._form_row(form, self._t("Язык интерфейса", "Interface language"), self.settings_language)
+        self._form_row(form, ("Язык интерфейса", "Interface language"), self.settings_language)
         self.settings_theme = QComboBox()
-        self.settings_theme.addItem(self._t("Светлая", "Light"), "light")
-        self.settings_theme.addItem(self._t("Тёмная", "Dark"), "dark")
+        self.settings_theme.addItem("", "light")
+        self.settings_theme.addItem("", "dark")
+        self._bilingual(lambda text: self.settings_theme.setItemText(0, text), "Светлая", "Light")
+        self._bilingual(lambda text: self.settings_theme.setItemText(1, text), "Тёмная", "Dark")
         self.settings_theme.currentIndexChanged.connect(self._set_settings_theme)
-        self._form_row(form, self._t("Тема", "Theme"), self.settings_theme)
+        self._form_row(form, ("Тема", "Theme"), self.settings_theme)
 
-        paths_title = QLabel(self._t("Пути", "Paths"))
+        paths_title = QLabel()
+        self._bilingual(paths_title.setText, "Пути", "Paths")
         paths_title.setObjectName("settings_section_label")
         paths_title.setFont(self._font(11))
         form.addRow(paths_title)
@@ -144,11 +160,12 @@ class PreferencesMixin:
         self.settings_data_dir_value.setObjectName("settings_path_value")
         self.settings_data_dir_value.setWordWrap(True)
         data_row.addWidget(self.settings_data_dir_value, 1)
-        choose_data = QPushButton(self._t("Папка данных и моделей…", "Data and models folder…"))
+        choose_data = QPushButton()
+        self._bilingual(choose_data.setText, "Папка данных и моделей…", "Data and models folder…")
         choose_data.setObjectName("settings_path_button")
         choose_data.clicked.connect(self._select_data_directory)
         data_row.addWidget(choose_data)
-        self._form_row(form, self._t("Данные и модели", "Data and models"), data_control)
+        self._form_row(form, ("Данные и модели", "Data and models"), data_control)
 
         output_control = QWidget()
         output_control.setObjectName("settings_path_control")
@@ -158,19 +175,20 @@ class PreferencesMixin:
         self.settings_output_dir_value.setObjectName("settings_path_value")
         self.settings_output_dir_value.setWordWrap(True)
         output_row.addWidget(self.settings_output_dir_value, 1)
-        choose_output = QPushButton(self._t("Папка результатов…", "Results folder…"))
+        choose_output = QPushButton()
+        self._bilingual(choose_output.setText, "Папка результатов…", "Results folder…")
         choose_output.setObjectName("settings_path_button")
         choose_output.clicked.connect(self._select_settings_output_folder)
         output_row.addWidget(choose_output)
-        self._form_row(form, self._t("Результаты", "Results"), output_control)
+        self._form_row(form, ("Результаты", "Results"), output_control)
         layout.addLayout(form)
         layout.addStretch()
         return page
 
     def _create_models_settings(self) -> QWidget:
         page, layout = self._settings_page(
-            self._t("Модели", "Models"),
-            self._t("Настройки используются следующей обработкой файлов.", "These settings are used by the next file processing run."),
+            ("Модели", "Models"),
+            ("Настройки используются следующей обработкой файлов.", "These settings are used by the next file processing run."),
         )
         form = QFormLayout()
         form.setObjectName("settings_preferences_form")
@@ -180,21 +198,22 @@ class PreferencesMixin:
         for model_id, model_name in ASR_MODELS.items():
             self.settings_model_combo.addItem(f"{model_name} [{model_id}]", model_id)
         self.settings_model_combo.currentIndexChanged.connect(self._set_settings_model)
-        self._form_row(form, self._t("Модель", "Model"), self.settings_model_combo)
+        self._form_row(form, ("Модель", "Model"), self.settings_model_combo)
         self.settings_backend_button = QPushButton()
         self.settings_backend_button.clicked.connect(self._choose_settings_backend)
-        self._form_row(form, self._t("ASR backend", "ASR backend"), self.settings_backend_button)
-        self.settings_device_button = QPushButton(self._t("Изменить устройство…", "Change device…"))
+        self._form_row(form, ("ASR backend", "ASR backend"), self.settings_backend_button)
+        self.settings_device_button = QPushButton()
+        self._bilingual(self.settings_device_button.setText, "Изменить устройство…", "Change device…")
         self.settings_device_button.clicked.connect(self._choose_settings_device)
-        self._form_row(form, self._t("Устройство", "Device"), self.settings_device_button)
+        self._form_row(form, ("Устройство", "Device"), self.settings_device_button)
         layout.addLayout(form)
         layout.addStretch()
         return page
 
     def _create_audio_settings(self) -> QWidget:
         page, layout = self._settings_page(
-            self._t("Аудио", "Audio"),
-            self._t("Подготовка записи и распознавание спикеров.", "Recording preparation and speaker recognition."),
+            ("Аудио", "Audio"),
+            ("Подготовка записи и распознавание спикеров.", "Recording preparation and speaker recognition."),
         )
         form = QFormLayout()
         form.setObjectName("settings_preferences_form")
@@ -208,17 +227,17 @@ class PreferencesMixin:
                     self.combo_audio_preprocessing.itemData(index),
                 )
         self.settings_audio_preprocessing.currentIndexChanged.connect(self._set_settings_audio_preprocessing)
-        self._form_row(form, self._t("Подготовка аудио", "Audio preparation"), self.settings_audio_preprocessing)
+        self._form_row(form, ("Подготовка аудио", "Audio preparation"), self.settings_audio_preprocessing)
         self.settings_diarization = QPushButton()
         self.settings_diarization.setCheckable(True)
         self.settings_diarization.clicked.connect(self._set_settings_diarization)
-        self._form_row(form, self._t("Диаризация", "Diarization"), self.settings_diarization)
+        self._form_row(form, ("Диаризация", "Diarization"), self.settings_diarization)
         self.settings_speakers = QSpinBox()
         self.settings_speakers.setMinimum(0)
         self.settings_speakers.setMaximum(32)
-        self.settings_speakers.setSpecialValueText(self._t("Авто", "Auto"))
+        self._bilingual(self.settings_speakers.setSpecialValueText, "Авто", "Auto")
         self.settings_speakers.valueChanged.connect(self._set_settings_speakers)
-        self._form_row(form, self._t("Количество спикеров", "Speaker count"), self.settings_speakers)
+        self._form_row(form, ("Количество спикеров", "Speaker count"), self.settings_speakers)
         layout.addLayout(form)
         layout.addStretch()
         return page
@@ -226,7 +245,7 @@ class PreferencesMixin:
     def _create_llm_settings(self) -> QWidget:
         page, layout = self._settings_page(
             "LLM",
-            self._t("Провайдер и параметры постобработки транскрипций.", "Provider and transcription post-processing parameters."),
+            ("Провайдер и параметры постобработки транскрипций.", "Provider and transcription post-processing parameters."),
         )
         form = QFormLayout()
         form.setObjectName("settings_preferences_form")
@@ -241,18 +260,19 @@ class PreferencesMixin:
                     self.combo_llm_provider.itemText(index), self.combo_llm_provider.itemData(index),
                 )
         self.settings_llm_provider.currentIndexChanged.connect(self._set_settings_llm_provider)
-        self._form_row(form, self._t("Провайдер", "Provider"), self.settings_llm_provider)
+        self._form_row(form, ("Провайдер", "Provider"), self.settings_llm_provider)
         self.settings_llm_api_url = QLineEdit()
         self.settings_llm_api_url.editingFinished.connect(self._save_settings_llm_fields)
         self._form_row(form, "API URL", self.settings_llm_api_url)
         self.settings_llm_model = QLineEdit()
         self.settings_llm_model.editingFinished.connect(self._save_settings_llm_fields)
-        self._form_row(form, self._t("Модель", "Model"), self.settings_llm_model)
+        self._form_row(form, ("Модель", "Model"), self.settings_llm_model)
         self.settings_llm_temperature = QLineEdit()
         self.settings_llm_temperature.editingFinished.connect(self._save_settings_llm_fields)
-        self._form_row(form, self._t("Температура", "Temperature"), self.settings_llm_temperature)
+        self._form_row(form, ("Температура", "Temperature"), self.settings_llm_temperature)
         layout.addLayout(form)
-        advanced = QPushButton(self._t("Расширенные настройки LLM…", "Advanced LLM settings…"))
+        advanced = QPushButton()
+        self._bilingual(advanced.setText, "Расширенные настройки LLM…", "Advanced LLM settings…")
         advanced.setObjectName("settings_secondary_action")
         advanced.clicked.connect(self._open_llm_settings_dialog)
         layout.addWidget(advanced, alignment=Qt.AlignmentFlag.AlignLeft)
@@ -262,29 +282,31 @@ class PreferencesMixin:
     def _create_api_settings(self) -> QWidget:
         page, layout = self._settings_page(
             "API",
-            self._t("Адрес используется для документации и проверки доступности отдельного API-сервиса.", "The address is used by documentation and to check the separate API service."),
+            ("Адрес используется для документации и проверки доступности отдельного API-сервиса.", "The address is used by documentation and to check the separate API service."),
         )
         form = QFormLayout()
         form.setObjectName("settings_preferences_form")
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.settings_api_endpoint = QLineEdit(self._api_base_url())
         self.settings_api_endpoint.editingFinished.connect(self._save_settings_api_endpoint)
-        self._form_row(form, self._t("Адрес API", "API address"), self.settings_api_endpoint)
+        self._form_row(form, ("Адрес API", "API address"), self.settings_api_endpoint)
         layout.addLayout(form)
         layout.addStretch()
         return page
 
     def _create_interface_settings(self) -> QWidget:
         page, layout = self._settings_page(
-            self._t("Интерфейс", "Interface"),
-            self._t("Настройте реальный акцент приложения; основная тема выбирается в «Общих».", "Set the application accent; the base theme is selected under General."),
+            ("Интерфейс", "Interface"),
+            ("Настройте реальный акцент приложения; основная тема выбирается в «Общих».", "Set the application accent; the base theme is selected under General."),
         )
         buttons = QHBoxLayout()
-        choose_accent = QPushButton(self._t("Выбрать акцент…", "Choose accent…"))
+        choose_accent = QPushButton()
+        self._bilingual(choose_accent.setText, "Выбрать акцент…", "Choose accent…")
         choose_accent.setObjectName("settings_secondary_action")
         choose_accent.clicked.connect(self._choose_accent_color)
         buttons.addWidget(choose_accent)
-        reset_accent = QPushButton(self._t("Сбросить акцент", "Reset accent"))
+        reset_accent = QPushButton()
+        self._bilingual(reset_accent.setText, "Сбросить акцент", "Reset accent")
         reset_accent.setObjectName("settings_secondary_action")
         reset_accent.clicked.connect(self._reset_accent_color)
         buttons.addWidget(reset_accent)
@@ -295,8 +317,8 @@ class PreferencesMixin:
 
     def _create_experimental_settings(self) -> QWidget:
         page, layout = self._settings_page(
-            self._t("Экспериментальные", "Experimental"),
-            self._t("Экспериментальные параметры для desktop-приложения пока не доступны.", "No experimental settings are currently available for the desktop application."),
+            ("Экспериментальные", "Experimental"),
+            ("Экспериментальные параметры для desktop-приложения пока не доступны.", "No experimental settings are currently available for the desktop application."),
         )
         layout.addStretch()
         return page
@@ -426,6 +448,11 @@ class PreferencesMixin:
         select_data(self.settings_model_combo, self.model_loader.requested_model)
         self.settings_backend_button.setText(self.model_loader.requested_backend or "auto")
         if hasattr(self, "combo_audio_preprocessing"):
+            # Подписи режимов — копия вкладки «Обработка», переведённой раньше.
+            for index in range(self.settings_audio_preprocessing.count()):
+                source = self.combo_audio_preprocessing.findData(self.settings_audio_preprocessing.itemData(index))
+                if source >= 0:
+                    self.settings_audio_preprocessing.setItemText(index, self.combo_audio_preprocessing.itemText(source))
             select_data(self.settings_audio_preprocessing, self.combo_audio_preprocessing.currentData())
         if hasattr(self, "cb_diarization"):
             self.settings_diarization.blockSignals(True)

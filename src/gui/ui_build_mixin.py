@@ -180,7 +180,7 @@ class UiBuildMixin:
         self.btn_start = QPushButton("ЗАПУСТИТЬ ОБРАБОТКУ")
         self.btn_start.setObjectName("start_button")
         self.btn_start.setFixedHeight(self._px(52))
-        self.btn_start.setToolTip("Начать транскрибацию выбранных файлов  (Ctrl+Enter)")
+        self._bilingual(self.btn_start.setToolTip, "Начать транскрибацию выбранных файлов  (Ctrl+Enter)", "Start transcribing the selected files  (Ctrl+Enter)")
         self.btn_start.setShortcut(QKeySequence("Ctrl+Return"))
         self.btn_start.clicked.connect(self._start_processing_thread)
         main_layout.addWidget(self.btn_start)
@@ -190,7 +190,7 @@ class UiBuildMixin:
         self.btn_clear = QPushButton("ОЧИСТИТЬ ВСЕ")
         self.btn_clear.setObjectName("clear_button")
         self.btn_clear.setFixedHeight(self._px(40))
-        self.btn_clear.setToolTip("Сбросить файлы, папки, журнал и прогресс")
+        self._bilingual(self.btn_clear.setToolTip, "Сбросить файлы, папки, журнал и прогресс", "Reset files, folders, log and progress")
         self.btn_clear.clicked.connect(self._clear_all)
         main_layout.addWidget(self.btn_clear)
 
@@ -268,7 +268,7 @@ class UiBuildMixin:
         head_row.addWidget(self.lbl_file_counter)
         self.btn_cancel = QPushButton("Отменить")
         self.btn_cancel.setObjectName("cancel_button")
-        self.btn_cancel.setToolTip("Остановить обработку после текущего файла  (Esc)")
+        self._bilingual(self.btn_cancel.setToolTip, "Остановить обработку после текущего файла  (Esc)", "Stop processing after the current file  (Esc)")
         self.btn_cancel.setFixedHeight(self._px(28))
         self.btn_cancel.clicked.connect(self._cancel_processing)
         self.btn_cancel.setVisible(False)
@@ -298,6 +298,8 @@ class UiBuildMixin:
         self.progress_bar_file = self._make_progress_bar(height=16, font_pt=8)
         frame_layout.addWidget(self.progress_bar_file)
 
+        # Строка статуса меняется во время работы: переводит её _retranslate_shell,
+        # и только пока она «пустая».
         self.lbl_status = QLabel(self._t("Готов к работе", "Ready to work"))
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_status.setFixedHeight(self._px(28))
@@ -311,7 +313,7 @@ class UiBuildMixin:
 
         self.btn_open_result = QPushButton("Открыть папку с результатами")
         self.btn_open_result.setObjectName("open_result_button")
-        self.btn_open_result.setToolTip("Открыть папку с готовыми файлами в проводнике")
+        self._bilingual(self.btn_open_result.setToolTip, "Открыть папку с готовыми файлами в проводнике", "Open the folder with finished files in the file manager")
         self.btn_open_result.setFixedHeight(self._px(34))
         self.btn_open_result.clicked.connect(self._open_results_folder)
         self.btn_open_result.setVisible(False)
@@ -338,7 +340,7 @@ class UiBuildMixin:
 
         self.btn_select_folder = QPushButton("Выбрать папку")
         btn_select_folder = self.btn_select_folder
-        btn_select_folder.setToolTip("Добавить все медиафайлы из папки и подпапок")
+        self._bilingual(btn_select_folder.setToolTip, "Добавить все медиафайлы из папки и подпапок", "Add all media files from the folder and subfolders")
         btn_select_folder.clicked.connect(self._select_files_folder)
         btn_select_folder.setFixedHeight(self._px(36))
         btn_select_folder.setMinimumWidth(self._px(150))

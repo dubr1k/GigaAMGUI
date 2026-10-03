@@ -44,7 +44,7 @@ class FilesMixin:
             self.lbl_files_count.setText(self._t(f"Выбрано файлов: {len(self.files_to_process)}", f"Selected files: {len(self.files_to_process)}"))
             self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_sub"]))
         else:
-            self.lbl_files_count.setText("Файлы не выбраны")
+            self.lbl_files_count.setText(self._t("Файлы не выбраны", "No files selected"))
             self.lbl_files_count.setStyleSheet(self._transparent_label_style(c["text_mute"]))
         self._update_files_controls()
 
@@ -68,7 +68,7 @@ class FilesMixin:
         removed = len(selected)
         self.files_to_process = [p for p in self.files_to_process if p not in selected]
         self._refresh_files_list()
-        self.log(f"Убрано из очереди: {removed} файлов")
+        self.log(self._t(f"Убрано из очереди: {removed} файлов", f"Removed from the queue: {removed} files"))
 
     def _clear_files_list(self):
         if self.is_processing:
@@ -82,7 +82,7 @@ class FilesMixin:
         self.files_to_process = []
         self._forget_input_dir()
         self._refresh_files_list()
-        self.log("Очередь файлов очищена")
+        self.log(self._t("Очередь файлов очищена", "File queue cleared"))
 
     def _forget_input_dir(self):
         """Забыть папку источника, чтобы её не пересканировали на следующем старте."""
@@ -328,8 +328,10 @@ class FilesMixin:
     def _select_files(self):
         initial_dir = self.user_settings.get_last_files_dir() or self.input_dir or os.path.expanduser("~")
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Выберите аудио или видео файлы", initial_dir,
-            "Медиа файлы (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.avi *.mov *.mkv *.webm *.wma *.qta *.3gp);;Все файлы (*.*)"
+            self, self._t("Выберите аудио или видео файлы", "Choose audio or video files"), initial_dir,
+            self._t("Медиа файлы", "Media files")
+            + " (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.avi *.mov *.mkv *.webm *.wma *.qta *.3gp);;"
+            + self._t("Все файлы (*.*)", "All files (*.*)")
         )
         if files:
             self._apply_dropped_or_selected_files(files)
@@ -359,7 +361,7 @@ class FilesMixin:
             self.user_settings.set_last_files_dir(file_dir)
             self.user_settings.set_value("last_files_dir_recursive", False)
         self._refresh_files_list()
-        self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
+        self.log(self._t(f"Добавлено в очередь: {len(unique_files)} файлов", f"Added to the queue: {len(unique_files)} files"))
         for f in unique_files:
             self.log(f" + {os.path.basename(f)}")
 
@@ -389,7 +391,9 @@ class FilesMixin:
 
     def _select_files_folder(self):
         initial_dir = self.user_settings.get_last_files_dir() or self.input_dir or os.path.expanduser("~")
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку с аудио/видео файлами", initial_dir)
+        folder = QFileDialog.getExistingDirectory(
+            self, self._t("Выберите папку с аудио/видео файлами", "Choose a folder with audio/video files"), initial_dir,
+        )
         if folder:
             self.input_dir = folder
             self.user_settings.set_last_files_dir(folder)
@@ -399,7 +403,10 @@ class FilesMixin:
             if files:
                 self.files_to_process = files
                 self._refresh_files_list()
-                self.log(f"Добавлено из папки (включая подпапки): {len(files)} файлов")
+                self.log(self._t(
+                    f"Добавлено из папки (включая подпапки): {len(files)} файлов",
+                    f"Added from the folder (with subfolders): {len(files)} files",
+                ))
                 for f in files:
                     self.log(f" + {os.path.relpath(f, folder)}")
             else:
@@ -407,12 +414,14 @@ class FilesMixin:
 
     def _select_output_folder(self):
         initial_dir = self.user_settings.get_last_output_dir() or self.output_dir or os.path.expanduser("~")
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения результатов", initial_dir)
+        folder = QFileDialog.getExistingDirectory(
+            self, self._t("Выберите папку для сохранения результатов", "Choose the output folder"), initial_dir,
+        )
         if folder:
             self.output_dir = folder
             self.user_settings.set_last_output_dir(folder)
             self._update_output_dir_label(folder)
-            self.log(f"Папка для сохранения: {folder}")
+            self.log(self._t(f"Папка для сохранения: {folder}", f"Output folder: {folder}"))
 
     def _update_input_dir_label(self, path: str):
         display_path = path if len(path) < 70 else f"...{path[-70:]}"

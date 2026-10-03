@@ -22,26 +22,26 @@ class MenuActionsMixin:
         self._act_files = QAction("Выбрать файлы…", self)
         act_files = self._act_files
         act_files.setShortcut(QKeySequence.StandardKey.Open)
-        act_files.setStatusTip("Добавить аудио- или видеофайлы в очередь")
+        self._bilingual(act_files.setStatusTip, "Добавить аудио- или видеофайлы в очередь", "Add audio or video files to the queue")
         act_files.triggered.connect(self._select_files)
         file_menu.addAction(act_files)
 
         self._act_folder = QAction("Выбрать папку с файлами…", self)
         act_folder = self._act_folder
-        act_folder.setStatusTip("Добавить все медиафайлы из папки и подпапок")
+        self._bilingual(act_folder.setStatusTip, "Добавить все медиафайлы из папки и подпапок", "Add all media files from the folder and subfolders")
         act_folder.triggered.connect(self._select_files_folder)
         file_menu.addAction(act_folder)
 
         self._act_out = QAction("Папка сохранения…", self)
         act_out = self._act_out
-        act_out.setStatusTip("Выбрать папку для результатов транскрибации")
+        self._bilingual(act_out.setStatusTip, "Выбрать папку для результатов транскрибации", "Choose the folder for transcription results")
         act_out.triggered.connect(self._select_output_folder)
         file_menu.addAction(act_out)
 
         file_menu.addSeparator()
         self._act_open_res = QAction("Открыть папку с результатами", self)
         act_open_res = self._act_open_res
-        act_open_res.setStatusTip("Открыть папку с готовыми файлами")
+        self._bilingual(act_open_res.setStatusTip, "Открыть папку с готовыми файлами", "Open the folder with finished files")
         act_open_res.triggered.connect(self._open_results_folder)
         file_menu.addAction(act_open_res)
 
@@ -56,37 +56,37 @@ class MenuActionsMixin:
         view_menu = self._menu_view
         self._act_theme = QAction("Переключить тему", self)
         self._act_theme.setShortcut(QKeySequence("Ctrl+T"))
-        self._act_theme.setStatusTip("Светлая / тёмная тема оформления")
+        self._bilingual(self._act_theme.setStatusTip, "Светлая / тёмная тема оформления", "Light / dark theme")
         self._act_theme.triggered.connect(self._toggle_theme)
         view_menu.addAction(self._act_theme)
 
         self._act_accent = QAction("Акцентный цвет…", self)
-        self._act_accent.setStatusTip("Выбрать акцентный цвет интерфейса")
+        self._bilingual(self._act_accent.setStatusTip, "Выбрать акцентный цвет интерфейса", "Choose the interface accent color")
         self._act_accent.triggered.connect(self._choose_accent_color)
         view_menu.addAction(self._act_accent)
 
         self._act_accent_reset = QAction("Сбросить акцентный цвет", self)
-        self._act_accent_reset.setStatusTip("Вернуть стандартный акцентный цвет")
+        self._bilingual(self._act_accent_reset.setStatusTip, "Вернуть стандартный акцентный цвет", "Restore the default accent color")
         self._act_accent_reset.triggered.connect(self._reset_accent_color)
         view_menu.addAction(self._act_accent_reset)
 
         self._menu_settings = menubar.addMenu("Настройки")
         settings_menu = self._menu_settings
         self._act_asr_model = QAction("Модель распознавания…", self)
-        self._act_asr_model.setStatusTip("Выбрать модель GigaAM для следующей обработки")
+        self._bilingual(self._act_asr_model.setStatusTip, "Выбрать модель GigaAM для следующей обработки", "Choose the GigaAM model for the next run")
         self._act_asr_model.triggered.connect(self._select_asr_model)
         settings_menu.addAction(self._act_asr_model)
 
         self._act_asr_backend = QAction("Движок распознавания…", self)
         act_asr_backend = self._act_asr_backend
-        act_asr_backend.setStatusTip("Выбрать backend для распознавания речи")
+        self._bilingual(act_asr_backend.setStatusTip, "Выбрать backend для распознавания речи", "Choose the speech recognition backend")
         act_asr_backend.triggered.connect(self._select_asr_backend)
         settings_menu.addAction(act_asr_backend)
 
         settings_menu.addSeparator()
         self._act_device = QAction("Устройство (CPU / GPU)…", self)
         act_device = self._act_device
-        act_device.setStatusTip("Выбрать CPU или видеокарту NVIDIA для распознавания")
+        self._bilingual(act_device.setStatusTip, "Выбрать CPU или видеокарту NVIDIA для распознавания", "Choose CPU or an NVIDIA GPU for recognition")
         act_device.triggered.connect(self._change_device)
         settings_menu.addAction(act_device)
 
@@ -99,7 +99,7 @@ class MenuActionsMixin:
         settings_menu.addSeparator()
         self._act_llm = QAction("LLM API…", self)
         act_llm = self._act_llm
-        act_llm.setStatusTip("Настроить API URL, ключ, модель и папку результатов LLM")
+        self._bilingual(act_llm.setStatusTip, "Настроить API URL, ключ, модель и папку результатов LLM", "Configure the LLM API URL, key, model and results folder")
         act_llm.triggered.connect(self._open_llm_settings_dialog)
         settings_menu.addAction(act_llm)
 
@@ -231,7 +231,6 @@ class MenuActionsMixin:
         self._act_accent_reset.setText("Сбросить акцентный цвет" if is_ru else "Reset accent color")
         if hasattr(self, "_act_asr_model"):
             self._act_asr_model.setText("Модель распознавания…" if is_ru else "Recognition model...")
-            self._act_asr_model.setStatusTip("Выбрать модель GigaAM" if is_ru else "Select the GigaAM model")
         self._act_asr_backend.setText("Движок распознавания…" if is_ru else "Recognition engine...")
         self._act_device.setText("Устройство (CPU / GPU)…" if is_ru else "Device (CPU / GPU)…")
         self._act_llm.setText("LLM API…")

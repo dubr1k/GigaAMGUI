@@ -42,7 +42,8 @@ class ApiSurfaceMixin:
         layout.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
         layout.setSpacing(self._px(10))
 
-        heading = QLabel(self._t("API", "API"))
+        heading = QLabel()
+        self._bilingual(heading.setText, "API", "API")
         heading.setObjectName("support_heading")
         heading.setFont(self._font(18))
         layout.addWidget(heading)
@@ -52,7 +53,8 @@ class ApiSurfaceMixin:
         status_layout = QHBoxLayout(status_card)
         status_layout.setContentsMargins(self._px(12), self._px(9), self._px(12), self._px(9))
         status_layout.setSpacing(self._px(8))
-        status_title = QLabel(self._t("Статус API", "API status"))
+        status_title = QLabel()
+        self._bilingual(status_title.setText, "Статус API", "API status")
         status_title.setObjectName("api_status_title")
         status_title.setFont(self._font(10))
         status_layout.addWidget(status_title)
@@ -68,15 +70,18 @@ class ApiSurfaceMixin:
         self.api_endpoint_input.editingFinished.connect(self._save_api_base_url)
         status_layout.addWidget(self.api_endpoint_input, 1)
 
-        refresh = QPushButton(self._t("Проверить", "Refresh"))
+        refresh = QPushButton()
+        self._bilingual(refresh.setText, "Проверить", "Refresh")
         refresh.setObjectName("api_action_button")
         refresh.clicked.connect(self._refresh_api_status)
         status_layout.addWidget(refresh)
-        copy_endpoint = QPushButton(self._t("Скопировать", "Copy"))
+        copy_endpoint = QPushButton()
+        self._bilingual(copy_endpoint.setText, "Скопировать", "Copy")
         copy_endpoint.setObjectName("api_action_button")
         copy_endpoint.clicked.connect(self._copy_api_endpoint)
         status_layout.addWidget(copy_endpoint)
-        self.api_docs_button = QPushButton(self._t("Открыть документацию", "Open documentation"))
+        self.api_docs_button = QPushButton()
+        self._bilingual(self.api_docs_button.setText, "Открыть документацию", "Open documentation")
         self.api_docs_button.setObjectName("api_primary_action")
         self.api_docs_button.clicked.connect(self._open_api_documentation)
         status_layout.addWidget(self.api_docs_button)
@@ -101,12 +106,14 @@ class ApiSurfaceMixin:
         layout.setSpacing(self._px(8))
 
         title_row = QHBoxLayout()
-        title = QLabel(self._t("Примеры запросов", "Request examples"))
+        title = QLabel()
+        self._bilingual(title.setText, "Примеры запросов", "Request examples")
         title.setObjectName("api_panel_title")
         title.setFont(self._font(11))
         title_row.addWidget(title)
         title_row.addStretch()
-        copy_button = QPushButton(self._t("Копировать", "Copy"))
+        copy_button = QPushButton()
+        self._bilingual(copy_button.setText, "Копировать", "Copy")
         copy_button.setObjectName("api_action_button")
         copy_button.clicked.connect(self._copy_active_api_example)
         title_row.addWidget(copy_button)
@@ -129,7 +136,7 @@ class ApiSurfaceMixin:
         layout.addWidget(self.api_code_tabs, 1)
         return panel
 
-    def _api_documentation_section(self, title: str, body: str, expanded: bool = False) -> QWidget:
+    def _api_documentation_section(self, title: tuple[str, str], body: tuple[str, str], expanded: bool = False) -> QWidget:
         section = QFrame()
         section.setObjectName("api_doc_section")
         layout = QVBoxLayout(section)
@@ -137,13 +144,14 @@ class ApiSurfaceMixin:
         layout.setSpacing(self._px(5))
         toggle = QToolButton()
         toggle.setObjectName("api_doc_toggle")
-        toggle.setText(title)
+        self._bilingual(toggle.setText, *title)
         toggle.setCheckable(True)
         toggle.setChecked(expanded)
         toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
         layout.addWidget(toggle)
-        content = QLabel(body)
+        content = QLabel()
+        self._bilingual(content.setText, *body)
         content.setObjectName("api_doc_body")
         content.setWordWrap(True)
         content.setTextFormat(Qt.TextFormat.RichText)
@@ -165,13 +173,14 @@ class ApiSurfaceMixin:
         layout.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
         layout.setSpacing(self._px(7))
 
-        title = QLabel(self._t("Документация", "Documentation"))
+        title = QLabel()
+        self._bilingual(title.setText, "Документация", "Documentation")
         title.setObjectName("api_panel_title")
         title.setFont(self._font(11))
         layout.addWidget(title)
         layout.addWidget(self._api_documentation_section(
-            self._t("Быстрый старт", "Quick start"),
-            self._t(
+            ("Быстрый старт", "Quick start"),
+            (
                 "Запустите отдельный API-сервис командой <code>python api.py</code>. "
                 "Передавайте ключ в заголовке <code>Authorization: Bearer &lt;ключ&gt;</code>.",
                 "Start the separate API service with <code>python api.py</code>. "
@@ -180,8 +189,8 @@ class ApiSurfaceMixin:
             expanded=True,
         ))
         layout.addWidget(self._api_documentation_section(
-            self._t("Эндпоинты", "Endpoints"),
-            self._t(
+            ("Эндпоинты", "Endpoints"),
+            (
                 "<code>POST /v1/audio/transcriptions</code> — распознать файл (multipart: file, model, response_format).<br>"
                 "<code>GET /v1/models</code> — доступные модели.<br>"
                 "<code>GET /health</code> — состояние сервера.<br>"
@@ -195,8 +204,8 @@ class ApiSurfaceMixin:
             ),
         ))
         layout.addWidget(self._api_documentation_section(
-            self._t("Параметры и ответы", "Parameters and responses"),
-            self._t(
+            ("Параметры и ответы", "Parameters and responses"),
+            (
                 "Загрузка принимает <code>file</code> и <code>model</code>; необязательные параметры: "
                 "<code>response_format</code>, <code>stream</code>, <code>timestamp_granularities[]</code>, "
                 "<code>diarize</code>, <code>diarization_backend</code>, <code>num_speakers</code>, "
@@ -281,8 +290,8 @@ class ApiSurfaceMixin:
         """Проверить /health в фоне: запрос к недоступному адресу — это таймаут,
         и раньше он шёл в Qt-потоке при построении окна и каждой правке адреса."""
         base_url = self._api_base_url()
-        self.api_status_label.setText(self._t("… Проверка", "… Checking"))
-        self.api_docs_button.setEnabled(getattr(self, "_api_available", False))
+        self._api_available = None
+        self._render_api_status()
         signals = self.signals
 
         def probe():
@@ -298,16 +307,29 @@ class ApiSurfaceMixin:
         if base_url != self._api_base_url():
             return  # ответ на прежний адрес: уже идёт проверка нового
         self._api_available = available
-        self.api_status_label.setText(
-            self._t("● Запущен", "● Running") if available else self._t("○ Остановлен", "○ Stopped")
-        )
+        self._render_api_status()
+
+    def _render_api_status(self) -> None:
+        """Статус сервиса на текущем языке: None — проверка ещё идёт."""
+        available = getattr(self, "_api_available", None)
+        if available is None:
+            self.api_status_label.setText(self._t("… Проверка", "… Checking"))
+        else:
+            self.api_status_label.setText(
+                self._t("● Запущен", "● Running") if available else self._t("○ Остановлен", "○ Stopped")
+            )
         self.api_status_label.setStyleSheet(
             "color: #22A06B;" if available else "color: #667085;"
         )
-        self.api_docs_button.setEnabled(available)
+        self.api_docs_button.setEnabled(bool(available))
         self.api_docs_button.setToolTip(
             "" if available else self._t("Документация доступна после запуска API-сервиса.", "Documentation is available after the API service starts.")
         )
+
+    def _retranslate_api_tab(self, _is_ru: bool) -> None:
+        """Вкладка API: статичные подписи переводит _bilingual, здесь — статус."""
+        if hasattr(self, "api_status_label"):
+            self._render_api_status()
 
     def _copy_api_endpoint(self) -> None:
         clipboard = QApplication.clipboard()

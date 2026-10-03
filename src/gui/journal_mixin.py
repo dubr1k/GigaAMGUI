@@ -305,6 +305,8 @@ class JournalMixin:
         """Вкладка «Журнал»."""
         if not hasattr(self, "btn_log_copy"):
             return
+        # Заголовки, фильтры, колонки и статусы строк таблицы.
+        self._refresh_journal_labels()
         self.btn_log_copy.setText("Копировать" if is_ru else "Copy")
         self.btn_log_copy.setToolTip("Скопировать весь журнал в буфер обмена" if is_ru else "Copy the entire log to the clipboard")
         self.btn_log_save.setText("Сохранить…" if is_ru else "Save…")

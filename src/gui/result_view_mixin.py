@@ -41,7 +41,7 @@ class ResultViewMixin:
         result_head.setSpacing(self._px(8))
         result_title_col = QVBoxLayout()
         result_title_col.setSpacing(0)
-        self.result_title = QLabel("Результат обработки")
+        self.result_title = QLabel()
         self.result_title.setObjectName("section_title")
         result_title_col.addWidget(self.result_title)
         self.result_meta = QLabel("")
@@ -53,7 +53,8 @@ class ResultViewMixin:
         self.result_file_picker.setMinimumWidth(self._px(170))
         self.result_file_picker.currentIndexChanged.connect(self._select_processing_result)
         result_head.addWidget(self.result_file_picker)
-        self.btn_back_to_processing = QPushButton("К обработке")
+        self.btn_back_to_processing = QPushButton()
+        self._bilingual(self.btn_back_to_processing.setText, "К обработке", "Back to processing")
         self.btn_back_to_processing.setObjectName("secondary_button")
         self.btn_back_to_processing.clicked.connect(lambda: self.processing_stack.setCurrentWidget(self._processing_start_page))
         result_head.addWidget(self.btn_back_to_processing)
@@ -122,7 +123,8 @@ class ResultViewMixin:
         self.result_transcript_layout.setContentsMargins(self._px(8), self._px(8), self._px(8), self._px(6))
         self.result_transcript_layout.setSpacing(self._px(8))
         self.result_transcript_layout.addStretch()
-        self.result_tabs.addTab(self.result_transcript, "Текст")
+        self.result_tabs.addTab(self.result_transcript, "")
+        self._bilingual(lambda text: self.result_tabs.setTabText(0, text), "Текст", "Text")
         self.result_srt = QTextEdit()
         self.result_srt.setObjectName("result_document")
         self.result_srt.setReadOnly(True)
@@ -130,11 +132,13 @@ class ResultViewMixin:
         self.result_diarization = QTextEdit()
         self.result_diarization.setObjectName("result_document")
         self.result_diarization.setReadOnly(True)
-        self.result_tabs.addTab(self.result_diarization, "Диар.")
+        self.result_tabs.addTab(self.result_diarization, "")
+        self._bilingual(lambda text: self.result_tabs.setTabText(2, text), "Диар.", "Diar.")
         self.result_summary = QTextEdit()
         self.result_summary.setObjectName("result_document")
         self.result_summary.setReadOnly(True)
-        self.result_tabs.addTab(self.result_summary, "Итог")
+        self.result_tabs.addTab(self.result_summary, "")
+        self._bilingual(lambda text: self.result_tabs.setTabText(3, text), "Итог", "Summary")
         self.result_json = QTextEdit()
         self.result_json.setObjectName("result_document")
         self.result_json.setReadOnly(True)
@@ -149,23 +153,32 @@ class ResultViewMixin:
         rail_layout = QVBoxLayout(result_rail)
         rail_layout.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
         rail_layout.setSpacing(self._px(7))
-        rail_actions_title = QLabel("Действия")
+        rail_actions_title = QLabel()
+        self._bilingual(rail_actions_title.setText, "Действия", "Actions")
         rail_actions_title.setObjectName("section_title")
         rail_layout.addWidget(rail_actions_title)
         self.result_actions_layout = QVBoxLayout()
         self.result_actions_layout.setSpacing(self._px(2))
         rail_layout.addLayout(self.result_actions_layout)
-        rail_topics_title = QLabel("Ключевые темы")
+        rail_topics_title = QLabel()
+        self._bilingual(rail_topics_title.setText, "Ключевые темы", "Key topics")
         rail_topics_title.setObjectName("section_title")
         rail_layout.addWidget(rail_topics_title)
-        self.result_topics = QLabel("Появятся после LLM-обработки результата.")
+        self.result_topics = QLabel()
+        self._bilingual(
+            self.result_topics.setText,
+            "Ключевые темы появятся после LLM-обработки результата.",
+            "Key topics appear after LLM processing of this result.",
+        )
         self.result_topics.setObjectName("muted_label")
         self.result_topics.setWordWrap(True)
         rail_layout.addWidget(self.result_topics)
-        rail_summary_title = QLabel("Краткое содержание")
+        rail_summary_title = QLabel()
+        self._bilingual(rail_summary_title.setText, "Краткое содержание", "Summary")
         rail_summary_title.setObjectName("section_title")
         rail_layout.addWidget(rail_summary_title)
-        self.result_summary_rail = QLabel("Не создавалось автоматически.")
+        self.result_summary_rail = QLabel()
+        self._bilingual(self.result_summary_rail.setText, "Не создавалось автоматически.", "Not generated automatically.")
         self.result_summary_rail.setObjectName("muted_label")
         self.result_summary_rail.setWordWrap(True)
         rail_layout.addWidget(self.result_summary_rail)
@@ -180,9 +193,10 @@ class ResultViewMixin:
 
     def _format_result_size(self, size: int) -> str:
         amount = float(size or 0)
-        for unit in ("Б", "КБ", "МБ", "ГБ"):
-            if amount < 1024 or unit == "ГБ":
-                return f"{amount:.0f} {unit}" if unit == "Б" else f"{amount:.1f} {unit}"
+        units = self._t("Б КБ МБ ГБ", "B KB MB GB").split()
+        for unit in units:
+            if amount < 1024 or unit == units[-1]:
+                return f"{amount:.0f} {unit}" if unit == units[0] else f"{amount:.1f} {unit}"
             amount /= 1024
         return ""
 
@@ -251,7 +265,6 @@ class ResultViewMixin:
 
     def _populate_processing_result(self, record: dict):
         source_path = record["file_path"]
-        saved_files = [path for path in record.get("saved_files", []) if os.path.isfile(path)]
         duration = float(record.get("media_duration") or 0)
         self._active_processing_result = record
         self.result_title.setText(os.path.basename(source_path))
@@ -269,7 +282,11 @@ class ResultViewMixin:
             self._result_player.setSource(QUrl.fromLocalFile(source_path))
             self._result_audio_output.setVolume(self.result_volume.value() / 100)
             self.result_player_status.setText("")
+        self._populate_result_documents(record)
 
+    def _populate_result_documents(self, record: dict) -> None:
+        """Текст, SRT, диаризация, JSON и действия; без плеера — можно повторять при смене языка."""
+        saved_files = [path for path in record.get("saved_files", []) if os.path.isfile(path)]
         plain_text = next((path for path in saved_files if path.lower().endswith(".txt") and "_timecodes" not in path and "_diarize" not in path), None)
         timed_text = next((path for path in saved_files if path.lower().endswith("_timecodes.txt")), None)
         diarized_text = next((path for path in saved_files if "_diarize" in os.path.basename(path).lower() and path.lower().endswith(".txt")), None)
@@ -283,8 +300,25 @@ class ResultViewMixin:
         self.result_summary.setPlainText(self._t("Краткое содержание не создавалось автоматически. Отправьте готовый текст на вкладку LLM, чтобы создать его.", "No summary was generated automatically. Send the completed text to the LLM tab to create one."))
         self.result_json.setPlainText(json.dumps(record, ensure_ascii=False, indent=2))
         self._populate_result_actions(saved_files)
-        self.result_topics.setText(self._t("Ключевые темы появятся после LLM-обработки результата.", "Key topics appear after LLM processing of this result."))
-        self.result_summary_rail.setText(self._t("Не создавалось автоматически.", "Not generated automatically."))
+
+    def _retranslate_result_page(self, _is_ru: bool) -> None:
+        """Страница результата: статичные подписи — через _bilingual, здесь — данные."""
+        if not hasattr(self, "result_title"):
+            return
+        record = getattr(self, "_active_processing_result", None)
+        if record is None:
+            self.result_title.setText(self._t("Результат обработки", "Processing result"))
+            return
+        self._populate_result_documents(record)
+        duration = float(record.get("media_duration") or 0)
+        source_path = record["file_path"]
+        self.result_meta.setText(" · ".join(part for part in (
+            self._format_result_time(duration) if duration else "",
+            self._format_result_size(record.get("file_size", 0)),
+            os.path.splitext(source_path)[1].removeprefix(".").upper(),
+        ) if part))
+        if getattr(self, "_result_player", True) is None:
+            self.result_player_status.setText(self._t("Воспроизведение недоступно в этой сборке.", "Playback is unavailable in this build."))
 
     @classmethod
     def _clear_layout(cls, layout) -> None:

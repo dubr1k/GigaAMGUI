@@ -23,6 +23,7 @@ from ..live.types import (
     LiveSettings,
 )
 from .live_transcript import LiveTranscriptPresenter
+from .live_ui_mixin import LIVE_SAVED_PREFIX, LIVE_STATE_LABELS
 
 
 class LiveMixin:
@@ -499,16 +500,7 @@ class LiveMixin:
             self.signals.live_event.emit(value)
 
     def _update_live_status(self, status: LiveStatus) -> None:
-        labels = {
-            CaptureState.IDLE: self._t("Ожидание", "Idle"),
-            CaptureState.STARTING: self._t("Запуск", "Starting"),
-            CaptureState.RECORDING: self._t("Идёт запись", "Recording"),
-            CaptureState.PAUSED: self._t("На паузе", "Paused"),
-            CaptureState.STOPPING: self._t("Остановка", "Stopping"),
-            CaptureState.STOPPED: self._t("Остановлено", "Stopped"),
-            CaptureState.FAILED: self._t("Ошибка", "Failed"),
-        }
-        self.lbl_live_status.setText(labels[status.state])
+        self.lbl_live_status.setText(self._t(*LIVE_STATE_LABELS[status.state]))
         self._update_live_control_state(status.state)
 
     def _on_live_finished(self, result) -> None:
@@ -519,7 +511,7 @@ class LiveMixin:
         self._live_conversation_id = None
         self._show_live_session_folder(result.session_dir)
         self.lbl_live_status.setText(
-            self._t("Сохранено: ", "Saved: ") + Path(result.session_dir).name
+            self._t(*LIVE_SAVED_PREFIX) + Path(result.session_dir).name
         )
         self.lbl_live_status.setToolTip(str(result.session_dir))
         self._update_live_control_state(CaptureState.STOPPED)

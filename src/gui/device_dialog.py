@@ -26,9 +26,19 @@ from PyQt6.QtWidgets import (
 
 from ..utils import runtime_manager as rm
 
+# Язык диалогов без родительского окна: на старте, до главного окна, лаунчер
+# передаёт сюда сохранённый язык (set_default_language), иначе они всегда были бы
+# на русском.
+_default_language = "ru"
+
+
+def set_default_language(language: str) -> None:
+    global _default_language
+    _default_language = "en" if language == "en" else "ru"
+
 
 def _lang(parent=None) -> str:
-    return getattr(parent, "_lang", "ru") if parent is not None else "ru"
+    return getattr(parent, "_lang", _default_language) if parent is not None else _default_language
 
 
 def _t(parent, ru: str, en: str) -> str:

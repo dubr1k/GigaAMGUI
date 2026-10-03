@@ -40,6 +40,33 @@ class I18nMixin:
     def _t(self, ru: str, en: str) -> str:
         return ru if self._lang == "ru" else en
 
+    def _bilingual(self, apply, ru: str, en: str) -> None:
+        """Поставить подпись сейчас и повторять при каждой смене языка.
+
+        apply — сеттер постоянного виджета (label.setText, button.setToolTip,
+        lambda text: combo.setItemText(0, text)…). Для статичных подписей
+        страниц это избавляет от отдельной строки в _retranslate_*.
+        """
+        if not hasattr(self, "_bilingual_texts"):
+            self._bilingual_texts = []
+        self._bilingual_texts.append((apply, ru, en))
+        apply(self._t(ru, en))
+
+    def _retranslate_known(self, apply, current: str, pairs) -> None:
+        """Перевести меняющуюся подпись, только если в ней сейчас один из pairs.
+
+        Статус идущей записи или текст ошибки по таблице не переводятся и
+        остаются как есть до следующего обновления.
+        """
+        for ru, en in pairs:
+            if current in (ru, en):
+                apply(self._t(ru, en))
+                return
+
+    def _retranslate_bilingual(self, is_ru: bool) -> None:
+        for apply, ru, en in getattr(self, "_bilingual_texts", []):
+            apply(ru if is_ru else en)
+
     def _normalize_llm_provider(self, provider: str) -> str:
         return "Other" if provider in {"Другое", "Other"} else provider
 
@@ -52,6 +79,7 @@ class I18nMixin:
         is_ru = self._lang == "ru"
         _install_qt_translator(QApplication.instance(), self._lang)
         for retranslate in (
+            self._retranslate_bilingual,
             self._retranslate_shell,
             self._retranslate_processing_page,
             self._retranslate_processing_options,
@@ -59,6 +87,8 @@ class I18nMixin:
             self._retranslate_journal,
             self._retranslate_llm_settings_dialog,
             self._retranslate_live_tab,
+            self._retranslate_result_page,
+            self._retranslate_api_tab,
             self._retranslate_menu,
         ):
             retranslate(is_ru)

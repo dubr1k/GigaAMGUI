@@ -37,6 +37,39 @@ def _display_path(path: str | Path) -> str:
         return str(path)
 
 
+# Подписи, которые меняются по ходу сессии. При смене языка их переводит
+# _retranslate_live_tab — только если сейчас показан один из этих текстов.
+LIVE_READY_TEXT = ("Готово к записи", "Ready for live capture")
+LIVE_STATE_LABELS = {
+    CaptureState.IDLE: ("Ожидание", "Idle"),
+    CaptureState.STARTING: ("Запуск", "Starting"),
+    CaptureState.RECORDING: ("Идёт запись", "Recording"),
+    CaptureState.PAUSED: ("На паузе", "Paused"),
+    CaptureState.STOPPING: ("Остановка", "Stopping"),
+    CaptureState.STOPPED: ("Остановлено", "Stopped"),
+    CaptureState.FAILED: ("Ошибка", "Failed"),
+}
+LIVE_STATUS_TEXTS = (
+    LIVE_READY_TEXT,
+    *LIVE_STATE_LABELS.values(),
+    ("Завершение расшифровки…", "Finishing transcription…"),
+    (
+        "Загрузка модели распознавания… Запись начнётся, когда она будет готова.",
+        "Loading the recognition model… Recording starts once it is ready.",
+    ),
+    ("Ошибка остановки", "Stop failed"),
+    ("Выберите существующую папку сессий", "Select an existing session folder"),
+    ("Папка ещё не создана", "The folder does not exist yet"),
+)
+LIVE_SAVED_PREFIX = ("Сохранено: ", "Saved: ")
+LIVE_WAVEFORM_TEXTS = {
+    "idle": ("Аудиосигнал появится во время записи", "Audio signal appears during capture"),
+    "recording": ("Захват аудио", "Capturing audio"),
+    "paused": ("Запись на паузе", "Capture paused"),
+    "finished": ("Аудиосигнал завершён", "Audio capture complete"),
+}
+
+
 class _GrowingTextEdit(QTextEdit):
     """QTextEdit whose size hint is its minimum, so it stretches to fill the
     page but never forces a scroll bar on the 760×440 compact window."""
@@ -60,7 +93,8 @@ class LiveUiMixin:
         title = QLabel(self._t("Live", "Live"))
         title.setObjectName("page_title")
         title_block.addWidget(title)
-        subtitle = QLabel(self._t("Запись и расшифровка в реальном времени", "Live capture and transcription"))
+        subtitle = QLabel()
+        self._bilingual(subtitle.setText, "Запись и расшифровка в реальном времени", "Live capture and transcription")
         subtitle.setObjectName("page_subtitle")
         title_block.addWidget(subtitle)
         heading.addLayout(title_block)
@@ -184,7 +218,8 @@ class LiveUiMixin:
         capture_layout.setContentsMargins(0, 0, 0, 0)
         capture_layout.setSpacing(self._px(6))
 
-        recorder = QGroupBox(self._t("Запись", "Recording"))
+        recorder = QGroupBox()
+        self._bilingual(recorder.setTitle, "Запись", "Recording")
         recorder.setObjectName("live_recorder_card")
         recorder_layout = QVBoxLayout(recorder)
         recorder_layout.setContentsMargins(self._px(10), self._px(7), self._px(10), self._px(8))
@@ -199,16 +234,24 @@ class LiveUiMixin:
         self.lbl_live_timer.setObjectName("live_timer_display")
         self.lbl_live_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_timer.setFixedHeight(self._px(22))
-        self.lbl_live_timer.setToolTip(self._t("Таймер отражает длительность активной записи.", "The timer reflects active capture duration."))
+        self._bilingual(
+            self.lbl_live_timer.setToolTip,
+            "Таймер отражает длительность активной записи.",
+            "The timer reflects active capture duration.",
+        )
         recorder_layout.addWidget(self.lbl_live_timer)
-        self.lbl_live_waveform = QLabel(self._t("Аудиосигнал появится во время записи", "Audio signal appears during capture"))
+        self.lbl_live_waveform = QLabel(self._t(*LIVE_WAVEFORM_TEXTS["idle"]))
         self.lbl_live_waveform.setObjectName("live_waveform_display")
         self.lbl_live_waveform.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_waveform.setWordWrap(True)
         self.lbl_live_waveform.setMaximumHeight(self._px(40))
-        self.lbl_live_waveform.setToolTip(self._t("Индикатор аудиосигнала ожидает активную сессию.", "The audio signal indicator is waiting for an active session."))
+        self._bilingual(
+            self.lbl_live_waveform.setToolTip,
+            "Индикатор аудиосигнала ожидает активную сессию.",
+            "The audio signal indicator is waiting for an active session.",
+        )
         recorder_layout.addWidget(self.lbl_live_waveform)
-        self.lbl_live_status = QLabel(self._t("Готово к записи", "Ready for live capture"))
+        self.lbl_live_status = QLabel(self._t(*LIVE_READY_TEXT))
         self.lbl_live_status.setObjectName("live_status_display")
         self.lbl_live_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_status.setWordWrap(True)
@@ -250,7 +293,12 @@ class LiveUiMixin:
         transcript_layout = QVBoxLayout(transcript_panel)
         transcript_layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(8))
         transcript_layout.setSpacing(self._px(3))
-        transcript_hint = QLabel(self._t("Таймкоды и мягкие метки спикеров появятся по мере распознавания.", "Timecodes and restrained speaker labels appear as speech is recognized."))
+        transcript_hint = QLabel()
+        self._bilingual(
+            transcript_hint.setText,
+            "Таймкоды и мягкие метки спикеров появятся по мере распознавания.",
+            "Timecodes and restrained speaker labels appear as speech is recognized.",
+        )
         transcript_hint.setObjectName("page_subtitle")
         transcript_hint.setWordWrap(True)
         transcript_hint.setMaximumHeight(self._px(28))
@@ -293,10 +341,11 @@ class LiveUiMixin:
         # Sortformer и сообщала, что оценки нет. Пункт виден, но не выбирается.
         estimate_item = self.combo_live_diarization.model().item(self.combo_live_diarization.findData("live_estimate"))
         estimate_item.setEnabled(False)
-        estimate_item.setToolTip(self._t(
+        self._bilingual(
+            estimate_item.setToolTip,
             "Пока не поддерживается: используйте «После остановки».",
             "Not supported yet: use After stop.",
-        ))
+        )
         self.combo_live_diarization.addItem(self._t("После остановки", "After stop"), "after_stop")
         self.combo_live_diarization.setToolTip(
             self._t(
@@ -404,13 +453,13 @@ class LiveUiMixin:
                 self._live_timer_clock.start()
                 self._live_timer_active = True
                 self._live_timer_ticker.start()
-            self.lbl_live_waveform.setText(self._t("Захват аудио", "Capturing audio"))
+            self.lbl_live_waveform.setText(self._t(*LIVE_WAVEFORM_TEXTS["recording"]))
         elif state == "paused":
             self._pause_live_recorder_timer()
-            self.lbl_live_waveform.setText(self._t("Запись на паузе", "Capture paused"))
+            self.lbl_live_waveform.setText(self._t(*LIVE_WAVEFORM_TEXTS["paused"]))
         elif state in {"stopped", "failed"}:
             self._pause_live_recorder_timer()
-            self.lbl_live_waveform.setText(self._t("Аудиосигнал завершён", "Audio capture complete"))
+            self.lbl_live_waveform.setText(self._t(*LIVE_WAVEFORM_TEXTS["finished"]))
 
     def _pause_live_recorder_timer(self) -> None:
         if self._live_timer_active:
@@ -570,3 +619,14 @@ class LiveUiMixin:
         self._update_live_output_folder_label(self.live_output_dir.text())
         self._update_live_export_controls()
         self._update_live_control_state()
+        self._retranslate_known(self.lbl_live_status.setText, self.lbl_live_status.text(), LIVE_STATUS_TEXTS)
+        status = self.lbl_live_status.text()
+        for prefix in LIVE_SAVED_PREFIX:
+            if status.startswith(prefix):
+                self.lbl_live_status.setText(self._t(*LIVE_SAVED_PREFIX) + status[len(prefix):])
+                break
+        self._retranslate_known(
+            self.lbl_live_waveform.setText, self.lbl_live_waveform.text(), LIVE_WAVEFORM_TEXTS.values(),
+        )
+        if self.live_overlay is not None:
+            self.live_overlay.set_language(self._lang)

@@ -74,7 +74,7 @@ class LlmToolsMixin:
             path_entry = QLineEdit()
             path_entry.setObjectName("llm_tool_path")
             path_entry.setPlaceholderText(spec.binary)
-            path_entry.setToolTip("Пусто — искать автоматически (PATH + типичные каталоги установки)")
+            self._bilingual(path_entry.setToolTip, "Пусто — искать автоматически (PATH + типичные каталоги установки)", "Empty — find automatically (PATH + common install folders)")
             path_entry.editingFinished.connect(lambda name=spec.name: self._on_llm_tool_path_edited(name))
             setattr(self, f"entry_llm_{spec.settings_prefix}_path", path_entry)
             table.setCellWidget(row, 3, path_entry)
@@ -143,7 +143,10 @@ class LlmToolsMixin:
         if hasattr(self, "btn_llm_tools_rescan"):
             self.btn_llm_tools_rescan.setEnabled(True)
         if isinstance(statuses, Exception):
-            self.log(f"LLM: не удалось просканировать CLI-инструменты: {statuses}")
+            self.log(self._t(
+                f"LLM: не удалось просканировать CLI-инструменты: {statuses}",
+                f"LLM: could not scan the CLI tools: {statuses}",
+            ))
             return
         for status in statuses:
             self._llm_tool_statuses[status.provider] = status
