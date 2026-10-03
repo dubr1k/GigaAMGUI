@@ -544,7 +544,7 @@ def test_emit_never_writes_invalid_json_or_unencodable_text():
     progress = json.loads(lines[0], parse_constant=reject)
     assert progress["file_progress"] is None and progress["total_seconds"] is None
     assert progress["file"] == "/tmp/�.wav"
-    assert progress["stage"] == "/x"
+    assert progress["stage"] == str(Path("/x"))  # «\x» на Windows
     assert progress["nested"] == {"values": [None, 1.5]}
     assert json.loads(lines[1]) == {"type": "pong"}
 

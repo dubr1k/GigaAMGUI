@@ -23,7 +23,9 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="нужен node")
 
 
 def _scenario(name: str) -> dict:
-    proc = subprocess.run([NODE, str(HARNESS), str(STATIC), name], capture_output=True, text=True, timeout=60)
+    # node пишет UTF-8; text=True на Windows декодирует в кодировке системы (cp1252),
+    # а ошибка декодирования в потоке communicate оставляет stdout равным None.
+    proc = subprocess.run([NODE, str(HARNESS), str(STATIC), name], capture_output=True, encoding="utf-8", timeout=60)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
