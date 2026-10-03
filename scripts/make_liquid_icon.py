@@ -1,6 +1,6 @@
 """Generate the GigaAMLiquid app icon: the sidebar brand mark on a macOS-style tile.
 
-The mark is the three sound bars from `brandMark()` in main.swift (widths 6,
+The mark is the three sound bars from `brandMark()` in App/AppController.swift (widths 6,
 heights 30/46/24, pitch 12 in a 36-pt box), scaled onto a 1024×1024 rounded
 square with a soft blue-violet gradient and a glass highlight. Output:
 
