@@ -18,7 +18,7 @@ from ..core.model_preparation import (
     PreparationEvent,
     PreparationState,
 )
-from ..core.progress import ProgressEvent
+from ..core.progress import STAGE_LABELS, coerce_progress, stage_label
 from ..core.subtitles import SubtitleOptions
 from ..services import transcription_service
 from ..utils.output_naming import find_output_collisions
@@ -459,57 +459,25 @@ class ProcessingMixin:
             text = self._t(f"Отменено: {component}", f"Cancelled: {component}")
         self.log(text + detail)
 
-    _STAGE_NAMES = {
-        'preparing': ('Подготовка…', 'Preparing…'),
-        'conversion': ('Конвертация…', 'Converting…'),
-        'preprocessing': ('Анализ и подготовка аудио…', 'Analyzing and preparing audio…'),
-        'transcription': ('Распознавание речи…', 'Speech recognition…'),
-        'diarization': ('Диаризация…', 'Speaker diarization…'),
-        'export': ('Экспорт…', 'Exporting…'),
-        'finalizing': ('Завершение…', 'Finalizing…'),
-    }
-
     def _on_file_progress(self, event_or_stage, progress: float | None = None):
-        if isinstance(event_or_stage, ProgressEvent):
-            event = {
-                "stage": event_or_stage.stage,
-                "file_progress": event_or_stage.file_progress,
-                "stage_progress": event_or_stage.stage_progress,
-            }
-        elif isinstance(event_or_stage, dict):
-            event = event_or_stage
-        else:
-            event = {
-                "stage": event_or_stage,
-                "file_progress": float(progress or 0.0),
-                "stage_progress": None,
-            }
-
-        self.signals.stage_update.emit(event)
+        # Из потока обработки в Qt-поток уходит уже нормализованный словарь.
+        self.signals.stage_update.emit(coerce_progress(event_or_stage, progress).as_dict())
 
     def _on_stage_update(self, event, progress: float | None = None):
-        if isinstance(event, ProgressEvent):
-            stage = event.stage
-            file_progress = event.file_progress
-            stage_progress = event.stage_progress
-        elif isinstance(event, dict):
-            stage = event.get("stage")
-            file_progress = float(event.get("file_progress", 0.0) or 0.0)
-            stage_progress = event.get("stage_progress")
-        else:
-            stage = event
-            file_progress = float(progress or 0.0)
-            stage_progress = None
-
+        snapshot = coerce_progress(event, progress)
+        stage = snapshot.stage
+        stage_progress = snapshot.stage_progress
         if not stage:
             return
 
         if stage != self.current_stage:
-            self.current_stage = str(stage)
+            self.current_stage = stage
             self.current_stage_progress = 0.0 if stage_progress is None else stage_progress
             self._stage_start_time = time.time()
 
-        if file_progress < self.current_stage_file_progress:
+        # Без доли файла и при откате назад полоса файла стоит на месте.
+        file_progress = snapshot.file_progress
+        if file_progress is None or file_progress < self.current_stage_file_progress:
             file_progress = self.current_stage_file_progress
         self.current_stage_file_progress = file_progress
         self.current_stage_is_indeterminate = stage_progress is None
@@ -544,8 +512,9 @@ class ProcessingMixin:
         current_idx = min(files_done + 1, self.total_files)
         self.lbl_file_counter.setText(self._t(f"Файл {current_idx} / {self.total_files}", f"File {current_idx} / {self.total_files}"))
 
-        stage_pair = self._STAGE_NAMES.get(self.current_stage or '', ('Подготовка…', 'Preparing…'))
-        stage_name = stage_pair[0] if self._lang == 'ru' else stage_pair[1]
+        # Подписи стадий — общие с TUI и веб (STAGE_LABELS); незнакомая стадия — «Подготовка…».
+        stage = self.current_stage if self.current_stage in STAGE_LABELS["ru"] else "preparing"
+        stage_name = stage_label(stage, "ru" if self._lang == "ru" else "en")
         self.lbl_stage.setText(f"●  {stage_name}{percent_label}")
 
 
