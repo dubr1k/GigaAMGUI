@@ -124,6 +124,7 @@ public enum LogTranslation {
         (#"^(\d+) сек$"#, "$1 s"),
         (#"^Не удалось обработать (.+?): (.+)$"#, "Could not process $1: $2"),
         (#"^Остановка запрошена: закончим текущий файл и остановимся\.$"#, "Stop requested: finishing the current file, then stopping."),
+        (#"^Обработка отменена пользователем$"#, "Processing cancelled by the user"),
     ].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
 
     private static let groupReference = try! NSRegularExpression(pattern: #"\$(\d)"#)

@@ -17,6 +17,7 @@ from collections.abc import Callable, Hashable, Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from ...utils.cancellation import CancelCheck, raise_if_cancelled
 from ..progress import ProgressCallback
 from .chunking import AudioChunk, normalize_chunk_words, stitch_chunk
 from .types import TranscriptionSegment, TranscriptionWord
@@ -122,6 +123,7 @@ def assemble_segments(
     min_chunk_samples: int = 0,
     progress_callback: ProgressCallback | None = None,
     on_chunk_done: Callable[[int], None] | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> list[TranscriptionSegment]:
     """Распознать окна по порядку и собрать сегменты без повторов на стыках.
 
@@ -137,6 +139,8 @@ def assemble_segments(
     reported = 0.0
 
     for index, chunk in enumerate(chunks):
+        # Отмена между окнами: окно (до 30 с звука) декодируется секунды.
+        raise_if_cancelled(cancel_check)
         if chunk.decode_end_sample - chunk.decode_start_sample < min_chunk_samples:
             continue
 

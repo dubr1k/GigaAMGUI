@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from threading import Event, Thread
 
 from ..config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
+from .cancellation import CancelCheck, raise_if_cancelled
 
 # Таймауты для проб длительности (защита от зависания на битых файлах)
 _PROBE_TIMEOUT = 30       # ffprobe
@@ -165,6 +166,7 @@ def run_ffmpeg_with_progress(
     on_ratio: Callable[[float | None], None] | None = None,
     stall_timeout: float | None = None,
     on_stall: Callable[[], None] | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> FfmpegRun:
     """Запустить ffmpeg с ``-progress pipe:1`` и сторожем зависания.
 
@@ -173,7 +175,9 @@ def run_ffmpeg_with_progress(
     дольше ``stall_timeout``. Процесс останавливается в ``finally``: исключение
     из ``on_ratio`` раньше оставляло ffmpeg работать до 600-секундного
     watchdog. ``on_ratio`` получает монотонную долю 0..1 или один раз ``None``,
-    если длительность неизвестна. Ошибки запуска (нет бинаря) пробрасываются.
+    если длительность неизвестна. ``cancel_check`` проверяется на каждой строке
+    прогресса (ffmpeg пишет их ~2 раза в секунду): отмена останавливает процесс
+    и поднимает ProcessingCancelled. Ошибки запуска (нет бинаря) пробрасываются.
     """
     timeout = _CONVERSION_STALL_TIMEOUT if stall_timeout is None else stall_timeout
     process = subprocess.Popen(
@@ -234,6 +238,7 @@ def run_ffmpeg_with_progress(
         if process.stdout is not None:
             for raw_line in iter(process.stdout.readline, ""):
                 _bump()
+                raise_if_cancelled(cancel_check)
                 seconds = _progress_seconds(raw_line)
                 if seconds is None or duration <= 0:
                     if duration <= 0 and on_ratio is not None and not reported_unknown and "=" in raw_line:
@@ -364,6 +369,7 @@ class AudioConverter:
         output_dir: str,
         progress_callback: Callable[[float | None], None] | None = None,
         media_duration: float | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> str | None:
         """
         Конвертирует любой входной файл в 16kHz mono wav для модели
@@ -416,6 +422,7 @@ class AudioConverter:
                 command,
                 duration=duration,
                 on_ratio=progress_callback,
+                cancel_check=cancel_check,
                 on_stall=lambda: self.logger(
                     f"ОШИБКА: FFmpeg не подаёт признаков активности дольше "
                     f"{_CONVERSION_STALL_TIMEOUT}s — принудительно останавливаю (issue #20)."

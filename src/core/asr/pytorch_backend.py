@@ -218,10 +218,11 @@ class PyTorchBackend:
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
         logger: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptionSegment]:
         """Serialize access to the shared GigaAM and pyannote models."""
         with self._inference_lock, call_logger(self, logger):
-            return self._transcribe_longform_unlocked(audio_path, progress_callback)
+            return self._transcribe_longform_unlocked(audio_path, progress_callback, cancel_check)
 
     def transcribe_window(
         self,
@@ -260,6 +261,7 @@ class PyTorchBackend:
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptionSegment]:
         if self.model is None:
             raise RuntimeError("Модель не загружена")
@@ -387,6 +389,7 @@ class PyTorchBackend:
                     total_seconds=total_seconds,
                     min_chunk_samples=1600,
                     progress_callback=progress_callback,
+                    cancel_check=cancel_check,
                 )
         finally:
             self._empty_cache()

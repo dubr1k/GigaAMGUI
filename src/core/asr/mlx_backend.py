@@ -8,6 +8,7 @@ from collections.abc import Callable
 import numpy as np
 
 from ...config import ASR_SEGMENTATION_MODE, ASR_VAD_DEVICE
+from ...utils.cancellation import ProcessingCancelled
 from .chunking import (
     AudioChunk,
     plan_audio_chunks,
@@ -91,6 +92,7 @@ class MLXBackend:
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
         logger: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptionSegment]:
         if self.model is None:
             raise RuntimeError("MLX модель не загружена")
@@ -103,7 +105,10 @@ class MLXBackend:
                 raw_segments = self._transcribe_in_chunks(
                     audio_path,
                     progress_callback=progress_callback,
+                    cancel_check=cancel_check,
                 )
+            except ProcessingCancelled:
+                raise
             except Exception as exc:
                 raise RuntimeError(
                     f"MLX transcription failed: backend={self.name}, model={self.model_name}, repo={self.repo_id}: {type(exc).__name__}: {exc}"
@@ -423,6 +428,7 @@ class MLXBackend:
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[dict]:
         gm = self._gigaam_mlx
         if gm is None:
@@ -462,6 +468,7 @@ class MLXBackend:
             total_seconds=total_seconds,
             progress_callback=progress_callback,
             on_chunk_done=trim_cache,
+            cancel_check=cancel_check,
         )
         # Исторический формат MLX-цикла: start/end/text (+words).
         result_segments: list[dict] = []

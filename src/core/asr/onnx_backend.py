@@ -146,6 +146,7 @@ class OnnxBackend:
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
         logger: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptionSegment]:
         with self._inference_lock, call_logger(self, logger):
             observed_total: float | None = None
@@ -162,6 +163,7 @@ class OnnxBackend:
                 return self._transcribe_longform_unlocked(
                     audio_path,
                     progress_callback=tracked_callback,
+                    cancel_check=cancel_check,
                 )
             except Exception as exc:
                 if not self._retry_on_cpu_after_provider_failure(exc):
@@ -173,6 +175,7 @@ class OnnxBackend:
                 return self._transcribe_longform_unlocked(
                     audio_path,
                     progress_callback=tracked_callback,
+                    cancel_check=cancel_check,
                 )
 
     def transcribe_window(
@@ -279,6 +282,7 @@ class OnnxBackend:
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptionSegment]:
         if self.model is None:
             raise RuntimeError("Модель не загружена")
@@ -388,6 +392,7 @@ class OnnxBackend:
             # Окна короче 0.1 с не декодируем.
             min_chunk_samples=max(1, sample_rate // 10),
             progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
 
     def unload(self) -> None:

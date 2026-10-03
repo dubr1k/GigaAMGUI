@@ -31,6 +31,7 @@ MODULES = (
     "src.utils.diarization",
     "src.utils.audio_converter",
     "src.utils.llm_client",
+    "src.utils.cancellation",
     "src.core.processor",
     "src.core.model_loader",
     "src.core.export",

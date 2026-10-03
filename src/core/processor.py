@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from ..config import DIARIZATION_BACKEND
 from ..utils.audio_converter import AudioConverter
 from ..utils.audio_preprocessing import AudioPreprocessor, FFmpegAudioPreprocessingBackend
+from ..utils.cancellation import CancelCheck, ProcessingCancelled, raise_if_cancelled
 from ..utils.deepfilter_backend import DeepFilterNetBinaryBackend
 from ..utils.output_naming import output_filename
 from ..utils.time_formatter import TimeFormatter
@@ -267,7 +268,8 @@ class TranscriptionProcessor:
                      output_formats: list | None = None,
                      diarization_backend: str = DIARIZATION_BACKEND,
                      audio_preprocessing_mode: str = "off",
-                     subtitle_options: SubtitleOptions | None = None) -> dict:
+                     subtitle_options: SubtitleOptions | None = None,
+                     cancel_check: CancelCheck | None = None) -> dict:
         """
         Обрабатывает один файл
 
@@ -286,6 +288,8 @@ class TranscriptionProcessor:
             diarization_backend: backend диаризации (`onnx`, `pyannote` или `sortformer`)
             audio_preprocessing_mode: подготовка аудио (`off`, `auto`, `light` или `denoise`)
             subtitle_options: правила пофразной разбивки SRT/VTT
+            cancel_check: вызывается между стадиями, на строках прогресса ffmpeg
+                и между окнами ASR; True — прервать файл (result['cancelled'])
 
         Returns:
             dict: результаты обработки с ключами:
@@ -300,6 +304,7 @@ class TranscriptionProcessor:
                 - saved_files: list[str]
                 - export_errors: dict[str, str] — несохранённые форматы
                 - utterances: list (после распознавания)
+                - cancelled: bool — файл прерван через cancel_check
         """
         with _TempFiles(protected=filepath) as temp_files:
             return self._process_file(
@@ -315,6 +320,7 @@ class TranscriptionProcessor:
                 diarization_backend=diarization_backend,
                 audio_preprocessing_mode=audio_preprocessing_mode,
                 subtitle_options=subtitle_options,
+                cancel_check=cancel_check,
             )
 
     def _process_file(
@@ -332,6 +338,7 @@ class TranscriptionProcessor:
         diarization_backend: str,
         audio_preprocessing_mode: str,
         subtitle_options: SubtitleOptions | None,
+        cancel_check: CancelCheck | None = None,
     ) -> dict:
         file_start_time = time.time()
         # Используем оригинальное имя если передано, иначе берем из пути
@@ -364,6 +371,7 @@ class TranscriptionProcessor:
             # Причина неуспеха одной строкой для клиентов, которые не видят журнал
             # (web, MCP, OpenAI-совместимый API). None при success.
             'error': None,
+            'cancelled': False,
         }
 
         def fail(message: str) -> dict:
@@ -371,123 +379,146 @@ class TranscriptionProcessor:
             result['total_time'] = time.time() - file_start_time
             return result
 
-        self.logger(f"Файл {file_index+1} из {total_files}: {filename}")
-        self.logger(f"Длительность записи: {self.time_formatter.format_clock(media_duration)}")
-
-        # Папку результатов создаём до долгой обработки: иначе (новая папка в
-        # CLI) распознавание шло впустую и падало только на сохранении.
         try:
-            os.makedirs(output_dir, exist_ok=True)
-        except OSError as exc:
-            message = f"Не удалось создать папку для результатов {output_dir}: {exc}"
-            self.logger(message)
-            return fail(message)
+            self.logger(f"Файл {file_index+1} из {total_files}: {filename}")
+            self.logger(f"Длительность записи: {self.time_formatter.format_clock(media_duration)}")
 
-        from .diarization.names import normalize_diarization_backend
-
-        self._active_diarization_backend = normalize_diarization_backend(diarization_backend)
-        self._progress_plan = ProgressPlan(has_diarization=enable_diarization)
-        self._update_progress("preparing", 0.0, total_seconds=media_duration, processed_seconds=0.0)
-
-        temp_audio = self._convert(filepath, temp_files, media_duration, result)
-        if not temp_audio:
-            self.logger(f"Файл пропущен: {filename}")
-            return fail(
-                getattr(self.audio_converter, "last_error", None)
-                or "Не удалось подготовить звук: FFmpeg не создал WAV, подробности в журнале обработки"
-            )
-
-        asr_audio, diarization_audio = self._preprocess(
-            temp_audio,
-            temp_files,
-            audio_preprocessing_mode,
-            media_duration,
-            result,
-        )
-
-        transcription_start = time.time()
-        try:
+            # Папку результатов создаём до долгой обработки: иначе (новая папка в
+            # CLI) распознавание шло впустую и падало только на сохранении.
             try:
-                utterances = self._transcribe(asr_audio)
+                os.makedirs(output_dir, exist_ok=True)
+            except OSError as exc:
+                message = f"Не удалось создать папку для результатов {output_dir}: {exc}"
+                self.logger(message)
+                return fail(message)
+
+            from .diarization.names import normalize_diarization_backend
+
+            self._active_diarization_backend = normalize_diarization_backend(diarization_backend)
+            self._progress_plan = ProgressPlan(has_diarization=enable_diarization)
+            self._update_progress("preparing", 0.0, total_seconds=media_duration, processed_seconds=0.0)
+
+            raise_if_cancelled(cancel_check)
+            temp_audio = self._convert(filepath, temp_files, media_duration, result, cancel_check)
+            if not temp_audio:
+                self.logger(f"Файл пропущен: {filename}")
+                return fail(
+                    getattr(self.audio_converter, "last_error", None)
+                    or "Не удалось подготовить звук: FFmpeg не создал WAV, подробности в журнале обработки"
+                )
+
+            raise_if_cancelled(cancel_check)
+            asr_audio, diarization_audio = self._preprocess(
+                temp_audio,
+                temp_files,
+                audio_preprocessing_mode,
+                media_duration,
+                result,
+            )
+
+            transcription_start = time.time()
+            try:
+                try:
+                    utterances = self._transcribe(asr_audio, cancel_check)
+                except ProcessingCancelled:
+                    raise
+                except Exception as e:
+                    # Сбой VAD backend-ы обрабатывают сами (резервное разбиение),
+                    # поэтому ValueError здесь — не «ошибка детектора речи», а
+                    # настоящая ошибка распознавания. Подсказка про токен — только
+                    # когда исключение действительно о нём.
+                    error_msg = f"Ошибка при распознавании речи: {e}"
+                    self.logger(error_msg)
+                    if "HF_TOKEN" in str(e):
+                        self.logger("Проверьте токен HF_TOKEN в .env файле и убедитесь, что приняли условия доступа:")
+                        self.logger("https://huggingface.co/pyannote/segmentation-3.0")
+                    _module_logger.error("ASR failed for %s", filepath, exc_info=True)
+                    result['transcription_time'] = time.time() - transcription_start
+                    return fail(error_msg)
+
+                result['transcription_time'] = time.time() - transcription_start
+                self._update_progress('transcription', 1.0)
+                self.logger(f"Распознавание завершено: фрагментов текста — {len(utterances) if utterances else 0}")
+
+                raise_if_cancelled(cancel_check)
+                diarization = self._run_diarization(
+                    diarization_audio,
+                    utterances or [],
+                    requested=enable_diarization,
+                    num_speakers=num_speakers,
+                )
+                result['diarization']['applied'] = diarization.applied
+                result['diarization']['error'] = diarization.error
+                utterances = diarization.utterances
+
+                raise_if_cancelled(cancel_check)
+                full_text = self._summarize_transcript(utterances, filename)
+                # Реплики нужны API, который собирает ответ в памяти, не читая файлы,
+                # в том числе когда какой-то формат не удалось сохранить.
+                result['utterances'] = utterances
+
+                outcome = self._export(
+                    utterances,
+                    output_dir=output_dir,
+                    stem=name_without_ext,
+                    filename=filename,
+                    full_text=full_text,
+                    output_formats=output_formats,
+                    diarization=diarization,
+                    subtitle_options=subtitle_options,
+                )
+                result['saved_files'] = outcome.saved_files
+                result['export_errors'] = outcome.errors
+                if outcome.errors and not outcome.saved_files:
+                    return fail("Не удалось сохранить результаты: " + "; ".join(
+                        f"{fmt}: {reason}" for fmt, reason in outcome.errors.items()
+                    ))
+
+                # Проверка сохраненных данных
+                if not full_text.strip():
+                    self.logger("Внимание: распознанный текст пуст")
+                else:
+                    self.logger(f"Объём текста: {len(full_text)} символов")
+
+                # Успех (отдельные несохранённые форматы — в export_errors)
+                result['success'] = True
+                result['total_time'] = time.time() - file_start_time
+
+                for saved_file in outcome.saved_files:
+                    self.logger(f"Сохранён файл: {os.path.basename(saved_file)}")
+                self.logger(f"Готово за {self.time_formatter.format_duration(result['total_time'])} " +
+                           f"(подготовка звука {round(result['conversion_time'], 1)} с, " +
+                           f"распознавание {round(result['transcription_time'], 1)} с)")
+                self._update_progress("finalizing", 1.0)
+
+            except ProcessingCancelled:
+                raise
             except Exception as e:
-                # Сбой VAD backend-ы обрабатывают сами (резервное разбиение),
-                # поэтому ValueError здесь — не «ошибка детектора речи», а
-                # настоящая ошибка распознавания. Подсказка про токен — только
-                # когда исключение действительно о нём.
-                error_msg = f"Ошибка при распознавании речи: {e}"
-                self.logger(error_msg)
-                if "HF_TOKEN" in str(e):
-                    self.logger("Проверьте токен HF_TOKEN в .env файле и убедитесь, что приняли условия доступа:")
-                    self.logger("https://huggingface.co/pyannote/segmentation-3.0")
-                _module_logger.error("ASR failed for %s", filepath, exc_info=True)
-                result['transcription_time'] = time.time() - transcription_start
-                return fail(error_msg)
+                result['success'] = False
+                if not result['transcription_time']:
+                    result['transcription_time'] = time.time() - transcription_start
+                message = f"Не удалось обработать {filename}: {e}"
+                self.logger(message)
+                _module_logger.error("Processing failed for %s", filepath, exc_info=True)
+                fail(message)
 
-            result['transcription_time'] = time.time() - transcription_start
-            self._update_progress('transcription', 1.0)
-            self.logger(f"Распознавание завершено: фрагментов текста — {len(utterances) if utterances else 0}")
-
-            diarization = self._run_diarization(
-                diarization_audio,
-                utterances or [],
-                requested=enable_diarization,
-                num_speakers=num_speakers,
-            )
-            result['diarization']['applied'] = diarization.applied
-            result['diarization']['error'] = diarization.error
-            utterances = diarization.utterances
-
-            full_text = self._summarize_transcript(utterances, filename)
-            # Реплики нужны API, который собирает ответ в памяти, не читая файлы,
-            # в том числе когда какой-то формат не удалось сохранить.
-            result['utterances'] = utterances
-
-            outcome = self._export(
-                utterances,
-                output_dir=output_dir,
-                stem=name_without_ext,
-                filename=filename,
-                full_text=full_text,
-                output_formats=output_formats,
-                diarization=diarization,
-                subtitle_options=subtitle_options,
-            )
-            result['saved_files'] = outcome.saved_files
-            result['export_errors'] = outcome.errors
-            if outcome.errors and not outcome.saved_files:
-                return fail("Не удалось сохранить результаты: " + "; ".join(
-                    f"{fmt}: {reason}" for fmt, reason in outcome.errors.items()
-                ))
-
-            # Проверка сохраненных данных
-            if not full_text.strip():
-                self.logger("Внимание: распознанный текст пуст")
-            else:
-                self.logger(f"Объём текста: {len(full_text)} символов")
-
-            # Успех (отдельные несохранённые форматы — в export_errors)
-            result['success'] = True
-            result['total_time'] = time.time() - file_start_time
-
-            for saved_file in outcome.saved_files:
-                self.logger(f"Сохранён файл: {os.path.basename(saved_file)}")
-            self.logger(f"Готово за {self.time_formatter.format_duration(result['total_time'])} " +
-                       f"(подготовка звука {round(result['conversion_time'], 1)} с, " +
-                       f"распознавание {round(result['transcription_time'], 1)} с)")
-            self._update_progress("finalizing", 1.0)
-
-        except Exception as e:
+        except ProcessingCancelled as exc:
+            # Частичные результаты не сохраняются; временные WAV удалит _TempFiles.
             result['success'] = False
-            if not result['transcription_time']:
-                result['transcription_time'] = time.time() - transcription_start
-            message = f"Не удалось обработать {filename}: {e}"
-            self.logger(message)
-            _module_logger.error("Processing failed for %s", filepath, exc_info=True)
-            fail(message)
+            result['cancelled'] = True
+            self.logger(str(exc))
+            return fail(str(exc))
 
         return result
 
-    def _convert(self, filepath: str, temp_files: _TempFiles, media_duration: float, result: dict) -> str | None:
+    def _convert(
+        self,
+        filepath: str,
+        temp_files: _TempFiles,
+        media_duration: float,
+        result: dict,
+        cancel_check: CancelCheck | None = None,
+    ) -> str | None:
         """Конвертация в WAV 16 кГц mono в личный temp-каталог обработки."""
 
         def report(value: float | None) -> None:
@@ -501,11 +532,16 @@ class TranscriptionProcessor:
             )
 
         conversion_start = time.time()
-        temp_audio = self.audio_converter.convert_to_wav(
+        convert = self.audio_converter.convert_to_wav
+        extra = {}
+        if cancel_check is not None and _accepts_keyword(convert, "cancel_check"):
+            extra["cancel_check"] = cancel_check
+        temp_audio = convert(
             filepath,
             temp_files.directory,
             media_duration=media_duration,
             progress_callback=report,
+            **extra,
         )
         temp_files.add(temp_audio)
         result['conversion_time'] = time.time() - conversion_start
@@ -556,7 +592,7 @@ class TranscriptionProcessor:
             )
         return asr_audio, diarization_audio
 
-    def _transcribe(self, asr_audio: str) -> list:
+    def _transcribe(self, asr_audio: str, cancel_check: CancelCheck | None = None) -> list:
         self.logger("Распознаём речь…")
         transcribe = self.model_loader.transcribe_longform
         kwargs = {}
@@ -564,6 +600,8 @@ class TranscriptionProcessor:
             # Предупреждения распознавания — в журнал этого файла, а не той
             # задачи, что когда-то загрузила модель.
             kwargs["logger"] = self.logger
+        if cancel_check is not None and _accepts_keyword(transcribe, "cancel_check"):
+            kwargs["cancel_check"] = cancel_check
         return transcribe(
             asr_audio,
             progress_callback=self._stage_reporter("transcription"),

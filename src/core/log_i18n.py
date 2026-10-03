@@ -140,6 +140,7 @@ LOG_TRANSLATIONS: tuple[tuple[str, str], ...] = (
     (r"^(\d+) сек$", r"\1 s"),
     (r"^Не удалось обработать (.+?): (.+)$", r"Could not process \1: \2"),
     (r"^Остановка запрошена: закончим текущий файл и остановимся\.$", r"Stop requested: finishing the current file, then stopping."),
+    (r"^Обработка отменена пользователем$", r"Processing cancelled by the user"),
 )
 
 _COMPILED = tuple((re.compile(pattern), template) for pattern, template in LOG_TRANSLATIONS)

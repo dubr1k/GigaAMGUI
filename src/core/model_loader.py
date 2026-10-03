@@ -241,6 +241,7 @@ class ModelLoader:
         audio_path: str,
         progress_callback: ProgressCallback | None = None,
         logger=None,
+        cancel_check=None,
     ):
         """Транскрибирует длинное аудио через выбранную стратегию сегментации.
 
@@ -256,6 +257,8 @@ class ModelLoader:
         kwargs = {"progress_callback": progress_callback}
         if logger is not None:
             kwargs["logger"] = logger
+        if cancel_check is not None:
+            kwargs["cancel_check"] = cancel_check
         try:
             return self._backend.transcribe_longform(audio_path, **kwargs)
         finally:
