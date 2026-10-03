@@ -154,6 +154,20 @@ class _EnergyGate:
         return self._window[0][1]
 
 
+def asr_scheduler_factory(backend: WindowBackend, *, scheduler_class: type | None = None):
+    """The `scheduler_factory` a LiveSession takes: one scheduler per source, one shared backend.
+
+    The backend is shared so decodes of all sources are serialized on one
+    model. `scheduler_class` lets a front-end pass the name it imported (and
+    that its tests replace).
+    """
+    def factory(source, on_final, on_partial, on_error):
+        cls = scheduler_class or LiveAsrScheduler
+        return cls(backend, on_final=on_final, on_partial=on_partial, on_error=on_error)
+
+    return factory
+
+
 def _normalize_word(word: str) -> str:
     return word.casefold().strip(".,!?;:…-–—«»\"'()")
 

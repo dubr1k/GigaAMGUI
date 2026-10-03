@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from src.live.asr import LiveAsrScheduler
+from src.live.asr import asr_scheduler_factory
 from src.live.asr_backend import LazyModelBackend
 from src.live.capture.push import PushCaptureAdapter
 from src.live.diarization import BuiltinDiarizers
@@ -98,14 +98,13 @@ class LiveWorkerService:
         diarization_backend = str(command.get("diarization_backend") or "pyannote")
         record_mic = bool(command.get("record_mic", True))
         record_system = bool(command.get("record_system", True))
-        settings = LiveSettings(
+        settings = LiveSettings.for_sources(
+            sources,
+            record_mic=record_mic,
+            record_system=record_system,
             diarization_mode=mode,
             diarization_backend=diarization_backend,
             asr_sample_rate=16_000,
-            record_mic_audio=CaptureSource.MIC in sources and record_mic,
-            record_system_audio=CaptureSource.SYSTEM in sources and record_system,
-            record_source_audio=record_mic or record_system,
-            record_mix_audio=set(sources) == {CaptureSource.MIC, CaptureSource.SYSTEM},
         )
         exports_raw = command.get("exports") or {"txt": True}
         if not isinstance(exports_raw, dict):
@@ -344,10 +343,7 @@ class LiveWorkerService:
             self._error("live_start", str(exc))
             return None
 
-        def factory(source, on_final, on_partial, on_error):
-            return LiveAsrScheduler(backend, on_final=on_final, on_partial=on_partial, on_error=on_error)
-
-        return factory
+        return asr_scheduler_factory(backend)
 
     @staticmethod
     def _default_model_loader(command: dict[str, Any]):

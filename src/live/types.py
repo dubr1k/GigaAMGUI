@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -97,6 +98,29 @@ class LiveSettings:
     record_mic_audio: bool = True
     record_system_audio: bool = True
     record_mix_audio: bool = True
+
+    @classmethod
+    def for_sources(
+        cls,
+        sources: Iterable[CaptureSource],
+        *,
+        record_mic: bool = True,
+        record_system: bool = True,
+        **values: object,
+    ) -> LiveSettings:
+        """Settings for capturing `sources`, as every front-end derives them.
+
+        A source track is recorded only for a captured source the user asked
+        to record; the mix only when both sources are captured.
+        """
+        sources = set(sources)
+        return cls(
+            record_mic_audio=CaptureSource.MIC in sources and record_mic,
+            record_system_audio=CaptureSource.SYSTEM in sources and record_system,
+            record_source_audio=record_mic or record_system,
+            record_mix_audio=sources == {CaptureSource.MIC, CaptureSource.SYSTEM},
+            **values,
+        )
 
 
 @dataclass(frozen=True)
