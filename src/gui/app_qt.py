@@ -159,7 +159,9 @@ class GigaTranscriberQtApp(
 
         self.transcript_files_for_llm = []
         self.llm_output_dir = ""
-        self.llm_transcript_dir = os.path.expanduser("~")
+        # Пусто, пока пользователь не выбрал транскрипты: из этой папки при
+        # старте пересобирается список LLM (домашняя — только для диалога).
+        self.llm_transcript_dir = ""
         self.is_llm_processing = False
         self.llm_last_result_text = ""
         self.llm_last_result_name = "llm_result"

@@ -180,3 +180,26 @@ def test_clearing_with_nothing_remembered_stays_a_noop(window):
 
     assert window.files_to_process == []
     assert window.transcript_files_for_llm == []
+
+
+@pytest.mark.parametrize("saved_home", [False, True])
+def test_first_launch_does_not_queue_text_files_from_the_home_folder(tmp_path, monkeypatch, saved_home):
+    """Без сохранённой папки транскриптов окно сканировало домашнюю папку."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "notes.txt").write_text("список покупок", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    app = QApplication.instance() or QApplication([])
+    if saved_home:
+        # Прежние версии сохраняли этот домашний дефолт при каждом выходе.
+        from src.utils import UserSettings
+
+        UserSettings().set_value("llm_transcript_dir", str(home))
+
+    win = GigaTranscriberQtApp()
+    try:
+        assert win.transcript_files_for_llm == []
+        assert win.llm_files_list.count() == 0
+    finally:
+        win.close()
+        app.processEvents()

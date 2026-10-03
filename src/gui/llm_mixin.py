@@ -295,7 +295,13 @@ class LlmMixin:
         уже обработаны выбранными действиями/форматами, пропускаются.
         """
         folder = self.llm_transcript_dir
-        if not folder or not os.path.isdir(folder):
+        # Домашнюю папку прежние версии сохраняли как значение по умолчанию:
+        # её сканирование ставило в очередь LLM все .txt/.md пользователя.
+        if (
+            not folder
+            or not os.path.isdir(folder)
+            or os.path.realpath(folder) == os.path.realpath(os.path.expanduser("~"))
+        ):
             self.transcript_files_for_llm = []
             return
         transcript_exts = (".txt", ".md", ".srt", ".vtt")
@@ -372,7 +378,10 @@ class LlmMixin:
         self.user_settings.set_value("llm_transcript_dir", "")
 
     def _select_llm_transcript_files(self):
-        initial_dir = self.user_settings.get_value("llm_transcript_dir", self.llm_transcript_dir)
+        initial_dir = (
+            self.user_settings.get_value("llm_transcript_dir", self.llm_transcript_dir)
+            or os.path.expanduser("~")
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Выберите транскрипты",
