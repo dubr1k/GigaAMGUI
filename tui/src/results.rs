@@ -165,7 +165,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{app::dispatch, commands::clear_queue, ui::Action};
+    use crate::{action::Action, app::dispatch, commands::clear_queue};
 
     #[test]
     fn opener_preserves_one_literal_path_and_rejects_missing_or_unsafe_targets() {

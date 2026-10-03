@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 
 use crate::{
+    action::{Action, AreaId, ButtonId},
     app::{dispatch, esc_is_cancel, esc_should_soft_cancel, llm_can_run, on_off, App, Focus, Page},
     commands::{
         apply_command_menu, command_menu_options, command_suggestions, complete_path,
@@ -19,7 +20,6 @@ use crate::{
     input::InputMode,
     options::{LLM_MODES, PARAM_ROWS},
     settings::save_app_settings,
-    ui::{Action, AreaId, ButtonId},
 };
 
 /// Lines `PgUp` / `PgDn` move the LLM answer, the log and the help by.
@@ -769,11 +769,11 @@ mod tests {
         assert_eq!(app.page, Page::Llm);
         press(&mut app, KeyCode::PageDown);
         assert_eq!(
-            app.scroll[&crate::ui::AreaId::LlmOutput],
+            app.scroll[&crate::action::AreaId::LlmOutput],
             ANSWER_PAGE as u16
         );
         press(&mut app, KeyCode::PageUp);
-        assert_eq!(app.scroll[&crate::ui::AreaId::LlmOutput], 0);
+        assert_eq!(app.scroll[&crate::action::AreaId::LlmOutput], 0);
 
         // Delete on the LLM page acts on the transcript list, not the queue.
         app.queue.add("/tmp/a.wav".into());

@@ -61,12 +61,16 @@ pub(crate) fn run_command(app: &mut App) {
         .replace(['–', '—', '−'], "-");
     let argument = parts.next().unwrap_or_default().trim();
     let action = match name.as_str() {
-        "/add" => Some(crate::ui::Action::AddFiles),
-        "/undo" => Some(crate::ui::Action::UndoRemove),
-        "/retry" => Some(crate::ui::Action::Run(crate::queue::RunSelection::Failed)),
-        "/run-selected" => Some(crate::ui::Action::Run(crate::queue::RunSelection::Selected)),
-        "/retry-input" => Some(crate::ui::Action::RetryInputs),
-        "/reconnect" => Some(crate::ui::Action::Reconnect),
+        "/add" => Some(crate::action::Action::AddFiles),
+        "/undo" => Some(crate::action::Action::UndoRemove),
+        "/retry" => Some(crate::action::Action::Run(
+            crate::queue::RunSelection::Failed,
+        )),
+        "/run-selected" => Some(crate::action::Action::Run(
+            crate::queue::RunSelection::Selected,
+        )),
+        "/retry-input" => Some(crate::action::Action::RetryInputs),
+        "/reconnect" => Some(crate::action::Action::Reconnect),
         _ => None,
     };
     if let Some(action) = action {

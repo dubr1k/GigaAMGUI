@@ -452,8 +452,8 @@ mod tests {
     #[test]
     fn selected_rerun_requires_confirmation_and_uses_one_file() {
         use crate::{
+            action::{Action, ButtonId},
             app::dispatch,
-            ui::{Action, ButtonId},
         };
         let mut app = crate::test_support::ready_app();
         app.queue.add("/a.wav".into());
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn down_worker_preserves_editor_and_failed_input_retry_is_lossless() {
-        use crate::{app::dispatch, ui::Action};
+        use crate::{action::Action, app::dispatch};
         let mut app = crate::test_support::ready_app();
         app.connection.state = crate::lifecycle::ConnectionState::Unavailable;
         app.input

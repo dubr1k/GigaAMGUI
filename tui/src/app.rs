@@ -13,6 +13,7 @@ use ratatui_image::{
 use serde_json::{json, Value};
 
 use crate::{
+    action::{Action, AreaId, ButtonId, HitMap},
     batch::{BatchRun, BatchSummary},
     commands::{
         accept_command_suggestion, apply_command_menu, clear_queue, command_menu_options,
@@ -26,8 +27,8 @@ use crate::{
     requests::llm_start_payload,
     session::PendingInput,
     settings::save_app_settings,
+    settings_page::rows as setting_rows,
     theme::{Palette, Theme},
-    ui::{settings::rows as setting_rows, Action, AreaId, ButtonId, HitMap},
     worker::LlmTool,
 };
 
@@ -965,11 +966,11 @@ mod tests {
 
     use super::*;
     use crate::{
+        action::{Action, ButtonId},
         commands::provider_from_menu_option,
         commands::{command_menu_options, BACK_MENU_OPTION},
         options::selectable_backends,
         settings::isolated_config_dir,
-        ui::{Action, ButtonId},
     };
 
     #[test]

@@ -91,7 +91,7 @@ fn raw_drop_consumes_only_complete_prefix_and_preserves_tail_bytes() {
 fn argument_paste_never_queues_media_and_invalid_arguments_remain_editable() {
     let _config = isolated_config_dir();
     let mut app = crate::test_support::ready_app();
-    crate::app::dispatch(&mut app, crate::ui::Action::EditCommand("/output"));
+    crate::app::dispatch(&mut app, crate::action::Action::EditCommand("/output"));
     paste_input(&mut app, "/tmp");
     assert!(app.queue.items.is_empty());
     assert_eq!(app.input.text(), "/output /tmp");

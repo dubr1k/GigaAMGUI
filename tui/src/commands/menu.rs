@@ -199,7 +199,7 @@ pub(crate) fn apply_command_menu(app: &mut App) {
     let command = app.command_menu.clone().unwrap_or_default();
     match command.as_str() {
         "/queue-actions" => {
-            use crate::{queue::RunSelection, ui::Action};
+            use crate::{action::Action, queue::RunSelection};
             let action = match app.command_menu_index {
                 0 => Action::Run(RunSelection::Pending),
                 1 => Action::Run(RunSelection::Failed),

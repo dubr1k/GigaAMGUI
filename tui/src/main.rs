@@ -8,6 +8,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use ratatui_image::picker::{Picker, ProtocolType};
 use serde_json::json;
 
+mod action;
 mod app;
 mod batch;
 mod commands;
@@ -26,6 +27,7 @@ mod results;
 mod runtime;
 mod session;
 mod settings;
+mod settings_page;
 mod signals;
 mod terminal_guard;
 #[cfg(test)]
@@ -36,6 +38,7 @@ mod ui;
 mod worker;
 mod worker_session;
 
+use action::Action;
 use app::{dispatch, App};
 use headless::{apply_data_dir_argument, run_headless, strip_data_dir, utf8_args, HEADLESS_USAGE};
 use i18n::strip_lang;
@@ -43,7 +46,7 @@ use keys::handle_key;
 use runtime::WorkerRuntime;
 use settings::{apply_settings, load_settings};
 use theme::strip_theme;
-use ui::{draw, Action};
+use ui::draw;
 
 fn main() -> io::Result<()> {
     let args = match utf8_args(std::env::args_os().skip(1)) {
