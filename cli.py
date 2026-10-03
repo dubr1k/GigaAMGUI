@@ -4,6 +4,7 @@ GigaAM v3 Transcriber - CLI интерфейс
 Продвинутый интерактивный командный интерфейс для транскрибации
 """
 
+import functools
 import os
 import sys
 import time
@@ -378,6 +379,27 @@ def display_results(results: list[dict]):
     console.print(summary)
 
 
+EXIT_FAILED = 1         # хотя бы один файл не обработан
+EXIT_INTERRUPTED = 130  # Ctrl-C: 128 + SIGINT, как у shell
+
+
+def _interrupt_exit_code(func):
+    """Ctrl-C в любой момент работы команды — сообщение и код 130.
+
+    Без этого KeyboardInterrupt ловит сам click (standalone_mode): печатает
+    «Aborted!» и выходит с 1, неотличимо от провала обработки; обработчик в
+    `__main__` до исключения так и не доходил.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except KeyboardInterrupt:
+            console.print("\n\n[yellow]⚠ Обработка прервана пользователем[/yellow]")
+            sys.exit(EXIT_INTERRUPTED)
+    return wrapper
+
+
 @click.command()
 @click.option(
     "--data-dir",
@@ -480,6 +502,7 @@ def display_results(results: list[dict]):
     show_default=True,
     help='Максимум символов в строке SRT/VTT',
 )
+@_interrupt_exit_code
 def main(
     data_dir, files, directory, output, interactive, verbose, formats, backend, model, onnx_provider,
     diarize, diarization_backend, speakers, audio_preprocessing,
@@ -611,11 +634,14 @@ def main(
     # Подтверждение перед обработкой
     if interactive:
         console.print("\n")
-        if not questionary.confirm(
+        confirmed = questionary.confirm(
             f"Начать обработку {len(file_list)} файлов?",
             default=True,
             style=custom_style
-        ).ask():
+        ).ask()
+        if confirmed is None:  # questionary сам ловит Ctrl-C и возвращает None
+            raise KeyboardInterrupt
+        if not confirmed:
             logger.warning("Обработка отменена пользователем")
             sys.exit(0)
 
@@ -657,14 +683,13 @@ def main(
         logger.error("Не удалось обработать ни одного файла")
 
     logger.info(f"Результаты сохранены в: {output_dir}")
+    if success_count < len(results):
+        sys.exit(EXIT_FAILED)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except KeyboardInterrupt:
-        console.print("\n\n[yellow]⚠ Обработка прервана пользователем[/yellow]")
-        sys.exit(0)
     except Exception as e:
         console.print(f"\n\n[red]❌ Критическая ошибка: {str(e)}[/red]")
         import traceback
