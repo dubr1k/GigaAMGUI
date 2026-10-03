@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import inspect
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -21,6 +23,8 @@ from .subtitles import SubtitleOptions
 
 if TYPE_CHECKING:
     from .diarization.base import DiarizationBackend
+
+_module_logger = logging.getLogger(__name__)
 
 
 # Журнал читают люди без технического бэкграунда: отчёт предобработки хранит
@@ -56,6 +60,28 @@ _QUALITY_GATE_RU = {
     "loudness moved away from target": "громкость ушла от нужного уровня",
     "no measurable cleanup benefit": "очистка не дала заметного улучшения",
 }
+
+
+class DiarizationSetupError(RuntimeError):
+    """Backend диаризации не удалось даже создать (причина — в ``__cause__``)."""
+
+
+def _accepts_event_argument(callback: Callable) -> bool:
+    """Можно ли вызвать колбэк одним ProgressEvent (иначе — legacy (stage, value)).
+
+    Решается по сигнатуре, а не пробным вызовом: прежний ``except TypeError``
+    принимал TypeError изнутри клиента за несовпадение сигнатуры и повторял
+    вызов в legacy-форме, подменяя настоящую ошибку чужой.
+    """
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return True
+    try:
+        signature.bind(None)
+    except TypeError:
+        return False
+    return True
 
 
 def _preprocessing_reason_ru(reason: str) -> str:
@@ -105,30 +131,28 @@ class TranscriptionProcessor:
         # provider. Без этого None != provider сбрасывал его при первом же
         # обращении, и ONNX-модели диаризации грузились второй раз.
         self._diarization_provider = getattr(diarization_manager, "provider", None)
+        # Исключение последней попытки создать backend: без него сбой фабрики
+        # (например, WinError 1114 при загрузке torch) превращался в «Проверьте HF_TOKEN».
+        self._diarization_factory_error: Exception | None = None
         self._progress_plan = None
+        # (колбэк, принимает ли он ProgressEvent) — progress_callback публичен и
+        # может быть заменён после создания процессора.
+        self._progress_style: tuple[Callable, bool] | None = None
 
     def _emit_progress(self, event: ProgressEvent) -> None:
-        if not self.progress_callback:
+        callback = self.progress_callback
+        if not callback:
             return
 
         if self._progress_plan is not None:
             event = self._progress_plan.normalize_event(event)
 
-        try:
-            self.progress_callback(event)
-            return
-        except TypeError:
-            self.progress_callback(event.stage, event.file_progress)
-        except Exception:
-            raise
-
-    def _emit_legacy_stage(self, stage: str, progress: float):
-        if not self.progress_callback:
-            return
-        try:
-            self.progress_callback(stage, progress)
-        except TypeError:
-            return
+        if self._progress_style is None or self._progress_style[0] is not callback:
+            self._progress_style = (callback, _accepts_event_argument(callback))
+        if self._progress_style[1]:
+            callback(event)
+        else:
+            callback(event.stage, event.file_progress)
 
     @property
     def diarization_manager(self) -> DiarizationBackend | None:
@@ -172,7 +196,9 @@ class TranscriptionProcessor:
                     model_dir=ONNX_MODEL_DIR,
                 )
                 self._diarization_provider = provider
+                self._diarization_factory_error = None
             except Exception as e:
+                self._diarization_factory_error = e
                 self.logger(f"Не удалось подготовить определение говорящих: {e}")
         return self._diarization_manager
 
@@ -260,7 +286,10 @@ class TranscriptionProcessor:
                 'backend': diarization_backend,
                 'error': None,
             },
-            'saved_files': []
+            'saved_files': [],
+            # Причина неуспеха одной строкой для клиентов, которые не видят журнал
+            # (web, MCP, OpenAI-совместимый API). None при success.
+            'error': None,
         }
 
         # Логирование начала
@@ -295,6 +324,10 @@ class TranscriptionProcessor:
 
         if not temp_audio:
             self.logger(f"Файл пропущен: {filename}")
+            result['error'] = (
+                getattr(self.audio_converter, "last_error", None)
+                or "Не удалось подготовить звук: FFmpeg не создал WAV, подробности в журнале обработки"
+            )
             result['total_time'] = time.time() - file_start_time
             return result
 
@@ -356,21 +389,18 @@ class TranscriptionProcessor:
                         total_seconds=total,
                     ),
                 )
-            except ValueError as e:
-                # Ошибка VAD (обычно связана с токеном)
-                error_msg = str(e)
-                self.logger(f"Не удалось найти речь в записи (ошибка детектора речи): {error_msg}")
-                if "HF_TOKEN" in error_msg:
+            except Exception as e:
+                # Сбой VAD backend-ы обрабатывают сами (резервное разбиение),
+                # поэтому ValueError здесь — не «ошибка детектора речи», а
+                # настоящая ошибка распознавания. Подсказка про токен — только
+                # когда исключение действительно о нём.
+                error_msg = f"Ошибка при распознавании речи: {e}"
+                self.logger(error_msg)
+                if "HF_TOKEN" in str(e):
                     self.logger("Проверьте токен HF_TOKEN в .env файле и убедитесь, что приняли условия доступа:")
                     self.logger("https://huggingface.co/pyannote/segmentation-3.0")
-                result['transcription_time'] = time.time() - transcription_start
-                result['total_time'] = time.time() - file_start_time
-                return result
-            except Exception as e:
-                # Другие ошибки транскрибации
-                self.logger(f"Ошибка при распознавании речи: {str(e)}")
-                import traceback
-                traceback.print_exc()
+                _module_logger.error("ASR failed for %s", filepath, exc_info=True)
+                result['error'] = error_msg
                 result['transcription_time'] = time.time() - transcription_start
                 result['total_time'] = time.time() - file_start_time
                 return result
@@ -417,6 +447,7 @@ class TranscriptionProcessor:
                     utterances = self._apply_diarization(
                         diarization_audio,
                         utterances,
+                        manager=active_diarization_manager,
                         num_speakers=num_speakers,
                         progress_callback=lambda stage_progress, processed, total: self._update_progress(
                             "diarization",
@@ -445,7 +476,10 @@ class TranscriptionProcessor:
                     # Диаризация не удалась — сохраняем транскрипт БЕЗ фиктивной
                     # разметки «Спикер №1» и даём пользователю реальную причину.
                     self.logger(f"Не удалось определить говорящих, текст сохранён без разметки по говорящим: {e}")
-                    if self._active_diarization_backend == "pyannote":
+                    if (
+                        self._active_diarization_backend == "pyannote"
+                        and not isinstance(e, DiarizationSetupError)
+                    ):
                         self.logger("Частая причина: на huggingface.co не приняты условия ВСЕХ моделей —")
                         self.logger("  pyannote/segmentation-3.0, pyannote/speaker-diarization-3.1")
                         self.logger("  и модели эмбеддингов (wespeaker-voxceleb-resnet34-LM),")
@@ -624,12 +658,13 @@ class TranscriptionProcessor:
             self._update_progress("finalizing", 1.0)
 
         except Exception as e:
+            result['success'] = False
             result['transcription_time'] = time.time() - transcription_start
             result['total_time'] = time.time() - file_start_time
+            result['error'] = f"Не удалось обработать {filename}: {e}"
 
-            self.logger(f"Не удалось обработать {filename}: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            self.logger(result['error'])
+            _module_logger.error("Processing failed for %s", filepath, exc_info=True)
 
         finally:
             # Удаляем только временные файлы текущего запуска; исходный файл
@@ -653,6 +688,7 @@ class TranscriptionProcessor:
         utterances: list,
         num_speakers: int | None = None,
         progress_callback=None,
+        manager=None,
     ) -> list:
         """
         Применяет диаризацию к сегментам транскрипции.
@@ -661,12 +697,21 @@ class TranscriptionProcessor:
             audio_path: путь к аудио файлу
             utterances: список сегментов транскрипции
             num_speakers: количество спикеров (если известно)
+            manager: уже полученный backend (иначе берётся diarization_manager)
 
         Returns:
             list: utterances с добавленной информацией о спикерах
         """
-        # Проверяем, доступен ли менеджер диаризации
-        if not self.diarization_manager:
+        # Свойство diarization_manager при каждом обращении заново пробует
+        # фабрику, поэтому backend берём один раз.
+        if manager is None:
+            manager = self.diarization_manager
+        if not manager:
+            cause = self._diarization_factory_error
+            if cause is not None:
+                raise DiarizationSetupError(
+                    f"Не удалось подготовить определение говорящих: {type(cause).__name__}: {cause}"
+                ) from cause
             raise RuntimeError(
                 "Менеджер диаризации недоступен. Проверьте HF_TOKEN (нужен доступ read)."
             )
@@ -677,7 +722,7 @@ class TranscriptionProcessor:
             if num_speakers is not None:
                 kwargs['num_speakers'] = num_speakers
 
-            speaker_segments = self.diarization_manager.diarize(
+            speaker_segments = manager.diarize(
                 audio_path,
                 **kwargs,
                 progress_callback=progress_callback,
@@ -688,7 +733,7 @@ class TranscriptionProcessor:
                 )
 
             # Сопоставляем спикеров с сегментами транскрипции
-            utterances = self.diarization_manager.map_speakers_to_transcription(
+            utterances = manager.map_speakers_to_transcription(
                 utterances,
                 speaker_segments
             )

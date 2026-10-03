@@ -115,6 +115,13 @@ class AudioConverter:
             logger: функция для логирования (опционально)
         """
         self.logger = logger or print
+        # Причина последнего отказа convert_to_wav одной строкой: процессор
+        # кладёт её в result['error'], иначе web/MCP/API видят только «сбой».
+        self.last_error: str | None = None
+
+    def _fail(self, message: str) -> None:
+        self.last_error = message
+        self.logger(message)
 
     def _log_ffmpeg_tail(self, stderr: str, lines: int = 5):
         """Логирует последние строки stderr ffmpeg для диагностики."""
@@ -216,14 +223,15 @@ class AudioConverter:
         """
         # Нормализуем путь (решает проблемы с относительными путями и символическими ссылками)
         input_path = os.path.abspath(os.path.expanduser(input_path))
+        self.last_error = None
 
         # Проверяем существование файла
         if not os.path.exists(input_path):
-            self.logger(f"Ошибка: файл не найден: {input_path}")
+            self._fail(f"Ошибка: файл не найден: {input_path}")
             return None
 
         if not os.path.isfile(input_path):
-            self.logger(f"Ошибка: это не файл, а папка или другой объект: {input_path}")
+            self._fail(f"Ошибка: это не файл, а папка или другой объект: {input_path}")
             return None
 
         # Создаём временный файл в папке вывода с уникальным именем,
@@ -347,13 +355,18 @@ class AudioConverter:
                 stderr_thread.join(timeout=1.0)
 
             if killed_by_watchdog[0]:
-                self.logger("Подготовка звука заняла слишком долго и была прервана — файл не обработан.")
+                self._fail("Подготовка звука заняла слишком долго и была прервана — файл не обработан.")
                 return None
 
             if returncode != 0:
                 stderr_text = "".join(stderr_lines).strip()
                 self.logger(f"FFmpeg не смог подготовить звук (код ошибки {returncode}). Подробности ниже:")
                 self._log_ffmpeg_tail(stderr_text)
+                tail = [line.strip() for line in stderr_text.splitlines() if line.strip()]
+                self.last_error = (
+                    f"FFmpeg не смог подготовить звук (код ошибки {returncode})"
+                    + (f": {tail[-1]}" if tail else "")
+                )
                 if "moov atom not found" in stderr_text or "Invalid data found when processing input" in stderr_text:
                     self.logger("")
                     self.logger("Возможная причина: файл повреждён или загружен не до конца (в MP4 метаданные «moov» в конце — если файл обрезан, FFmpeg не может его прочитать).")
@@ -366,9 +379,9 @@ class AudioConverter:
             return temp_wav
 
         except FileNotFoundError:
-            self.logger("Ошибка: не найдена программа FFmpeg (ни в приложении, ни в системе) — без неё звук подготовить нельзя.")
+            self._fail("Ошибка: не найдена программа FFmpeg (ни в приложении, ни в системе) — без неё звук подготовить нельзя.")
             return None
         except OSError as exc:
-            self.logger(f"Ошибка: не удалось запустить FFmpeg ({exc}).")
+            self._fail(f"Ошибка: не удалось запустить FFmpeg ({exc}).")
             self.logger("Проверьте, что рядом с приложением нет несовместимого ffmpeg для другой ОС/архитектуры.")
             return None
