@@ -31,6 +31,20 @@ def test_glob_matches_real_api_config():
     assert file_policy.is_supported_by_glob("a.pdf", SUPPORTED_FORMATS[1]) is False
 
 
+def test_api_and_web_extension_lists_are_the_same():
+    # is_supported_media заменила две проверки по двум спискам — они обязаны совпадать
+    globbed = {ext.replace("*", "") for ext in SUPPORTED_FORMATS[1].split()}
+    assert globbed == set(MEDIA_EXTENSIONS)
+
+
+def test_is_supported_media():
+    assert file_policy.is_supported_media("talk.MKV") is True
+    assert file_policy.is_supported_media("voice.3gp") is True
+    assert file_policy.is_supported_media("notes.txt") is False
+    assert file_policy.is_supported_media("noext") is False
+    assert file_policy.is_supported_media(None) is False
+
+
 def test_set_matches_real_web_config():
     assert file_policy.is_supported_by_set("a.mp4", MEDIA_EXTENSIONS) is True
     assert file_policy.is_supported_by_set("a.pdf", MEDIA_EXTENSIONS) is False

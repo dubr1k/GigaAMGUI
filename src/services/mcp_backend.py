@@ -52,7 +52,7 @@ _MiB = 1024 * 1024
 
 
 def _is_supported(filename: str) -> bool:
-    return file_policy.is_supported_by_glob(filename, SUPPORTED_FORMATS[1])
+    return file_policy.is_supported_media(filename)
 
 
 def _unsupported(filename: str) -> BackendError:

@@ -24,7 +24,7 @@ router = APIRouter()
 
 
 def is_supported_format(filename: str) -> bool:
-    return file_policy.is_supported_by_set(filename, MEDIA_EXTENSIONS)
+    return file_policy.is_supported_media(filename)
 
 
 def safe_filename(filename: str | None) -> str:

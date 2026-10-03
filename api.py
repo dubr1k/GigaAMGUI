@@ -171,7 +171,7 @@ def verify_api_key(
 
 def is_supported_format(filename: str) -> bool:
     """Проверяет поддерживаемый формат файла"""
-    return file_policy.is_supported_by_glob(filename, SUPPORTED_FORMATS[1])
+    return file_policy.is_supported_media(filename)
 
 
 def safe_filename(filename: str | None) -> str:
