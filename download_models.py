@@ -55,7 +55,7 @@ def download_onnx_models(
                 onnx_model_name(model),
                 path=model_dir,
                 quantization=quantization,
-            providers=onnx_session_providers(selection),
+                providers=onnx_session_providers(selection),
                 preprocessor_config={"use_numpy_preprocessors": False},
             )
             del loaded
