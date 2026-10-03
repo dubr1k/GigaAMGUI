@@ -27,6 +27,15 @@ pub(crate) const FORMAT_KEYS: [&str; 7] = [
 pub(crate) fn short_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
+
+/// The folder of a queued file for display. `Path` splits on `\` too on Windows,
+/// where splitting on `/` alone left the parent column empty.
+pub(crate) fn parent_name(path: &str) -> &str {
+    Path::new(path)
+        .parent()
+        .and_then(Path::to_str)
+        .unwrap_or("")
+}
 /// Why a pasted path was rejected; [`PathError::message`] renders it in the UI
 /// language (headless mode uses English).
 #[derive(Debug, PartialEq, Eq)]
@@ -1189,7 +1198,7 @@ pub(crate) fn remove_selected_file(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::split_shell_paths;
+    use crate::input::split_paths;
 
     #[test]
     fn modal_confirmation_rejects_paste_and_automatic_input_completion() {
@@ -1422,9 +1431,17 @@ mod tests {
     }
 
     #[test]
+    fn parent_name_uses_the_platform_separators() {
+        assert_eq!(parent_name("/tmp/записи/a.wav"), "/tmp/записи");
+        assert_eq!(parent_name("a.wav"), "");
+        #[cfg(windows)]
+        assert_eq!(parent_name(r"C:\Записи\a.wav"), r"C:\Записи");
+    }
+
+    #[test]
     fn shell_path_split_keeps_escaped_and_quoted_spaces() {
         assert_eq!(
-            split_shell_paths(r#"/tmp/first\ file.mp3 "/tmp/second file.mp3""#),
+            split_paths(r#"/tmp/first\ file.mp3 "/tmp/second file.mp3""#, true),
             vec!["/tmp/first file.mp3", "/tmp/second file.mp3"]
         );
     }
@@ -1645,11 +1662,13 @@ mod tests {
     fn shell_paths_preserve_nonbreaking_spaces_in_finder_copy_names() {
         let raw = "/Users/dubr1k/Downloads/Ректорат\\ 07.09\\ \\(1\\)\u{a0}—\\ копия.mp3";
         assert_eq!(
-            split_shell_paths(raw),
+            split_paths(raw, true),
             vec!["/Users/dubr1k/Downloads/Ректорат 07.09 (1)\u{a0}— копия.mp3"]
         );
     }
 
+    // Terminal drops are shell-escaped (`\ `) only on POSIX.
+    #[cfg(not(windows))]
     #[test]
     fn concatenated_drops_are_split_only_after_existing_files() {
         let directory =
@@ -1701,6 +1720,8 @@ mod tests {
         }
     }
 
+    // Terminal drops are shell-escaped (`\ `) only on POSIX.
+    #[cfg(not(windows))]
     #[test]
     fn successive_pastes_queue_files_without_concatenating_paths() {
         let directory = std::env::temp_dir().join(format!("gigaam-paste-{}", std::process::id()));

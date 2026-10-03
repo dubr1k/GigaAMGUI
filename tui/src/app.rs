@@ -286,6 +286,8 @@ impl App {
         }
     }
 
+    /// Lookup by path for the tests; drawing uses each row's own state.
+    #[cfg(test)]
     pub(crate) fn file_state(&self, path: &str) -> FileState {
         self.queue
             .items

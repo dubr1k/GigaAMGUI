@@ -86,36 +86,88 @@ impl InputState {
     }
 }
 
-pub(crate) fn split_shell_paths(raw: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut escaped = false;
-    for character in raw.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if matches!(character, '\'' | '"') {
-            if quote == Some(character) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(character);
-            } else {
-                current.push(character);
-            }
-        // Finder uses NBSP before «— копия». Shells do not treat Unicode
-        // spaces as separators, so preserve them as part of the filename.
-        } else if matches!(character, ' ' | '\t' | '\r' | '\n') && quote.is_none() {
-            if !current.is_empty() {
-                paths.push(std::mem::take(&mut current));
-            }
-        } else {
-            current.push(character);
+/// Whether `\` escapes the next character of a pasted path list. Terminals on
+/// macOS/Linux drop paths shell-escaped (`My\ File.wav`); on Windows `\` is the
+/// path separator, and treating it as an escape turned `C:\My Files\a.wav` into
+/// `C:My Filesa.wav`. The parsers take the rule as a parameter so both are
+/// tested on every platform.
+pub(crate) const BACKSLASH_ESCAPES: bool = cfg!(not(windows));
+
+enum Token {
+    Char(char),
+    Escaped(char),
+    /// A quote or an escaping backslash: shell syntax, not part of the path.
+    Syntax,
+    Separator,
+}
+
+/// The shell quoting rules shared by splitting and by the completeness check.
+struct ShellLexer {
+    backslash_escapes: bool,
+    quote: Option<char>,
+    escaped: bool,
+}
+
+impl ShellLexer {
+    fn new(backslash_escapes: bool) -> Self {
+        Self {
+            backslash_escapes,
+            quote: None,
+            escaped: false,
         }
     }
-    if escaped {
+
+    fn next(&mut self, ch: char) -> Token {
+        if self.escaped {
+            self.escaped = false;
+            return Token::Escaped(ch);
+        }
+        // Inside quotes a backslash is literal: a quoted Windows path, or a
+        // quoted POSIX name that really contains one.
+        if ch == '\\' && self.backslash_escapes && self.quote.is_none() {
+            self.escaped = true;
+            return Token::Syntax;
+        }
+        if matches!(ch, '\'' | '"') {
+            if self.quote == Some(ch) {
+                self.quote = None;
+                return Token::Syntax;
+            }
+            if self.quote.is_none() {
+                self.quote = Some(ch);
+                return Token::Syntax;
+            }
+        }
+        // Finder uses NBSP before «— копия». Shells do not treat Unicode
+        // spaces as separators, so preserve them as part of the filename.
+        if self.quote.is_none() && matches!(ch, ' ' | '\t' | '\r' | '\n') {
+            return Token::Separator;
+        }
+        Token::Char(ch)
+    }
+
+    /// Unterminated quote or a trailing escape: the input is not finished yet.
+    fn open(&self) -> bool {
+        self.quote.is_some() || self.escaped
+    }
+}
+
+pub(crate) fn split_paths(raw: &str, backslash_escapes: bool) -> Vec<String> {
+    let mut lexer = ShellLexer::new(backslash_escapes);
+    let mut paths = Vec::new();
+    let mut current = String::new();
+    for character in raw.chars() {
+        match lexer.next(character) {
+            Token::Char(ch) | Token::Escaped(ch) => current.push(ch),
+            Token::Syntax => {}
+            Token::Separator => {
+                if !current.is_empty() {
+                    paths.push(std::mem::take(&mut current));
+                }
+            }
+        }
+    }
+    if lexer.escaped {
         current.push('\\');
     }
     if !current.is_empty() {
@@ -156,84 +208,125 @@ pub(crate) fn local_path(raw: &str) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Граница принятого raw-drop: хвост возвращается без перевычисления экранирования.
-pub(crate) fn complete_prefix(raw: &str) -> Option<usize> {
-    let valid = |text: &str| {
-        let paths = input_candidates(text);
-        !paths.is_empty()
-            && paths
-                .iter()
-                .all(|p| local_path(p).is_some_and(|p| p.exists()))
-    };
-    let mut quote = None;
-    let mut escaped = false;
-    let mut boundary = None;
-    for (index, ch) in raw.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if matches!(ch, '\'' | '"') {
-            if quote == Some(ch) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(ch);
-            }
-            continue;
-        }
-        let prefix = raw[..index].trim();
-        let separator = quote.is_none() && matches!(ch, ' ' | '\t' | '\r' | '\n');
-        let concatenated = ch == '/'
-            && input_candidates(prefix)
-                .last()
-                .is_some_and(|p| local_path(p).is_some_and(|p| p.is_file()));
-        if (separator || concatenated) && valid(prefix) {
-            boundary = Some(index);
+/// `Some(is_file)` for an existing path, `None` for a missing or unusable one.
+fn metadata_kind(path: &std::path::Path) -> Option<bool> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.is_file())
+}
+
+/// Filesystem checks of one parsing pass, each distinct path probed once. The
+/// completeness check re-derives the candidates of every prefix at every
+/// separator; without the cache a long keystroke drop cost O(S²) `stat` calls on
+/// the UI thread, with it the probes grow linearly with the input.
+struct Probe<F: FnMut(&std::path::Path) -> Option<bool>> {
+    stat: F,
+    cache: std::collections::HashMap<String, Option<bool>>,
+}
+
+impl<F: FnMut(&std::path::Path) -> Option<bool>> Probe<F> {
+    fn new(stat: F) -> Self {
+        Self {
+            stat,
+            cache: std::collections::HashMap::new(),
         }
     }
-    if quote.is_none() && !escaped && valid(raw) {
-        Some(raw.len())
-    } else {
-        boundary
+
+    fn kind(&mut self, raw: &str) -> Option<bool> {
+        if let Some(kind) = self.cache.get(raw) {
+            return *kind;
+        }
+        let kind = local_path(raw).and_then(|path| (self.stat)(&path));
+        self.cache.insert(raw.to_owned(), kind);
+        kind
+    }
+
+    fn exists(&mut self, raw: &str) -> bool {
+        self.kind(raw).is_some()
+    }
+
+    fn is_file(&mut self, raw: &str) -> bool {
+        self.kind(raw) == Some(true)
+    }
+
+    fn candidates(&mut self, raw: &str, backslash_escapes: bool) -> Vec<String> {
+        let mut candidates = Vec::new();
+        // Not str::lines(): Terminal.app sends a multi-line paste with bare CR, which
+        // lines() does not split, so a pasted list became one path with spaces.
+        for line in raw
+            .split(['\r', '\n'])
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let paths = if self.exists(line) {
+                vec![line.to_owned()]
+            } else {
+                split_paths(line, backslash_escapes)
+            };
+            for path in paths {
+                // cmux may concatenate consecutive drops without any separator.
+                // A slash AFTER an existing regular file cannot be part of that
+                // file's path, so it unambiguously starts the next absolute path.
+                let mut start = 0;
+                for (index, character) in path.char_indices() {
+                    if character == '/' && index > start && self.is_file(&path[start..index]) {
+                        candidates.push(path[start..index].to_owned());
+                        start = index;
+                    }
+                }
+                candidates.push(path[start..].to_owned());
+            }
+        }
+        candidates
+    }
+
+    fn valid(&mut self, text: &str, backslash_escapes: bool) -> bool {
+        let paths = self.candidates(text, backslash_escapes);
+        !paths.is_empty() && paths.iter().all(|path| self.exists(path))
+    }
+
+    fn boundary(&mut self, raw: &str, backslash_escapes: bool) -> Option<usize> {
+        let mut lexer = ShellLexer::new(backslash_escapes);
+        let mut boundary = None;
+        for (index, ch) in raw.char_indices() {
+            let separator = match lexer.next(ch) {
+                Token::Separator => true,
+                Token::Char('/') => false,
+                _ => continue,
+            };
+            let prefix = raw[..index].trim();
+            let concatenated = !separator
+                && self
+                    .candidates(prefix, backslash_escapes)
+                    .last()
+                    .is_some_and(|path| self.is_file(path));
+            if (separator || concatenated) && self.valid(prefix, backslash_escapes) {
+                boundary = Some(index);
+            }
+        }
+        if !lexer.open() && self.valid(raw, backslash_escapes) {
+            Some(raw.len())
+        } else {
+            boundary
+        }
     }
 }
 
+/// Граница принятого raw-drop: хвост возвращается без перевычисления экранирования.
+pub(crate) fn complete_prefix(raw: &str) -> Option<usize> {
+    prefix_boundary(raw, BACKSLASH_ESCAPES)
+}
+
+fn prefix_boundary(raw: &str, backslash_escapes: bool) -> Option<usize> {
+    Probe::new(metadata_kind).boundary(raw, backslash_escapes)
+}
+
 pub(crate) fn input_candidates(raw: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    // Not str::lines(): Terminal.app sends a multi-line paste with bare CR, which
-    // lines() does not split, so a pasted list became one path with spaces.
-    for line in raw
-        .split(['\r', '\n'])
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let paths = if local_path(line).is_some_and(|path| path.exists()) {
-            vec![line.to_owned()]
-        } else {
-            split_shell_paths(line)
-        };
-        for path in paths {
-            // cmux may concatenate consecutive drops without any separator.
-            // A slash AFTER an existing regular file cannot be part of that
-            // file's path, so it unambiguously starts the next absolute path.
-            let mut start = 0;
-            for (index, character) in path.char_indices() {
-                if character == '/'
-                    && index > start
-                    && local_path(&path[start..index]).is_some_and(|p| p.is_file())
-                {
-                    candidates.push(path[start..index].to_owned());
-                    start = index;
-                }
-            }
-            candidates.push(path[start..].to_owned());
-        }
-    }
-    candidates
+    candidates(raw, BACKSLASH_ESCAPES)
+}
+
+fn candidates(raw: &str, backslash_escapes: bool) -> Vec<String> {
+    Probe::new(metadata_kind).candidates(raw, backslash_escapes)
 }
 
 #[cfg(test)]
@@ -290,6 +383,57 @@ mod tests {
         let path = directory.join("nested").to_string_lossy().to_string();
         assert_eq!(input_candidates(&path), vec![path]);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backslash_escapes_only_outside_quotes_and_never_on_windows() {
+        // Windows: a backslash is the path separator, never an escape.
+        assert_eq!(
+            split_paths(r#""C:\My Files\a.wav" C:\Users\b.wav"#, false),
+            vec![r"C:\My Files\a.wav", r"C:\Users\b.wav"]
+        );
+        // POSIX shells: an escape outside quotes only.
+        assert_eq!(
+            split_paths(r#""/tmp/a\b.wav" '/tmp/c\ d.wav' /tmp/e\ f.wav"#, true),
+            vec![r"/tmp/a\b.wav", r"/tmp/c\ d.wav", "/tmp/e f.wav"]
+        );
+        assert_eq!(
+            split_paths(r"/tmp/trailing\", true),
+            vec![r"/tmp/trailing\"]
+        );
+    }
+
+    #[test]
+    fn quoted_backslash_path_is_complete_on_every_platform() {
+        let directory = std::env::temp_dir().join(format!("gigaam-bs-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        // A file name with a literal backslash is legal on Unix; Windows can't create
+        // it, but the parsing rule under test is platform-independent there too.
+        let Ok(()) = std::fs::write(directory.join(r"a\b.wav"), []) else {
+            return;
+        };
+        let path = format!(r"{}/a\b.wav", directory.display());
+        let quoted = format!("\"{path}\"");
+        assert_eq!(prefix_boundary(&quoted, true), Some(quoted.len()));
+        assert_eq!(candidates(&quoted, true), vec![path.clone()]);
+        assert_eq!(prefix_boundary(&path, false), Some(path.len()));
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn completion_probes_each_path_a_bounded_number_of_times() {
+        // Every separator re-validated the whole prefix, so a long keystroke drop
+        // cost O(S²) `stat` calls on the UI thread.
+        let words: Vec<String> = (0..300).map(|i| format!("/missing/w{i}")).collect();
+        let raw = words.join(" ");
+        let mut probes = 0;
+        let mut probe = Probe::new(|_: &std::path::Path| {
+            probes += 1;
+            None
+        });
+        assert_eq!(probe.boundary(&raw, true), None);
+        drop(probe);
+        assert!(probes <= 4 * words.len(), "{probes} probes");
     }
 
     #[test]

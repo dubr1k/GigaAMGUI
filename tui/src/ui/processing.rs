@@ -9,8 +9,9 @@ use ratatui::{
 
 use crate::{
     app::{App, FileState, Focus},
-    commands::short_name,
+    commands::{parent_name, short_name},
     i18n::{t, tf},
+    queue::QueueItem,
     ui::{Action, AreaId, ButtonId},
 };
 
@@ -74,11 +75,13 @@ pub(crate) fn fit_middle(text: &str, width: usize) -> String {
     out
 }
 
-fn state_of(app: &App, _index: usize, file: &str) -> FileState {
-    if app.running() && !app.llm_running() && app.current_file.as_deref() == Some(file) {
+/// The row's own state, not a lookup by path: `App::file_state` scans the queue,
+/// which made every frame O(n²) in the queue length.
+fn state_of(app: &App, item: &QueueItem) -> FileState {
+    if app.running() && !app.llm_running() && app.current_file.as_deref() == Some(&item.path) {
         FileState::Processing
     } else {
-        app.file_state(file)
+        item.state
     }
 }
 
@@ -206,7 +209,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(index, item)| {
             let file = &item.path;
-            let state = state_of(app, index, file);
+            let state = state_of(app, item);
             let (key, colour) = match state {
                 FileState::Pending => ("state.pending", p.muted),
                 FileState::Processing => ("state.processing", p.accent),
@@ -222,10 +225,7 @@ fn draw_queue(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
                         Style::default().fg(p.text).add_modifier(Modifier::BOLD),
                     ),
                     Line::styled(
-                        fit_middle(
-                            file.rsplit_once('/').map_or("", |(parent, _)| parent),
-                            name_width,
-                        ),
+                        fit_middle(parent_name(file), name_width),
                         Style::default().fg(p.muted),
                     ),
                 ]),
