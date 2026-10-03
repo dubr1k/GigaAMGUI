@@ -458,6 +458,41 @@ def test_llm_tool_check_does_not_run_client_path(client, llm_env, monkeypatch):
     assert probed == ["/opt/server/claude"]  # настроенный на сервере путь, а не присланный
 
 
+# ==================== фоновые задачи ====================
+
+
+def test_background_jobs_are_referenced_until_done(web_dirs, monkeypatch):
+    # Цикл событий держит на задачи только слабые ссылки: без своей ссылки
+    # create_task-задача может быть собрана сборщиком мусора посреди работы
+    release = None
+    seen = {}
+
+    async def fake_download(*args):
+        await release.wait()
+
+    monkeypatch.setattr(web_app, "_download_and_process", fake_download)
+    monkeypatch.setattr(web_app, "model_loader", _FakeLoader())
+
+    async def scenario():
+        nonlocal release
+        release = asyncio.Event()
+        await web_app.download_from_url(
+            request=None, user="alice", url="https://example.com/v", output_formats="txt",
+            enable_diarization=False, diarization_backend="pyannote", num_speakers="", asr_backend="",
+            asr_model="", onnx_provider="", subtitle_sentence_split=True, subtitle_max_lines=2,
+            subtitle_max_width=64,
+        )
+        await asyncio.sleep(0)
+        seen["running"] = len(web_app._background_jobs)
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        seen["after"] = len(web_app._background_jobs)
+
+    asyncio.run(scenario())
+    assert seen == {"running": 1, "after": 0}
+
+
 # ==================== форматы вывода ====================
 
 

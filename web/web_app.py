@@ -669,6 +669,18 @@ async def _save_upload(file: UploadFile, request: Request) -> tuple:
 
 # ==================== ОБРАБОТКА ====================
 
+# Ссылки на фоновые задачи: цикл событий хранит на них только слабые ссылки, и
+# задача без своей ссылки может быть собрана сборщиком мусора посреди работы.
+_background_jobs: set[asyncio.Task] = set()
+
+
+def _start_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_jobs.add(task)
+    task.add_done_callback(_background_jobs.discard)
+    return task
+
+
 async def process_transcription(
     task_id: str,
     file_path: Path,
@@ -1281,7 +1293,7 @@ async def upload_files(
         tasks_storage[task_id].update(form.task_fields())
         _persist_tasks_index()
 
-        asyncio.create_task(
+        _start_background(
             process_transcription(
                 task_id, file_path, filename, form.output_formats,
                 form.enable_diarization, form.diarization_backend, form.num_speakers,
@@ -1340,7 +1352,7 @@ async def download_from_url(
     tasks_storage[task_id]['message'] = 'Загрузка по URL'
     _persist_tasks_index()
 
-    asyncio.create_task(
+    _start_background(
         _download_and_process(
             task_id, url, form.output_formats, form.enable_diarization,
             form.diarization_backend, form.num_speakers,
