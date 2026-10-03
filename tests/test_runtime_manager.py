@@ -2,6 +2,8 @@ import os
 import sys
 import types
 
+import pytest
+
 from src.utils import runtime_manager as rm
 
 _TEST_STACK = {
@@ -192,3 +194,33 @@ def test_cancelled_install_keeps_previous_runtime(monkeypatch, tmp_path):
 
     assert rm.install_variant("cpu") is False
     assert stale_file.read_text(encoding="utf-8") == "keep me"
+
+
+
+@pytest.mark.parametrize(
+    ("gpu_name", "variant"),
+    [
+        ("NVIDIA GeForce RTX 5090", "cu128"),
+        ("NVIDIA GeForce RTX 5070 Ti", "cu128"),
+        ("NVIDIA GeForce RTX 5060 Laptop GPU", "cu128"),
+        ("NVIDIA GeForce RTX 5050", "cu128"),
+        # Blackwell без номера 50x0 — без cu128 карта вовсе не работает (sm_120).
+        ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", "cu128"),
+        ("NVIDIA RTX PRO 4000 Blackwell", "cu128"),
+        ("NVIDIA B200", "cu128"),
+        # «5000» — не GeForce 50-й серии: Turing и Ada идут в cu124.
+        ("Quadro RTX 5000", "cu124"),
+        ("NVIDIA RTX 5000 Ada Generation", "cu124"),
+        ("NVIDIA RTX A5000", "cu124"),
+        ("NVIDIA GeForce RTX 4090", "cu124"),
+        ("NVIDIA GeForce RTX 3060", "cu124"),
+        ("Tesla T4", "cu124"),
+        ("AMD Radeon RX 7900 XTX", "cpu"),
+        (None, "cpu"),
+    ],
+)
+def test_detect_recommended_variant_classifies_gpu_names(monkeypatch, gpu_name, variant):
+    monkeypatch.setattr(rm.sys, "platform", "win32")
+    monkeypatch.setattr(rm, "_detect_gpu_name", lambda: gpu_name)
+
+    assert rm.detect_recommended_variant() == variant
