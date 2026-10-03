@@ -8,7 +8,7 @@ use std::{
 use crate::{
     app::{llm_input_files, on_off, request_llm, App, Page},
     i18n::{t, tf, Lang},
-    input::InputMode,
+    input::{local_path, split_paths, InputMode, BACKSLASH_ESCAPES},
     settings::save_app_settings,
     theme::Theme,
     worker::{provider_from_menu_option, provider_menu_options, provider_prefix},
@@ -55,19 +55,48 @@ impl PathError {
     }
 }
 
+/// The one reading of a path the user typed, pasted or passed on the command
+/// line: a single shell-quoted or escaped token is unquoted (`My\ Dir`,
+/// `"My Dir"`), a `file://` URL is percent-decoded and `~/` expands to the home
+/// directory. Text that already names something on disk is taken literally, so
+/// a real name with quotes or backslashes survives. `/output`, `/llm-file` and
+/// headless mode all go through here; each used to have its own subset.
+pub(crate) fn user_path(raw: &str) -> Result<PathBuf, PathError> {
+    let text = raw.trim();
+    if let Some(literal) = local_path(text).filter(|path| path.exists()) {
+        return Ok(literal);
+    }
+    let parts = split_paths(text, BACKSLASH_ESCAPES);
+    let text = match parts.as_slice() {
+        [single] => single.as_str(),
+        _ => text,
+    };
+    local_path(text).ok_or_else(|| {
+        if text.starts_with("~/") {
+            PathError::HomeNotSet
+        } else {
+            PathError::Missing(text.to_owned())
+        }
+    })
+}
+
+/// An existing regular file, canonical.
 pub(crate) fn normalize_path(raw: &str) -> Result<String, PathError> {
-    let mut text = raw.trim().trim_matches(['\'', '"']).trim().to_string();
-    if let Some(path) = text.strip_prefix("file://") {
-        text = path.replace("%20", " ");
-    }
-    if let Some(path) = text.strip_prefix("~/") {
-        let home = std::env::var("HOME").map_err(|_| PathError::HomeNotSet)?;
-        text = format!("{home}/{path}");
-    }
-    let path = fs::canonicalize(&text).map_err(|_| PathError::Missing(text.clone()))?;
+    let path = user_path(raw)?;
+    let path =
+        fs::canonicalize(&path).map_err(|_| PathError::Missing(path.display().to_string()))?;
     if !path.is_file() {
         return Err(PathError::NotAFile(path.display().to_string()));
     }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// A results directory (`/output`, `--output`): created when missing, canonical.
+/// The error is the technical cause; callers add the sentence around it.
+pub(crate) fn prepare_output_dir(raw: &str, lang: Lang) -> Result<String, String> {
+    let path = user_path(raw).map_err(|error| error.message(lang))?;
+    fs::create_dir_all(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let path = fs::canonicalize(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -190,7 +219,10 @@ pub(crate) const COMMANDS: [(&str, &str); 39] = [
         "/reconnect",
         "reconnect the worker without repeating processing",
     ),
-    ("/output", "set the results directory"),
+    (
+        "/output",
+        "set the results directory; - for next to the file",
+    ),
     ("/backend", "select the ASR runtime"),
     ("/onnx-provider", "select the ONNX execution provider"),
     ("/model", "select the GigaAM recognition model"),
@@ -954,22 +986,26 @@ pub(crate) fn run_command(app: &mut App) {
             app.status = t(app.lang, "usage.llm-tools").into();
         }
         "/pets" => toggle_pets(app),
-        "/output" => {
-            if argument.is_empty() {
-                accepted = false;
-                app.status = t(app.lang, "usage.output").into();
-            } else if let Err(error) = fs::create_dir_all(argument) {
-                accepted = false;
-                app.status = tf(
-                    app.lang,
-                    "status.output_dir_error",
-                    &[("error", &error.to_string())],
-                );
-            } else if let Ok(path) = fs::canonicalize(argument) {
-                app.output_dir = Some(path.to_string_lossy().into_owned());
-                app.status = t(app.lang, "status.output_dir_updated").into();
-            }
+        "/output" if argument.is_empty() => {
+            accepted = false;
+            app.status = t(app.lang, "usage.output").into();
         }
+        "/output" if argument == "-" => {
+            app.output_dir = None;
+            app.status = t(app.lang, "status.output_dir_reset").into();
+            save_app_settings(app);
+        }
+        "/output" => match prepare_output_dir(argument, app.lang) {
+            Ok(path) => {
+                app.output_dir = Some(path);
+                app.status = t(app.lang, "status.output_dir_updated").into();
+                save_app_settings(app);
+            }
+            Err(error) => {
+                accepted = false;
+                app.status = tf(app.lang, "status.output_dir_error", &[("error", &error)]);
+            }
+        },
         "/backend" if backend_is_supported(&argument.to_ascii_lowercase()) => {
             app.backend = argument.to_ascii_lowercase();
             app.status = tf(app.lang, "status.backend", &[("value", &app.backend)]);
@@ -1428,6 +1464,82 @@ mod tests {
         run_command(&mut app);
         assert_eq!(app.status, "Usage: /lang ru|en");
         assert_eq!(app.lang, Lang::En);
+    }
+
+    #[test]
+    fn output_command_reads_the_path_like_every_other_path_and_persists_it() {
+        let config = isolated_config_dir();
+        let mut app = crate::test_support::ready_app();
+        let canonical = |path: &Path| {
+            fs::canonicalize(path)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let quoted = config.join("Quoted Dir");
+        app.input
+            .replace(format!("/output \"{}\"", quoted.display()));
+        run_command(&mut app);
+        assert_eq!(app.output_dir.as_deref(), Some(canonical(&quoted).as_str()));
+        assert_eq!(load_settings().output_dir, app.output_dir, "persisted");
+
+        #[cfg(not(windows))]
+        {
+            // A dropped folder arrives shell-escaped; the old code created `My\ Dir`.
+            let target = config.join("My Dir");
+            app.input.replace(format!(
+                "/output {}",
+                target.display().to_string().replace(' ', "\\ ")
+            ));
+            run_command(&mut app);
+            assert_eq!(app.output_dir.as_deref(), Some(canonical(&target).as_str()));
+            assert!(!config.join("My\\ Dir").exists());
+        }
+
+        app.input.replace("/output -".into());
+        run_command(&mut app);
+        assert_eq!(
+            app.output_dir, None,
+            "`-` puts results next to each file again"
+        );
+        assert_eq!(load_settings().output_dir, None);
+    }
+
+    #[test]
+    fn home_and_percent_encoded_urls_expand_in_one_place() {
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(
+                user_path("~/Записи").unwrap(),
+                PathBuf::from(home).join("Записи")
+            );
+        }
+        let directory = std::env::temp_dir().join(format!("gigaam-url-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("é ё.txt");
+        fs::write(&file, "x").unwrap();
+        #[cfg(not(windows))]
+        {
+            let canonical = fs::canonicalize(&file).unwrap();
+            let url = format!(
+                "file://{}",
+                canonical
+                    .to_string_lossy()
+                    .replace('é', "%C3%A9")
+                    .replace('ё', "%D1%91")
+                    .replace(' ', "%20")
+            );
+            assert_eq!(
+                normalize_path(&url).unwrap(),
+                canonical.to_string_lossy(),
+                "only %20 used to be decoded"
+            );
+        }
+        assert_eq!(
+            normalize_path(&format!("'{}'", file.display())).unwrap(),
+            normalize_path(&file.to_string_lossy()).unwrap()
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

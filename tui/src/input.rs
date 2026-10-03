@@ -197,12 +197,23 @@ pub(crate) fn local_path(raw: &str) -> Option<std::path::PathBuf> {
             }
         }
         decoded = String::from_utf8(bytes).ok()?;
-        decoded.as_str()
+        // `file:///C:/x` names `C:/x` on Windows, not a rooted `/C:/x`.
+        match decoded.as_bytes() {
+            [b'/', drive, b':', ..] if cfg!(windows) && drive.is_ascii_alphabetic() => {
+                &decoded[1..]
+            }
+            _ => decoded.as_str(),
+        }
     } else {
         text
     };
     if let Some(path) = text.strip_prefix("~/") {
-        Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(path))
+        let home = std::env::var_os("HOME").or_else(|| {
+            cfg!(windows)
+                .then(|| std::env::var_os("USERPROFILE"))
+                .flatten()
+        })?;
+        Some(std::path::PathBuf::from(home).join(path))
     } else {
         Some(text.into())
     }

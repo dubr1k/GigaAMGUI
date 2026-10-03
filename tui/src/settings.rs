@@ -47,6 +47,9 @@ pub(crate) struct TuiSettings {
     pub(crate) audio_preprocessing_mode: String,
     /// Colour scheme name (`default`, `mono` or a catalogue theme).
     pub(crate) theme: String,
+    /// `/output`; `None` saves results next to each input. TUI-only: the desktop
+    /// app's `last_output_dir` is a dialog start folder, not an active choice.
+    pub(crate) output_dir: Option<String>,
 }
 
 impl Default for TuiSettings {
@@ -79,6 +82,7 @@ impl Default for TuiSettings {
             llm_allow_tools: false,
             audio_preprocessing_mode: "auto".into(),
             theme: DEFAULT_THEME.into(),
+            output_dir: None,
         }
     }
 }
@@ -451,6 +455,11 @@ pub(crate) fn apply_settings(app: &mut App, settings: TuiSettings, lang_override
     }
     app.diarization = settings.diarization;
     app.num_speakers = settings.num_speakers;
+    // A folder removed since the last run falls back to "next to the file"
+    // instead of failing every file of the first batch.
+    app.output_dir = settings
+        .output_dir
+        .filter(|directory| Path::new(directory).is_dir());
     // `App::default()` greets in Russian before the language is known: redo the
     // greeting in the language that was just chosen.
     app.status = t(app.lang, "status.ready").into();
@@ -554,6 +563,7 @@ impl From<&App> for TuiSettings {
             llm_allow_tools: app.llm_allow_tools,
             audio_preprocessing_mode: app.audio_preprocessing_mode.clone(),
             theme: app.theme.name.to_owned(),
+            output_dir: app.output_dir.clone(),
         }
     }
 }

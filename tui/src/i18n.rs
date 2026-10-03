@@ -428,8 +428,8 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     // which headless mode and the README keep in English.
     (
         "cmd.output",
-        "папка для результатов",
-        "set the results directory",
+        "папка для результатов; - — рядом с файлом",
+        "set the results directory; - for next to the file",
     ),
     (
         "cmd.backend",
@@ -986,8 +986,13 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "usage.output",
-        "Использование: /output <папка>",
-        "Usage: /output <directory>",
+        "Использование: /output <папка> | /output - (рядом с файлом)",
+        "Usage: /output <directory> | /output - (next to the file)",
+    ),
+    (
+        "status.output_dir_reset",
+        "Результаты сохраняются рядом с каждым файлом",
+        "Results are saved next to each file",
     ),
     (
         "usage.llm-mode",

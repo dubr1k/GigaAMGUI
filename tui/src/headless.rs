@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashSet,
-    fs,
     io::{self, Write},
     path::PathBuf,
     process::Stdio,
@@ -14,8 +13,8 @@ use serde_json::{json, Value};
 
 use crate::{
     commands::{
-        backend_is_supported, normalize_path, selectable_backends, short_name, FORMAT_KEYS,
-        MODEL_OPTIONS,
+        backend_is_supported, normalize_path, prepare_output_dir, selectable_backends, short_name,
+        FORMAT_KEYS, MODEL_OPTIONS,
     },
     i18n::Lang,
     settings::{load_settings, TuiSettings},
@@ -462,11 +461,8 @@ fn resolve_headless_paths(command: &mut HeadlessCommand) -> Result<(), String> {
         *file = normalize_path(file).map_err(|error| error.message(Lang::En))?;
     }
     if let Some(directory) = output_dir.as_mut() {
-        fs::create_dir_all(&*directory)
+        *directory = prepare_output_dir(directory, Lang::En)
             .map_err(|error| format!("cannot create output directory {directory}: {error}"))?;
-        let canonical = fs::canonicalize(&*directory)
-            .map_err(|error| format!("cannot resolve output directory {directory}: {error}"))?;
-        *directory = canonical.to_string_lossy().into_owned();
     }
     Ok(())
 }
@@ -667,7 +663,7 @@ fn headless_event_loop(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, fs};
 
     use super::*;
 
