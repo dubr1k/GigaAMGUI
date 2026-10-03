@@ -105,6 +105,26 @@ class LiveUiMixin:
         workspace.setObjectName("live_three_pane_layout")
         workspace.setSpacing(self._px(6))
 
+        workspace.addWidget(self._create_live_source_pane())
+        workspace.addWidget(self._create_live_capture_pane(), 1)
+        workspace.addWidget(self._create_live_parameters_pane())
+
+        layout.addLayout(workspace, 1)
+
+        self.combo_live_source.currentIndexChanged.connect(self._update_live_source_controls)
+        self.combo_live_diarization.currentIndexChanged.connect(self._update_live_export_controls)
+        for checkbox in self.live_export_checkboxes.values():
+            checkbox.stateChanged.connect(self._update_live_export_controls)
+        # Устройства перечитывает _restore_live_settings (в фоне, с сохранённым выбором).
+        self._update_live_output_folder_label(self.live_output_dir.text())
+        self._update_live_source_controls()
+        self._update_live_export_controls()
+        self._update_live_control_state()
+        self.signals.live_status.connect(self._update_live_recorder_display)
+        return tab
+
+    def _create_live_source_pane(self) -> QWidget:
+        """Левая колонка: источник и устройства, папка сессии, оверлей."""
         source_pane = QWidget()
         source_pane.setObjectName("live_source_pane")
         # Wide enough for a label plus a readable device name; the earlier
@@ -209,8 +229,10 @@ class LiveUiMixin:
         quick_layout.addWidget(self.btn_live_clear)
         source_layout.addWidget(quick_actions)
         source_layout.addStretch()
-        workspace.addWidget(source_pane)
+        return source_pane
 
+    def _create_live_capture_pane(self) -> QWidget:
+        """Центр: таймер, статус, кнопки записи и сама расшифровка."""
         capture_pane = QWidget()
         capture_pane.setObjectName("live_capture_pane")
         capture_pane.setMinimumWidth(self._px(235))
@@ -227,7 +249,7 @@ class LiveUiMixin:
         self._live_timer_clock = QElapsedTimer()
         self._live_timer_elapsed_ms = 0
         self._live_timer_active = False
-        self._live_timer_ticker = QTimer(tab)
+        self._live_timer_ticker = QTimer(capture_pane)
         self._live_timer_ticker.setInterval(1000)
         self._live_timer_ticker.timeout.connect(self._refresh_live_recorder_timer)
         self.lbl_live_timer = QLabel("00:00:00")
@@ -312,8 +334,10 @@ class LiveUiMixin:
         self.live_transcript.setPlaceholderText(self._t("Расшифровка появится здесь", "Transcript appears here"))
         transcript_layout.addWidget(self.live_transcript, 1)
         capture_layout.addWidget(transcript_panel, 1)
-        workspace.addWidget(capture_pane, 1)
+        return capture_pane
 
+    def _create_live_parameters_pane(self) -> QWidget:
+        """Правая колонка: диаризация, усиление и форматы экспорта."""
         parameters_pane = QWidget()
         parameters_pane.setObjectName("live_parameters_pane")
         parameters_pane.setMinimumWidth(self._px(220))
@@ -425,21 +449,7 @@ class LiveUiMixin:
         exports_group_layout.addLayout(subtitle_layout)
         parameters_layout.addWidget(self.grp_live_exports)
         parameters_layout.addStretch()
-        workspace.addWidget(parameters_pane)
-
-        layout.addLayout(workspace, 1)
-
-        self.combo_live_source.currentIndexChanged.connect(self._update_live_source_controls)
-        self.combo_live_diarization.currentIndexChanged.connect(self._update_live_export_controls)
-        for checkbox in self.live_export_checkboxes.values():
-            checkbox.stateChanged.connect(self._update_live_export_controls)
-        # Устройства перечитывает _restore_live_settings (в фоне, с сохранённым выбором).
-        self._update_live_output_folder_label(self.live_output_dir.text())
-        self._update_live_source_controls()
-        self._update_live_export_controls()
-        self._update_live_control_state()
-        self.signals.live_status.connect(self._update_live_recorder_display)
-        return tab
+        return parameters_pane
 
     def _update_live_recorder_display(self, status) -> None:
         state = getattr(getattr(status, "state", None), "value", "")
