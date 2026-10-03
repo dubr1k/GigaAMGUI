@@ -6,7 +6,6 @@ GigaAM v3 Transcriber - Web GUI
 
 import asyncio
 import contextlib
-import hmac
 import logging
 import uuid
 import warnings
@@ -30,9 +29,8 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 from slowapi.errors import RateLimitExceeded
 
 from src import __version__
@@ -52,6 +50,7 @@ from src.utils.media_downloader import MediaDownloader
 from src.utils.output_naming import find_result_file
 from src.utils.processing_stats import ProcessingStats
 from web import auth, jobs
+from web.routes import auth as auth_routes
 from web.state import STATIC_DIR, state
 from web.task_registry import ALL_TASK_STATUSES, registry
 
@@ -244,14 +243,12 @@ if state.trusted_origins:
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+app.include_router(auth_routes.router)
+
 mount_mcp(app, "/mcp", _mcp_backend, lambda: state.key_store)
 
 
 # ==================== ЭНДПОИНТЫ АВТОРИЗАЦИИ ====================
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
 
 
 def _server_llm_settings(client: dict) -> dict:
@@ -299,41 +296,6 @@ def _run_llm_provider(llm_settings: dict, transcript_text: str, prompt: str) -> 
     except llm_service.UnknownLLMProvider as exc:
         raise RuntimeError(f"Неизвестный провайдер: {exc.provider}") from exc
 
-
-@app.post("/api/auth/login")
-@auth.limiter.limit(state.login_rate_limit)
-async def login(request: Request, req: LoginRequest):
-    # Лимит считает все попытки с адреса: без него пароль единственной учётной
-    # записи перебирался со скоростью сети. За прокси без доверенного
-    # X-Forwarded-For адрес у всех общий — лимит тогда общий на панель.
-    if req.username == state.username and hmac.compare_digest(auth.hash_password(req.password), auth.hash_password(state.password)):
-        token = auth.create_token(req.username)
-        response = JSONResponse({"ok": True, "username": req.username})
-        response.set_cookie(
-            key="gigaam_token",
-            value=token,
-            httponly=True,
-            secure=state.cookie_secure,
-            samesite="lax",
-            max_age=state.jwt_expire_hours * 3600,
-        )
-        return response
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Неверное имя пользователя или пароль",
-    )
-
-
-@app.post("/api/auth/logout")
-async def logout():
-    response = JSONResponse({"ok": True})
-    response.delete_cookie("gigaam_token")
-    return response
-
-
-@app.get("/api/auth/check")
-async def auth_check(user: str = Depends(auth.require_auth)):
-    return {"ok": True, "username": user}
 
 
 # ==================== ЭНДПОИНТЫ GUI ====================
