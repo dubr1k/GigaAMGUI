@@ -269,8 +269,6 @@ final class NativeTranscriptionJob {
         if !success { worker?.drainDiagnostics() }
         let metadata = try JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys])
         let stem = files[index].deletingPathExtension().lastPathComponent
-        let suffixes = ["txt": ".txt", "txt_timecodes": "_timecodes.txt", "txt_diarize": "_diarize.txt",
-                        "txt_diarize_timecodes": "_diarize_timecodes.txt", "md": ".md", "srt": ".srt", "vtt": ".vtt"]
         var outputFiles: [String: URL] = [:]
         var errors: [String] = []
         if let error = raw["error"] as? String, !error.isEmpty { errors.append(error) }
@@ -283,7 +281,7 @@ final class NativeTranscriptionJob {
             let file = reported.resolvingSymlinksInPath().standardizedFileURL
             let expectedName = reported.lastPathComponent
             guard !savedPath.contains("\0"), file.deletingLastPathComponent().path == directory.path,
-                  let format = suffixes.first(where: { stem + $0.value == expectedName })?.key,
+                  let format = OutputNaming.format(ofOutputNamed: expectedName, stem: stem),
                   let values = try? file.resourceValues(forKeys: [.isRegularFileKey]), values.isRegularFile == true,
                   FileManager.default.isReadableFile(atPath: file.path) else {
                 errors.append("The worker returned an unavailable or unsafe output file: \(savedPath)")

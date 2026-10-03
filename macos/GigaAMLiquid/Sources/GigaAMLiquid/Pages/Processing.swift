@@ -295,17 +295,14 @@ extension AppController {
             showNotice("Не удалось начать обработку", "Выберите файлы, доступную папку и хотя бы один формат.")
             return
         }
-        let groupedStems = Dictionary(grouping: selectedFileURLs) {
-            $0.deletingPathExtension().lastPathComponent.folding(
-                options: [.caseInsensitive, .diacriticInsensitive], locale: .current
-            )
-        }
-        let collisions = groupedStems.values.filter { $0.count > 1 }
+        // The worker's own rule (find_output_collisions): same normalised stem in the
+        // same target folder. Beside the source, /a/x.mp3 and /b/x.mp3 do not collide.
+        let collisions = OutputNaming.collisions(selectedFileURLs, outputDirectory: destination.folder)
         if !collisions.isEmpty {
             let names = collisions.flatMap { $0.map(\.lastPathComponent) }.sorted().joined(separator: ", ")
             showNotice(
                 "Не удалось начать обработку",
-                "Файлы с одинаковым базовым именем перезапишут результаты друг друга: \(names). Переименуйте файлы или обработайте их отдельно."
+                L10n.format("Файлы с одинаковым базовым именем перезапишут результаты друг друга: %@. Переименуйте файлы или обработайте их отдельно.", names)
             )
             return
         }

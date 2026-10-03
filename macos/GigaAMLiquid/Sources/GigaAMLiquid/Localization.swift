@@ -364,6 +364,7 @@ enum L10n {
         "Ассистент не ответил: ": "The assistant did not answer: ",
         "В записи ещё нет распознанных фраз — спросите после первой.": "No phrase has been recognised yet; ask after the first one.",
         "Введите вопрос.": "Enter a question.",
-        "LLM не настроена.": "LLM is not configured."
+        "LLM не настроена.": "LLM is not configured.",
+        "Файлы с одинаковым базовым именем перезапишут результаты друг друга: %@. Переименуйте файлы или обработайте их отдельно.": "Files with the same base name would overwrite each other's results: %@. Rename them or process them separately."
     ]
 }

@@ -114,7 +114,9 @@ def test_hugging_face_token_uses_keychain_instead_of_user_defaults() -> None:
 
 def test_native_client_blocks_colliding_output_stems_and_cleans_download_cache() -> None:
     main = _liquid_sources()
-    assert "let groupedStems = Dictionary(grouping: selectedFileURLs)" in main
+    # Same rule as the worker (find_output_collisions): per target folder.
+    start = _swift_block(main, "@objc private func startProcessing(_ sender: Any?) {")
+    assert "OutputNaming.collisions(selectedFileURLs, outputDirectory: destination.folder)" in start
     assert "перезапишут результаты друг друга" in main
     assert "rememberDownloadedMedia(files)" in main
     assert "cleanupDownloadedMedia()" in main
@@ -534,3 +536,17 @@ def test_swift_stage_labels_cover_every_progress_stage() -> None:
         assert f'"{stage}": (' in swift, stage
     transcription = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
     assert "StageLabel.text(stage" in transcription
+
+
+def test_swift_output_names_mirror_python_naming() -> None:
+    # Liquid identifies saved files and refuses colliding batches with the
+    # worker's own naming table; a new format in Python must be added here too.
+    from src.utils import output_naming
+
+    naming = (LIQUID_CORE / "OutputNaming.swift").read_text(encoding="utf-8")
+    table = naming.split("public static let formatSuffix", 1)[1].split("\n    ]\n", 1)[0]
+    entries = {key: (suffix, ext) for key, suffix, ext in re.findall(r'"(\w+)": \("([^"]*)", "(\w+)"\)', table)}
+    assert entries == {key: tuple(value) for key, value in output_naming.FORMAT_SUFFIX.items()}
+    transcription = (LIQUID_APP / "Transcription.swift").read_text(encoding="utf-8")
+    assert "OutputNaming.format(ofOutputNamed:" in transcription
+    assert '"_timecodes.txt"' not in transcription
