@@ -163,7 +163,8 @@ final class LiveSessionJob {
                 ])
             }
         case .level(let source, let rms):
-            emit(.level(source, rms))
+            // On the audio thread: `finished` belongs to the queue.
+            queue.async { self.emit(.level(source, rms)) }
         case .permissionDenied(let source, let detail):
             forwardCaptureEvent(source: source, kind: "permission_denied", detail: detail)
         case .deviceRemoved(let source, let detail):
