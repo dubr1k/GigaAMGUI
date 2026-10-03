@@ -10,7 +10,7 @@ from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QFileDialog
 
-from ..live.asr import LiveAsrScheduler
+from ..live.asr import LiveAsrScheduler, asr_scheduler_factory
 from ..live.asr_backend import LazyModelBackend
 from ..live.capture.factory import CaptureUnavailable, create_capture_adapter
 from ..live.exports import ExportSelection
@@ -284,17 +284,16 @@ class LiveMixin:
     def _live_start_request(self, output_dir: Path) -> dict | None:
         """Снимок настроек Live на момент нажатия и адаптеры захвата."""
         sources = self._selected_live_sources()
-        settings = LiveSettings(
+        # Дорожки и микс выводятся так же, как в worker (Liquid/TUI). Бэкенд
+        # диаризации не передаём: после остановки работает встроенный onnx,
+        # pyannote потребовал бы HF-токен.
+        settings = LiveSettings.for_sources(
+            sources,
+            record_mic=self.cb_live_mic_audio.isChecked(),
+            record_system=self.cb_live_system_audio.isChecked(),
             mic_device_id=self._selected_live_device(CaptureSource.MIC),
             system_device_id=self._selected_live_device(CaptureSource.SYSTEM),
             diarization_mode=DiarizationMode(self.combo_live_diarization.currentData()),
-            record_mic_audio=CaptureSource.MIC in sources and self.cb_live_mic_audio.isChecked(),
-            record_system_audio=CaptureSource.SYSTEM in sources and self.cb_live_system_audio.isChecked(),
-            record_source_audio=any(
-                checkbox.isChecked()
-                for checkbox in (self.cb_live_mic_audio, self.cb_live_system_audio)
-            ),
-            record_mix_audio=sources == {CaptureSource.MIC, CaptureSource.SYSTEM},
         )
         try:
             adapters = {
@@ -373,12 +372,9 @@ class LiveMixin:
                 request["output_dir"],
                 request["settings"],
                 request["adapters"],
-                scheduler_factory=lambda source, on_final, on_partial, on_error: LiveAsrScheduler(
-                    backend,
-                    on_final=on_final,
-                    on_partial=on_partial,
-                    on_error=on_error,
-                ),
+                # Имя модуля, а не класс из src.live.asr: тесты подменяют
+                # src.gui.live_mixin.LiveAsrScheduler.
+                scheduler_factory=asr_scheduler_factory(backend, scheduler_class=LiveAsrScheduler),
                 export_selection=request["export_selection"],
                 translate=self._t,
                 log=self._log_live,
