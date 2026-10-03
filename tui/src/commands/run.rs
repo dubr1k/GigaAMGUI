@@ -6,11 +6,9 @@ use crate::{
     app::{llm_input_files, on_off, request_llm, App, Page},
     i18n::{t, tf, Lang},
     input::InputMode,
-    options::{
-        backend_is_supported, is_llm_mode, is_model, AUDIO_MODES, DIARIZATION_BACKENDS,
-        FORMAT_KEYS, ONNX_PROVIDERS,
-    },
+    options::{is_llm_mode, FORMAT_KEYS},
     providers::{provider, provider_prefix},
+    setting::Setting,
     settings::save_app_settings,
     theme::Theme,
 };
@@ -77,6 +75,23 @@ pub(crate) fn run_command(app: &mut App) {
         app.input.close();
         let messages = crate::app::dispatch(app, action);
         app.outbox.extend(messages);
+        return;
+    }
+    if let Some(parsed) = Setting::parse(&name, argument, app) {
+        let accepted = match parsed {
+            Ok(setting) => {
+                setting.apply(app);
+                true
+            }
+            Err(usage) => {
+                app.status = usage;
+                false
+            }
+        };
+        app.log(app.status.clone());
+        if accepted {
+            app.input.close();
+        }
         return;
     }
     let mut accepted = true;
@@ -297,37 +312,6 @@ pub(crate) fn run_command(app: &mut App) {
                 app.status = tf(app.lang, "status.output_dir_error", &[("error", &error)]);
             }
         },
-        "/backend" if backend_is_supported(&argument.to_ascii_lowercase()) => {
-            app.backend = argument.to_ascii_lowercase();
-            app.status = tf(app.lang, "status.backend", &[("value", &app.backend)]);
-            save_app_settings(app);
-        }
-        "/backend" => {
-            accepted = false;
-            app.status = backend_usage(app.lang);
-        }
-        "/onnx-provider" if ONNX_PROVIDERS.contains(&argument.to_ascii_lowercase().as_str()) => {
-            app.onnx_provider = argument.to_ascii_lowercase();
-            app.status = tf(
-                app.lang,
-                "status.onnx_provider",
-                &[("value", &app.onnx_provider)],
-            );
-            save_app_settings(app);
-        }
-        "/onnx-provider" => {
-            accepted = false;
-            app.status = t(app.lang, "usage.onnx-provider").into();
-        }
-        "/model" if is_model(argument) => {
-            app.model = argument.into();
-            app.status = tf(app.lang, "status.model", &[("value", &app.model)]);
-            save_app_settings(app);
-        }
-        "/model" => {
-            accepted = false;
-            app.status = t(app.lang, "usage.model").into();
-        }
         "/formats" => {
             let formats: Vec<String> = argument
                 .split(',')
@@ -383,73 +367,6 @@ pub(crate) fn run_command(app: &mut App) {
                 save_app_settings(app);
             }
             _ => app.status = t(app.lang, "status.subtitle_width_range").into(),
-        },
-        "/diarize" if matches!(argument, "on" | "off") => {
-            app.diarization = argument == "on";
-            app.status = tf(
-                app.lang,
-                "status.diarization",
-                &[("value", on_off(app.lang, app.diarization))],
-            );
-            save_app_settings(app);
-        }
-        "/diarize" => {
-            accepted = false;
-            app.status = t(app.lang, "usage.diarize").into();
-        }
-        "/audio-mode" if AUDIO_MODES.contains(&argument) => {
-            app.audio_preprocessing_mode = argument.into();
-            app.status = tf(app.lang, "status.audio_mode", &[("value", argument)]);
-            save_app_settings(app);
-        }
-        "/audio-mode" => {
-            accepted = false;
-            app.status = t(app.lang, "usage.audio-mode").into();
-        }
-        "/diarization-backend" if DIARIZATION_BACKENDS.contains(&argument) => {
-            app.diarization_backend = argument.into();
-            if app.diarization_backend == "sortformer" {
-                app.num_speakers = None;
-            }
-            app.status = tf(
-                app.lang,
-                "status.diarization_backend",
-                &[("value", &app.diarization_backend)],
-            );
-            save_app_settings(app);
-        }
-        "/diarization-backend" => {
-            accepted = false;
-            app.status = t(app.lang, "usage.diarization-backend").into();
-        }
-        "/speakers" if app.diarization_backend == "sortformer" => {
-            app.num_speakers = None;
-            app.status = t(app.lang, "status.sortformer_auto").into();
-            save_app_settings(app);
-        }
-        "/speakers" if argument == "auto" => {
-            app.num_speakers = None;
-            app.status = tf(
-                app.lang,
-                "status.speakers",
-                &[("value", t(app.lang, "value.auto"))],
-            );
-            save_app_settings(app);
-        }
-        "/speakers" => match argument.parse::<u32>() {
-            Ok(value) if value > 0 => {
-                app.num_speakers = Some(value);
-                app.status = tf(
-                    app.lang,
-                    "status.speakers",
-                    &[("value", &value.to_string())],
-                );
-                save_app_settings(app);
-            }
-            _ => {
-                accepted = false;
-                app.status = t(app.lang, "usage.speakers").into();
-            }
         },
         "/clear" => clear_queue(app),
         "/remove" => match argument.parse::<usize>() {

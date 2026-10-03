@@ -1,7 +1,7 @@
 //! Choice menus: their options, opening one on the current value, applying a pick.
 
 use crate::{
-    app::{on_off, App},
+    app::App,
     i18n::{t, tf, Lang},
     input::InputMode,
     options::{
@@ -9,6 +9,7 @@ use crate::{
         MODEL_OPTIONS, ONNX_PROVIDERS, SPEAKER_CHOICES,
     },
     providers::{provider, PROVIDERS},
+    setting::Setting,
     settings::save_app_settings,
     theme::Theme,
 };
@@ -197,6 +198,13 @@ pub(crate) fn apply_command_menu(app: &mut App) {
         return;
     }
     let command = app.command_menu.clone().unwrap_or_default();
+    if let Some(setting) = Setting::from_menu(&command, option) {
+        setting.apply(app);
+        app.command_menu = None;
+        app.input.close();
+        app.log(app.status.clone());
+        return;
+    }
     match command.as_str() {
         "/queue-actions" => {
             use crate::{action::Action, queue::RunSelection};
@@ -211,35 +219,6 @@ pub(crate) fn apply_command_menu(app: &mut App) {
             app.input.close();
             let messages = crate::app::dispatch(app, action);
             app.outbox.extend(messages);
-        }
-        "/backend" => {
-            app.backend = option.clone();
-            app.status = tf(app.lang, "status.backend", &[("value", &app.backend)]);
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
-        }
-        "/onnx-provider" => {
-            app.onnx_provider = option.clone();
-            app.status = tf(
-                app.lang,
-                "status.onnx_provider",
-                &[("value", &app.onnx_provider)],
-            );
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
-        }
-        "/model" => {
-            app.model = option
-                .split_whitespace()
-                .next()
-                .unwrap_or("v3_e2e_rnnt")
-                .into();
-            app.status = tf(app.lang, "status.model", &[("value", &app.model)]);
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
         }
         "/settings-provider" => {
             app.llm_provider = provider_from_menu_option(option).to_owned();
@@ -304,52 +283,6 @@ pub(crate) fn apply_command_menu(app: &mut App) {
                 "status.llm_modes",
                 &[("modes", &app.llm_modes.join(", "))],
             );
-        }
-        "/diarize" => {
-            app.diarization = option == "on";
-            app.status = tf(
-                app.lang,
-                "status.diarization",
-                &[("value", on_off(app.lang, app.diarization))],
-            );
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
-        }
-        "/audio-mode" => {
-            app.audio_preprocessing_mode = option.clone();
-            app.status = tf(app.lang, "status.audio_mode", &[("value", option)]);
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
-        }
-        "/diarization-backend" => {
-            app.diarization_backend = option.clone();
-            if app.diarization_backend == "sortformer" {
-                app.num_speakers = None;
-            }
-            app.status = tf(
-                app.lang,
-                "status.diarization_backend",
-                &[("value", &app.diarization_backend)],
-            );
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
-        }
-        "/speakers" if app.diarization_backend == "sortformer" => {
-            app.num_speakers = None;
-            app.status = t(app.lang, "status.sortformer_auto").into();
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
-        }
-        "/speakers" => {
-            app.num_speakers = option.parse().ok();
-            app.status = tf(app.lang, "status.speakers", &[("value", option)]);
-            app.command_menu = None;
-            app.input.close();
-            save_app_settings(app);
         }
         "/formats" => {
             let format = option.trim_start_matches("[x] ").trim_start_matches("[ ] ");

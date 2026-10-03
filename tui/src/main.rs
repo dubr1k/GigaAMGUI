@@ -26,6 +26,7 @@ mod requests;
 mod results;
 mod runtime;
 mod session;
+mod setting;
 mod settings;
 mod settings_page;
 mod signals;
