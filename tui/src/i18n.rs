@@ -1185,7 +1185,10 @@ mod tests {
         .map(|pattern| regex_lite::Regex::new(pattern).unwrap());
         let mut found = Vec::new();
         for (file, src) in rust_sources() {
-            if NOT_INTERACTIVE_SOURCES.contains(&file.as_str()) {
+            // A `tests.rs` module and the test fixtures are test code as a whole.
+            let test_only =
+                file == "test_support.rs" || file.rsplit('/').next() == Some("tests.rs");
+            if test_only || NOT_INTERACTIVE_SOURCES.contains(&file.as_str()) {
                 continue;
             }
             let src = src.split("#[cfg(test)]").next().unwrap_or_default();
