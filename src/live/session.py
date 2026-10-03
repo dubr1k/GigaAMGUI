@@ -414,7 +414,9 @@ class LiveSession:
                     if len(pending) > MAX_PENDING_MIX_CHUNKS:
                         self._mark_stalled_mix_peers(aligned)
                     self._write_ready_mixes()
-                audio = normalize_window_audio(aligned.frames[:, 0], aligned.sample_rate, self._settings.asr_sample_rate)
+                # All channels, downmixed: channel 0 alone missed a talker on
+                # input 2 of a stereo interface entirely.
+                audio = normalize_window_audio(aligned.frames, aligned.sample_rate, self._settings.asr_sample_rate)
                 offset = round(aligned.sample_offset * self._settings.asr_sample_rate / aligned.sample_rate)
                 self._schedulers[aligned.source].submit(
                     PcmChunk(
