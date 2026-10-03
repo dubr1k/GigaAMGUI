@@ -9,7 +9,6 @@ import contextlib
 import hashlib
 import hmac
 import logging
-import os
 import shutil
 import traceback
 import uuid
@@ -25,7 +24,6 @@ from urllib.parse import urlsplit
 
 import aiofiles
 import jwt
-from dotenv import load_dotenv
 from fastapi import (
     Depends,
     FastAPI,
@@ -39,7 +37,6 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from limits import parse_many
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -48,9 +45,8 @@ from slowapi.util import get_remote_address
 from src import __version__
 from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUTPUT_FORMATS
 from src.core.asr.models import ASR_MODELS
-from src.core.model_loader import ModelLoader
 from src.core.subtitles import SubtitleOptions
-from src.services import cli_tools, file_policy, llm_service, mcp_backend, task_store, transcription_service
+from src.services import cli_tools, file_policy, llm_service, mcp_backend, transcription_service
 from src.services import health as health_service
 from src.services import llm_settings as llm_settings_service
 from src.services.api_keys import KeyStore
@@ -63,6 +59,8 @@ from src.utils.media_downloader import MediaDownloader
 from src.utils.output_naming import find_result_file, output_filename
 from src.utils.processing_stats import ProcessingStats
 from src.utils.time_formatter import TimeFormatter
+from web.state import STATIC_DIR, state
+from web.task_registry import ALL_TASK_STATUSES, registry
 
 # Third-party ML libraries emit noisy deprecation/reproducibility warnings on
 # supported pinned versions. Keep runtime logs focused on actionable failures.
@@ -79,87 +77,8 @@ if HF_TOKEN and HF_TOKEN.startswith("hf_"):
     except Exception:
         print("ПРЕДУПРЕЖДЕНИЕ: pyannote patch не применен; продолжим без него.")
 
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(env_path, override=False)
-
-# ==================== КОНФИГУРАЦИЯ ====================
-
-WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
-WEB_SECRET: Final[str] = os.getenv("WEB_SECRET", "")
-WEB_USERNAME: Final[str] = os.getenv("WEB_USERNAME", "")
-WEB_PASSWORD: Final[str] = os.getenv("WEB_PASSWORD", "")
-JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "72"))
-# secure-cookie требует HTTPS (или localhost). За TLS-прокси/на HTTPS оставляем
-# True; при доступе по чистому HTTP с не-localhost домена браузер молча выкинет
-# cookie и логин зациклится — тогда выставите COOKIE_SECURE=0.
-COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
-
-
-def _validated_login_rate_limit(value: str | None) -> str:
-    """Лимит попыток входа; неразборная строка — отказ при старте, а не молча без лимита
-    (slowapi при ошибке разбора лимит просто не применяет)."""
-    limit = (value or "").strip() or "10/minute"
-    try:
-        parse_many(limit)
-    except ValueError as exc:
-        raise ValueError(f"WEB_LOGIN_RATE_LIMIT={limit!r} is not a valid rate limit (e.g. '10/minute').") from exc
-    return limit
-
-
-WEB_LOGIN_RATE_LIMIT = _validated_login_rate_limit(os.getenv("WEB_LOGIN_RATE_LIMIT"))
-# Origin-ы (scheme://host[:port]) кроме самой панели, которым можно слать изменяющие
-# запросы с cookie сессии и читать API через CORS (фронтенд разработки). Обычно пусто.
-WEB_TRUSTED_ORIGINS: tuple[str, ...] = tuple(
-    origin.strip().rstrip("/") for origin in os.getenv("WEB_TRUSTED_ORIGINS", "").split(",") if origin.strip()
-)
-
-if len(WEB_SECRET.encode("utf-8")) < 32:
-    raise RuntimeError("WEB_SECRET must be set and contain at least 32 bytes")
-if not WEB_USERNAME:
-    raise RuntimeError("WEB_USERNAME must be set")
-if not WEB_PASSWORD:
-    raise RuntimeError("WEB_PASSWORD must be set")
-
-UPLOAD_DIR = Path(__file__).parent.parent / os.getenv("UPLOAD_DIR", "uploads")
-RESULTS_DIR = Path(__file__).parent.parent / os.getenv("RESULTS_DIR", "results")
-UPLOAD_DIR.mkdir(exist_ok=True)
-RESULTS_DIR.mkdir(exist_ok=True)
-
-MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(2 * 1024 * 1024 * 1024)))
-# Транскрипты для LLM-вкладки — текст; лимит на всё тело запроса /api/llm/process
-MAX_LLM_BODY_SIZE = int(os.getenv("WEB_MAX_LLM_BODY_SIZE", str(50 * 1024 * 1024)))
-MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
-# Одновременные вызовы LLM-провайдеров LLM-вкладки (свой семафор, не общий с ASR)
-MAX_CONCURRENT_LLM = int(os.getenv("WEB_MAX_CONCURRENT_LLM", "2"))
-# 1 — пути/аргументы CLI и «инструменты агента» из LLM-формы принимаются как есть
-# (прежнее поведение: сессия = запуск любой команды на сервере). По умолчанию выкл.
-WEB_ALLOW_CLIENT_LLM_CLI = os.getenv("WEB_ALLOW_CLIENT_LLM_CLI", "").strip().lower() in ("1", "true", "yes")
-# Ключи для /mcp — тот же файл, что у api.py (в контейнере API_KEYS_FILE=/data/.api_keys, persist)
-API_KEYS_FILE = Path(__file__).parent.parent / os.getenv("API_KEYS_FILE", ".api_keys")
-
-STATIC_DIR = Path(__file__).parent / "static"
-
-# Глобальные переменные
-model_loader: ModelLoader | None = None
-stats_manager: ProcessingStats | None = None
-media_downloader: MediaDownloader | None = None
 time_formatter = TimeFormatter()
-processing_semaphore: asyncio.Semaphore | None = None
-llm_semaphore: asyncio.Semaphore | None = None
-key_store: KeyStore | None = None
-
-# Хранилище задач
-tasks_storage: dict[str, dict] = {}
-TASKS_INDEX_PATH: Final[Path] = RESULTS_DIR / ".tasks_index.json"
-DELETED_TASKS_PATH: Final[Path] = RESULTS_DIR / ".deleted_tasks.json"
-TASK_RECOVERY_MESSAGE: Final[str] = "Сервер перезапустился во время обработки задачи"
-ACTIVE_TASK_STATUSES: Final[set[str]] = {'pending', 'downloading', 'processing'}
-ALL_TASK_STATUSES: Final[set[str]] = {'pending', 'downloading', 'processing', 'completed', 'failed'}
-deleted_task_ids: set[str] = set()
-LLM_RESULTS_DIR = RESULTS_DIR / "llm"
 LLM_EXPORT_FORMATS: Final[tuple[str, ...]] = ("txt", "md", "docx")
-LLM_RESULTS_DIR.mkdir(exist_ok=True)
 SUMMARY_PROMPT = (
     "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
     "Убери повторы, слова-паразиты и шум распознавания. Сохрани только смысл.\n\n"
@@ -173,9 +92,6 @@ TASKS_PROMPT = (
     "Если задач нет — напиши: «Явных задач не найдено»."
 )
 
-# Очередь логов для SSE (task_id -> list of log lines)
-log_queues: dict[str, list[str]] = {}
-
 
 # ==================== АВТОРИЗАЦИЯ ====================
 
@@ -186,15 +102,15 @@ def _hash_password(password: str) -> str:
 def _create_token(username: str) -> str:
     payload = {
         "sub": username,
-        "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS),
+        "exp": datetime.utcnow() + timedelta(hours=state.jwt_expire_hours),
         "iat": datetime.utcnow(),
     }
-    return jwt.encode(payload, WEB_SECRET, algorithm="HS256")
+    return jwt.encode(payload, state.secret, algorithm="HS256")
 
 
 def _verify_token(token: str) -> str | None:
     try:
-        payload = jwt.decode(token, WEB_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, state.secret, algorithms=["HS256"])
         return payload.get("sub")
     except jwt.ExpiredSignatureError:
         return None
@@ -204,7 +120,7 @@ def _verify_token(token: str) -> str | None:
 
 def _asr_health() -> dict[str, object]:
     # Публичный /health: без путей сервера (cache_root, repo)
-    return health_service.public_asr_health(model_loader)
+    return health_service.public_asr_health(state.model_loader)
 
 
 def _runtime_info() -> dict[str, object]:
@@ -260,7 +176,7 @@ def _same_origin(request: Request) -> bool:
             source_host = parsed.hostname
         except ValueError:
             pass
-    if source_origin in WEB_TRUSTED_ORIGINS:
+    if source_origin in state.trusted_origins:
         return True
 
     fetch_site = request.headers.get("sec-fetch-site")
@@ -295,9 +211,9 @@ _AUTH_EXEMPT_PATHS = frozenset({"/api/auth/login", "/api/auth/logout"})
 
 def _body_limit(path: str) -> int:
     if path == "/api/upload":
-        return MAX_FILE_SIZE + _CONTENT_LENGTH_SLACK
+        return state.max_file_size + _CONTENT_LENGTH_SLACK
     if path == "/api/llm/process":
-        return MAX_LLM_BODY_SIZE + _CONTENT_LENGTH_SLACK
+        return state.max_llm_body_size + _CONTENT_LENGTH_SLACK
     return _SMALL_BODY_LIMIT
 
 
@@ -360,264 +276,11 @@ def safe_filename(filename: str | None) -> str:
     return file_policy.safe_filename(filename)
 
 
-def _persist_tasks_index() -> None:
-    save_json_atomic(str(TASKS_INDEX_PATH), tasks_storage)
-
-
-def _persist_deleted_task_ids() -> None:
-    save_json_atomic(str(DELETED_TASKS_PATH), sorted(deleted_task_ids))
-
-
-def _restore_deleted_task_ids() -> None:
-    raw_deleted = load_json(str(DELETED_TASKS_PATH), [])
-    if isinstance(raw_deleted, list):
-        deleted_task_ids.update(task_id for task_id in raw_deleted if isinstance(task_id, str))
-
-
-def _task_result_dir(task_id: str) -> Path:
-    return RESULTS_DIR / task_id
-
-
-def _remove_task_files(task_id: str, filename: str | None = None) -> None:
-    for upload_path in UPLOAD_DIR.glob(f"{task_id}_*"):
-        if upload_path.is_dir():
-            # `{task_id}_download` — загрузка по URL, оборванная падением сервера
-            shutil.rmtree(upload_path, ignore_errors=True)
-        elif upload_path.is_file():
-            try:
-                upload_path.unlink()
-            except OSError:
-                pass
-
-    if filename:
-        exact_upload = UPLOAD_DIR / f"{task_id}_{filename}"
-        if exact_upload.exists():
-            try:
-                exact_upload.unlink()
-            except OSError:
-                pass
-
-    result_dir = _task_result_dir(task_id)
-    if result_dir.exists():
-        shutil.rmtree(result_dir, ignore_errors=True)
-
-
-def _delete_task_data(task_id: str, task: dict) -> None:
-    if task.get('status') in ACTIVE_TASK_STATUSES:
-        deleted_task_ids.add(task_id)
-        _persist_deleted_task_ids()
-    filename = task.get('filename')
-    _remove_task_files(task_id, filename if isinstance(filename, str) else None)
-
-
-def _finalize_deleted_task(task_id: str, filename: str | None = None) -> None:
-    _remove_task_files(task_id, filename)
-    deleted_task_ids.discard(task_id)
-    _persist_deleted_task_ids()
-
-
-def _cleanup_deleted_task_tombstones() -> None:
-    if not deleted_task_ids:
-        return
-
-    raw_index = load_json(str(TASKS_INDEX_PATH), {})
-    index_changed = False
-    if isinstance(raw_index, dict):
-        for task_id in list(deleted_task_ids):
-            if task_id in raw_index:
-                raw_index.pop(task_id, None)
-                index_changed = True
-    if index_changed:
-        save_json_atomic(str(TASKS_INDEX_PATH), raw_index)
-
-    for task_id in list(deleted_task_ids):
-        _remove_task_files(task_id)
-        tasks_storage.pop(task_id, None)
-        log_queues.pop(task_id, None)
-        deleted_task_ids.discard(task_id)
-    _persist_deleted_task_ids()
-
-
-def _register_task(
-    task_id: str,
-    filename: str,
-    file_size: int,
-    user: str,
-    asr_selection: transcription_service.AsrSelection | None = None,
-):
-    asr_fields = asr_selection.as_dict() if asr_selection is not None else {}
-    tasks_storage[task_id] = task_store.new_task_record(
-        task_id, filename, file_size, message="В очереди",
-        extra={
-            "stage": "",
-            "output_formats": [],
-            "enable_diarization": False,
-            "diarization_backend": "pyannote",
-            "num_speakers": None,
-            "user": user,
-            **asr_fields,
-        },
-    )
-    log_queues[task_id] = []
-    _persist_tasks_index()
-
-
-def _task_log(task_id: str, message: str):
-    """Добавляет сообщение в лог задачи."""
-    if task_id in log_queues:
-        log_queues[task_id].append(message)
-
-
-def _user_task_or_404(task_id: str, user: str):
-    task = tasks_storage.get(task_id)
-    if task is None or task.get('user') != user:
+def _user_task_or_404(task_id: str, user: str) -> dict:
+    task = registry.user_task(task_id, user)
+    if task is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
     return task
-
-
-def _visible_task_copy(task: dict) -> dict:
-    task_copy = dict(task)
-    task_copy.pop('result_files', None)
-    return task_copy
-
-
-def _restore_completed_task_from_meta(task_dir: Path) -> dict | None:
-    meta = load_json(str(task_dir / "meta.json"), None)
-    if not isinstance(meta, dict):
-        return None
-
-    filename = meta.get('filename')
-    user = meta.get('user')
-    if not isinstance(filename, str):
-        return None
-    if not isinstance(user, str) or not user:
-        user = WEB_USERNAME
-
-    task_id = task_dir.name
-    created_at = meta.get('created_at')
-    if not isinstance(created_at, str):
-        created_at = datetime.fromtimestamp(task_dir.stat().st_mtime).isoformat()
-    started_at = meta.get('started_at', created_at)
-    completed_at = meta.get('completed_at', started_at)
-    if not isinstance(started_at, str):
-        started_at = created_at
-    if not isinstance(completed_at, str):
-        completed_at = started_at
-
-    task = {
-        'task_id': task_id,
-        'status': 'completed',
-        'created_at': created_at,
-        'started_at': started_at,
-        'completed_at': completed_at,
-        'progress': 100,
-        'stage_progress': 1.0,
-        'processed_seconds': meta.get('media_duration') if isinstance(meta.get('media_duration'), (int, float)) else None,
-        'total_seconds': meta.get('media_duration') if isinstance(meta.get('media_duration'), (int, float)) else None,
-        'progress_indeterminate': False,
-        'filename': filename,
-        'file_size': meta.get('file_size', 0),
-        'message': 'Задача восстановлена из результатов при запуске Web GUI',
-        'stage': 'Готово',
-        'output_formats': meta.get('output_formats') if isinstance(meta.get('output_formats'), list) else ['txt', 'txt_timecodes'],
-        'enable_diarization': meta.get('enable_diarization', False),
-        'diarization_backend': meta.get('diarization_backend', 'pyannote'),
-        'num_speakers': meta.get('num_speakers'),
-        'subtitle_options': (
-            dict(meta['subtitle_options'])
-            if isinstance(meta.get('subtitle_options'), dict)
-            else {
-                'sentence_split': True,
-                'max_line_count': 2,
-                'max_line_width': 64,
-            }
-        ),
-        'asr_backend': meta.get('asr_backend'),
-        'asr_model': meta.get('asr_model'),
-        'onnx_provider': meta.get('onnx_provider'),
-        'asr_diagnostics': meta.get('asr_diagnostics'),
-        'user': user,
-    }
-    if isinstance(meta.get('processing_time'), (int, float)):
-        task['processing_time'] = meta['processing_time']
-    if isinstance(meta.get('media_duration'), (int, float)):
-        task['media_duration'] = meta['media_duration']
-    return task
-
-
-def _restore_tasks_from_index() -> bool:
-    raw_index = load_json(str(TASKS_INDEX_PATH), {})
-    if not isinstance(raw_index, dict):
-        return False
-
-    restored_any = False
-    changed = False
-    now_iso = datetime.now().isoformat()
-
-    for task_id, raw_task in raw_index.items():
-        if not isinstance(task_id, str) or not isinstance(raw_task, dict):
-            continue
-
-        task = dict(raw_task)
-        task['task_id'] = task_id
-
-        user = task.get('user')
-        if not isinstance(user, str) or not user:
-            task['user'] = WEB_USERNAME
-            changed = True
-
-        if task.get('status') in ACTIVE_TASK_STATUSES:
-            task['status'] = 'failed'
-            task['completed_at'] = now_iso
-            task['stage'] = 'Ошибка'
-            task['message'] = TASK_RECOVERY_MESSAGE
-            task['error'] = TASK_RECOVERY_MESSAGE
-            changed = True
-
-        task.setdefault('stage_progress', None)
-        task.setdefault('processed_seconds', None)
-        task.setdefault('total_seconds', None)
-        task.setdefault('progress_indeterminate', False)
-
-        tasks_storage[task_id] = task
-        log_queues[task_id] = []
-        restored_any = True
-
-    if changed:
-        _persist_tasks_index()
-
-    return restored_any
-
-
-def _restore_tasks_from_results() -> bool:
-    restored_any = False
-    if not RESULTS_DIR.exists():
-        return False
-
-    for task_dir in RESULTS_DIR.iterdir():
-        if not task_dir.is_dir():
-            continue
-        task = _restore_completed_task_from_meta(task_dir)
-        if task is None:
-            continue
-        task_id = task['task_id']
-        if task_id in tasks_storage:
-            continue
-        tasks_storage[task_id] = task
-        log_queues[task_id] = []
-        restored_any = True
-
-    if restored_any:
-        _persist_tasks_index()
-
-    return restored_any
-
-
-def _restore_persisted_tasks() -> None:
-    _restore_deleted_task_ids()
-    _cleanup_deleted_task_tombstones()
-    _restore_tasks_from_index()
-    _restore_tasks_from_results()
 
 
 async def _save_upload(file: UploadFile, request: Request) -> tuple:
@@ -630,8 +293,8 @@ async def _save_upload(file: UploadFile, request: Request) -> tuple:
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
-            if int(content_length) > MAX_FILE_SIZE:
-                max_gb = MAX_FILE_SIZE / 1024 / 1024 / 1024
+            if int(content_length) > state.max_file_size:
+                max_gb = state.max_file_size / 1024 / 1024 / 1024
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=f"Файл слишком большой (макс. {max_gb:.1f} GB)",
@@ -641,14 +304,14 @@ async def _save_upload(file: UploadFile, request: Request) -> tuple:
 
     task_id = uuid.uuid4().hex
     filename = safe_filename(file.filename)
-    file_path = UPLOAD_DIR / f"{task_id}_{filename}"
+    file_path = state.upload_dir / f"{task_id}_{filename}"
     file_size = 0
 
     try:
         async with aiofiles.open(file_path, 'wb') as f:
             while chunk := await file.read(1024 * 1024):
                 file_size += len(chunk)
-                if file_size > MAX_FILE_SIZE:
+                if file_size > state.max_file_size:
                     raise HTTPException(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         detail=f"Файл {filename} слишком большой",
@@ -696,25 +359,25 @@ async def process_transcription(
 ):
     """Фоновая обработка транскрибации."""
     subtitle_options = subtitle_options or SubtitleOptions()
-    if processing_semaphore is None:
+    if state.processing_semaphore is None:
         raise RuntimeError("Семафор обработки не инициализирован")
 
     # Проверка loader-а живёт внутри try ниже: подняв её сюда, мы бы убили
-    # фоновую задачу до создания обработчика ошибок, и запись в tasks_storage
+    # фоновую задачу до создания обработчика ошибок, и запись в registry.tasks
     # навсегда осталась бы в статусе pending.
-    request_loader = model_loader
+    request_loader = state.model_loader
     owns_loader = False
-    async with processing_semaphore:
+    async with state.processing_semaphore:
         try:
-            if model_loader is None:
+            if state.model_loader is None:
                 raise RuntimeError("ASR model loader не инициализирован")
             asr_selection = asr_selection or transcription_service.normalize_asr_selection(
-                model_loader
+                state.model_loader
             )
-            if not file_path.exists() or task_id not in tasks_storage:
+            if not file_path.exists() or task_id not in registry.tasks:
                 return
 
-            tasks_storage[task_id].update({
+            registry.tasks[task_id].update({
                 'status': 'processing',
                 'started_at': datetime.now().isoformat(),
                 'progress': 5,
@@ -725,14 +388,14 @@ async def process_transcription(
                 'stage': 'Подготовка...',
                 'message': 'Обработка началась',
             })
-            _persist_tasks_index()
-            _task_log(task_id, f"Начало обработки: {filename}")
+            registry.persist()
+            registry.log(task_id, f"Начало обработки: {filename}")
 
-            output_dir = _task_result_dir(task_id)
+            output_dir = registry.result_dir(task_id)
             output_dir.mkdir(exist_ok=True)
 
             def progress_callback(event_or_stage, progress: float | None = None):
-                task = tasks_storage.get(task_id)
+                task = registry.tasks.get(task_id)
                 if task is None:
                     return
 
@@ -779,14 +442,14 @@ async def process_transcription(
                 task['progress_indeterminate'] = stage_progress is None
 
             def logger(msg: str):
-                _task_log(task_id, msg)
+                registry.log(task_id, msg)
 
-            if model_loader is None:
+            if state.model_loader is None:
                 raise RuntimeError("ASR model loader не инициализирован")
             request_loader, owns_loader = transcription_service.acquire_request_model_loader(
-                model_loader,
+                state.model_loader,
                 asr_selection,
-                loader_factory=ModelLoader,
+                loader_factory=state.loader_factory,
             )
             if owns_loader:
                 loop = asyncio.get_running_loop()
@@ -796,7 +459,7 @@ async def process_transcription(
 
             processor = transcription_service.build_processor(
                 request_loader,
-                stats_manager,
+                state.stats_manager,
                 logger=logger,
                 progress_callback=progress_callback,
             )
@@ -823,13 +486,13 @@ async def process_transcription(
                 # Причину провала процессор кладёт в result['error']; старые версии её не дают
                 raise Exception(mcp_backend.failure_reason(result) or "Обработка не удалась")
 
-            if task_id not in tasks_storage:
-                if task_id in deleted_task_ids:
-                    _finalize_deleted_task(task_id, filename)
+            if task_id not in registry.tasks:
+                if task_id in registry.deleted:
+                    registry.finalize_deleted(task_id, filename)
                 return
 
-            if task_id in deleted_task_ids:
-                _finalize_deleted_task(task_id, filename)
+            if task_id in registry.deleted:
+                registry.finalize_deleted(task_id, filename)
                 return
 
             # Собираем результаты
@@ -846,7 +509,7 @@ async def process_transcription(
                         'format': _detect_format(p.name, stem),
                     })
 
-            tasks_storage[task_id].update({
+            registry.tasks[task_id].update({
                 'status': 'completed',
                 'completed_at': datetime.now().isoformat(),
                 'progress': 100,
@@ -862,12 +525,12 @@ async def process_transcription(
                 'audio_preprocessing': result.get('audio_preprocessing'),
                 'asr_diagnostics': request_loader.diagnostics(),
             })
-            _persist_tasks_index()
-            _task_log(task_id, f"Обработка завершена за {time_formatter.format_duration(result['total_time'])}")
+            registry.persist()
+            registry.log(task_id, f"Обработка завершена за {time_formatter.format_duration(result['total_time'])}")
 
-            if task_id in deleted_task_ids or task_id not in tasks_storage:
-                if task_id in deleted_task_ids:
-                    _finalize_deleted_task(task_id, filename)
+            if task_id in registry.deleted or task_id not in registry.tasks:
+                if task_id in registry.deleted:
+                    registry.finalize_deleted(task_id, filename)
                 return
 
             # Сохраняем meta.json
@@ -875,10 +538,10 @@ async def process_transcription(
                 save_json_atomic(str(output_dir / "meta.json"), {
                     'task_id': task_id,
                     'filename': filename,
-                    'file_size': tasks_storage[task_id].get('file_size', 0),
-                    'created_at': tasks_storage[task_id].get('created_at'),
-                    'started_at': tasks_storage[task_id].get('started_at'),
-                    'completed_at': tasks_storage[task_id].get('completed_at'),
+                    'file_size': registry.tasks[task_id].get('file_size', 0),
+                    'created_at': registry.tasks[task_id].get('created_at'),
+                    'started_at': registry.tasks[task_id].get('started_at'),
+                    'completed_at': registry.tasks[task_id].get('completed_at'),
                     'output_formats': output_formats,
                     'enable_diarization': enable_diarization,
                     'diarization_backend': diarization_backend,
@@ -890,7 +553,7 @@ async def process_transcription(
                     },
                     **asr_selection.as_dict(),
                     'asr_diagnostics': request_loader.diagnostics(),
-                    'user': tasks_storage[task_id].get('user'),
+                    'user': registry.tasks[task_id].get('user'),
                     'processing_time': result['total_time'],
                     'media_duration': result.get('media_duration', 0),
                     'audio_preprocessing_mode': AUDIO_PREPROCESSING_MODE,
@@ -900,28 +563,28 @@ async def process_transcription(
                 pass
 
         except Exception as e:
-            _task_log(task_id, f"Ошибка: {e}")
-            _task_log(task_id, traceback.format_exc())
-            if task_id in tasks_storage:
-                tasks_storage[task_id].update({
+            registry.log(task_id, f"Ошибка: {e}")
+            registry.log(task_id, traceback.format_exc())
+            if task_id in registry.tasks:
+                registry.tasks[task_id].update({
                     'status': 'failed',
                     'completed_at': datetime.now().isoformat(),
                     'stage': 'Ошибка',
                     'message': str(e),
                 })
-            _persist_tasks_index()
+            registry.persist()
 
         finally:
             if owns_loader and request_loader is not None:
                 request_loader.unload()
-            task_status = tasks_storage.get(task_id, {}).get('status', 'unknown')
+            task_status = registry.tasks.get(task_id, {}).get('status', 'unknown')
             if task_status == 'completed' and file_path.exists():
                 try:
                     file_path.unlink()
                 except OSError:
                     pass
-            if task_id in deleted_task_ids:
-                _finalize_deleted_task(task_id, filename)
+            if task_id in registry.deleted:
+                registry.finalize_deleted(task_id, filename)
 
 
 def _detect_format(filename: str, stem: str) -> str:
@@ -937,39 +600,37 @@ def _detect_format(filename: str, stem: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model_loader, stats_manager, media_downloader, processing_semaphore, llm_semaphore, key_store
-
     print("=" * 60)
     print("GigaAM v3 Transcriber - Web GUI")
     print("=" * 60)
 
     # Ключи /mcp; при первом старте создаётся и печатается (один раз) первый ключ
-    key_store = KeyStore(API_KEYS_FILE).load()
+    state.key_store = KeyStore(state.api_keys_file).load()
 
     if not ffmpeg_available():
         print("ВНИМАНИЕ: ffmpeg/ffprobe не найдены в PATH!")
 
-    if not HF_TOKEN or not HF_TOKEN.startswith("hf_"):
+    if not state.hf_token or not state.hf_token.startswith("hf_"):
         print("ВНИМАНИЕ: HF_TOKEN не настроен!")
         print("Диаризация будет недоступна без HF_TOKEN.")
 
     print("Загрузка модели GigaAM-v3...")
-    model_loader = ModelLoader()
-    success = model_loader.load_model(logger=print)
+    state.model_loader = state.loader_factory()
+    success = state.model_loader.load_model(logger=print)
     if not success:
         print("ОШИБКА загрузки модели!")
         raise RuntimeError("Ошибка загрузки модели")
-    device_name = model_loader.device.upper() if model_loader.device else "N/A"
+    device_name = state.model_loader.device.upper() if state.model_loader.device else "N/A"
     print(f"Модель загружена. Устройство: {device_name}")
 
-    stats_manager = ProcessingStats(os.getenv("STATS_FILE", str(RESULTS_DIR / "processing_stats.json")))
-    media_downloader = MediaDownloader()
-    processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-    llm_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
+    state.stats_manager = ProcessingStats(state.stats_file or str(state.results_dir / "processing_stats.json"))
+    state.media_downloader = MediaDownloader()
+    state.processing_semaphore = asyncio.Semaphore(state.max_concurrent_tasks)
+    state.llm_semaphore = asyncio.Semaphore(state.max_concurrent_llm)
 
-    _restore_persisted_tasks()
+    registry.restore()
 
-    print(f"Web GUI готов (порт {WEB_PORT}, макс. {MAX_CONCURRENT_TASKS} задач)")
+    print(f"Web GUI готов (порт {state.port}, макс. {state.max_concurrent_tasks} задач)")
     print("=" * 60)
 
     yield
@@ -984,10 +645,10 @@ async def lifespan(app: FastAPI):
 
 def _mcp_backend() -> LocalBackend:
     return LocalBackend(
-        model_loader=model_loader, stats_manager=stats_manager, semaphore=processing_semaphore,
-        upload_dir=UPLOAD_DIR, media_downloader=media_downloader, loader_factory=ModelLoader,
+        model_loader=state.model_loader, stats_manager=state.stats_manager, semaphore=state.processing_semaphore,
+        upload_dir=state.upload_dir, media_downloader=state.media_downloader, loader_factory=state.loader_factory,
         logger=logging.getLogger("GigaAM"),  # веб-панель логгер не настраивает: ошибки уходят в stderr
-        http_mode=True, max_file_size=MAX_FILE_SIZE, hf_token=HF_TOKEN, max_concurrent=MAX_CONCURRENT_TASKS,
+        http_mode=True, max_file_size=state.max_file_size, hf_token=state.hf_token, max_concurrent=state.max_concurrent_tasks,
         **backend_options_from_env())
 
 
@@ -1007,10 +668,10 @@ app.add_middleware(_BodyGuard)
 # (разработка) перечисляется в WEB_TRUSTED_ORIGINS; раньше здесь был зашитый
 # localhost:8001 с credentials — любая страница на этом порту читала API панели.
 # Добавляется после _BodyGuard, т.е. снаружи: его 401/403/413 тоже с CORS-заголовками.
-if WEB_TRUSTED_ORIGINS:
+if state.trusted_origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(WEB_TRUSTED_ORIGINS),
+        allow_origins=list(state.trusted_origins),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -1019,7 +680,7 @@ if WEB_TRUSTED_ORIGINS:
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-mount_mcp(app, "/mcp", _mcp_backend, lambda: key_store)
+mount_mcp(app, "/mcp", _mcp_backend, lambda: state.key_store)
 
 
 # ==================== ЭНДПОИНТЫ АВТОРИЗАЦИИ ====================
@@ -1041,7 +702,7 @@ def _server_llm_settings(client: dict) -> dict:
     поведение переменной WEB_ALLOW_CLIENT_LLM_CLI=1. Вызывать в потоке: первый
     resolve() сканирует CLI (`--version`).
     """
-    if WEB_ALLOW_CLIENT_LLM_CLI:
+    if state.allow_client_llm_cli:
         return dict(client)
     server = llm_settings_service.resolve()
     settings = {key: client[key] for key in ("provider", "api_url", "api_key", "model", "temperature")}
@@ -1086,21 +747,21 @@ async def _login_rate_limited(request: Request, exc: RateLimitExceeded):
 
 
 @app.post("/api/auth/login")
-@limiter.limit(WEB_LOGIN_RATE_LIMIT)
+@limiter.limit(state.login_rate_limit)
 async def login(request: Request, req: LoginRequest):
     # Лимит считает все попытки с адреса: без него пароль единственной учётной
     # записи перебирался со скоростью сети. За прокси без доверенного
     # X-Forwarded-For адрес у всех общий — лимит тогда общий на панель.
-    if req.username == WEB_USERNAME and hmac.compare_digest(_hash_password(req.password), _hash_password(WEB_PASSWORD)):
+    if req.username == state.username and hmac.compare_digest(_hash_password(req.password), _hash_password(state.password)):
         token = _create_token(req.username)
         response = JSONResponse({"ok": True, "username": req.username})
         response.set_cookie(
             key="gigaam_token",
             value=token,
             httponly=True,
-            secure=COOKIE_SECURE,
+            secure=state.cookie_secure,
             samesite="lax",
-            max_age=JWT_EXPIRE_HOURS * 3600,
+            max_age=state.jwt_expire_hours * 3600,
         )
         return response
     raise HTTPException(
@@ -1130,21 +791,21 @@ async def get_formats(user: str = Depends(require_auth)):
 
 @app.get("/api/device")
 async def get_device(user: str = Depends(require_auth)):
-    if model_loader and model_loader.device:
-        return {"device": model_loader.device.upper()}
+    if state.model_loader and state.model_loader.device:
+        return {"device": state.model_loader.device.upper()}
     return {"device": "CPU"}
 
 
 @app.get("/api/asr-options")
 async def get_asr_options(user: str = Depends(require_auth)):
-    if model_loader is None:
+    if state.model_loader is None:
         raise HTTPException(status_code=503, detail="ASR model loader не инициализирован")
     return {
         "backends": transcription_service.available_asr_backends(),
         "models": ASR_MODELS,
         "onnx_providers": list(transcription_service.ONNX_PROVIDERS),
-        "defaults": transcription_service.normalize_asr_selection(model_loader).as_dict(),
-        "active": model_loader.diagnostics(),
+        "defaults": transcription_service.normalize_asr_selection(state.model_loader).as_dict(),
+        "active": state.model_loader.diagnostics(),
     }
 
 
@@ -1202,7 +863,7 @@ def _parse_transcribe_form(
     try:
         diarization_backend = normalize_diarization_backend(diarization_backend)
         asr_selection = transcription_service.normalize_asr_selection(
-            model_loader,
+            state.model_loader,
             backend=asr_backend,
             model=asr_model,
             onnx_provider=onnx_provider,
@@ -1291,9 +952,9 @@ async def upload_files(
 
     uploaded = []
     for task_id, file_path, filename, file_size in saved:
-        _register_task(task_id, filename, file_size, user, form.asr_selection)
-        tasks_storage[task_id].update(form.task_fields())
-        _persist_tasks_index()
+        registry.register(task_id, filename, file_size, user, form.asr_selection)
+        registry.tasks[task_id].update(form.task_fields())
+        registry.persist()
 
         _start_background(
             process_transcription(
@@ -1347,12 +1008,12 @@ async def download_from_url(
     )
 
     task_id = uuid.uuid4().hex
-    _register_task(task_id, url.split("/")[-1][:80], 0, user, form.asr_selection)
-    tasks_storage[task_id].update(form.task_fields())
-    tasks_storage[task_id]['status'] = 'downloading'
-    tasks_storage[task_id]['stage'] = 'Загрузка медиа...'
-    tasks_storage[task_id]['message'] = 'Загрузка по URL'
-    _persist_tasks_index()
+    registry.register(task_id, url.split("/")[-1][:80], 0, user, form.asr_selection)
+    registry.tasks[task_id].update(form.task_fields())
+    registry.tasks[task_id]['status'] = 'downloading'
+    registry.tasks[task_id]['stage'] = 'Загрузка медиа...'
+    registry.tasks[task_id]['message'] = 'Загрузка по URL'
+    registry.persist()
 
     _start_background(
         _download_and_process(
@@ -1384,43 +1045,43 @@ async def _download_and_process(
     оборванной загрузки; готовый файл переносится в обычное
     `{task_id}_<имя>` загрузок.
     """
-    download_dir = UPLOAD_DIR / f"{task_id}_download"
+    download_dir = state.upload_dir / f"{task_id}_download"
     try:
         def on_percent(percent) -> None:  # MediaDownloader отдаёт 0..100; 95+ — уже обработка
-            if task_id in tasks_storage and isinstance(percent, (int, float)):
-                tasks_storage[task_id]['progress'] = max(0, min(95, int(percent)))
+            if task_id in registry.tasks and isinstance(percent, (int, float)):
+                registry.tasks[task_id]['progress'] = max(0, min(95, int(percent)))
 
-        downloader = media_downloader or MediaDownloader()
+        downloader = state.media_downloader or MediaDownloader()
         loop = asyncio.get_running_loop()
         downloaded = await loop.run_in_executor(
             None,
             lambda: downloader.download(
-                url, str(download_dir), progress_callback=on_percent, max_filesize=MAX_FILE_SIZE,
+                url, str(download_dir), progress_callback=on_percent, max_filesize=state.max_file_size,
             ),
         )
 
-        if task_id in deleted_task_ids or task_id not in tasks_storage:
-            if task_id in deleted_task_ids:
-                _finalize_deleted_task(task_id)
+        if task_id in registry.deleted or task_id not in registry.tasks:
+            if task_id in registry.deleted:
+                registry.finalize_deleted(task_id)
             else:
-                _remove_task_files(task_id)
+                registry.remove_files(task_id)
             return
 
         files = [Path(p) for p in (getattr(downloaded, "files", None) or []) if Path(p).is_file()]
         if not files:
             # yt-dlp молча пропускает файл больше max_filesize
-            max_gb = MAX_FILE_SIZE / 1024 / 1024 / 1024
+            max_gb = state.max_file_size / 1024 / 1024 / 1024
             raise RuntimeError(f"Ничего не скачано: медиа недоступно или больше лимита {max_gb:.1f} GB")
-        if files[0].stat().st_size > MAX_FILE_SIZE:
+        if files[0].stat().st_size > state.max_file_size:
             raise RuntimeError("Скачанный файл больше лимита MAX_FILE_SIZE")
 
         filename = safe_filename(files[0].name)
-        file_path = UPLOAD_DIR / f"{task_id}_{filename}"
+        file_path = state.upload_dir / f"{task_id}_{filename}"
         files[0].replace(file_path)
         shutil.rmtree(download_dir, ignore_errors=True)
         file_size = file_path.stat().st_size
 
-        tasks_storage[task_id].update({
+        registry.tasks[task_id].update({
             'filename': filename,
             'file_size': file_size,
             'status': 'pending',
@@ -1428,8 +1089,8 @@ async def _download_and_process(
             'progress': 0,
             'message': 'Загрузка завершена, ожидание обработки',
         })
-        _persist_tasks_index()
-        _task_log(task_id, f"Загружено: {filename} ({file_size / 1024 / 1024:.1f} MB)")
+        registry.persist()
+        registry.log(task_id, f"Загружено: {filename} ({file_size / 1024 / 1024:.1f} MB)")
 
         await process_transcription(
             task_id, file_path, filename, output_formats,
@@ -1439,27 +1100,27 @@ async def _download_and_process(
         )
 
     except Exception as e:
-        _task_log(task_id, f"Ошибка загрузки: {e}")
-        if task_id in tasks_storage:
-            tasks_storage[task_id].update({
+        registry.log(task_id, f"Ошибка загрузки: {e}")
+        if task_id in registry.tasks:
+            registry.tasks[task_id].update({
                 'status': 'failed',
                 'stage': 'Ошибка загрузки',
                 'message': str(e),
                 'completed_at': datetime.now().isoformat(),
             })
-            _persist_tasks_index()
+            registry.persist()
 
     finally:
         shutil.rmtree(download_dir, ignore_errors=True)
-        if task_id in deleted_task_ids and task_id not in tasks_storage:
-            _finalize_deleted_task(task_id)
+        if task_id in registry.deleted and task_id not in registry.tasks:
+            registry.finalize_deleted(task_id)
 
 
 # ==================== ЭНДПОИНТЫ ЗАДАЧ ====================
 
 @app.get("/api/tasks")
 async def list_tasks(user: str = Depends(require_auth)):
-    tasks = [_visible_task_copy(task) for task in tasks_storage.values() if task.get('user') == user]
+    tasks = [registry.visible_copy(task) for task in registry.tasks.values() if task.get('user') == user]
     tasks.sort(key=lambda x: x.get('created_at') or '', reverse=True)
     return {"total": len(tasks), "tasks": tasks}
 
@@ -1467,13 +1128,13 @@ async def list_tasks(user: str = Depends(require_auth)):
 @app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str, user: str = Depends(require_auth)):
     # Без result_files: там абсолютные пути сервера; файлы отдают /result и /download
-    return _visible_task_copy(_user_task_or_404(task_id, user))
+    return registry.visible_copy(_user_task_or_404(task_id, user))
 
 
 @app.get("/api/tasks/{task_id}/logs")
 async def get_task_logs(task_id: str, user: str = Depends(require_auth)):
     _user_task_or_404(task_id, user)
-    return {"logs": log_queues.get(task_id, [])}
+    return {"logs": registry.logs.get(task_id, [])}
 
 
 @app.get("/api/tasks/{task_id}/result")
@@ -1482,7 +1143,7 @@ async def get_task_result(task_id: str, user: str = Depends(require_auth)):
     if task['status'] != 'completed':
         raise HTTPException(status_code=400, detail=f"Задача не завершена (статус: {task['status']})")
 
-    result_dir = _task_result_dir(task_id)
+    result_dir = registry.result_dir(task_id)
     result_files = []
     if result_dir.exists():
         stem = Path(task['filename']).stem
@@ -1521,7 +1182,7 @@ async def download_result_file(
     if task['status'] != 'completed':
         raise HTTPException(status_code=400, detail="Задача не завершена")
 
-    result_dir = _task_result_dir(task_id)
+    result_dir = registry.result_dir(task_id)
     if not result_dir.exists():
         raise HTTPException(status_code=404, detail="Результаты не найдены")
 
@@ -1543,11 +1204,11 @@ async def delete_task(task_id: str, user: str = Depends(require_auth)):
     if task['status'] == 'processing':
         raise HTTPException(status_code=400, detail="Нельзя удалить задачу в процессе обработки")
 
-    _delete_task_data(task_id, task)
+    registry.delete_data(task_id, task)
 
-    tasks_storage.pop(task_id, None)
-    log_queues.pop(task_id, None)
-    _persist_tasks_index()
+    registry.tasks.pop(task_id, None)
+    registry.logs.pop(task_id, None)
+    registry.persist()
 
     return {"ok": True, "message": "Задача удалена"}
 
@@ -1560,7 +1221,7 @@ async def llm_tools(fresh: bool = False, user: str = Depends(require_auth)):
         "providers": cli_tools.canonical_provider_names(),
         "tools": [status.to_dict() for status in statuses],
         # false — пути/аргументы CLI и инструменты агента из формы сервер игнорирует
-        "client_cli": WEB_ALLOW_CLIENT_LLM_CLI,
+        "client_cli": state.allow_client_llm_cli,
     }
 
 
@@ -1577,7 +1238,7 @@ async def llm_tool_check(
 
     def check():
         # Присланный путь запускается (`<path> --version`) только с разрешения оператора
-        override = (path.strip() or None) if WEB_ALLOW_CLIENT_LLM_CLI else _server_tool_override(spec)
+        override = (path.strip() or None) if state.allow_client_llm_cli else _server_tool_override(spec)
         return cli_tools.resolve_tool(spec, override)
 
     status = await asyncio.to_thread(check)
@@ -1585,14 +1246,14 @@ async def llm_tool_check(
 
 
 async def _llm_answer(settings: dict, text: str, prompt: str) -> str:
-    """Один вызов LLM-провайдера в пуле потоков под llm_semaphore.
+    """Один вызов LLM-провайдера в пуле потоков под state.llm_semaphore.
 
     Запрос /api/llm/process — это items×modes вызовов CLI/API по 10 минут
     таймаута каждый; без ограничения несколько вкладок запускали их сколько
     угодно параллельно (процессы агентных CLI, потоки executor-а). Семафор свой,
     не общий с транскрибацией: длинная выжимка не должна держать очередь ASR.
     """
-    gate = llm_semaphore if llm_semaphore is not None else contextlib.nullcontext()
+    gate = state.llm_semaphore if state.llm_semaphore is not None else contextlib.nullcontext()
     async with gate:
         return await asyncio.get_running_loop().run_in_executor(None, _run_llm_provider, settings, text, prompt)
 
@@ -1671,12 +1332,12 @@ async def llm_process(
     for upload in transcript_files:
         # Не больше лимита за чтение: тело без Content-Length гард не меряет,
         # а upload.read() без аргумента держал бы в памяти любой объём
-        raw = await upload.read(MAX_LLM_BODY_SIZE + 1)
+        raw = await upload.read(state.max_llm_body_size + 1)
         total_bytes += len(raw)
-        if total_bytes > MAX_LLM_BODY_SIZE:
+        if total_bytes > state.max_llm_body_size:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"Транскрипты больше лимита ({MAX_LLM_BODY_SIZE / 1024 / 1024:.0f} MB)",
+                detail=f"Транскрипты больше лимита ({state.max_llm_body_size / 1024 / 1024:.0f} MB)",
             )
         text = raw.decode("utf-8", errors="ignore").strip()
         if text:
@@ -1709,7 +1370,7 @@ async def llm_process(
         )
 
     job_id = uuid.uuid4().hex
-    job_dir = LLM_RESULTS_DIR / job_id
+    job_dir = state.llm_results_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     results = []
     saved_files = []
@@ -1739,7 +1400,7 @@ async def llm_process(
 
 @app.get("/api/llm/download/{job_id}/{filename}")
 async def llm_download(job_id: str, filename: str, user: str = Depends(require_auth)):
-    job_dir = LLM_RESULTS_DIR / job_id
+    job_dir = state.llm_results_dir / job_id
     meta = load_json(str(job_dir / "meta.json"), {})
     if not job_dir.exists() or not isinstance(meta, dict) or meta.get("user") != user:
         raise HTTPException(status_code=404, detail="LLM-результат не найден")
@@ -1758,17 +1419,17 @@ async def delete_all_tasks(
         statuses = set(ALL_TASK_STATUSES)
 
     removed = 0
-    for tid in list(tasks_storage.keys()):
-        task = tasks_storage[tid]
+    for tid in list(registry.tasks.keys()):
+        task = registry.tasks[tid]
         if task.get('user') != user:
             continue
         if task['status'] in statuses:
-            _delete_task_data(tid, task)
-            tasks_storage.pop(tid, None)
-            log_queues.pop(tid, None)
+            registry.delete_data(tid, task)
+            registry.tasks.pop(tid, None)
+            registry.logs.pop(tid, None)
             removed += 1
 
-    _persist_tasks_index()
+    registry.persist()
 
     return {"ok": True, "removed": removed}
 
@@ -1795,7 +1456,7 @@ class ProgressFeed:
 
     def _current(self) -> dict[str, dict]:
         current = {}
-        for tid, task in tasks_storage.items():
+        for tid, task in registry.tasks.items():
             if task.get('user') != self.user:
                 continue
             current[tid] = {
@@ -1817,13 +1478,13 @@ class ProgressFeed:
         if not self.started:
             self.started = True
             self.last = dict(current)
-            self.log_lengths = {tid: len(log_queues.get(tid, [])) for tid in current}
+            self.log_lengths = {tid: len(registry.logs.get(tid, [])) for tid in current}
             return {'snapshot': True, 'tasks': current, 'logs': {}}
 
         changed = {tid: data for tid, data in current.items() if self.last.get(tid) != data}
         new_logs = {}
-        for tid, logs in list(log_queues.items()):
-            task = tasks_storage.get(tid)
+        for tid, logs in list(registry.logs.items()):
+            task = registry.tasks.get(tid)
             if task is None or task.get('user') != self.user:
                 continue
             seen = self.log_lengths.get(tid, 0)
@@ -1889,11 +1550,11 @@ async def health():
     return {
         "status": "healthy",
         "version": __version__,
-        "model_loaded": model_loader is not None and model_loader.is_loaded(),
+        "model_loaded": state.model_loader is not None and state.model_loader.is_loaded(),
         "runtime": _runtime_info(),
         "asr": _asr_health(),
-        "active_tasks": sum(1 for t in tasks_storage.values() if t['status'] in ('processing', 'downloading')),
-        "total_tasks": len(tasks_storage),
+        "active_tasks": sum(1 for t in registry.tasks.values() if t['status'] in ('processing', 'downloading')),
+        "total_tasks": len(registry.tasks),
     }
 
 
@@ -1904,6 +1565,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "web.web_app:app",
         host="0.0.0.0",
-        port=WEB_PORT,
+        port=state.port,
         reload=False,
     )

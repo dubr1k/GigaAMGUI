@@ -16,6 +16,10 @@ os.environ.setdefault("WEB_USERNAME", "test-user")
 os.environ.setdefault("WEB_PASSWORD", "test-password")
 
 web_app = importlib.import_module("web.web_app")
+from src.services import transcription_service  # noqa: E402
+from src.utils.atomic_json import load_json, save_json_atomic  # noqa: E402
+from web.state import STATIC_DIR, state  # noqa: E402
+from web.task_registry import TASK_RECOVERY_MESSAGE, registry  # noqa: E402
 
 
 @pytest.fixture
@@ -25,20 +29,18 @@ def web_state(tmp_path, monkeypatch):
     upload_dir.mkdir()
     results_dir.mkdir()
 
-    monkeypatch.setattr(web_app, "UPLOAD_DIR", upload_dir)
-    monkeypatch.setattr(web_app, "RESULTS_DIR", results_dir)
-    monkeypatch.setattr(web_app, "TASKS_INDEX_PATH", results_dir / ".tasks_index.json")
-    monkeypatch.setattr(web_app, "DELETED_TASKS_PATH", results_dir / ".deleted_tasks.json")
-    monkeypatch.setattr(web_app, "API_KEYS_FILE", tmp_path / ".api_keys")  # lifespan создаёт файл ключей
-    web_app.tasks_storage.clear()
-    web_app.log_queues.clear()
-    web_app.deleted_task_ids.clear()
+    monkeypatch.setattr(state, "upload_dir", upload_dir)
+    monkeypatch.setattr(state, "results_dir", results_dir)
+    monkeypatch.setattr(state, "api_keys_file", tmp_path / ".api_keys")  # lifespan создаёт файл ключей
+    registry.tasks.clear()
+    registry.logs.clear()
+    registry.deleted.clear()
 
     yield upload_dir, results_dir
 
-    web_app.tasks_storage.clear()
-    web_app.log_queues.clear()
-    web_app.deleted_task_ids.clear()
+    registry.tasks.clear()
+    registry.logs.clear()
+    registry.deleted.clear()
 
 
 def _task(task_id: str, user: str, status: str = "completed") -> dict:
@@ -64,26 +66,26 @@ def _task(task_id: str, user: str, status: str = "completed") -> dict:
 def test_register_task_persists_authenticated_user(web_state):
     # Given: пустое серверное хранилище Web GUI.
     # When: задача регистрируется для конкретного пользователя.
-    web_app._register_task("task-alice", "voice.mp3", 128, "alice")
+    registry.register("task-alice", "voice.mp3", 128, "alice")
 
     # Then: JSON-индекс содержит владельца задачи и переживёт закрытие вкладки.
-    index = web_app.load_json(str(web_app.TASKS_INDEX_PATH), {})
+    index = load_json(str(state.tasks_index_path), {})
     assert index["task-alice"]["user"] == "alice"
     assert index["task-alice"]["filename"] == "voice.mp3"
     assert index["task-alice"]["diarization_backend"] == "pyannote"
 
 
 def test_web_frontend_posts_selected_diarization_backend():
-    html = (web_app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    javascript = (web_app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
     assert 'option value="sortformer"' in html
     assert "formData.append('diarization_backend', diarBackend)" in javascript
 
 
 def test_web_frontend_posts_selected_asr_runtime():
-    html = (web_app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    javascript = (web_app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
     assert 'id="asrBackend"' in html
     assert 'id="asrModel"' in html
@@ -94,8 +96,8 @@ def test_web_frontend_posts_selected_asr_runtime():
 
 
 def test_web_frontend_posts_subtitle_options():
-    html = (web_app.STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    javascript = (web_app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
     assert 'id="subtitle-sentence-split"' in html
     assert 'id="subtitle-max-lines"' in html
@@ -108,19 +110,19 @@ def test_web_frontend_posts_subtitle_options():
 
 
 def test_download_endpoint_forwards_validated_subtitle_options(monkeypatch):
-    selection = web_app.transcription_service.AsrSelection(
+    selection = transcription_service.AsrSelection(
         backend="auto",
         model="v3_e2e_rnnt",
         onnx_provider="auto",
     )
     monkeypatch.setattr(
-        web_app.transcription_service,
+        transcription_service,
         "normalize_asr_selection",
         lambda *_args, **_kwargs: selection,
     )
-    monkeypatch.setattr(web_app, "tasks_storage", {})
-    monkeypatch.setattr(web_app, "log_queues", {})
-    monkeypatch.setattr(web_app, "_persist_tasks_index", lambda: None)
+    monkeypatch.setattr(registry, "tasks", {})
+    monkeypatch.setattr(registry, "logs", {})
+    monkeypatch.setattr(registry, "persist", lambda: None)
     captured = {}
 
     async def fake_download(*args):
@@ -149,7 +151,7 @@ def test_download_endpoint_forwards_validated_subtitle_options(monkeypatch):
 
     response = asyncio.run(scenario())
 
-    assert response["task_id"] in web_app.tasks_storage
+    assert response["task_id"] in registry.tasks
     options = captured["subtitle_options"]
     assert options.sentence_split is False
     assert options.max_line_count == 3
@@ -157,13 +159,13 @@ def test_download_endpoint_forwards_validated_subtitle_options(monkeypatch):
 
 
 def test_download_endpoint_rejects_invalid_subtitle_limits(monkeypatch):
-    selection = web_app.transcription_service.AsrSelection(
+    selection = transcription_service.AsrSelection(
         backend="auto",
         model="v3_e2e_rnnt",
         onnx_provider="auto",
     )
     monkeypatch.setattr(
-        web_app.transcription_service,
+        transcription_service,
         "normalize_asr_selection",
         lambda *_args, **_kwargs: selection,
     )
@@ -193,19 +195,19 @@ def test_download_endpoint_rejects_invalid_subtitle_limits(monkeypatch):
 
 
 def test_upload_endpoint_forwards_validated_subtitle_options(monkeypatch, tmp_path):
-    selection = web_app.transcription_service.AsrSelection(
+    selection = transcription_service.AsrSelection(
         backend="auto",
         model="v3_e2e_rnnt",
         onnx_provider="auto",
     )
     monkeypatch.setattr(
-        web_app.transcription_service,
+        transcription_service,
         "normalize_asr_selection",
         lambda *_args, **_kwargs: selection,
     )
-    monkeypatch.setattr(web_app, "tasks_storage", {})
-    monkeypatch.setattr(web_app, "log_queues", {})
-    monkeypatch.setattr(web_app, "_persist_tasks_index", lambda: None)
+    monkeypatch.setattr(registry, "tasks", {})
+    monkeypatch.setattr(registry, "logs", {})
+    monkeypatch.setattr(registry, "persist", lambda: None)
     captured = {}
 
     async def fake_save_upload(_file, _request):
@@ -242,7 +244,7 @@ def test_upload_endpoint_forwards_validated_subtitle_options(monkeypatch, tmp_pa
     response = asyncio.run(scenario())
 
     assert response["tasks"][0]["task_id"] == "upload-task"
-    assert web_app.tasks_storage["upload-task"]["subtitle_options"] == {
+    assert registry.tasks["upload-task"]["subtitle_options"] == {
         "sentence_split": False,
         "max_line_count": 4,
         "max_line_width": 80,
@@ -255,23 +257,23 @@ def test_upload_endpoint_forwards_validated_subtitle_options(monkeypatch, tmp_pa
 
 def test_restore_marks_active_task_failed_and_preserves_user(web_state):
     # Given: сервер был остановлен, пока пользовательская задача была в обработке.
-    web_app.save_json_atomic(str(web_app.TASKS_INDEX_PATH), {"task-alice": _task("task-alice", "alice", "processing")})
+    save_json_atomic(str(state.tasks_index_path), {"task-alice": _task("task-alice", "alice", "processing")})
 
     # When: Web GUI восстанавливает индекс задач при старте.
-    restored = web_app._restore_tasks_from_index()
+    restored = registry.restore_from_index()
 
     # Then: задача остаётся привязанной к пользователю и становится завершённой ошибкой рестарта.
     assert restored is True
-    assert web_app.tasks_storage["task-alice"]["user"] == "alice"
-    assert web_app.tasks_storage["task-alice"]["status"] == "failed"
-    assert web_app.tasks_storage["task-alice"]["message"] == web_app.TASK_RECOVERY_MESSAGE
+    assert registry.tasks["task-alice"]["user"] == "alice"
+    assert registry.tasks["task-alice"]["status"] == "failed"
+    assert registry.tasks["task-alice"]["message"] == TASK_RECOVERY_MESSAGE
 
 
 def test_legacy_meta_restore_uses_configured_single_user(web_state):
     _, results_dir = web_state
     task_dir = results_dir / "legacy-task"
     task_dir.mkdir()
-    web_app.save_json_atomic(str(task_dir / "meta.json"), {
+    save_json_atomic(str(task_dir / "meta.json"), {
         "task_id": "legacy-task",
         "filename": "legacy.mp3",
         "created_at": "2026-01-01T00:00:00",
@@ -285,13 +287,13 @@ def test_legacy_meta_restore_uses_configured_single_user(web_state):
     })
 
     # When: старые результаты без поля user восстанавливаются из meta.json.
-    restored = web_app._restore_tasks_from_results()
+    restored = registry.restore_from_results()
 
     # Then: в однопользовательском Web GUI история остаётся видимой текущему пользователю.
     assert restored is True
-    assert web_app.tasks_storage["legacy-task"]["user"] == web_app.WEB_USERNAME
-    assert web_app.tasks_storage["legacy-task"]["status"] == "completed"
-    assert web_app.tasks_storage["legacy-task"]["subtitle_options"] == {
+    assert registry.tasks["legacy-task"]["user"] == state.username
+    assert registry.tasks["legacy-task"]["status"] == "completed"
+    assert registry.tasks["legacy-task"]["subtitle_options"] == {
         "sentence_split": False,
         "max_line_count": 3,
         "max_line_width": 72,
@@ -300,11 +302,11 @@ def test_legacy_meta_restore_uses_configured_single_user(web_state):
 
 def test_restore_merges_index_and_result_metadata(web_state):
     _, results_dir = web_state
-    web_app.save_json_atomic(str(web_app.TASKS_INDEX_PATH), {"indexed-task": _task("indexed-task", "alice")})
+    save_json_atomic(str(state.tasks_index_path), {"indexed-task": _task("indexed-task", "alice")})
 
     task_dir = results_dir / "meta-only-task"
     task_dir.mkdir()
-    web_app.save_json_atomic(str(task_dir / "meta.json"), {
+    save_json_atomic(str(task_dir / "meta.json"), {
         "task_id": "meta-only-task",
         "filename": "meta-only.mp3",
         "created_at": "2026-01-01T00:00:00",
@@ -314,16 +316,16 @@ def test_restore_merges_index_and_result_metadata(web_state):
     })
 
     # When: startup restore sees both an index and a result directory missing from that index.
-    web_app._restore_persisted_tasks()
+    registry.restore()
 
     # Then: both task sources are visible instead of choosing only one source.
-    assert set(web_app.tasks_storage) == {"indexed-task", "meta-only-task"}
-    assert web_app.tasks_storage["meta-only-task"]["user"] == "alice"
+    assert set(registry.tasks) == {"indexed-task", "meta-only-task"}
+    assert registry.tasks["meta-only-task"]["user"] == "alice"
 
 
 def test_user_cannot_access_other_users_task(web_state):
     # Given: задача принадлежит другому пользователю.
-    web_app.tasks_storage["task-bob"] = _task("task-bob", "bob")
+    registry.tasks["task-bob"] = _task("task-bob", "bob")
 
     # When / Then: прямой доступ текущего пользователя маскируется под 404.
     with pytest.raises(HTTPException) as exc:
@@ -333,10 +335,10 @@ def test_user_cannot_access_other_users_task(web_state):
 
 def test_delete_all_removes_only_current_user_data(web_state):
     upload_dir, results_dir = web_state
-    web_app.tasks_storage["task-alice"] = _task("task-alice", "alice")
-    web_app.tasks_storage["task-bob"] = _task("task-bob", "bob")
-    web_app.log_queues["task-alice"] = ["alice log"]
-    web_app.log_queues["task-bob"] = ["bob log"]
+    registry.tasks["task-alice"] = _task("task-alice", "alice")
+    registry.tasks["task-bob"] = _task("task-bob", "bob")
+    registry.logs["task-alice"] = ["alice log"]
+    registry.logs["task-bob"] = ["bob log"]
 
     (upload_dir / "task-alice_task-alice.mp3").write_bytes(b"alice")
     (upload_dir / "task-bob_task-bob.mp3").write_bytes(b"bob")
@@ -348,19 +350,19 @@ def test_delete_all_removes_only_current_user_data(web_state):
 
     # Then: удалены только его задачи, файлы и логи; чужая история сохранена.
     assert response == {"ok": True, "removed": 1}
-    assert "task-alice" not in web_app.tasks_storage
-    assert "task-bob" in web_app.tasks_storage
+    assert "task-alice" not in registry.tasks
+    assert "task-bob" in registry.tasks
     assert not (upload_dir / "task-alice_task-alice.mp3").exists()
     assert (upload_dir / "task-bob_task-bob.mp3").exists()
     assert not (results_dir / "task-alice").exists()
     assert (results_dir / "task-bob").exists()
-    assert "task-alice" not in web_app.log_queues
-    assert web_app.load_json(str(web_app.TASKS_INDEX_PATH), {}) == {"task-bob": web_app.tasks_storage["task-bob"]}
+    assert "task-alice" not in registry.logs
+    assert load_json(str(state.tasks_index_path), {}) == {"task-bob": registry.tasks["task-bob"]}
 
 
 def test_active_delete_all_leaves_persistent_tombstone_until_worker_cleanup(web_state):
     upload_dir, results_dir = web_state
-    web_app.tasks_storage["task-alice"] = _task("task-alice", "alice", "processing")
+    registry.tasks["task-alice"] = _task("task-alice", "alice", "processing")
     (upload_dir / "task-alice_task-alice.mp3").write_bytes(b"alice")
     (results_dir / "task-alice").mkdir()
 
@@ -369,32 +371,32 @@ def test_active_delete_all_leaves_persistent_tombstone_until_worker_cleanup(web_
 
     # Then: задача удалена из видимой истории, а tombstone сохранён до выхода фонового worker.
     assert response == {"ok": True, "removed": 1}
-    assert "task-alice" not in web_app.tasks_storage
-    assert web_app.load_json(str(web_app.DELETED_TASKS_PATH), []) == ["task-alice"]
+    assert "task-alice" not in registry.tasks
+    assert load_json(str(state.deleted_tasks_path), []) == ["task-alice"]
     assert not (upload_dir / "task-alice_task-alice.mp3").exists()
     assert not (results_dir / "task-alice").exists()
 
     # When: фоновый worker завершает обработку и делает финальную уборку.
-    web_app._finalize_deleted_task("task-alice", "task-alice.mp3")
+    registry.finalize_deleted("task-alice", "task-alice.mp3")
 
     # Then: tombstone очищен, поэтому список удалённых задач не растёт бесконечно.
-    assert web_app.load_json(str(web_app.DELETED_TASKS_PATH), []) == []
+    assert load_json(str(state.deleted_tasks_path), []) == []
 
 
 def test_startup_tombstone_cleanup_prevents_deleted_task_restore(web_state):
     upload_dir, results_dir = web_state
-    web_app.save_json_atomic(str(web_app.TASKS_INDEX_PATH), {"task-alice": _task("task-alice", "alice", "processing")})
-    web_app.save_json_atomic(str(web_app.DELETED_TASKS_PATH), ["task-alice"])
+    save_json_atomic(str(state.tasks_index_path), {"task-alice": _task("task-alice", "alice", "processing")})
+    save_json_atomic(str(state.deleted_tasks_path), ["task-alice"])
     (upload_dir / "task-alice_task-alice.mp3").write_bytes(b"alice")
     (results_dir / "task-alice").mkdir()
 
     # When: сервер стартует после падения между delete-all и выходом worker.
-    web_app._restore_persisted_tasks()
+    registry.restore()
 
     # Then: tombstone удаляет файлы и не даёт задаче вернуться из старого индекса.
-    assert "task-alice" not in web_app.tasks_storage
-    assert web_app.load_json(str(web_app.TASKS_INDEX_PATH), {}) == {}
-    assert web_app.load_json(str(web_app.DELETED_TASKS_PATH), []) == []
+    assert "task-alice" not in registry.tasks
+    assert load_json(str(state.tasks_index_path), {}) == {}
+    assert load_json(str(state.deleted_tasks_path), []) == []
     assert not (upload_dir / "task-alice_task-alice.mp3").exists()
     assert not (results_dir / "task-alice").exists()
 
@@ -426,8 +428,8 @@ def test_health_includes_asr_and_runtime(web_state, monkeypatch):
                 "error": None,
             }
 
-    monkeypatch.setattr(web_app, "ModelLoader", _FakeModelLoader)
-    monkeypatch.setattr(web_app, "HF_TOKEN", "")
+    monkeypatch.setattr(state, "loader_factory", _FakeModelLoader)
+    monkeypatch.setattr(state, "hf_token", "")
 
     with TestClient(web_app.app) as client:
         response = client.get("/health")
@@ -440,7 +442,7 @@ def test_health_includes_asr_and_runtime(web_state, monkeypatch):
 
         options = asyncio.run(web_app.get_asr_options(user="test-user"))
         assert set(options["backends"]) == set(
-            web_app.transcription_service.available_asr_backends()
+            transcription_service.available_asr_backends()
         )
         assert options["defaults"]["asr_backend"] == "pytorch"
 
