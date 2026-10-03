@@ -106,6 +106,24 @@ private func data(_ line: String) -> Data { Data(line.utf8) }
         #expect(text.contains("\n"))
     }
 
+    /// A long session rolls each track over to further FLACs; `recording_files`
+    /// lists every segment (the mix too), `recordings` only a source's first file.
+    @Test func stopListsEveryRecordingSegment() {
+        guard case .stopped(_, let saved, let recordings, let message) = event(WorkerFixtures.liveStoppedPartial) else { Issue.record("live_stopped"); return }
+        #expect(saved.map { ($0 as NSString).lastPathComponent } == ["transcript.txt"])
+        #expect(recordings.map { ($0 as NSString).lastPathComponent } == ["mic.flac", "mic-002.flac", "mix.flac", "mix-002.flac", "system.flac"])
+        #expect(message == "diarize: RuntimeError: diarization backend unavailable")
+    }
+
+    /// The stop finished and wrote files: a failed stage is a warning, not a failure.
+    @Test func stopOutcomeSeparatesPartialSuccessFromFailure() {
+        #expect(LiveStopOutcome(message: nil, savedFiles: ["t.txt"], recordings: ["mic.flac"]) == .saved)
+        #expect(LiveStopOutcome(message: nil, savedFiles: [], recordings: []) == .saved)
+        #expect(LiveStopOutcome(message: "export: OSError", savedFiles: ["t.txt"], recordings: []) == .savedWithWarning("export: OSError"))
+        #expect(LiveStopOutcome(message: "export: OSError", savedFiles: [], recordings: ["mic.flac"]) == .savedWithWarning("export: OSError"))
+        #expect(LiveStopOutcome(message: "session is not running", savedFiles: [], recordings: []) == .failed("session is not running"))
+    }
+
     /// A current worker names the command an error answers.
     @Test func errorsCarryTheirCommand() {
         guard case .error("Session is already paused", "live_pause") = event(WorkerFixtures.liveErrorWithCommand) else { Issue.record("error with command"); return }

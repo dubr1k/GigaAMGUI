@@ -162,11 +162,30 @@ public enum LiveWorkerEvent {
     case captureEvent(source: String, kind: String, detail: String)
     case answerChunk(turnID: String, text: String)
     case answer(turnID: String, status: String, text: String)
-    /// `recordings` in source order; `message` is set when the stop failed to save.
+    /// `recordings`: every recording segment, tracks by name, segments in order.
+    /// `message` is set when a stage of the stop failed — with files saved or none.
     case stopped(sessionDir: String?, savedFiles: [String], recordings: [String], message: String?)
     /// `command` names the live_* command the error answers; an older worker sends none.
     case error(message: String?, command: String?)
     case log(String)
+}
+
+/// How a `live_stopped` reads to the user.
+public enum LiveStopOutcome: Equatable {
+    /// Every stage finished.
+    case saved
+    /// The stop finished and wrote files, but a stage failed (`message`): the
+    /// session is saved, only not completely — e.g. after-stop diarization.
+    case savedWithWarning(String)
+    /// Nothing was saved; the message says why.
+    case failed(String)
+
+    /// The worker's stop() runs every stage even when one fails and reports the
+    /// failures in `message` next to whatever it saved.
+    public init(message: String?, savedFiles: [String], recordings: [String]) {
+        guard let message else { self = .saved; return }
+        self = savedFiles.isEmpty && recordings.isEmpty ? .failed(message) : .savedWithWarning(message)
+    }
 }
 
 public enum LiveEventDecoder {
@@ -203,7 +222,15 @@ public enum LiveEventDecoder {
             return .answer(turnID: object["turn_id"] as? String ?? "", status: object["status"] as? String ?? "",
                            text: object["text"] as? String ?? "")
         case "live_stopped":
-            let recordings = (object["recordings"] as? [String: String] ?? [:]).sorted { $0.key < $1.key }.map(\.value)
+            // A long session rolls each track over to further FLACs: `recording_files`
+            // lists every segment, the mix included; `recordings` (an older worker)
+            // only the first file of each source.
+            let recordings: [String]
+            if let segments = object["recording_files"] as? [String: [String]] {
+                recordings = segments.sorted { $0.key < $1.key }.flatMap(\.value)
+            } else {
+                recordings = (object["recordings"] as? [String: String] ?? [:]).sorted { $0.key < $1.key }.map(\.value)
+            }
             let message = (object["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             return .stopped(sessionDir: object["session_dir"] as? String, savedFiles: object["saved_files"] as? [String] ?? [],
                             recordings: recordings, message: message)

@@ -168,6 +168,8 @@ enum L10n {
         "Сессия сохранена": "Session saved",
         "Загрузка модели распознавания… Запись начнётся, когда она будет готова.": "Loading the recognition model… Recording starts once it is ready.",
         "Сессия остановлена с ошибкой: ": "Session stopped with an error: ",
+        "Сессия сохранена, но не полностью: %@": "Session saved, but not completely: %@",
+        "Сохранён файл: %@": "Saved file: %@",
         "Сохранено в ": "Saved to ",
         "Запись в ": "Recording to ",
         "Сохраняется в ": "Saving to ",

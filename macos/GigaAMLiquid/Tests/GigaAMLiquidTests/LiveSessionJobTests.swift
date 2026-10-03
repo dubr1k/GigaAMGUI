@@ -1,4 +1,5 @@
 import Foundation
+import GigaAMLiquidCore
 import Testing
 @testable import GigaAMLiquid
 
@@ -70,6 +71,37 @@ import Testing
         let job = try await startedJob(worker, log: log)
         job.stop()
         #expect(try await terminal(in: log) == "stopped")
+    }
+
+    private func stopped(in log: EventLog<LiveSessionEvent>) async throws -> (exports: [URL], recordings: [URL], outcome: LiveStopOutcome) {
+        let event = try await log.wait { if case .stopped = $0 { return true } else { return false } }
+        guard case .stopped(_, let exports, let recordings, let outcome) = event else { throw TimeoutError(description: "not stopped") }
+        return (exports, recordings, outcome)
+    }
+
+    /// stop() finishes even when a stage fails and reports it in `message` next to
+    /// what it saved. That read as "the session stopped with an error" over a
+    /// saved transcript; and only the first FLAC of each source was listed.
+    @Test func aStopThatSavedFilesDespiteAFailedStageIsAWarning() async throws {
+        let dir = Self.sessionDir
+        let partial = #"{"type":"live_stopped","session_dir":"\#(dir)","saved_files":["\#(dir)/transcript.txt"],"recordings":{"mic":"\#(dir)/mic.flac"},"recording_files":{"mic":["\#(dir)/mic.flac","\#(dir)/mic-002.flac"]},"message":"diarize: RuntimeError: boom"}"#
+        let worker = try FakeWorker(replies: ["live_start": [Self.recording], "live_stop": [partial]])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.stop()
+        let result = try await stopped(in: log)
+        #expect(result.outcome == .savedWithWarning("diarize: RuntimeError: boom"))
+        #expect(result.exports.map(\.lastPathComponent) == ["transcript.txt"])
+        #expect(result.recordings.map(\.lastPathComponent) == ["mic.flac", "mic-002.flac"])
+    }
+
+    @Test func aStopThatSavedNothingFails() async throws {
+        let failed = #"{"type":"live_stopped","session_dir":"\#(Self.sessionDir)","saved_files":[],"recordings":{},"message":"session is not running"}"#
+        let worker = try FakeWorker(replies: ["live_start": [Self.recording], "live_stop": [failed]])
+        let log = EventLog<LiveSessionEvent>()
+        let job = try await startedJob(worker, log: log)
+        job.stop()
+        #expect(try await stopped(in: log).outcome == .failed("session is not running"))
     }
 
     /// A question before the first final is answered with the worker's reason,

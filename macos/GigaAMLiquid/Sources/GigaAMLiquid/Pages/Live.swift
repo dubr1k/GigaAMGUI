@@ -375,13 +375,22 @@ extension AppController {
             liveAnswerView?.string = liveAnswerText
             liveAsking = false
             refreshLiveControls()
-        case .stopped(let directory, let saved, let error):
+        case .stopped(let directory, let exports, let recordings, let outcome):
             liveSessionDir = directory
-            if let error {
-                finishLive(status: L10n.text("Сессия остановлена с ошибкой: ") + error)
-            } else {
-                let names = saved.map(\.lastPathComponent).joined(separator: ", ")
-                finishLive(status: L10n.text("Сессия сохранена") + (names.isEmpty ? "" : " · " + names))
+            // Every file in the log — each recording segment of a long session too;
+            // the status line names them as far as it reaches.
+            let saved = exports + recordings
+            saved.forEach { appendLogLine(L10n.format("Сохранён файл: %@", $0.path)) }
+            let names = saved.map(\.lastPathComponent).joined(separator: ", ")
+            let list = names.isEmpty ? "" : " · " + names
+            switch outcome {
+            case .saved:
+                finishLive(status: L10n.text("Сессия сохранена") + list)
+            case .savedWithWarning(let message):
+                // A failed stage (after-stop diarization, one export) next to saved files.
+                finishLive(status: L10n.format("Сессия сохранена, но не полностью: %@", message) + list)
+            case .failed(let message):
+                finishLive(status: L10n.text("Сессия остановлена с ошибкой: ") + message)
             }
         case .failed(let message):
             appendLogLine(message)

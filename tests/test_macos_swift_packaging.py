@@ -433,6 +433,8 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
     assert "Live и LLM пока не подключены" not in main
     receive = _swift_block(main, "private func receiveLiveEvent(_ event: LiveSessionEvent) {")
     assert "case .partial" in receive and "case .final" in receive and "case .stopped" in receive and "case .failed" in receive
+    # A stop whose stage failed next to saved files is a warning, not a failed stop.
+    assert "case .savedWithWarning(let message):" in _swift_case(receive, "case .stopped(")
     terminate = _swift_block(main, "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {")
     # Quitting stops and saves the session (live_stop); the kill is the bounded fallback.
     assert "stopLiveForExit" in terminate and "liveJob?.terminate()" not in terminate
