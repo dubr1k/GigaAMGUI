@@ -4,10 +4,6 @@ import GigaAMLiquidCore
 /// The Live page: capture sources, the live session job, its transcript and
 /// the assistant's questions.
 extension AppController {
-    private static let liveDiarizationModes = ["Выкл.", "Оценка вживую", "После остановки"]
-
-    private static let liveDiarizationModeValues = ["off", "live_estimate", "after_stop"]
-
     func buildLive(into content: NSStackView) {
         let source = card("Источник аудио", dense: true)
         let sourceBody = contentStack(source)
@@ -20,7 +16,11 @@ extension AppController {
         sourceBody.addArrangedSubview(toggleRow("Системный звук", key: "live.systemAudio", defaultValue: false))
         sourceBody.addArrangedSubview(toggleRow("Записывать микрофон", key: "live.recordMic", defaultValue: true))
         sourceBody.addArrangedSubview(toggleRow("Записывать системный звук", key: "live.recordSystem", defaultValue: false))
-        sourceBody.addArrangedSubview(compactField("Диаризация", control: popup(Self.liveDiarizationModes, key: "live.diarizationMode")))
+        // Live speaker estimates are not offered: no backend implements them, and a
+        // session started with them had no speakers at all.
+        let diarizationMode = popup(SettingsSchema.liveDiarizationModes.map(\.title), key: "live.diarizationMode")
+        diarizationMode.toolTip = L10n.text("Оценка спикеров во время записи пока недоступна: спикеры размечаются после остановки.")
+        sourceBody.addArrangedSubview(compactField("Диаризация", control: diarizationMode))
         sourceBody.addArrangedSubview(compactField("Движок", control: popup(SettingsSchema.diarizationEngines, key: "live.diarizationEngine")))
         source.heightAnchor.constraint(equalToConstant: 306).isActive = true
 
@@ -202,8 +202,7 @@ extension AppController {
         var settings = LiveSessionSettings(sessionRoot: root, sources: withSystem ? [.mic, .system] : [.mic])
         let device = defaults.string(forKey: "live.microphone") ?? "default"
         settings.microphoneDeviceID = device == "default" ? nil : device
-        let modeIndex = Self.liveDiarizationModes.firstIndex(of: option("live.diarizationMode", values: Self.liveDiarizationModes)) ?? 0
-        settings.diarizationMode = Self.liveDiarizationModeValues[modeIndex]
+        settings.diarizationMode = SettingsSchema.liveDiarizationMode(stored: defaults.string(forKey: "live.diarizationMode"))
         settings.diarizationBackend = option("live.diarizationEngine", values: SettingsSchema.diarizationEngines)
         settings.recordMic = enabledOption("live.recordMic", defaultValue: true)
         settings.recordSystem = enabledOption("live.recordSystem", defaultValue: false)

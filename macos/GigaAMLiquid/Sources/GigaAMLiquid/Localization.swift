@@ -143,6 +143,7 @@ enum L10n {
         "По умолчанию": "Default",
         "Оценка вживую": "Live estimate",
         "После остановки": "After stop",
+        "Оценка спикеров во время записи пока недоступна: спикеры размечаются после остановки.": "Live speaker estimates are not available yet: speakers are labelled after stop.",
         "Уровень сигнала": "Signal level",
         "Папка сессий": "Sessions folder",
         "Вопрос ассистенту по текущей записи": "Ask the assistant about this recording",

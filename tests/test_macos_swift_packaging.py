@@ -646,6 +646,25 @@ def test_swift_settings_choices_match_the_worker() -> None:
         assert literal not in sources, name
 
 
+def test_swift_live_diarization_offers_only_modes_the_worker_runs() -> None:
+    # "Live estimate" is a DiarizationMode the worker accepts but no backend
+    # implements: it reports it unavailable at once and the session has no
+    # speakers. Liquid does not offer it; PyQt shows it disabled.
+    schema = (LIQUID_CORE / "SettingsSchema.swift").read_text(encoding="utf-8")
+    literal = schema.split("public static let liveDiarizationModes", 1)[1].split("\n    ]\n", 1)[0]
+    values = re.findall(r'\("[^"]+", "([a-z_]+)"\)', literal)
+    types = Path("src/live/types.py").read_text(encoding="utf-8")
+    modes = set(re.findall(r'^\s+[A-Z_]+ = "([a-z_]+)"', types.split("class DiarizationMode", 1)[1].split("\nclass ", 1)[0], flags=re.MULTILINE))
+    assert values == ["off", "after_stop"]
+    assert set(values) < modes and "live_estimate" in modes
+    sources = _liquid_sources()
+    assert '"live_estimate"' not in sources and '"Оценка вживую"' not in sources
+    live = _swift_block(sources, "private func launchLive(root: URL, withSystem: Bool) {")
+    assert 'SettingsSchema.liveDiarizationMode(stored: defaults.string(forKey: "live.diarizationMode"))' in live
+    page = _swift_block(sources, "func buildLive(into content: NSStackView) {")
+    assert 'popup(SettingsSchema.liveDiarizationModes.map(\\.title), key: "live.diarizationMode")' in page
+
+
 def test_swift_decoder_fixtures_are_events_the_worker_emits() -> None:
     # WorkerFixtures.swift holds lines captured from a real worker run; if the
     # worker drops or renames an event, the fixtures (and the decoders) are stale.
