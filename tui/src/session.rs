@@ -517,7 +517,7 @@ mod tests {
         // The reply to a cancel sent for the previous batch arrives late.
         app.handle_message(
             json!({"type":"error","message":"Nothing is being processed",
-            "request":"cancel"}),
+            "command":"cancel"}),
         );
         assert_eq!(app.activity, Activity::Starting(JobKind::Asr));
         assert!(app.batch.as_ref().unwrap().error.is_none());
@@ -529,7 +529,7 @@ mod tests {
         app.queue.add("/a.wav".into());
         app.begin_batch(RunSelection::Pending, false);
         app.handle_message(json!({"type":"error","message":"Input file does not exist",
-            "request":"start", "traceback":"Traceback (most recent call last):\n  File \"w.py\"\nValueError: deep cause"}));
+            "command":"start", "traceback":"Traceback (most recent call last):\n  File \"w.py\"\nValueError: deep cause"}));
         assert_eq!(app.activity, Activity::Idle);
         assert!(app
             .logs
@@ -540,9 +540,9 @@ mod tests {
         let mut app = crate::test_support::ready_app();
         app.llm_extra_files.push("/a.txt".into());
         crate::app::request_llm(&mut app);
-        app.handle_message(json!({"type":"error","message":"x","request":"start"}));
+        app.handle_message(json!({"type":"error","message":"x","command":"start"}));
         assert_eq!(app.activity, Activity::Starting(JobKind::Llm));
-        app.handle_message(json!({"type":"error","message":"x","request":"llm_start"}));
+        app.handle_message(json!({"type":"error","message":"x","command":"llm_start"}));
         assert_eq!(app.activity, Activity::Idle);
     }
 
@@ -550,10 +550,10 @@ mod tests {
     fn resolver_failure_is_recognized_by_request_not_by_english_text() {
         let mut app = crate::test_support::ready_app();
         app.submit_paths("/a.wav".into());
-        app.handle_message(json!({"type":"error","request":"llm_tool_check",
+        app.handle_message(json!({"type":"error","command":"llm_tool_check",
             "message":"resolve_inputs is mentioned but unrelated"}));
         assert_eq!(app.pending_inputs.len(), 1);
-        app.handle_message(json!({"type":"error","request":"resolve_inputs",
+        app.handle_message(json!({"type":"error","command":"resolve_inputs",
             "message":"resolve_inputs failed: boom"}));
         assert!(app.pending_inputs.is_empty());
         assert_eq!(app.input.text(), "/a.wav");

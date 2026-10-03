@@ -67,7 +67,7 @@ pub(crate) enum JobKind {
 }
 
 impl JobKind {
-    /// The command that starts this job; the worker names it in `error.request`.
+    /// The command that starts this job; the worker names it in `error.command`.
     pub(crate) fn start_command(self) -> &'static str {
         match self {
             Self::Asr => "start",

@@ -37,7 +37,7 @@ def main():
             if stopped.wait(0.02):
                 return
         version = 99 if os.environ.get("GIGAAM_TEST_INVALID_HELLO") else 1
-        emit("ready", protocol_version=version, capabilities=["resolve_inputs", "asr", "llm"])
+        emit("ready", protocol_version=version, capabilities=["resolve_inputs", "asr", "llm", "compact_completed"])
 
     def run(command):
         if os.environ.get("GIGAAM_TEST_REJECT_AFTER_CANCEL"):
@@ -50,7 +50,7 @@ def main():
                     return
         if os.environ.get("GIGAAM_TEST_WORKER_FAIL_START"):
             # Как настоящий worker: ошибка называет команду, на которую отвечает.
-            emit("error", message="fixture initialization failed", request="start")
+            emit("error", message="fixture initialization failed", command="start")
             return
         files = command["files"]
         emit("started", total_files=len(files), backend="fixture")
@@ -74,7 +74,7 @@ def main():
             if closing.wait(0.02):
                 return
         # Валидация может отклонить запуск после получения отмены, без completed.
-        emit("error", message="Input file does not exist", request=request)
+        emit("error", message="Input file does not exist", command=request)
 
     def long_llm_result():
         emit("llm_started", mode="summary", index=1, total=1)

@@ -208,20 +208,20 @@ impl App {
                 }
             }
             "error" => {
-                // Newer workers name the command an error answers. Without that,
+                // Newer workers name the command an error answers (`command`). Without that,
                 // a late reply to `cancel` arriving during the next start was taken
                 // as the start's rejection: the TUI went idle and then ignored the
-                // `started` that followed. Old workers send no `request`, and for
+                // `started` that followed. Old workers send no `command`, and for
                 // them any error during a start still rejects it.
-                let request = value["request"].as_str();
+                let command = value["command"].as_str();
                 let message = value["message"].as_str().map(str::to_owned);
-                if matches!(request, None | Some("start")) {
+                if matches!(command, None | Some("start")) {
                     if let Some(batch) = &mut self.batch {
                         batch.error = message.clone();
                     }
                 }
                 if let Some(kind) = self.activity.starting_kind() {
-                    if request.is_none_or(|request| request == kind.start_command()) {
+                    if command.is_none_or(|command| command == kind.start_command()) {
                         self.finish_batch(false, message.clone(), None);
                         self.activity = Activity::Idle;
                     }
@@ -231,8 +231,8 @@ impl App {
                 if let Some(trace) = value["traceback"].as_str() {
                     self.log_traceback(trace);
                 }
-                let resolver_failed = match request {
-                    Some(request) => request == "resolve_inputs",
+                let resolver_failed = match command {
+                    Some(command) => command == "resolve_inputs",
                     // An old worker without `resolve_inputs` says so only in English.
                     None => self.status.contains("resolve_inputs"),
                 };

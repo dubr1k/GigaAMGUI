@@ -117,8 +117,9 @@ class TuiWorker:
         # Только `completed`: клиентам, которые берут полные результаты из `file_completed`.
         self._compact_completed = False
         # Команда, которую handle() сейчас обрабатывает в этом потоке. Её `error`
-        # получает поле `request`: поздний ответ на `cancel` («Nothing is being
-        # processed») клиент иначе принимал за отказ следующего `start`.
+        # получает поле `command` (её `type`): поздний ответ на `cancel` («Nothing
+        # is being processed») клиент иначе принимал за отказ следующего `start`.
+        # Поле, заданное самим источником ошибки (live-сервис), не переписывается.
         self._handling = threading.local()
         self._llm = LLMWorkerService(self.emit)
         self._live = LiveWorkerService(self.emit)
@@ -134,10 +135,10 @@ class TuiWorker:
             payload["result"] = self._result_metadata(payload["result"])
         elif self._compact_completed and message_type == "completed" and isinstance(payload.get("results"), list):
             payload["results"] = [self._result_metadata(result) for result in payload["results"]]
-        if message_type == "error" and "request" not in payload:
-            request = getattr(self._handling, "command", None)
-            if request is not None:
-                payload["request"] = request
+        if message_type == "error" and "command" not in payload:
+            command = getattr(self._handling, "command", None)
+            if command is not None:
+                payload["command"] = command
         line = protocol_line({"type": message_type, **payload})
         with self._write_lock:
             self._output.write(line + "\n")
@@ -166,7 +167,7 @@ class TuiWorker:
             # `file_completed`; `completed` повторял их все со словами и на большой
             # пачке перерастал лимит строки клиента в 8 MiB.
             self._compact_completed = tui or "compact_completed" in _features(command)
-            self.emit("ready", protocol_version=1, capabilities=["resolve_inputs", "asr", "llm"])
+            self.emit("ready", protocol_version=1, capabilities=["resolve_inputs", "asr", "llm", "compact_completed"])
         elif command_type == "ping":
             self.emit("pong")
         elif command_type == "resolve_inputs":
@@ -412,11 +413,11 @@ class TuiWorker:
                 ),
                 traceback=traceback.format_exc(),
                 # The batch thread answers the `start` that launched it.
-                request="start",
+                command="start",
             )
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
         except Exception as exc:  # Keep JSONL valid even for startup failures.
-            self.emit("error", message=str(exc), traceback=traceback.format_exc(), request="start")
+            self.emit("error", message=str(exc), traceback=traceback.format_exc(), command="start")
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
 
 
@@ -484,7 +485,7 @@ def main() -> int:
                 worker.handle(command)
             except Exception as exc:
                 command_type = command.get("type")
-                tag = {"request": command_type} if isinstance(command_type, str) else {}
+                tag = {"command": command_type} if isinstance(command_type, str) else {}
                 worker.emit("error", message=f"{command_type or 'command'} failed: {exc}", **tag)
     finally:
         worker.close()

@@ -42,7 +42,7 @@ worker.close()
 values = [json.loads(line) for line in out.getvalue().splitlines()]
 assert values == [
     {'type': 'ready', 'protocol_version': 1,
-     'capabilities': ['resolve_inputs', 'asr', 'llm']},
+     'capabilities': ['resolve_inputs', 'asr', 'llm', 'compact_completed']},
     {'type': 'pong'},
 ], values
 assert not {'torch', 'gigaam', 'pyannote.audio', 'mlx'}.intersection(sys.modules)
@@ -90,7 +90,7 @@ def test_hello_negotiates_which_asr_events_are_compact(hello, compact_file, comp
         if hello is not None:
             worker.handle(hello)
             assert _messages(output)[-1] == {
-                "type": "ready", "protocol_version": 1, "capabilities": ["resolve_inputs", "asr", "llm"],
+                "type": "ready", "protocol_version": 1, "capabilities": ["resolve_inputs", "asr", "llm", "compact_completed"],
             }
         result = {"file_path": "/long.wav", "success": True, "saved_files": ["/long.txt"],
                   "utterances": [{"text": "длинная запись"}]}
@@ -285,7 +285,7 @@ def test_tui_worker_routes_llm_cancel_without_job():
     worker.handle({"type": "llm_cancel"})
 
     assert _messages(output) == [
-        {"type": "error", "message": "No LLM request is running", "request": "llm_cancel"},
+        {"type": "error", "message": "No LLM request is running", "command": "llm_cancel"},
     ]
 
 
@@ -306,9 +306,9 @@ def test_command_errors_name_the_command_they_answer(command, answered):
         worker.handle(command)
         error = _messages(output)[-1]
         assert error["type"] == "error"
-        assert error["request"] == answered
+        assert error["command"] == answered
         worker.emit("error", message="from a background thread")
-        assert "request" not in _messages(output)[-1], "only replies to a command are tagged"
+        assert "command" not in _messages(output)[-1], "only replies to a command are tagged"
     finally:
         worker.close()
 
@@ -329,7 +329,7 @@ def test_batch_failure_before_started_is_tagged_as_the_start(monkeypatch):
     worker._run_batch(["/a.wav"], "", ["txt"], False, "pyannote", None, "auto",
                       "v3_e2e_rnnt", "auto", "auto", True, 2, 64)
     error, completed = _messages(output)[-2:]
-    assert error["type"] == "error" and error["request"] == "start"
+    assert error["type"] == "error" and error["command"] == "start"
     assert "torch" in error["message"] and "traceback" in error
     assert completed["type"] == "completed"
 
@@ -364,8 +364,8 @@ def test_tui_worker_batch_start_is_rejected_while_live_session_runs(tmp_path):
     worker.handle({"type": "llm_start", "text": "t", "modes": ["summary"], "settings": {}})
 
     assert _messages(output) == [
-        {"type": "error", "message": "Processing is already running", "request": "start"},
-        {"type": "error", "message": "Processing is already running", "request": "llm_start"},
+        {"type": "error", "message": "Processing is already running", "command": "start"},
+        {"type": "error", "message": "Processing is already running", "command": "llm_start"},
     ]
 
 
@@ -425,7 +425,7 @@ def test_tui_worker_rejects_invalid_subtitle_limits(tmp_path):
     assert _messages(output)[0] == {
         "type": "error",
         "message": "max_line_count должен быть от 1 до 4",
-        "request": "start",
+        "command": "start",
     }
 
 
