@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import GigaAMLiquidCore
 
 /// Error type shared by every worker-backed job.
 struct WorkerFailure: LocalizedError {
@@ -66,15 +67,20 @@ final class WorkerProcess {
             throw WorkerFailure("Could not configure the worker input pipe: \(String(cString: strerror(errno)))")
         }
         input = stdinPipe.fileHandleForWriting
-        stdout = try LineReader(handle: stdoutPipe.fileHandleForReading, queue: queue, limit: 8 * 1024 * 1024,
-                                truncate: false, onLine: onLine, onError: onError,
-                                onEnd: { [weak self] in
-                                    guard let self, self.process?.isRunning == true else { return }
-                                    onStdoutEnd()
-                                })
-        stderr = try LineReader(handle: stderrPipe.fileHandleForReading, queue: queue, limit: 16 * 1024,
-                                truncate: true, onLine: { onStderr(String(decoding: $0, as: UTF8.self)) },
-                                onError: onError)
+        let describe: (LineReader.Failure) -> Void = { onError(Self.describe($0)) }
+        do {
+            stdout = try LineReader(handle: stdoutPipe.fileHandleForReading, queue: queue, limit: Self.eventLimit,
+                                    truncate: false, onLine: onLine, onError: describe,
+                                    onEnd: { [weak self] in
+                                        guard let self, self.process?.isRunning == true else { return }
+                                        onStdoutEnd()
+                                    })
+            stderr = try LineReader(handle: stderrPipe.fileHandleForReading, queue: queue, limit: 16 * 1024,
+                                    truncate: true, onLine: { onStderr(String(decoding: $0, as: UTF8.self)) },
+                                    onError: describe)
+        } catch let failure as LineReader.Failure {
+            throw WorkerFailure(Self.describe(failure))
+        }
         // Retain the worker until the OS has reaped it, even if its UI is rebuilt.
         task.terminationHandler = { [self] task in
             queue.async {
@@ -132,9 +138,25 @@ final class WorkerProcess {
         if let task = process, task.isRunning { Darwin.kill(task.processIdentifier, SIGKILL) }
     }
 
-    func drain() {
-        stdout?.drain()
+    /// Pulls pending stderr (tracebacks) before a failure report is composed.
+    /// Only stderr: this is called while a stdout line is being handled, and the
+    /// stdout reader must not be re-entered from its own callback.
+    func drainDiagnostics() {
         stderr?.drain()
+    }
+
+    /// One stdout event may carry a whole file result; the cap only stops a runaway line.
+    static let eventLimit = 8 * 1024 * 1024
+
+    static func describe(_ failure: LineReader.Failure) -> String {
+        switch failure {
+        case .configure(let code):
+            return "Could not configure the transcription output pipe: \(String(cString: strerror(code)))"
+        case .oversizedLine:
+            return "The transcription worker exceeded the 8 MiB JSONL event limit."
+        case .readFailed(let code):
+            return "Could not read transcription worker output: \(String(cString: strerror(code)))"
+        }
     }
 
     func close() {
@@ -144,95 +166,4 @@ final class WorkerProcess {
         stdout = nil
         stderr = nil
     }
-}
-
-/// Nonblocking readers drain both pipes concurrently without growing an
-/// unbounded callback queue or waiting forever for a descendant's open pipe.
-final class LineReader {
-    private let handle: FileHandle
-    private let limit: Int
-    private let truncate: Bool
-    private let onLine: (Data) -> Void
-    private let onError: (String) -> Void
-    private let onEnd: () -> Void
-    private var source: DispatchSourceRead?
-    private var buffer = [UInt8](repeating: 0, count: 8192)
-    private var line = Data()
-    private var dropping = false
-
-    init(handle: FileHandle, queue: DispatchQueue, limit: Int, truncate: Bool,
-         onLine: @escaping (Data) -> Void, onError: @escaping (String) -> Void,
-         onEnd: @escaping () -> Void = {}) throws {
-        self.handle = handle
-        self.limit = limit
-        self.truncate = truncate
-        self.onLine = onLine
-        self.onError = onError
-        self.onEnd = onEnd
-        let flags = fcntl(handle.fileDescriptor, F_GETFL)
-        guard flags != -1, fcntl(handle.fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
-            throw WorkerFailure("Could not configure the transcription output pipe.")
-        }
-        let source = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
-        self.source = source
-        source.setEventHandler { [weak self] in self?.drain() }
-        source.setCancelHandler { try? handle.close() }
-        source.resume()
-    }
-
-    func drain() {
-        guard source != nil else { return }
-        // Bound one turn so busy diagnostics cannot starve Cancel/teardown.
-        for _ in 0..<64 {
-            let count = buffer.withUnsafeMutableBytes { Darwin.read(handle.fileDescriptor, $0.baseAddress, $0.count) }
-            if count > 0 {
-                consume(count)
-            } else if count == 0 {
-                if !line.isEmpty && !dropping { onLine(line) }
-                line.removeAll(keepingCapacity: false)
-                close()
-                onEnd()
-                return
-            } else if errno == EINTR {
-                continue
-            } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                return
-            } else {
-                onError("Could not read transcription worker output: \(String(cString: strerror(errno)))")
-                close()
-                return
-            }
-        }
-    }
-
-    private func consume(_ count: Int) {
-        var start = 0
-        while start < count {
-            let newline = buffer[start..<count].firstIndex(of: 10)
-            let end = newline ?? count
-            if !dropping {
-                let available = max(0, limit - line.count)
-                line.append(contentsOf: buffer[start..<min(end, start + available)])
-                if end - start > available {
-                    dropping = true
-                    if truncate { onLine(line) }
-                    else { onError("The transcription worker exceeded the 8 MiB JSONL event limit.") }
-                    line.removeAll(keepingCapacity: true)
-                }
-            }
-            if let newline {
-                if !dropping { onLine(line) }
-                line.removeAll(keepingCapacity: true)
-                dropping = false
-                start = newline + 1
-            } else { break }
-        }
-    }
-
-    func close() {
-        source?.cancel()
-        source = nil
-    }
-
-    deinit { close() }
 }

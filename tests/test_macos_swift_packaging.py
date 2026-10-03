@@ -259,13 +259,30 @@ def test_swift_english_dictionary_has_no_duplicate_keys() -> None:
 def test_swift_worker_process_is_shared_between_jobs() -> None:
     worker = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/WorkerProcess.swift").read_text(encoding="utf-8")
     assert "final class WorkerProcess" in worker
-    assert "final class LineReader" in worker
     assert "enum WorkerRedaction" in worker
     assert "F_SETNOSIGPIPE" in worker
+    # One line reader, unit-tested in GigaAMLiquidCore (LineFramingTests), for every job.
+    reader = (LIQUID_CORE / "LineReader.swift").read_text(encoding="utf-8")
+    assert "final class LineReader" in reader and "JSONLineFramer" in reader
+    assert "final class LineReader" not in _liquid_sources()
     transcription = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
-    assert "final class LineReader" not in transcription
     assert "credentialPatterns" not in transcription
     assert "WorkerProcess(" in transcription
+
+
+def test_swift_jobs_never_reenter_the_stdout_reader() -> None:
+    # A failed file made NativeTranscriptionJob call worker.drain() from inside the
+    # stdout callback: the nested drain overwrote the read buffer the outer one was
+    # still cutting lines from, the next line came out garbled ("malformed JSON")
+    # and the batch was aborted. Only stderr may be pulled in from a callback.
+    sources = _liquid_sources()
+    assert "worker?.drain()" not in sources and "worker.drain()" not in sources
+    worker = _swift_type(sources, "WorkerProcess")
+    assert "func drain()" not in worker
+    assert "stderr?.drain()" in _swift_block(worker, "func drainDiagnostics() {")
+    assert "worker?.drainDiagnostics()" in Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/Transcription.swift").read_text(encoding="utf-8")
+    reader = (LIQUID_CORE / "LineReader.swift").read_text(encoding="utf-8")
+    assert "guard source != nil, !draining else { return }" in reader
 
 
 def test_swift_llm_job_uses_worker_protocol_and_redacts_api_key() -> None:

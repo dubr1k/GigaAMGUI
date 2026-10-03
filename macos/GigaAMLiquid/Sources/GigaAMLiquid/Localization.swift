@@ -8,6 +8,11 @@ enum L10n {
         isEnglish ? (english[source] ?? source) : source
     }
 
+    /// A translated `String(format:)` template: the key keeps its `%@`/`%d` slots.
+    static func format(_ source: String, _ arguments: CVarArg...) -> String {
+        String(format: text(source), arguments: arguments)
+    }
+
     private static let english: [String: String] = [
         "Обработка": "Processing",
         "Результат обработки": "Processing result",

@@ -243,7 +243,9 @@ final class NativeTranscriptionJob {
               let saved = raw["saved_files"] as? [String] else { throw WorkerFailure("The transcription worker returned an invalid result payload.") }
         // `completed` repeats the same result objects; do not re-read files or re-emit them.
         guard !completedIndices.contains(index) else { return }
-        if !success { worker?.drain() }
+        // Pull the traceback in before the failure is reported. Only stderr: this
+        // runs inside the stdout callback, which must not be re-entered.
+        if !success { worker?.drainDiagnostics() }
         let metadata = try JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys])
         let stem = files[index].deletingPathExtension().lastPathComponent
         let suffixes = ["txt": ".txt", "txt_timecodes": "_timecodes.txt", "txt_diarize": "_diarize.txt",
