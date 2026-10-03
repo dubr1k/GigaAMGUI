@@ -187,13 +187,13 @@ final class LiveSessionJob {
         }
         secrets = WorkerRedaction.secrets(in: environment)
         let worker = try WorkerProcess(
-            runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
+            role: .live, runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
             onLine: { self.consume($0) },
             onStderr: { self.emit(.log(self.safe($0))) },
-            onStdoutEnd: { self.finish(.failed("The live worker closed its output without stopping.")) },
+            onStdoutEnd: { self.finish(.failed(L10n.format("%@ закрыл вывод, не остановив сессию.", WorkerRole.live.name))) },
             onError: { self.finish(.failed($0)) },
             onExit: { status in
-                self.finish(.failed("The live worker exited without stopping (status \(status))."))
+                self.finish(.failed(L10n.format("%@ завершился, не остановив сессию (код %@).", WorkerRole.live.name, String(status))))
                 self.releaseWorker()
             }
         )
@@ -267,7 +267,7 @@ final class LiveSessionJob {
             if let message { emit(.log(message)) }
             finish(.stopped(sessionDir: directory, saved: saved, error: message))
         case .error(let text):
-            let raw = text ?? "Live worker error."
+            let raw = text ?? L10n.text("Ошибка Live-воркера.")
             let message = safe(raw)
             // Before the first live_status the only thing we sent was live_start, so an error
             // (rejected settings, an old companion without live support, …) is terminal.

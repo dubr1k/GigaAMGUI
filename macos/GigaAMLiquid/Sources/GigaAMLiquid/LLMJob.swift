@@ -70,13 +70,13 @@ final class LLMJob {
         ]
         if let directory = request.outputDirectory { command["output_dir"] = directory.path }
         let worker = try WorkerProcess(
-            runtime: runtime, arguments: runtime.transcriptionArguments, environment: runtime.environment, queue: queue,
+            role: .llm, runtime: runtime, arguments: runtime.transcriptionArguments, environment: runtime.environment, queue: queue,
             onLine: { self.consume($0) },
             onStderr: { self.emit(.log(self.safe($0))) },
-            onStdoutEnd: { self.finish(.failed("The LLM worker closed its output without completing.")) },
+            onStdoutEnd: { self.finish(.failed(L10n.format("%@ закрыл вывод, не завершив запрос.", WorkerRole.llm.name))) },
             onError: { self.finish(.failed($0)) },
             onExit: { status in
-                self.finish(.failed("The LLM worker exited without completing (status \(status))."))
+                self.finish(.failed(L10n.format("%@ завершился, не завершив запрос (код %@).", WorkerRole.llm.name, String(status))))
                 self.releaseWorker()
             }
         )
@@ -103,9 +103,9 @@ final class LLMJob {
         case .event(.cancelled):
             finish(.cancelled)
         case .event(.failed(let message)):
-            finish(.failed(safe(message ?? "LLM request failed.")))
+            finish(.failed(safe(message ?? L10n.text("Запрос к LLM не удался."))))
         case .event(.error(let message)):
-            finish(.failed(safe(message ?? "LLM worker error.")))
+            finish(.failed(safe(message ?? L10n.text("Ошибка LLM-воркера."))))
         case .event(.log(let text)):
             emit(.log(safe(text)))
         }

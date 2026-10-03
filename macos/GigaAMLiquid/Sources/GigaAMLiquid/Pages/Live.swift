@@ -122,9 +122,10 @@ extension AppController {
         ask.identifier = NSUserInterfaceItemIdentifier("live.ask")
         ask.widthAnchor.constraint(equalToConstant: 120).isActive = true
         liveAskButton = ask
-        let cancelAsk = button("Отменить", action: #selector(cancelAskLive(_:)), height: 36)
+        // Not «Отменить»: that key is the Edit menu's Undo.
+        let cancelAsk = button("Отменить вопрос", action: #selector(cancelAskLive(_:)), height: 36)
         cancelAsk.identifier = NSUserInterfaceItemIdentifier("live.askCancel")
-        cancelAsk.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        cancelAsk.widthAnchor.constraint(equalToConstant: 160).isActive = true
         transcriptBody.addArrangedSubview(horizontal([question, ask, cancelAsk], spacing: 12))
         let answer = textEditor(liveAnswerText, key: nil, height: 96)
         liveAnswerView = answer.documentView as? NSTextView

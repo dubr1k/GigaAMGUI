@@ -104,21 +104,21 @@ final class NativeTranscriptionJob {
     }
 
     private func launch() throws {
-        guard !files.isEmpty else { throw WorkerFailure("No input files supplied.") }
+        guard !files.isEmpty else { throw WorkerFailure(L10n.text("Не выбраны файлы для обработки.")) }
         let manager = FileManager.default
         for file in files {
             guard file.isFileURL,
                   (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
                   manager.isReadableFile(atPath: file.path) else {
-                throw WorkerFailure("Input file is not readable: \(file.path)")
+                throw WorkerFailure(L10n.format("Файл недоступен для чтения: %@", file.path))
             }
         }
-        if let outputDirectory, !outputDirectory.isFileURL { throw WorkerFailure("Output directory must be a local folder.") }
+        if let outputDirectory, !outputDirectory.isFileURL { throw WorkerFailure(L10n.text("Папка результатов должна быть локальной.")) }
         let runtime = try resolveRuntime()
         runtimeRoot = runtime.root
         // The frozen companion runs `--native-worker`; only the source-tree runtime needs src.tui_worker.
         guard runtime.frozenCompanion || manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path) else {
-            throw WorkerFailure("The Python project is missing src/tui_worker.py.")
+            throw WorkerFailure(L10n.text("В Python-проекте нет src/tui_worker.py."))
         }
         if let outputDirectory {
             try manager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -142,11 +142,11 @@ final class NativeTranscriptionJob {
         // The job retains itself through the worker callbacks until the OS has
         // reaped the process, even if its UI is rebuilt meanwhile.
         let worker = try WorkerProcess(
-            runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
+            role: .transcription, runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
             onLine: { self.consume($0) },
             // Library warnings and tracebacks are for failure reports, not the user-facing log.
             onStderr: { self.recordDiagnostic($0) },
-            onStdoutEnd: { self.requestTerminal(.failed(self.failureDetails("The transcription worker closed stdout without a completion event."))) },
+            onStdoutEnd: { self.requestTerminal(.failed(self.failureDetails(L10n.format("%@ закрыл вывод, не сообщив о завершении.", WorkerRole.transcription.name)))) },
             onError: { self.requestTerminal(.failed($0)) },
             onExit: { self.workerExited(status: $0) }
         )
@@ -164,7 +164,7 @@ final class NativeTranscriptionJob {
     static let hello: [String: Any] = ["type": "hello", "client": "liquid", "features": ["compact_completed"]]
 
     private func send(_ command: [String: Any]) throws {
-        guard let worker else { throw WorkerFailure("The transcription worker is not running.") }
+        guard let worker else { throw WorkerFailure(L10n.format("%@ не запущен.", WorkerRole.transcription.name)) }
         try worker.send(command)
     }
 
@@ -187,7 +187,7 @@ final class NativeTranscriptionJob {
             recordLog(L10n.format("Пропущено неизвестное событие воркера: %@", type))
             return
         case .invalid(let type):
-            requestTerminal(.failed(safeText("The transcription worker sent an invalid \(type) event.")))
+            requestTerminal(.failed(safeText(L10n.format("%@ прислал событие %@ в неверном формате.", WorkerRole.transcription.name, type))))
             return
         case .event(let event):
             helloReply = awaitingHelloReply
@@ -202,7 +202,7 @@ final class NativeTranscriptionJob {
         case .ready:
             break  // compact_completed acknowledged; nothing here depends on it
         case .started(let total):
-            guard total == files.count else { throw WorkerFailure("Invalid worker batch size.") }
+            guard total == files.count else { throw WorkerFailure(L10n.text("Воркер сообщил неверное число файлов.")) }
         case .log(let text):
             recordLog(text)
         case .fileStarted(let index, let file, let total):
@@ -221,19 +221,19 @@ final class NativeTranscriptionJob {
         case .fileCompleted(let index, let file, let result):
             try acceptResult(result, index: fileIndex(index, file: file, total: nil, requireTotal: false))
         case .completed(let success, let cancelled, let results, let message):
-            guard results.count <= files.count else { throw WorkerFailure("Invalid worker completion event.") }
+            guard results.count <= files.count else { throw WorkerFailure(L10n.text("Воркер прислал неверное событие завершения.")) }
             // With compact_completed these are metadata only; every file already came
             // in full through file_completed and is skipped here.
             for (index, result) in results.enumerated() { try acceptResult(result, index: index) }
             if let message { recordLog(message) }
-            if success && completedIndices.count != files.count { throw WorkerFailure("The worker completed without results for every file.") }
+            if success && completedIndices.count != files.count { throw WorkerFailure(L10n.text("Воркер завершил пакет без результатов для всех файлов.")) }
             if !success && !cancelled && completedIndices.isEmpty {
-                requestTerminal(.failed(failureDetails(message ?? "Transcription failed before processing any files.")))
+                requestTerminal(.failed(failureDetails(message ?? L10n.text("Распознавание остановилось до обработки первого файла."))))
             } else {
                 requestTerminal(.completed(success: success && !hadFileError, cancelled: cancelled))
             }
         case .error(let message, let traceback):
-            guard let text = message else { throw WorkerFailure("Invalid worker error event.") }
+            guard let text = message else { throw WorkerFailure(L10n.text("Воркер прислал ошибку без текста.")) }
             if helloReply {
                 // A worker older than the handshake rejects `hello`; `start` follows.
                 recordDiagnostic(text)
@@ -248,14 +248,14 @@ final class NativeTranscriptionJob {
     private func fileIndex(_ index: Int, file: String, total: Int?, requireTotal: Bool = true) throws -> Int {
         guard files.indices.contains(index), URL(fileURLWithPath: file).standardizedFileURL == files[index],
               !requireTotal || total == files.count else {
-            throw WorkerFailure("The transcription worker returned an invalid file reference.")
+            throw WorkerFailure(L10n.text("Воркер сослался на неизвестный файл."))
         }
         return index
     }
 
     private func acceptResult(_ result: BatchFileResult, index: Int) throws {
         guard files.indices.contains(index), URL(fileURLWithPath: result.filePath).standardizedFileURL == files[index] else {
-            throw WorkerFailure("The transcription worker returned an invalid result payload.")
+            throw WorkerFailure(L10n.text("Воркер прислал неверный результат файла."))
         }
         // `completed` repeats the same results; do not re-read files or re-emit them.
         guard !completedIndices.contains(index) else { return }
@@ -266,7 +266,7 @@ final class NativeTranscriptionJob {
         var outputFiles: [String: URL] = [:]
         var errors = [result.error, result.diarizationError].compactMap { $0 }
         for savedPath in result.savedFiles {
-            guard let root = runtimeRoot else { throw WorkerFailure("Missing Python runtime context.") }
+            guard let root = runtimeRoot else { throw WorkerFailure(L10n.text("Нет данных о Python-окружении.")) }
             let directory = resolvedOutputDirectory ?? files[index].deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
             let reported = URL(fileURLWithPath: savedPath, relativeTo: root).standardizedFileURL
             let file = reported.resolvingSymlinksInPath().standardizedFileURL
@@ -275,7 +275,7 @@ final class NativeTranscriptionJob {
                   let format = OutputNaming.format(ofOutputNamed: expectedName, stem: stem),
                   let values = try? file.resourceValues(forKeys: [.isRegularFileKey]), values.isRegularFile == true,
                   FileManager.default.isReadableFile(atPath: file.path) else {
-                errors.append("The worker returned an unavailable or unsafe output file: \(savedPath)")
+                errors.append(L10n.format("Воркер вернул недоступный или небезопасный файл результата: %@", savedPath))
                 continue
             }
             outputFiles[format] = file
@@ -289,14 +289,14 @@ final class NativeTranscriptionJob {
                 defer { try? handle.close() }
                 let limit = 32 * 1024 * 1024
                 let data = try handle.read(upToCount: limit + 1) ?? Data()
-                guard data.count <= limit else { throw WorkerFailure("Transcript is larger than the 32 MiB preview limit; open the saved file.") }
-                guard let text = String(data: data, encoding: .utf8) else { throw WorkerFailure("The saved transcript is not valid UTF-8.") }
+                guard data.count <= limit else { throw WorkerFailure(L10n.text("Транскрипт больше 32 МиБ — откройте сохранённый файл.")) }
+                guard let text = String(data: data, encoding: .utf8) else { throw WorkerFailure(L10n.text("Сохранённый транскрипт не в кодировке UTF-8.")) }
                 transcript = text
                 break
             } catch { errors.append(error.localizedDescription) }
         }
-        if !result.success && errors.isEmpty { errors.append(failureDetails("The Python processor could not transcribe this file.")) }
-        if result.success && outputFiles.isEmpty { errors.append("The Python processor did not produce any readable output files.") }
+        if !result.success && errors.isEmpty { errors.append(failureDetails(L10n.text("Python-обработчик не смог распознать этот файл."))) }
+        if result.success && outputFiles.isEmpty { errors.append(L10n.text("Python-обработчик не создал ни одного читаемого файла результата.")) }
         let error = errors.isEmpty ? nil : safeText(errors.joined(separator: "\n"))
         hadFileError = hadFileError || !result.success || error != nil
         completedIndices.insert(index)
@@ -345,7 +345,7 @@ final class NativeTranscriptionJob {
     private func workerExited(status: Int32) {
         guard !finished else { return }
         if pendingTerminal == nil {
-            pendingTerminal = .failed(failureDetails("The transcription worker exited without a completion event (status \(status))."))
+            pendingTerminal = .failed(failureDetails(L10n.format("%@ завершился, не сообщив о завершении (код %@).", WorkerRole.transcription.name, String(status))))
         }
         finish()
     }

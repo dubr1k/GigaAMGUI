@@ -59,13 +59,13 @@ final class LLMToolsQuery {
         let runtime = try resolveRuntime()
         secrets = WorkerRedaction.secrets(in: runtime.environment)
         let worker = try WorkerProcess(
-            runtime: runtime, arguments: runtime.transcriptionArguments, environment: runtime.environment, queue: queue,
+            role: .toolsQuery, runtime: runtime, arguments: runtime.transcriptionArguments, environment: runtime.environment, queue: queue,
             onLine: { self.consume($0) },
             onStderr: { self.log($0) },
-            onStdoutEnd: { self.finish(.failed("The worker closed its output before answering.")) },
+            onStdoutEnd: { self.finish(.failed(L10n.format("%@ закрыл вывод, не ответив.", WorkerRole.toolsQuery.name))) },
             onError: { self.finish(.failed($0)) },
             onExit: { status in
-                self.finish(.failed("The worker exited without answering (status \(status))."))
+                self.finish(.failed(L10n.format("%@ завершился, не ответив (код %@).", WorkerRole.toolsQuery.name, String(status))))
                 self.releaseWorker()
             }
         )
@@ -83,13 +83,13 @@ final class LLMToolsQuery {
         case .unknown(let type):
             log(L10n.format("Пропущено неизвестное событие воркера: %@", type))
         case .invalid:
-            finish(.failed("Malformed llm_tool_check reply."))
+            finish(.failed(L10n.text("Воркер прислал неверный ответ llm_tool_check.")))
         case .event(.tools(let providers, let tools)):
             finish(.tools(providers: providers, tools: tools))
         case .event(.tool(let tool)):
             finish(.tool(tool))
         case .event(.error(let message)):
-            finish(.failed(WorkerRedaction.safeText(message ?? "LLM tools query failed.", secrets: secrets)))
+            finish(.failed(WorkerRedaction.safeText(message ?? L10n.text("Проверка CLI-инструментов не удалась."), secrets: secrets)))
         case .event(.log(let text)):
             log(text)
         }

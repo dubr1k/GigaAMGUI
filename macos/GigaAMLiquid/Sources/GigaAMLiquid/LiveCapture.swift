@@ -69,7 +69,7 @@ final class PcmChunker {
             inputFormat = buffer.format
             converter = AVAudioConverter(from: buffer.format, to: targetFormat)
         }
-        guard let converter else { throw WorkerFailure("Unsupported audio format for live capture.") }
+        guard let converter else { throw WorkerFailure(L10n.text("Неподдерживаемый формат звука для записи.")) }
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
         guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }

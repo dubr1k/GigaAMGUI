@@ -599,3 +599,39 @@ def test_swift_decoder_fixtures_are_events_the_worker_emits() -> None:
     )
     for kind in sorted(types):
         assert f'"{kind}"' in python, kind
+
+
+def _english_table() -> dict[str, str]:
+    source = (LIQUID_APP / "Localization.swift").read_text(encoding="utf-8")
+    literal = source.split("private static let english: [String: String] = [", 1)[1].split("\n    ]\n", 1)[0]
+    return dict(re.findall(r'^\s*"((?:[^"\\]|\\.)*)":\s*"((?:[^"\\]|\\.)*)"', literal, flags=re.MULTILINE))
+
+
+def test_swift_every_russian_ui_string_has_an_english_translation() -> None:
+    # The English UI showed Russian wherever a key was missing (file state
+    # «Готово», the model-loading status, Settings > LLM tools), and job errors
+    # were English in the Russian UI. Every Russian literal in the app code is
+    # now a translation key; format keys keep their placeholders.
+    table = _english_table()
+    allowed = {
+        # Prefixes joined with the app name; the joined key is in the table.
+        "О приложении ", "Скрыть ", "Завершить ",
+        # Prompt templates sent to the model, not interface text.
+        "Сделай краткое содержание транскрипции и выдели основные решения.",
+        "Выдели задачи из транскрипции, ответственных и сроки, если они указаны.",
+    }
+    missing = set()
+    for path in sorted(LIQUID_APP.rglob("*.swift")):
+        if path.name == "Localization.swift":
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("//"):
+                continue
+            for text in re.findall(r'"((?:[^"\\]|\\.)*)"', line):
+                if re.search("[А-Яа-яЁё]", text) and text not in table and text not in allowed:
+                    missing.add(f"{path.name}: {text}")
+    assert sorted(missing) == []
+    for key, value in table.items():
+        assert key.count("%@") == value.count("%@"), key
+    assert table["Отменить"] == "Undo"  # the Edit menu; the Live button has its own key
+    assert table["Отменить вопрос"] == "Cancel question"

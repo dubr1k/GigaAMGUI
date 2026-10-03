@@ -9,6 +9,20 @@ struct WorkerFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// Which job a worker serves, as its error messages name it.
+enum WorkerRole {
+    case transcription, live, llm, toolsQuery
+
+    var name: String {
+        switch self {
+        case .transcription: return L10n.text("Воркер распознавания")
+        case .live: return L10n.text("Live-воркер")
+        case .llm: return L10n.text("LLM-воркер")
+        case .toolsQuery: return L10n.text("Воркер проверки CLI")
+        }
+    }
+}
+
 /// One JSONL worker process: stdin for commands, stdout for events, stderr for diagnostics.
 ///
 /// Every callback runs on `queue`. The owner decides what a line means; this
@@ -16,16 +30,18 @@ struct WorkerFailure: LocalizedError {
 /// lines) and a graceful → forced termination ladder.
 final class WorkerProcess {
     private let queue: DispatchQueue
+    private let role: WorkerRole
     private var process: Process?
     private var input: FileHandle?
     private var stdout: LineReader?
     private var stderr: LineReader?
 
-    init(runtime: PythonRuntime, arguments: [String], environment: [String: String], queue: DispatchQueue,
+    init(role: WorkerRole, runtime: PythonRuntime, arguments: [String], environment: [String: String], queue: DispatchQueue,
          onLine: @escaping (Data) -> Void, onStderr: @escaping (String) -> Void,
          onStdoutEnd: @escaping () -> Void, onError: @escaping (String) -> Void,
          onExit: @escaping (Int32) -> Void) throws {
         self.queue = queue
+        self.role = role
         let task = Process()
         task.executableURL = runtime.executable
         task.arguments = arguments
@@ -37,10 +53,10 @@ final class WorkerProcess {
         task.standardError = stderrPipe
         // A worker exiting between isRunning and write must not SIGPIPE the app.
         guard fcntl(stdinPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
-            throw WorkerFailure("Could not configure the worker input pipe: \(String(cString: strerror(errno)))")
+            throw WorkerFailure(L10n.format("Не удалось настроить канал ввода воркера: %@", String(cString: strerror(errno))))
         }
         input = stdinPipe.fileHandleForWriting
-        let describe: (LineReader.Failure) -> Void = { onError(Self.describe($0)) }
+        let describe: (LineReader.Failure) -> Void = { onError(Self.describe($0, role: role)) }
         do {
             stdout = try LineReader(handle: stdoutPipe.fileHandleForReading, queue: queue, limit: Self.eventLimit,
                                     truncate: false, onLine: onLine, onError: describe,
@@ -52,7 +68,7 @@ final class WorkerProcess {
                                     truncate: true, onLine: { onStderr(String(decoding: $0, as: UTF8.self)) },
                                     onError: describe)
         } catch let failure as LineReader.Failure {
-            throw WorkerFailure(Self.describe(failure))
+            throw WorkerFailure(Self.describe(failure, role: role))
         }
         // Retain the worker until the OS has reaped it, even if its UI is rebuilt.
         task.terminationHandler = { [self] task in
@@ -71,7 +87,7 @@ final class WorkerProcess {
             process = task
         } catch {
             task.terminationHandler = nil
-            throw WorkerFailure("Could not launch the project Python (\(runtime.executable.path)): \(error.localizedDescription)")
+            throw WorkerFailure(L10n.format("Не удалось запустить Python проекта (%@): %@", runtime.executable.path, error.localizedDescription))
         }
         try? stdinPipe.fileHandleForReading.close()
         try? stdoutPipe.fileHandleForWriting.close()
@@ -81,7 +97,7 @@ final class WorkerProcess {
     var isRunning: Bool { process?.isRunning == true }
 
     func send(_ command: [String: Any]) throws {
-        guard let input, let process, process.isRunning else { throw WorkerFailure("The transcription worker is not running.") }
+        guard let input, let process, process.isRunning else { throw WorkerFailure(L10n.format("%@ не запущен.", role.name)) }
         var data = try JSONSerialization.data(withJSONObject: command)
         data.append(10)
         try input.write(contentsOf: data)
@@ -121,16 +137,17 @@ final class WorkerProcess {
     /// One stdout event may carry a whole file result; the cap only stops a runaway line.
     static let eventLimit = 8 * 1024 * 1024
 
-    static func describe(_ failure: LineReader.Failure) -> String {
+    static func describe(_ failure: LineReader.Failure, role: WorkerRole) -> String {
         switch failure {
         case .configure(let code):
-            return "Could not configure the transcription output pipe: \(String(cString: strerror(code)))"
+            return L10n.format("Не удалось настроить вывод воркера: %@", String(cString: strerror(code)))
         case .oversizedLine(let limit):
             // The event is gone, so the job cannot know its outcome; what the worker
             // already wrote is safe, and that is where the user should look.
-            return "A worker event larger than \(limit / (1024 * 1024)) MiB was dropped, so the outcome of this job is unknown. Files the worker already saved remain on disk."
+            return L10n.format("%@: событие больше %@ МиБ пропущено, поэтому итог задачи неизвестен. Файлы, которые воркер успел сохранить, остались на диске.",
+                               role.name, String(limit / (1024 * 1024)))
         case .readFailed(let code):
-            return "Could not read transcription worker output: \(String(cString: strerror(code)))"
+            return L10n.format("%@: не удалось прочитать вывод (%@).", role.name, String(cString: strerror(code)))
         }
     }
 

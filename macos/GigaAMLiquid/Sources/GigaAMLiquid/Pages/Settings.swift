@@ -107,11 +107,11 @@ extension AppController {
             for tool in Self.llmCliProviders {
                 let argsField = editableText(defaults.string(forKey: "llm.\(tool.prefix)Args") ?? "", key: "llm.\(tool.prefix)Args", placeholder: Self.llmArgsExamples[tool.prefix] ?? "")
                 argsField.toolTip = L10n.text("Флаги командной строки, добавляются к запуску как есть. Пример: ") + (Self.llmArgsExamples[tool.prefix] ?? "")
-                var fields: [NSView] = [settingsField("\(tool.name) — аргументы", control: argsField)]
+                var fields: [NSView] = [settingsField(L10n.format("%@ — аргументы", tool.name), control: argsField)]
                 if tool.hasProvider {
                     let providerField = editableText(defaults.string(forKey: "llm.\(tool.prefix)Provider") ?? "", key: "llm.\(tool.prefix)Provider", placeholder: "по умолчанию из конфига CLI")
                     providerField.toolTip = L10n.text("Внутренний поставщик модели: anthropic, openai, google, openrouter… Пусто — как настроено в ") + tool.name
-                    fields.append(settingsField("\(tool.name) — поставщик модели", control: providerField))
+                    fields.append(settingsField(L10n.format("%@ — поставщик модели", tool.name), control: providerField))
                 }
                 body.addArrangedSubview(fields.count == 1 ? fields[0] : equalColumns(fields, spacing: 20))
             }
