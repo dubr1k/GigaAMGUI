@@ -242,13 +242,28 @@ class FilesMixin:
         if not folder or not os.path.isdir(folder):
             self.files_to_process = []
             return
-        candidates = sorted(
-            os.path.join(folder, name)
-            for name in os.listdir(folder)
-            if name.lower().endswith(MEDIA_EXTENSIONS)
-        )
+        # Папку, выбранную «Выбрать папку», пересобираем с подпапками, как при
+        # выборе; папку отдельных файлов — только верхний уровень. Раньше
+        # всегда без подпапок, и после перезапуска очередь теряла их файлы.
+        recursive = bool(self.user_settings.get_value("last_files_dir_recursive", False))
+        candidates = sorted(self._media_files_in(folder, recursive=recursive))
         self.files_to_process = [
             path for path in candidates if not self._is_audio_already_transcribed(path)
+        ]
+
+    @staticmethod
+    def _media_files_in(folder: str, *, recursive: bool) -> list[str]:
+        if not recursive:
+            return [
+                os.path.join(folder, name)
+                for name in os.listdir(folder)
+                if name.lower().endswith(MEDIA_EXTENSIONS)
+            ]
+        return [
+            os.path.join(root, name)
+            for root, _dirs, filenames in os.walk(folder)
+            for name in filenames
+            if name.lower().endswith(MEDIA_EXTENSIONS)
         ]
 
     def open_paths_from_system(self, paths: list, append: bool = True):
@@ -342,6 +357,7 @@ class FilesMixin:
             file_dir = os.path.dirname(unique_files[0])
             self.input_dir = file_dir
             self.user_settings.set_last_files_dir(file_dir)
+            self.user_settings.set_value("last_files_dir_recursive", False)
         self._refresh_files_list()
         self.log(f"Добавлено в очередь: {len(unique_files)} файлов")
         for f in unique_files:
@@ -377,12 +393,9 @@ class FilesMixin:
         if folder:
             self.input_dir = folder
             self.user_settings.set_last_files_dir(folder)
+            self.user_settings.set_value("last_files_dir_recursive", True)
             self._update_input_dir_label(folder)
-            files = []
-            for root, _dirs, filenames in os.walk(folder):
-                for f in filenames:
-                    if f.lower().endswith(MEDIA_EXTENSIONS):
-                        files.append(os.path.join(root, f))
+            files = self._media_files_in(folder, recursive=True)
             if files:
                 self.files_to_process = files
                 self._refresh_files_list()
