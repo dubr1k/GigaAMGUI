@@ -19,19 +19,28 @@ def test_tauri_dependencies_are_locked() -> None:
     assert (ROOT / "desktop/src-tauri/Cargo.lock").is_file()
 
 
+def _read_surface(rel: str) -> str:
+    """A file, or — for a directory such as the Liquid app target — all its Swift sources."""
+    path = ROOT / rel
+    if path.is_dir():
+        return "\n".join(file.read_text(encoding="utf-8") for file in sorted(path.rglob("*.swift")))
+    return path.read_text(encoding="utf-8")
+
+
 def test_api_examples_use_openai_contract() -> None:
     files = [
         "desktop/ui/app.js",
         "desktop/ui/index.html",
         "src/gui/support_surfaces_mixin.py",
-        "macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift",
+        # The Liquid API page may live in any file of the app target.
+        "macos/GigaAMLiquid/Sources/GigaAMLiquid",
         "macos/GigaAMLiquid/Sources/GigaAMLiquid/Localization.swift",
     ]
     for rel in files:
-        text = (ROOT / rel).read_text(encoding="utf-8")
+        text = _read_surface(rel)
         assert "/api/v1/" not in text, rel
     for rel in files:
-        text = (ROOT / rel).read_text(encoding="utf-8")
+        text = _read_surface(rel)
         assert "/v1/audio/transcriptions" in text, rel
         assert "Authorization: Bearer" in text or "Bearer " in text, rel
 

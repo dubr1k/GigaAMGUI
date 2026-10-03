@@ -2,6 +2,82 @@ import re
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/build.yml")
+LIQUID_APP = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid")
+LIQUID_CORE = Path("macos/GigaAMLiquid/Sources/GigaAMLiquidCore")
+
+
+def _liquid_sources(*roots: Path) -> str:
+    """Все .swift-файлы цели одной строкой (рекурсивно, в стабильном порядке).
+
+    Тесты проверяют поведение клиента, а не файл, в котором живёт метод: после
+    разбиения main.swift на страницы/расширения проверки не должны ломаться.
+    Таблица переводов (Localization.swift) — не код интерфейса: в ней остаются
+    ключи старых строк, поэтому её читают отдельно.
+    """
+    roots = roots or (LIQUID_APP,)
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for root in roots
+        for path in sorted(root.rglob("*.swift"))
+        if path.name != "Localization.swift"
+    )
+
+
+_ACCESS_WORDS = {"private", "fileprivate", "internal", "public", "open"}
+_ACCESS = r"(?:(?:private|fileprivate|internal|public|open)\s+)?"
+
+
+def _declaration_pattern(opener: str) -> str:
+    """Regex для объявления `opener` с любым модификатором доступа (или без него).
+
+    Разнесённые по файлам члены AppController приходится расширять с `private`
+    до internal: `private` не виден из другого файла.
+    """
+    tokens = [token for token in opener.split() if token not in _ACCESS_WORDS]
+    attributes = 0
+    while attributes < len(tokens) and tokens[attributes].startswith("@"):
+        attributes += 1
+    head = [re.escape(token) + r"\s+" for token in tokens[:attributes]]
+    tail = r"\s+".join(re.escape(token) for token in tokens[attributes:])
+    return "".join(head) + _ACCESS + tail
+
+
+def _has_declaration(source: str, opener: str) -> bool:
+    return re.search(_declaration_pattern(opener), source) is not None
+
+
+def _indented_block(source: str, match: re.Match) -> str:
+    """Тело от конца `match` до закрывающей скобки на отступе строки объявления."""
+    line_start = source.rfind("\n", 0, match.start()) + 1
+    indent = re.match(r"[ \t]*", source[line_start:]).group(0)
+    end = source.find("\n" + indent + "}", match.end())
+    assert end != -1, f"no closing brace for {match.group(0)!r}"
+    return source[match.end():end]
+
+
+def _swift_block(source: str, opener: str) -> str:
+    """Тело первого объявления `opener { … }` (метод, свойство, тип), где бы оно ни лежало."""
+    match = re.search(_declaration_pattern(opener), source)
+    assert match, f"declaration not found: {opener}"
+    return _indented_block(source, match)
+
+
+def _swift_type(source: str, name: str) -> str:
+    """Тело объявления класса/структуры/перечисления `name`."""
+    pattern = r"^[ \t]*" + _ACCESS + r"(?:final\s+)?(?:class|struct|enum)\s+" + re.escape(name) + r"\b[^\n]*\{"
+    match = re.search(pattern, source, flags=re.MULTILINE)
+    assert match, f"type not found: {name}"
+    return _indented_block(source, match)
+
+
+def _swift_case(source: str, label: str) -> str:
+    """Ветка `case …:` до следующей ветки (или default) того же уровня."""
+    start = source.index(label)
+    line_start = source.rfind("\n", 0, start) + 1
+    indent = source[line_start:start]
+    following = re.compile(r"\n" + re.escape(indent) + r"(?:case\b|default\b)")
+    match = following.search(source, start + len(label))
+    return source[start + len(label):match.start() if match else len(source)]
 
 
 
@@ -28,7 +104,7 @@ def test_native_worker_smoke_has_live_mode() -> None:
 
 
 def test_hugging_face_token_uses_keychain_instead_of_user_defaults() -> None:
-    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    main = _liquid_sources()
     secure_store = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/SecureStore.swift").read_text(encoding="utf-8")
     assert 'SecureStore.string(for: "hfToken")' in main
     assert 'SecureStore.set(sender.stringValue' in main
@@ -37,7 +113,7 @@ def test_hugging_face_token_uses_keychain_instead_of_user_defaults() -> None:
 
 
 def test_native_client_blocks_colliding_output_stems_and_cleans_download_cache() -> None:
-    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    main = _liquid_sources()
     assert "let groupedStems = Dictionary(grouping: selectedFileURLs)" in main
     assert "перезапишут результаты друг друга" in main
     assert "rememberDownloadedMedia(files)" in main
@@ -48,29 +124,29 @@ def test_native_client_blocks_colliding_output_stems_and_cleans_download_cache()
 def test_swift_client_installs_main_menu_with_standard_shortcuts() -> None:
     # SwiftPM-исполняемый файл не несёт MainMenu.nib: без программного меню в
     # menu bar только имя приложения, а ⌘Q/⌘W/⌘C/⌘V не имеют key equivalents.
-    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
-    menu = main.split("private func installMainMenu()", 1)[1].split("\n    }\n", 1)[0]
+    main = _liquid_sources()
+    menu = _swift_block(main, "private func installMainMenu() {")
     assert "NSApp.mainMenu = " in menu
     assert "#selector(NSApplication.terminate(_:))" in menu and 'keyEquivalent: "q"' in menu
     assert "#selector(NSWindow.performClose(_:))" in menu and 'keyEquivalent: "w"' in menu
     assert "#selector(NSText.paste(_:))" in menu and 'keyEquivalent: "v"' in menu
     assert "NSApp.windowsMenu = " in menu
     assert "func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }" in main
-    assert "installMainMenu()" in main.split("func applicationDidFinishLaunching", 1)[1].split("buildWindow()", 1)[0]
-    assert "installMainMenu()" in main.split("private func rebuildInterface()", 1)[1].split("show(page: page)", 1)[0]
+    assert "installMainMenu()" in _swift_block(main, "func applicationDidFinishLaunching(_ notification: Notification) {").split("buildWindow()", 1)[0]
+    assert "installMainMenu()" in _swift_block(main, "private func rebuildInterface() {").split("show(page: page)", 1)[0]
 
 
 def test_swift_window_accepts_dropped_media_files() -> None:
-    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
-    background = main.split("private final class BlobBackgroundView", 1)[1].split("\nprivate final class", 1)[0]
+    main = _liquid_sources()
+    background = _swift_type(main, "BlobBackgroundView")
     assert "registerForDraggedTypes([.fileURL])" in background
     assert "override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation" in background
     assert "override func performDragOperation(_ sender: NSDraggingInfo) -> Bool" in background
-    drop = main.split("private func acceptDroppedFiles(_ urls: [URL]) -> Bool", 1)[1].split("\n    }\n", 1)[0]
+    drop = _swift_block(main, "private func acceptDroppedFiles(_ urls: [URL]) -> Bool {")
     assert "MediaScan.expand(urls)" in drop
     assert "appendSelectedFiles(" in drop
     # Тот же путь, что и у панели выбора: дедупликация и refreshSelectedFiles().
-    chooser = main.split("@objc private func chooseFiles(_ sender: Any?)", 1)[1].split("\n    }\n", 1)[0]
+    chooser = _swift_block(main, "@objc private func chooseFiles(_ sender: Any?) {")
     assert "appendSelectedFiles(MediaScan.expand(panel.urls))" in chooser
 
 
@@ -81,10 +157,11 @@ def test_tauri_prototype_does_not_persist_hf_token() -> None:
 
 
 def test_swift_batch_clears_previous_results_and_preserves_failed_keychain_migration():
-    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
+    main = _liquid_sources()
     assert "transcriptionResults.removeAll()" in main
     assert "selectedResultURL = nil" in main
-    migration = main.split('if let legacyToken = defaults.string(forKey: "settings.hfToken")', 1)[1].split("cleanupDownloadedMedia()", 1)[0]
+    launch = _swift_block(main, "func applicationDidFinishLaunching(_ notification: Notification) {")
+    migration = launch.split('if let legacyToken = defaults.string(forKey: "settings.hfToken")', 1)[1].split("cleanupDownloadedMedia()", 1)[0]
     assert "try SecureStore.set" in migration
     assert migration.index("try SecureStore.set") < migration.index('defaults.removeObject(forKey: "settings.hfToken")')
     assert "catch" in migration
@@ -103,8 +180,8 @@ def test_theme_styles_2_0_page_widgets_from_the_palette():
 
 
 def test_downloaded_media_cleanup_retains_failed_roots_for_retry() -> None:
-    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
-    cleanup = main.split("private func cleanupDownloadedMedia()", 1)[1].split("@objc private func chooseOutputFolder", 1)[0]
+    main = _liquid_sources()
+    cleanup = _swift_block(main, "private func cleanupDownloadedMedia() {")
     assert "var failed = Set<URL>()" in cleanup
     assert "failed.insert(root)" in cleanup
     assert "downloadedMediaRoots = failed" in cleanup
@@ -112,26 +189,18 @@ def test_downloaded_media_cleanup_retains_failed_roots_for_retry() -> None:
 
 
 def test_appkit_about_uses_bundle_release_version():
-    main = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift").read_text(encoding="utf-8")
-    about = main.split('case "О приложении":', 1)[1].split("default: break", 1)[0]
+    main = _liquid_sources()
+    about = _swift_case(_swift_block(main, "private func settingsPage(_ category: String) -> NSView {"), 'case "О приложении":')
     assert 'CFBundleShortVersionString' in about
     assert 'settingsField("Версия приложения"' in about
     assert 'label("1.3.0"' not in about
-
-
-MAIN_SWIFT = Path("macos/GigaAMLiquid/Sources/GigaAMLiquid/main.swift")
-
-
-def _swift_block(source: str, opener: str) -> str:
-    """Тело первого объявления `opener { … }` на уровне метода AppController."""
-    return source.split(opener, 1)[1].split("\n    }\n", 1)[0]
 
 
 def test_swift_empty_output_path_keeps_the_start_button_enabled() -> None:
     # Поле пути сохраняется на каждое нажатие клавиши; стёртое поле оставляет в
     # defaults пустую строку. Раньше это молча выключало кнопку запуска; теперь
     # пустое поле — штатный режим «рядом с исходным файлом».
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     text = _swift_block(main, "private var outputPathText: String {")
     assert 'defaults.string(forKey: "output.path")' in text
     assert "trimmingCharacters(in: .whitespacesAndNewlines)" in text
@@ -143,8 +212,8 @@ def test_swift_empty_output_path_keeps_the_start_button_enabled() -> None:
 
 
 def test_swift_disabled_primary_button_is_visibly_dimmed() -> None:
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
-    padded = main.split("private final class PaddedButton: NSButton {", 1)[1].split("\nprivate final class", 1)[0]
+    main = _liquid_sources()
+    padded = _swift_type(main, "PaddedButton")
     assert "override var isEnabled: Bool" in padded
     assert "alphaValue = isEnabled ? 1 :" in padded
 
@@ -152,7 +221,7 @@ def test_swift_disabled_primary_button_is_visibly_dimmed() -> None:
 def test_swift_sortformer_never_sends_manual_speaker_count() -> None:
     # Sortformer определяет спикеров сам (до 4); ручное значение 5–6 роняло файл
     # с «Sortformer поддерживает не более 4 спикеров», а 1–4 молча игнорировалось.
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     available = _swift_block(main, "private var manualSpeakerCountAvailable: Bool {")
     assert 'enabledOption("settings.diarization", defaultValue: false)' in available
     assert '!= "sortformer"' in available
@@ -210,8 +279,8 @@ def test_swift_llm_job_uses_worker_protocol_and_redacts_api_key() -> None:
 
 
 def test_swift_llm_page_is_wired_to_llm_job() -> None:
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
-    page = main.split("private func buildLLM(into content: NSStackView)", 1)[1].split("private func buildAPI", 1)[0]
+    main = _liquid_sources()
+    page = _swift_block(main, "private func buildLLM(into content: NSStackView) {")
     assert "unavailableButton(" not in page
     assert "LLM-сервис не подключён" not in page
     assert "#selector(runLLM(_:))" in page and "#selector(cancelLLM(_:))" in page
@@ -231,9 +300,9 @@ def test_swift_llm_page_is_wired_to_llm_job() -> None:
 def test_swift_llm_providers_mirror_python_registry() -> None:
     from src.services import cli_tools
 
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     expected = ", ".join(f'"{name}"' for name in cli_tools.canonical_provider_names())
-    assert f"private static let llmProviders = [{expected}]" in main
+    assert _has_declaration(main, f"private static let llmProviders = [{expected}]")
     for spec in cli_tools.cli_specs():
         assert f'("{spec.name}", "{spec.settings_prefix}", "{spec.binary}", {str(spec.has_provider_field).lower()})' in main
 
@@ -243,8 +312,8 @@ def test_swift_llm_tools_query_uses_worker_protocol() -> None:
     assert '"type": "llm_tools"' in query and '"type": "llm_tool_check"' in query
     assert 'case "llm_tools":' in query and 'case "llm_tool_check":' in query
     assert "WorkerProcess(" in query
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
-    settings_llm = main.split('case "LLM":', 1)[1].split('case "API":', 1)[0]
+    main = _liquid_sources()
+    settings_llm = _swift_case(_swift_block(main, "private func settingsPage(_ category: String) -> NSView {"), 'case "LLM":')
     assert "#selector(rescanLLMTools(_:))" in settings_llm
     assert 'key: "llm.allowTools"' in settings_llm
     assert "llmToolRow(tool)" in settings_llm
@@ -252,7 +321,7 @@ def test_swift_llm_tools_query_uses_worker_protocol() -> None:
 
 
 def test_swift_llm_api_key_uses_keychain() -> None:
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     text_changed = _swift_block(main, "@objc private func textChanged(_ sender: NSTextField) {")
     assert 'key == "llm.apiKey"' in text_changed
     assert 'SecureStore.set(sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: "llmApiKey")' in text_changed
@@ -285,8 +354,8 @@ def test_swift_live_session_job_streams_pcm_and_handles_events() -> None:
 
 
 def test_swift_live_page_is_wired_to_live_session_job() -> None:
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
-    page = main.split("private func buildLive(into content: NSStackView)", 1)[1].split("private static let llmProviders", 1)[0]
+    main = _liquid_sources()
+    page = _swift_block(main, "private func buildLive(into content: NSStackView) {")
     assert "unavailableButton(" not in page and "unavailableIcon(" not in page
     assert "Захват аудио не подключён" not in page
     assert "#selector(startLive(_:))" in page and "#selector(pauseLive(_:))" in page and "#selector(stopLive(_:))" in page
@@ -322,8 +391,8 @@ def test_swift_live_page_is_wired_to_live_session_job() -> None:
 
 
 def test_swift_diarization_formats_are_selectable_and_gated_by_toggle() -> None:
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
-    processing = main.split("private func buildProcessing(into content: NSStackView)", 1)[1].split("private func buildResult", 1)[0]
+    main = _liquid_sources()
+    processing = _swift_block(main, "private func buildProcessing(into content: NSStackView) {")
     assert 'checkbox("Диаризация (.txt)", key: "output.diarize", defaultValue: false)' in processing
     assert 'checkbox("Диар. + таймкоды", key: "output.diarizeTimestamps", defaultValue: false)' in processing
     formats = _swift_block(main, "private var outputFormats: [String] {")
@@ -342,7 +411,7 @@ def test_swift_empty_output_folder_means_next_to_the_source_file() -> None:
     src.tui_worker already treats an empty output_dir as "dirname(file)"; the
     client must not substitute ~/Documents/GigaAM behind the user's back.
     """
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     assert "~/Documents/GigaAM\"" not in main
     path_text = _swift_block(main, "private var outputPathText: String {")
     assert "Documents/GigaAM" not in path_text
@@ -361,7 +430,7 @@ def test_swift_empty_output_folder_means_next_to_the_source_file() -> None:
 def test_swift_processing_log_shows_worker_lines_and_keeps_stderr_in_diagnostics() -> None:
     # The worker logs in plain Russian at the source (see test_processing_log_messages);
     # the client shows every log event and keeps library stderr for failure reports.
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     assert "import GigaAMLiquidCore" in main
     helper = _swift_block(main, "private func appendProcessingLog(_ message: String) {")
     assert "L10n.isEnglish ? LogTranslation.englishText(message) : message" in helper
@@ -375,7 +444,7 @@ def test_swift_processing_log_shows_worker_lines_and_keeps_stderr_in_diagnostics
 
 
 def test_swift_dropped_folders_are_scanned_like_the_pyqt_client() -> None:
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     drop = _swift_block(main, "private func acceptDroppedFiles(_ urls: [URL]) -> Bool {")
     assert "MediaScan.expand(urls)" in drop
     chooser = _swift_block(main, "@objc private func chooseFiles(_ sender: Any?) {")
@@ -392,7 +461,7 @@ def test_swift_dropped_folders_are_scanned_like_the_pyqt_client() -> None:
 
 
 def test_swift_progress_row_keeps_the_log_button_still() -> None:
-    main = MAIN_SWIFT.read_text(encoding="utf-8")
+    main = _liquid_sources()
     card = _swift_block(main, "private func progressCard() -> GlassView {")
     assert "percentage.widthAnchor.constraint(equalToConstant: 40)" in card
     assert "log.setContentHuggingPriority(.required, for: .horizontal)" in card
