@@ -38,8 +38,11 @@ def test_diarization_manager_runs_hook_when_supported():
 
     manager._run_pipeline("/tmp/audio.wav", {}, lambda *args: events.append(args))
 
-    # A pyannote hook reports one internal step, not the whole pipeline.
-    assert events == [(None, 2.0, 4.0)]
+    # Хук pyannote считает элементы одного внутреннего шага (окна, батчи
+    # эмбеддингов), а процессор понимает 2-й и 3-й аргументы как секунды
+    # записи: «обработано 2 из 4 с» на часовом файле. Стадия остаётся
+    # неопределённой, но хук продолжает подавать признаки жизни.
+    assert events == [(None, None, None)]
 
 
 def test_diarization_manager_detects_hook_on_pipeline_apply():

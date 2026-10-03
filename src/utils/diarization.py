@@ -401,15 +401,12 @@ class DiarizationManager(SpeakerMappingMixin):
             if completed is None or not isinstance(completed, (int, float)):
                 return
 
-            # `completed/total` applies to the current internal pyannote step,
-            # not the whole diarization pipeline.  Expose the real work units
-            # but keep the overall stage indeterminate rather than inventing a
-            # misleading whole-pipeline percentage.
-            progress_callback(
-                None,
-                float(completed),
-                float(total) if isinstance(total, (int, float)) else None,
-            )
+            # `completed/total` считает элементы текущего внутреннего шага
+            # pyannote (окна сегментации, батчи эмбеддингов), а не секунды и не
+            # весь pipeline. Процессор трактует 2-й и 3-й аргументы как секунды
+            # записи, поэтому единицы шага не передаём: стадия неопределённая,
+            # а вызов служит признаком того, что работа идёт.
+            progress_callback(None, None, None)
 
         try:
             return pipeline(file_path, hook=_hook, **kwargs)
