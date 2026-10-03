@@ -45,7 +45,7 @@ from src.config import AUDIO_PREPROCESSING_MODE, HF_TOKEN, MEDIA_EXTENSIONS, OUT
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
 from src.core.subtitles import SubtitleOptions
-from src.services import file_policy, llm_service, task_store, transcription_service
+from src.services import file_policy, llm_service, mcp_backend, task_store, transcription_service
 from src.services import health as health_service
 from src.services.api_keys import KeyStore
 from src.services.mcp_backend import LocalBackend
@@ -654,7 +654,8 @@ async def process_transcription(
             )
 
             if not result['success']:
-                raise Exception("Обработка не удалась")
+                # Причину провала процессор кладёт в result['error']; старые версии её не дают
+                raise Exception(mcp_backend.failure_reason(result) or "Обработка не удалась")
 
             if task_id not in tasks_storage:
                 if task_id in deleted_task_ids:

@@ -336,6 +336,22 @@ def test_processor_failure_cleans_up_and_maps_to_processing_failed(backend, uplo
     assert _leftovers(upload_dir) == []
 
 
+def test_processor_failure_reason_reaches_the_client(backend, tmp_path, fake_processor, monkeypatch):
+    # Процессор объясняет провал в result["error"] — клиент должен увидеть причину, а не «see the log»
+    monkeypatch.setattr(_FakeProcessor, "process_file",
+                        lambda self, *a, **kw: {"success": False, "error": "boom: ffmpeg could not decode\ntrace"})
+    err = _err(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+    assert err.code == "processing_failed" and err.status == 500
+    assert "boom: ffmpeg could not decode" in err.message
+    assert "trace" not in err.message  # только первая строка: без многострочных подробностей сервера
+
+
+def test_processor_failure_without_reason_keeps_generic_message(backend, tmp_path, fake_processor):
+    fake_processor.fail = True
+    err = _err(backend.transcribe(path=str(_wav(tmp_path)), opts=TranscribeOptions(), progress=None))
+    assert err.message == "Transcription failed on the server. See the server log."
+
+
 def test_processor_exception_cleans_up(backend, upload_dir, fake_processor, monkeypatch):
     monkeypatch.setattr(_FakeProcessor, "process_file", lambda self, *a, **kw: (_ for _ in ()).throw(RuntimeError("x")))
     err = _err(backend.transcribe(url="https://example.org/x", opts=TranscribeOptions(), progress=None))

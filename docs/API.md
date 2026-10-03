@@ -364,7 +364,7 @@ curl -N http://127.0.0.1:8000/v1/audio/transcriptions \
 | 413 | `invalid_request_error` | `file_too_large` | файл больше `MAX_FILE_SIZE`; если `Content-Length` превышает `MAX_FILE_SIZE` + 1 МиБ, ответ приходит по заголовкам, до чтения тела |
 | 422 | `invalid_request_error` | `null` | ошибка валидации формы: нет `file`/`model`, `num_speakers` < 1 …; `param` — имя поля |
 | 429 | `rate_limit_error` | `rate_limit_exceeded` | больше `RATE_LIMIT_UPLOAD` (10 в минуту) запросов на транскрибацию с одного IP |
-| 500 | `server_error` | `processing_failed` | конвертация/распознавание упали; подробности в журнале сервера |
+| 500 | `server_error` | `processing_failed` | конвертация/распознавание упали; если процессор назвал причину, она в `message` (`Transcription failed: …`), иначе — в журнале сервера |
 | 500 | `server_error` | `internal_error` | необработанное исключение; при `API_DEBUG=true` в `message` добавляется текст исключения |
 | 503 | `server_error` | `diarization_unavailable` | диаризация `pyannote` без `HF_TOKEN` на сервере |
 | 503 | `server_error` | `model_not_loaded` | модель ASR не загружена |

@@ -176,6 +176,14 @@ def _adapt_progress(progress: ProgressFn | None):
     return callback
 
 
+def failure_reason(result: dict[str, Any]) -> str | None:
+    """Первая строка `result["error"]` процессора или None, если причины нет."""
+    error = result.get("error")
+    if not isinstance(error, str) or not error.strip():
+        return None
+    return error.strip().splitlines()[0]
+
+
 def run_transcription(file_path: Path, work_dir: Path, opts: TranscribeOptions, *, model_loader, stats_manager,
                       loader_factory, logger, progress: ProgressFn | None) -> dict[str, Any]:
     """Блокирующая транскрибация `file_path`; `opts` — только из `prepare_options`
@@ -204,7 +212,11 @@ def run_transcription(file_path: Path, work_dir: Path, opts: TranscribeOptions, 
             diarization_backend=opts.diarization_backend, audio_preprocessing_mode=opts.audio_preprocessing,
         )
         if not result.get("success"):
-            raise BackendError("processing_failed", "Transcription failed on the server. See the server log.", 500)
+            # Процессор кладёт понятную пользователю причину в result["error"]; без неё — общий текст
+            reason = failure_reason(result)
+            message = f"Transcription failed: {reason}" if reason else \
+                "Transcription failed on the server. See the server log."
+            raise BackendError("processing_failed", message, 500)
         return result
     finally:
         if owns:  # иначе модель под нестандартный backend/model живёт до остановки процесса
