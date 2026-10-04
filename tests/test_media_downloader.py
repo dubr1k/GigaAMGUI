@@ -2,6 +2,8 @@ import os
 import zlib
 
 import pytest
+from yt_dlp.utils import DownloadError
+from yt_dlp.version import __version__ as yt_dlp_version
 
 from src.utils.media_downloader import MediaDownloader
 
@@ -137,6 +139,38 @@ def test_download_raises_on_nonzero_exit_code(tmp_path):
 
     with pytest.raises(RuntimeError, match="yt-dlp"):
         downloader.download("https://example.test/video", str(tmp_path))
+
+
+class FakeYoutubeDLForbidden(FakeYoutubeDL):
+    def download(self, urls):
+        raise DownloadError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+
+
+def test_download_explains_http_403_in_one_line(tmp_path):
+    # Устаревший yt-dlp получает от YouTube 403 на сами медиаданные; пользователю нужна
+    # причина и действие, а не голая строка yt-dlp или трейсбек.
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDLForbidden)
+
+    with pytest.raises(RuntimeError) as error:
+        downloader.download("https://www.youtube.com/watch?v=x", str(tmp_path))
+
+    message = str(error.value)
+    assert "\n" not in message
+    assert "HTTP 403" in message
+    assert yt_dlp_version in message
+    assert "unable to download video data" in message
+    assert isinstance(error.value.__cause__, DownloadError)
+
+
+def test_download_keeps_other_download_errors(tmp_path):
+    class FakeYoutubeDLUnavailable(FakeYoutubeDL):
+        def download(self, urls):
+            raise DownloadError("ERROR: [youtube] x: Video unavailable")
+
+    downloader = MediaDownloader(youtube_dl_cls=FakeYoutubeDLUnavailable)
+
+    with pytest.raises(DownloadError, match="Video unavailable"):
+        downloader.download("https://www.youtube.com/watch?v=x", str(tmp_path))
 
 
 def test_download_retries_transient_zlib_decompression_error(tmp_path):

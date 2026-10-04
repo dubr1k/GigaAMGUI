@@ -3,6 +3,8 @@
 import sys
 import types
 
+import pytest
+
 import app
 
 
@@ -86,3 +88,19 @@ def test_run_media_download_smoke_uses_project_downloader(monkeypatch, tmp_path)
         "target_dir": str(tmp_path),
     }
     assert result == {"files": [str(tmp_path / "audio.webm")]}
+
+
+def test_media_download_smoke_exits_with_the_error_line(monkeypatch, tmp_path):
+    # Liquid runs `app.py --media-download-smoke` from a source checkout and shows
+    # its stderr; a failed download must end in one line, not a traceback.
+    class FailingDownloader:
+        def download(self, url, target_dir):
+            raise RuntimeError("HTTP 403 при скачивании медиа")
+
+    monkeypatch.setattr("src.utils.media_downloader.MediaDownloader", FailingDownloader)
+    monkeypatch.setattr(sys, "argv", ["app.py", "--media-download-smoke", "https://example.test/v", str(tmp_path)])
+
+    with pytest.raises(SystemExit) as exit_info:
+        app.main()
+
+    assert exit_info.value.code == "HTTP 403 при скачивании медиа"

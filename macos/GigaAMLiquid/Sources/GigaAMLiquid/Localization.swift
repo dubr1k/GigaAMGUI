@@ -59,6 +59,7 @@ enum L10n {
         "Загрузчик работает. Точный прогресс недоступен. После завершения файл появится в списке выбранных.": "The downloader is running. Exact progress is unavailable. The file will appear in the selection when the download finishes.",
         "Загрузка отменена.": "Download cancelled.",
         "Не удалось запустить Python для загрузки медиа.": "Could not start Python to download media.",
+        "Не удалось загрузить медиа по ссылке.": "Could not download media from the URL.",
         "Не удалось загрузить медиа. Проверьте ссылку и Python-окружение проекта: нужны yt-dlp и зависимости requirements.txt.": "Could not download media. Check the URL and the project's Python environment: yt-dlp and the dependencies in requirements.txt are required.",
         "Код завершения": "Exit code",
         "Загрузчик не вернул список файлов. Проверьте Python-окружение проекта.": "The downloader did not return a file list. Check the project's Python environment.",

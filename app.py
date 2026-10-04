@@ -480,13 +480,12 @@ def main():
         index = sys.argv.index("--media-download-smoke")
         if index + 2 >= len(sys.argv):
             raise SystemExit("--media-download-smoke requires URL and target directory")
-        print(
-            json.dumps(
-                run_media_download_smoke(sys.argv[index + 1], sys.argv[index + 2]),
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
+        try:
+            response = run_media_download_smoke(sys.argv[index + 1], sys.argv[index + 2])
+        except Exception as exc:
+            # Liquid shows stderr to the user verbatim: one line, not a traceback.
+            raise SystemExit(str(exc)) from None
+        print(json.dumps(response, ensure_ascii=False, sort_keys=True))
         return
 
     early_lock = _try_acquire_instance_lock()
