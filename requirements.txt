@@ -157,7 +157,7 @@ tzdata==2025.2
 urllib3==2.5.0
 yarl==1.22.0
 zipp==3.23.0
-yt-dlp==2026.3.17
+yt-dlp==2026.8.19
 
 # Environment variables
 python-dotenv==1.0.0

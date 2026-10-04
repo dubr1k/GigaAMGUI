@@ -29,7 +29,7 @@ soxr>=1.0.0
 # `gigaam mcp` runs python -m src.mcp_server from the TUI venv (stdio / --http).
 mcp>=2,<3
 # MCP accepts media URLs through MediaDownloader, imported at server startup.
-yt-dlp==2026.3.17
+yt-dlp==2026.8.19
 # The MCP server's own imports: declared directly rather than trusted to mcp.
 pydantic>=2.0.0
 starlette>=0.27.0

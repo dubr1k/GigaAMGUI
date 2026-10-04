@@ -17,7 +17,12 @@ def main() -> int:
     if len(sys.argv) == 4 and sys.argv[1] == "--media-download-smoke":
         from src.utils.media_downloader import MediaDownloader
 
-        result = MediaDownloader().download(sys.argv[2], sys.argv[3])
+        try:
+            result = MediaDownloader().download(sys.argv[2], sys.argv[3])
+        except Exception as exc:
+            # Liquid shows stderr to the user verbatim: one line, not a frozen traceback.
+            print(exc, file=sys.stderr)
+            return 1
         print(json.dumps({"files": result.files}, ensure_ascii=False))
         return 0
     raise SystemExit("Usage: GigaAMWorker --native-worker | --media-download-smoke URL TARGET_DIR")
