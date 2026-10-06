@@ -14,37 +14,14 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMessageBox
 
 from ..config import LLM_TEMPERATURE
-from ..services import llm_service
+from ..services import cli_tools, llm_service
 
-SUMMARY_PROMPT = (
-    "Ты аналитик встреч и голосовых сообщений. Сделай сильную, плотную и полезную выжимку транскрипта на русском языке. "
-    "Убери повторы, слова-паразиты и шум распознавания. Сохрани только смысл. "
-    "\n\nСтруктура ответа:"
-    "\n1. Краткое резюме в 3-6 пунктах."
-    "\n2. Ключевые договоренности и решения."
-    "\n3. Важные факты, цифры, сроки, имена и роли — если они есть."
-    "\n4. Риски, спорные места или открытые вопросы — если они есть."
-    "\n\nПиши четко, по делу, без воды. Если часть информации в транскрипте неясна, пометь это явно и не выдумывай."
-)
-
-TASKS_PROMPT = (
-    "Ты project manager assistant. Из транскрипта выдели только конкретные задачи и оформи их в максимально рабочем виде на русском языке. "
-    "Игнорируй рассуждения, повторы и фоновые фразы. Не выдумывай задачи, которых нет в тексте. "
-    "\n\nДля каждой задачи укажи:"
-    "\n- Что нужно сделать"
-    "\n- Кто ответственный / исполнитель, если это можно понять"
-    "\n- Срок, дедлайн или ориентир по времени, если упомянут"
-    "\n- Контекст или комментарий, если он важен"
-    "\n- Приоритет, если он читается из разговора"
-    "\n\nСначала дай список задач. Затем отдельным коротким блоком выведи: "
-    "«Открытые вопросы / неясности». Если задач нет, напиши: «Явных задач не найдено»."
-)
+# Промпты по умолчанию — общие со всеми клиентами (settings_mixin берёт их отсюда).
+from ..services.llm_prompts import SUMMARY_PROMPT, TASKS_PROMPT
+from .llm_errors import FRIENDLY_LLM_ERRORS
 
 
 class LlmMixin:
-    def _build_llm_prompt_text(self, transcript_text: str, prompt: str) -> str:
-        return llm_service.build_prompt_text(transcript_text, prompt)
-
     def _run_llm_provider(
         self,
         llm_settings: dict,
@@ -86,7 +63,10 @@ class LlmMixin:
                 last_name = name
                 item_blocks = []
                 for mode_suffix, mode_label, prompt in modes:
-                    self.log(f"LLM: обработка {item_index}/{total} — {name} — {mode_label} — {provider}")
+                    self.log(self._t(
+                        f"LLM: обработка {item_index}/{total} — {name} — {mode_label} — {provider}",
+                        f"LLM: processing {item_index}/{total} — {name} — {mode_label} — {provider}",
+                    ))
                     self.signals.llm_progress_started.emit(completed_operations, total_operations)
                     answer = self._run_llm_provider(
                         llm_settings,
@@ -99,54 +79,32 @@ class LlmMixin:
                     saved_paths = self._save_llm_result(item, answer, mode_suffix, export_formats)
                     block = f"=== {name} / {mode_label} / {provider} ===\n{answer}"
                     if saved_paths:
-                        block += "\n\nСохранено:\n" + "\n".join(saved_paths)
+                        block += self._t("\n\nСохранено:\n", "\n\nSaved:\n") + "\n".join(saved_paths)
                     item_blocks.append(block)
                 results.append("\n\n".join(item_blocks))
             mode_suffixes = "_".join(mode[0] for mode in modes)
             self.llm_last_result_name = f"{last_name}_llm_{mode_suffixes}"
             final_text = "\n\n".join(results)
-            self.signals.llm_finished.emit(True, f"LLM-обработка завершена: {total} файл(ов)", final_text)
+            self.signals.llm_finished.emit(
+                True,
+                self._t(f"LLM-обработка завершена: {total} файл(ов)", f"LLM processing finished: {total} file(s)"),
+                final_text,
+            )
         except Exception as e:
-            error_text = str(e).strip() or "Неизвестная ошибка"
-            self.signals.llm_finished.emit(False, f"Ошибка LLM: {self._compact_llm_error(error_text)}", error_text)
+            error_text = str(e).strip() or self._t("Неизвестная ошибка", "Unknown error")
+            self.signals.llm_finished.emit(
+                False,
+                self._t("Ошибка LLM: ", "LLM error: ") + self._compact_llm_error(error_text),
+                error_text,
+            )
 
     def _compact_llm_error(self, error_text: str, limit: int = 180) -> str:
         raw_text = (error_text or "").strip()
         lowered = raw_text.lower()
 
-        friendly_rules = [
-            (("refresh token was revoked", "please log out and sign in again"), "Codex: сессия истекла или токен отозван — нужно заново войти в Codex"),
-            (("token_invalidated", "authentication token has been invalidated"), "Codex: токен недействителен — перелогиньтесь"),
-            (("your session has ended", "refresh_token_invalidated"), "Codex: сессия завершилась — выполните codex logout и codex login"),
-            (("connection refused", "127.0.0.1", "/v1/responses"), "Codex: локальный backend недоступен — проверьте, запущен ли нужный сервер/провайдер"),
-            (("failed to refresh available models", "missing field `base_instructions`"), "Codex: сервер моделей отдает несовместимый формат ответа — провайдер/прокси не полностью совместим с Codex"),
-            (("failed to decode models response",), "Codex: провайдер вернул неожиданный формат списка моделей"),
-            (("401", "anthropic"), "Anthropic API: ошибка авторизации (401) — проверьте API key"),
-            (("401", "openai"), "OpenAI-compatible API: ошибка авторизации (401) — проверьте API key"),
-            (("401", "unauthorized"), "Ошибка авторизации (401) — проверьте ключ, токен или логин выбранного провайдера"),
-            (("403", "forbidden"), "Доступ запрещен (403) — у аккаунта или ключа не хватает прав"),
-            (("404",), "Endpoint не найден (404) — проверьте URL API и путь /v1/..."),
-            (("429", "rate"), "Превышен лимит запросов (429) — попробуйте позже или смените тариф/провайдера"),
-            (("insufficient_quota",), "Закончилась квота API — проверьте биллинг или лимиты"),
-            (("model_not_found",), "Указанная модель не найдена — проверьте точное имя модели"),
-            (("does not exist", "model"), "Указанная модель не существует у выбранного провайдера"),
-            (("invalid x-api-key",), "Неверный Anthropic API key"),
-            (("incorrect api key",), "Неверный API key"),
-            (("could not resolve host",), "Не удалось найти хост — проверьте URL и интернет-соединение"),
-            (("name or service not known",), "Не удалось найти сервер — проверьте адрес API"),
-            (("max retries exceeded",), "Не удалось подключиться к API после нескольких попыток"),
-            (("read timed out", "timeout"), "Сервер слишком долго отвечает — попробуйте позже или увеличьте timeout"),
-            (("connection timed out",), "Таймаут соединения — сервер недоступен или отвечает слишком долго"),
-            (("ssl", "certificate"), "Ошибка SSL-сертификата — проверьте HTTPS/сертификат сервера"),
-            (("command not found",), "Не найдена команда CLI-провайдера — проверьте путь в настройках"),
-            (("not found", "claude"), "Claude Code не найден — проверьте путь к команде claude"),
-            (("not found", "codex"), "Codex не найден — проверьте путь к команде codex"),
-            (("not found", "opencode"), "OpenCode не найден — проверьте путь к команде opencode"),
-            (("not found", "pi"), "Pi не найден — проверьте путь к команде pi"),
-        ]
-        for needles, message in friendly_rules:
+        for needles, ru, en in FRIENDLY_LLM_ERRORS:
             if all(needle in lowered for needle in needles):
-                return message
+                return self._t(ru, en)
 
         text = " ".join(raw_text.split())
         if len(text) <= limit:
@@ -215,9 +173,6 @@ class LlmMixin:
             )
         )
 
-    def _on_llm_stream_chunk(self, _chunk: str):
-        self.lbl_llm_status.setText(self._t("LLM выдаёт текст…", "LLM is streaming text…"))
-
     def _on_llm_finished(self, success: bool, message: str, result_text: str):
         self.is_llm_processing = False
         self._set_llm_buttons_enabled(True)
@@ -246,7 +201,7 @@ class LlmMixin:
         default_name = f"{self.llm_last_result_name}.{suffix}"
         save_path, _ = QFileDialog.getSaveFileName(
             self,
-            f"Сохранить результат как {suffix.upper()}",
+            self._t(f"Сохранить результат как {suffix.upper()}", f"Save the result as {suffix.upper()}"),
             os.path.join(initial_dir, default_name),
             f"{suffix.upper()} files (*.{suffix})"
         )
@@ -273,9 +228,51 @@ class LlmMixin:
                 self.llm_output_dir = target_dir
                 self.user_settings.set_value("llm_output_dir", target_dir)
                 self._update_llm_output_dir_label(target_dir)
-            self.lbl_llm_status.setText(f"Результат экспортирован: {os.path.basename(save_path)}")
+            self.lbl_llm_status.setText(self._t("Результат экспортирован: ", "Result exported: ") + os.path.basename(save_path))
         except Exception as e:
             QMessageBox.warning(self, self._t("Ошибка", "Error"), self._t("Не удалось экспортировать результат: ", "Failed to export the result: ") + str(e))
+
+    def _is_transcript_already_processed(self, path: str) -> bool:
+        """Есть ли уже LLM-результат для этого транскрипта во включённых режиме+формате."""
+        target_dir = self.llm_output_dir or os.path.dirname(path)
+        if not target_dir or not os.path.isdir(target_dir):
+            return False
+        modes = [key for key, cb in self.llm_action_checkboxes.items() if cb.isChecked()]
+        export_formats = [key for key, cb in self.llm_export_checkboxes.items() if cb.isChecked()]
+        if not modes or not export_formats:
+            return False
+        stem = Path(path).stem
+        return any(
+            os.path.isfile(os.path.join(target_dir, f"{stem}_llm_{mode}.{fmt}"))
+            for mode in modes
+            for fmt in export_formats
+        )
+
+    def _rebuild_pending_llm_transcripts(self):
+        """При старте пересобрать список транскриптов из llm_transcript_dir.
+
+        Показывает только транскрипты без готового LLM-результата — файлы, которые
+        уже обработаны выбранными действиями/форматами, пропускаются.
+        """
+        folder = self.llm_transcript_dir
+        # Домашнюю папку прежние версии сохраняли как значение по умолчанию:
+        # её сканирование ставило в очередь LLM все .txt/.md пользователя.
+        if (
+            not folder
+            or not os.path.isdir(folder)
+            or os.path.realpath(folder) == os.path.realpath(os.path.expanduser("~"))
+        ):
+            self.transcript_files_for_llm = []
+            return
+        transcript_exts = (".txt", ".md", ".srt", ".vtt")
+        candidates = sorted(
+            os.path.join(folder, name)
+            for name in os.listdir(folder)
+            if name.lower().endswith(transcript_exts) and "_llm_" not in name
+        )
+        self.transcript_files_for_llm = [
+            path for path in candidates if not self._is_transcript_already_processed(path)
+        ]
 
     def _refresh_llm_files_list(self):
         if not hasattr(self, "llm_files_list"):
@@ -323,22 +320,36 @@ class LlmMixin:
             return
         self.transcript_files_for_llm = [p for p in self.transcript_files_for_llm if p not in selected]
         self._refresh_llm_files_list()
-        self.user_settings.set_value("last_selected_transcript_files", [p for p in self.transcript_files_for_llm if os.path.isfile(p)])
 
     def _clear_llm_files_list(self):
-        if self.is_llm_processing or not self.transcript_files_for_llm:
+        if self.is_llm_processing:
+            return
+        # См. _clear_files_list: папку транскриптов тоже нужно забывать при
+        # уже пустом списке, иначе она остаётся запомненной навсегда.
+        if not self.transcript_files_for_llm and not self.llm_transcript_dir:
             return
         self.transcript_files_for_llm = []
+        self._forget_llm_transcript_dir()
         self._refresh_llm_files_list()
-        self.user_settings.set_value("last_selected_transcript_files", [])
+
+    def _forget_llm_transcript_dir(self):
+        """Забыть папку транскриптов, чтобы её не пересканировали на следующем старте."""
+        self.llm_transcript_dir = ""
+        self.user_settings.set_value("llm_transcript_dir", "")
 
     def _select_llm_transcript_files(self):
-        initial_dir = self.user_settings.get_value("llm_transcript_dir", self.llm_transcript_dir)
+        initial_dir = (
+            self.user_settings.get_value("llm_transcript_dir", self.llm_transcript_dir)
+            or os.path.expanduser("~")
+        )
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Выберите транскрипты",
+            self._t("Выберите транскрипты", "Choose transcripts"),
             initial_dir,
-            "Транскрипты (*.txt *.md *.srt *.vtt);;Текстовые файлы (*.txt *.md);;Все файлы (*.*)"
+            self._t(
+                "Транскрипты (*.txt *.md *.srt *.vtt);;Текстовые файлы (*.txt *.md);;Все файлы (*.*)",
+                "Transcripts (*.txt *.md *.srt *.vtt);;Text files (*.txt *.md);;All files (*.*)",
+            ),
         )
         if files:
             self.transcript_files_for_llm = files
@@ -348,13 +359,14 @@ class LlmMixin:
                 self.llm_output_dir = folder
                 self._update_llm_output_dir_label(folder)
             self.user_settings.set_value("llm_transcript_dir", folder)
-            self.user_settings.set_value("last_selected_transcript_files", files)
             self._refresh_llm_files_list()
             self.lbl_llm_status.setText(self._t("Транскрипты готовы к LLM-обработке", "Transcripts are ready for LLM processing"))
 
     def _select_llm_output_folder(self):
         initial_dir = self.llm_output_dir or self.output_dir or os.path.expanduser("~")
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения LLM-результатов", initial_dir)
+        folder = QFileDialog.getExistingDirectory(
+            self, self._t("Выберите папку для сохранения LLM-результатов", "Choose the folder for LLM results"), initial_dir,
+        )
         if folder:
             self.llm_output_dir = folder
             self.user_settings.set_value("llm_output_dir", folder)
@@ -379,32 +391,41 @@ class LlmMixin:
             return
         self.transcript_files_for_llm = []
         self.txt_llm_transcript.clear()
+        self._forget_llm_transcript_dir()
         self._refresh_llm_files_list()
         self._clear_llm_result()
-        self.user_settings.set_value("last_selected_transcript_files", [])
         self.user_settings.set_value("llm_manual_transcript", "")
 
     def _selected_llm_modes(self):
         modes = []
         if self.llm_action_checkboxes["summary"].isChecked():
             prompt = self.txt_llm_summary_prompt.toPlainText().strip() or SUMMARY_PROMPT
-            modes.append(("summary", "Выжимка", prompt))
+            modes.append(("summary", self._t("Выжимка", "Summary"), prompt))
         if self.llm_action_checkboxes["tasks"].isChecked():
             prompt = self.txt_llm_tasks_prompt.toPlainText().strip() or TASKS_PROMPT
-            modes.append(("tasks", "Задачи", prompt))
+            modes.append(("tasks", self._t("Задачи", "Tasks"), prompt))
         if self.llm_action_checkboxes["custom"].isChecked():
             custom_prompt = self.txt_llm_custom_prompt.toPlainText().strip()
             if not custom_prompt:
-                raise ValueError("Для режима «Свой промпт» укажите пользовательский промпт в меню «Настройки → LLM API…»")
-            modes.append(("custom", "Свой промпт", custom_prompt))
+                raise ValueError(self._t(
+                    "Для режима «Свой промпт» укажите пользовательский промпт в меню «Настройки → LLM API…»",
+                    "For “Custom prompt”, enter your prompt in Settings → LLM API…",
+                ))
+            modes.append(("custom", self._t("Свой промпт", "Custom prompt"), custom_prompt))
         if not modes:
-            raise ValueError("Выберите хотя бы один чекбокс в блоке «Что делать»")
+            raise ValueError(self._t(
+                "Выберите хотя бы один чекбокс в блоке «Что делать»",
+                "Select at least one checkbox under “What to do”",
+            ))
         return modes
 
     def _selected_llm_export_formats(self):
         formats = [key for key, cb in self.llm_export_checkboxes.items() if cb.isChecked()]
         if not formats:
-            raise ValueError("Выберите хотя бы один формат сохранения результата")
+            raise ValueError(self._t(
+                "Выберите хотя бы один формат сохранения результата",
+                "Select at least one output format for the result",
+            ))
         return formats
 
     def _start_llm_processing(self):
@@ -441,66 +462,63 @@ class LlmMixin:
         try:
             temperature = float(temperature_text)
         except ValueError as exc:
-            raise ValueError("Temperature должно быть числом") from exc
+            raise ValueError(self._t("Temperature должно быть числом", "Temperature must be a number")) from exc
         if not 0 <= temperature <= 2:
-            raise ValueError("Temperature должно быть в диапазоне 0..2")
+            raise ValueError(self._t("Temperature должно быть в диапазоне 0..2", "Temperature must be within 0..2"))
 
         if provider == "API":
             if not api_url:
-                raise ValueError("Укажите API URL")
+                raise ValueError(self._t("Укажите API URL", "Enter the API URL"))
             if not api_key:
-                raise ValueError("Укажите API Key")
+                raise ValueError(self._t("Укажите API Key", "Enter the API key"))
             if not model:
-                raise ValueError("Укажите модель")
-        elif provider == "Claude Code":
-            claude_path = self.entry_llm_claude_path.text().strip() or "claude"
-            if not (shutil.which(claude_path) or os.path.isfile(claude_path)):
-                raise ValueError(f"Не найден Claude Code: {claude_path}")
-        elif provider == "Codex":
-            codex_path = self.entry_llm_codex_path.text().strip() or "codex"
-            if not (shutil.which(codex_path) or os.path.isfile(codex_path)):
-                raise ValueError(f"Не найден Codex: {codex_path}")
-        elif provider == "OpenCode":
-            opencode_path = self.entry_llm_opencode_path.text().strip() or "opencode"
-            if not (shutil.which(opencode_path) or os.path.isfile(opencode_path)):
-                raise ValueError(f"Не найден OpenCode: {opencode_path}")
-        elif provider == "Pi":
-            pi_path = self.entry_llm_pi_path.text().strip() or "pi"
-            if not (shutil.which(pi_path) or os.path.isfile(pi_path)):
-                raise ValueError(f"Не найден Pi: {pi_path}")
+                raise ValueError(self._t("Укажите модель", "Enter the model"))
         elif self._normalize_llm_provider(provider) == "Other":
             other_path = self.entry_llm_other_path.text().strip()
             if not other_path:
                 raise ValueError(self._t("Укажите команду для провайдера «Другое»", "Specify a command for the 'Other' provider"))
             if not (shutil.which(other_path) or os.path.isfile(other_path)):
-                raise ValueError(f"Не найдена команда: {other_path}")
-        return {
+                raise ValueError(self._t(f"Не найдена команда: {other_path}", f"Command not found: {other_path}"))
+        else:
+            spec = cli_tools.provider_by_name(provider)
+            requested = getattr(self, f"entry_llm_{spec.settings_prefix}_path").text().strip()
+            if cli_tools.locate_tool(spec, requested or None) is None:
+                hint = f"\n{self._t('Установка', 'Install')}: {spec.install_hint}" if spec.install_hint else ""
+                raise ValueError(
+                    self._t(f"Не найден {spec.name}: {requested or spec.binary}", f"{spec.name} not found: {requested or spec.binary}")
+                    + hint
+                )
+        settings = {
             "provider": provider,
             "api_url": api_url,
             "api_key": api_key,
             "model": model,
             "temperature": temperature,
-            "claude_path": self.entry_llm_claude_path.text().strip() or "claude",
-            "claude_args": self.entry_llm_claude_args.text().strip(),
-            "codex_path": self.entry_llm_codex_path.text().strip() or "codex",
-            "codex_args": self.entry_llm_codex_args.text().strip(),
-            "opencode_path": self.entry_llm_opencode_path.text().strip() or "opencode",
-            "opencode_args": self.entry_llm_opencode_args.text().strip(),
-            "pi_path": self.entry_llm_pi_path.text().strip() or "pi",
-            "pi_provider": self.entry_llm_pi_provider.text().strip(),
-            "pi_args": self.entry_llm_pi_args.text().strip(),
             "other_path": self.entry_llm_other_path.text().strip(),
             "other_args": self.entry_llm_other_args.text().strip(),
+            "llm_allow_tools": self.cb_llm_allow_tools.isChecked(),
         }
+        for spec in cli_tools.cli_specs():
+            prefix = spec.settings_prefix
+            settings[f"{prefix}_path"] = getattr(self, f"entry_llm_{prefix}_path").text().strip() or spec.binary
+            settings[f"{prefix}_args"] = getattr(self, f"entry_llm_{prefix}_args").text().strip()
+            if spec.has_provider_field:
+                settings[f"{prefix}_provider"] = getattr(self, f"entry_llm_{prefix}_provider").text().strip()
+        return settings
 
     def _collect_llm_inputs(self):
         manual_text = self.txt_llm_transcript.toPlainText().strip()
         items = []
         if manual_text:
-            base_name = "manual_transcript"
-            if self.transcript_files_for_llm:
-                base_name = Path(self.transcript_files_for_llm[0]).stem
-            items.append({"name": base_name, "text": manual_text, "source_path": self.transcript_files_for_llm[0] if self.transcript_files_for_llm else None})
+            # Своё имя, даже если рядом выбраны файлы: с именем первого файла
+            # результат вставленного текста и результат самого файла писались
+            # в один <имя>_llm_<режим>.<формат>, и второй затирал первый.
+            # Папка — по-прежнему рядом с первым транскриптом.
+            items.append({
+                "name": "manual_transcript",
+                "text": manual_text,
+                "source_path": self.transcript_files_for_llm[0] if self.transcript_files_for_llm else None,
+            })
         for path in self.transcript_files_for_llm:
             try:
                 with open(path, encoding="utf-8") as f:
@@ -510,7 +528,10 @@ class LlmMixin:
             if text:
                 items.append({"name": Path(path).stem, "text": text, "source_path": path})
         if not items:
-            raise ValueError("Выберите хотя бы один транскрипт или вставьте текст вручную")
+            raise ValueError(self._t(
+                "Выберите хотя бы один транскрипт или вставьте текст вручную",
+                "Choose at least one transcript or paste the text",
+            ))
         return items
 
     # ──────────────────────────────────────────────────────────────

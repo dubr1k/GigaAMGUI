@@ -2,6 +2,8 @@ import os
 import sys
 import types
 
+import pytest
+
 from src.utils import runtime_manager as rm
 
 _TEST_STACK = {
@@ -30,13 +32,38 @@ _TEST_VARIANTS = {
 }
 
 
-def _write_stack(path, versions=None) -> None:
-    versions = versions or rm.VARIANTS[path.name]["packages"]
+@pytest.fixture(autouse=True)
+def _restore_interpreter_state(monkeypatch):
+    """activate()/purge_runtime_modules() правят процесс глобально.
+
+    Тесты ставят в sys.path фиктивные рантаймы с пустым пакетом torch и
+    выбрасывают из sys.modules все torch*-модули, включая настоящие. Без
+    восстановления следующий тест, лениво импортирующий torch (PyTorch-backend),
+    получал пустой пакет из tmp-рантайма без torch.from_numpy.
+    """
+    monkeypatch.delenv("GIGAAM_ACTIVE_VARIANT", raising=False)
+    saved_path = list(sys.path)
+    saved_modules = dict(sys.modules)
+    yield
+    sys.path[:] = saved_path
+    for name in [name for name in sys.modules if name not in saved_modules]:
+        if name.startswith(rm._RUNTIME_MODULE_PREFIXES):
+            sys.modules.pop(name, None)
+    for name, module in saved_modules.items():
+        if sys.modules.get(name) is not module:
+            sys.modules[name] = module
+
+
+def _write_stack(path, versions=None, ext_suffix: str | None = None) -> None:
+    """Раскладка torch-колеса: пакеты, dist-info и C-расширение под интерпретатор."""
+    variant = path.name.split("-", 1)[0]
+    versions = versions or rm.VARIANTS[variant]["packages"]
     for package, version in versions.items():
         package_dir = path / package / "__init__.py"
         package_dir.parent.mkdir(parents=True, exist_ok=True)
         package_dir.write_text("", encoding="utf-8")
         (path / f"{package}-{version}.dist-info").mkdir(parents=True, exist_ok=True)
+    (path / "torch" / f"_C{ext_suffix or rm._EXT_SUFFIX}").write_bytes(b"")
 
 
 def _mark_installed(variant: str) -> None:
@@ -121,6 +148,36 @@ def test_is_installed_rejects_mixed_runtime_versions(monkeypatch, tmp_path):
     assert rm.is_installed("cpu") is False
 
 
+def test_is_installed_rejects_a_runtime_built_for_another_python(monkeypatch, tmp_path):
+    """v2.3.0: PyQt-сборка на Python 3.12 положила cp312-колёса в общий кэш, а
+    CI-компаньон на 3.11 счёл их установленными и импортировал папку-заглушку
+    torch/_C вместо расширения."""
+    monkeypatch.setenv("GIGAAM_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(rm, "VARIANTS", dict(_TEST_VARIANTS))
+    path = rm._runtimes_root() / "cpu"
+    _write_stack(path, ext_suffix=".cpython-399-darwin.so")
+    (path / ".installed_ok").write_text("ok", encoding="utf-8")
+
+    assert rm.is_installed("cpu") is False
+
+
+def test_variant_dir_sidesteps_a_runtime_built_for_another_python(monkeypatch, tmp_path):
+    """Две сборки с разными Python на одной машине не должны перезаписывать
+    torch друг друга: чужой ABI получает свою папку с суффиксом интерпретатора."""
+    monkeypatch.setenv("GIGAAM_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(rm, "VARIANTS", dict(_TEST_VARIANTS))
+    legacy = rm._runtimes_root() / "cpu"
+
+    assert rm.variant_dir("cpu") == legacy, "nothing installed yet → legacy path"
+
+    _write_stack(legacy)
+    assert rm.variant_dir("cpu") == legacy, "our own ABI → keep using the legacy dir"
+
+    (legacy / "torch" / f"_C{rm._EXT_SUFFIX}").unlink()
+    (legacy / "torch" / "_C.cpython-399-darwin.so").write_bytes(b"")
+    assert rm.variant_dir("cpu") == rm._runtimes_root() / f"cpu-{rm._python_tag()}"
+
+
 def test_install_variant_replaces_stale_runtime_transactionally(monkeypatch, tmp_path):
     monkeypatch.setenv("GIGAAM_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setattr(rm, "VARIANTS", dict(_TEST_VARIANTS))
@@ -159,3 +216,33 @@ def test_cancelled_install_keeps_previous_runtime(monkeypatch, tmp_path):
 
     assert rm.install_variant("cpu") is False
     assert stale_file.read_text(encoding="utf-8") == "keep me"
+
+
+
+@pytest.mark.parametrize(
+    ("gpu_name", "variant"),
+    [
+        ("NVIDIA GeForce RTX 5090", "cu128"),
+        ("NVIDIA GeForce RTX 5070 Ti", "cu128"),
+        ("NVIDIA GeForce RTX 5060 Laptop GPU", "cu128"),
+        ("NVIDIA GeForce RTX 5050", "cu128"),
+        # Blackwell без номера 50x0 — без cu128 карта вовсе не работает (sm_120).
+        ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", "cu128"),
+        ("NVIDIA RTX PRO 4000 Blackwell", "cu128"),
+        ("NVIDIA B200", "cu128"),
+        # «5000» — не GeForce 50-й серии: Turing и Ada идут в cu124.
+        ("Quadro RTX 5000", "cu124"),
+        ("NVIDIA RTX 5000 Ada Generation", "cu124"),
+        ("NVIDIA RTX A5000", "cu124"),
+        ("NVIDIA GeForce RTX 4090", "cu124"),
+        ("NVIDIA GeForce RTX 3060", "cu124"),
+        ("Tesla T4", "cu124"),
+        ("AMD Radeon RX 7900 XTX", "cpu"),
+        (None, "cpu"),
+    ],
+)
+def test_detect_recommended_variant_classifies_gpu_names(monkeypatch, gpu_name, variant):
+    monkeypatch.setattr(rm.sys, "platform", "win32")
+    monkeypatch.setattr(rm, "_detect_gpu_name", lambda: gpu_name)
+
+    assert rm.detect_recommended_variant() == variant

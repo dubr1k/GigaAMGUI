@@ -2,6 +2,9 @@ from src.utils.llm_client import LLMClient, LLMSettings
 
 
 class _Response:
+    status_code = 200
+    headers = {}
+
     def raise_for_status(self):
         pass
 
@@ -30,3 +33,182 @@ def test_openai_streams_text_chunks(monkeypatch):
     assert chunks == ["при", "вет"]
     assert captured["json"]["stream"] is True
     assert captured["stream"] is True
+
+
+def test_google_openai_compat_endpoint_does_not_duplicate_v1():
+    endpoint = LLMClient._build_openai_endpoint(
+        "https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+
+    assert endpoint == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
+
+def test_retries_transient_service_unavailable(monkeypatch):
+    class RetryResponse:
+        status_code = 503
+        headers = {}
+
+        def close(self):
+            pass
+
+        def raise_for_status(self):
+            raise RuntimeError("503")
+
+    class SuccessResponse:
+        status_code = 200
+
+    responses = iter([RetryResponse(), SuccessResponse()])
+    monkeypatch.setattr("src.utils.llm_client.requests.post", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr("src.utils.llm_client.time.sleep", lambda _: None)
+    client = LLMClient(LLMSettings("https://example.test/v1", "key", "model"))
+
+    response = client._post_with_retry("https://example.test/v1/chat/completions", headers={}, payload={})
+
+    assert response.status_code == 200
+
+
+def _retry_response(status=429, headers=None):
+    class R:
+        status_code = status
+
+        def close(self):
+            pass
+
+    R.headers = headers or {}
+    return R()
+
+
+def _ok_response():
+    class R:
+        status_code = 200
+
+    return R()
+
+
+def _run_retry(monkeypatch, responses, cancel_check=None):
+    sleeps = []
+    responses = iter(responses)
+    monkeypatch.setattr("src.utils.llm_client.requests.post", lambda *a, **k: next(responses))
+    monkeypatch.setattr("src.utils.llm_client.time.sleep", sleeps.append)
+    client = LLMClient(LLMSettings("https://example.test/v1", "key", "model"))
+    result = client._post_with_retry(
+        "https://example.test/v1/chat/completions", headers={}, payload={}, cancel_check=cancel_check,
+    )
+    return result, sleeps
+
+
+def test_retry_honours_numeric_retry_after_capped_at_15s(monkeypatch):
+    _, sleeps = _run_retry(monkeypatch, [_retry_response(headers={"Retry-After": "40"}), _ok_response()])
+    assert sum(sleeps) == 15.0
+
+
+def test_retry_falls_back_to_backoff_on_garbage_retry_after(monkeypatch):
+    _, sleeps = _run_retry(monkeypatch, [
+        _retry_response(headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}),
+        _retry_response(),
+        _ok_response(),
+    ])
+    assert sum(sleeps[:len(sleeps)]) == 1 + 2  # 2**0, 2**1
+
+
+def test_retry_gives_up_after_three_attempts(monkeypatch):
+    result, _ = _run_retry(monkeypatch, [_retry_response(503)] * 3)
+    assert result.status_code == 503
+
+
+def test_retry_wait_is_interrupted_by_cancel(monkeypatch):
+    import pytest
+
+    calls = {"n": 0}
+
+    def cancel_check():
+        calls["n"] += 1
+        return calls["n"] > 2  # отмена приходит во время ожидания
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        _run_retry(monkeypatch, [_retry_response(headers={"Retry-After": "10"}), _ok_response()], cancel_check)
+
+
+def _real_response(body: bytes, *, status=200, content_type="text/event-stream", reason="OK"):
+    """Ответ так, как его собирает адаптер requests: кодировка — из заголовков."""
+    import io
+
+    import requests
+
+    response = requests.models.Response()
+    response.status_code = status
+    response.reason = reason
+    response.headers["Content-Type"] = content_type
+    response.raw = io.BytesIO(body)
+    response.encoding = requests.utils.get_encoding_from_headers(response.headers)
+    response.url = "https://example.test/v1/chat/completions"
+    return response
+
+
+def _client(monkeypatch, response, url="https://example.test/v1"):
+    monkeypatch.setattr("src.utils.llm_client.requests.post", lambda *a, **k: response)
+    return LLMClient(LLMSettings(url, "key", "model"))
+
+
+def test_openai_sse_without_charset_is_decoded_as_utf8(monkeypatch):
+    # text/event-stream без charset requests декодирует как ISO-8859-1:
+    # русский ответ превращался в «Ð¿Ñ\x80Ð¸Ð²ÐµÑ\x82».
+    body = (
+        'data: {"choices":[{"delta":{"content":"привет"}}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode()
+    client = _client(monkeypatch, _real_response(body))
+    chunks = []
+
+    assert client.process_transcript("текст", "промпт", stream_callback=chunks.append) == "привет"
+    assert chunks == ["привет"]
+
+
+def test_anthropic_sse_without_charset_is_decoded_as_utf8(monkeypatch):
+    body = (
+        "event: content_block_delta\n"
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ответ"}}\n\n'
+    ).encode()
+    client = _client(monkeypatch, _real_response(body), url="https://api.anthropic.com")
+
+    assert client.process_transcript("текст", "промпт", stream_callback=lambda _c: None) == "ответ"
+
+
+def test_openai_stream_error_event_is_reported(monkeypatch):
+    import pytest
+
+    body = (
+        'data: {"choices":[{"delta":{"content":"нача"}}]}\n\n'
+        'data: {"error":{"message":"Rate limit exceeded","code":429}}\n\n'
+    ).encode()
+    client = _client(monkeypatch, _real_response(body))
+
+    with pytest.raises(RuntimeError, match="Rate limit exceeded"):
+        client.process_transcript("текст", "промпт", stream_callback=lambda _c: None)
+
+
+def test_anthropic_stream_error_event_is_reported(monkeypatch):
+    import pytest
+
+    body = (
+        b"event: error\n"
+        b'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n'
+    )
+    client = _client(monkeypatch, _real_response(body), url="https://api.anthropic.com")
+
+    with pytest.raises(RuntimeError, match="Overloaded"):
+        client.process_transcript("текст", "промпт", stream_callback=lambda _c: None)
+
+
+def test_http_error_carries_provider_message(monkeypatch):
+    import pytest
+    import requests
+
+    body = b'{"error":{"message":"The model `gpt-9` does not exist"}}'
+    client = _client(
+        monkeypatch,
+        _real_response(body, status=404, content_type="application/json", reason="Not Found"),
+    )
+
+    with pytest.raises(requests.HTTPError, match="does not exist"):
+        client.process_transcript("текст", "промпт")

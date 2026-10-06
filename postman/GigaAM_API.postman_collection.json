@@ -1,0 +1,440 @@
+{
+  "info": {
+    "name": "GigaAM v3 Transcriber API (OpenAI-compatible)",
+    "description": "POST /v1/audio/transcriptions, GET /v1/models, GET /health. Set the collection variables baseUrl and apiKey; every /v1 request sends `Authorization: Bearer {{apiKey}}` from the collection-level auth. Pick a file in the `file` field of a transcription request. Reference: docs/API.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "string",
+      "description": "Key printed by api.py at first start (gam_...)"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "description": "Service status, version and active ASR backend. No API key required.",
+        "auth": {
+          "type": "noauth"
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Models",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models"
+          ]
+        },
+        "description": "OpenAI-style model list plus the `gigaam` extension (available backends, ONNX providers, active configuration)."
+      },
+      "response": []
+    },
+    {
+      "name": "Model by alias",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models/whisper-1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models",
+            "whisper-1"
+          ]
+        },
+        "description": "Aliases resolve to the default GigaAM model (v3_e2e_rnnt)."
+      },
+      "response": []
+    },
+    {
+      "name": "Transcribe json",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "json",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        },
+        "description": "Default response_format=json: {\"text\", \"usage\"}."
+      },
+      "response": []
+    },
+    {
+      "name": "Transcribe text",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "text",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        },
+        "description": "Plain text, Content-Type text/plain."
+      },
+      "response": []
+    },
+    {
+      "name": "Transcribe srt",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "srt",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        },
+        "description": "SubRip subtitles (application/x-subrip). Use response_format=vtt for WebVTT."
+      },
+      "response": []
+    },
+    {
+      "name": "Transcribe verbose_json + words",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "verbose_json",
+              "type": "text"
+            },
+            {
+              "key": "timestamp_granularities[]",
+              "value": "segment",
+              "type": "text"
+            },
+            {
+              "key": "timestamp_granularities[]",
+              "value": "word",
+              "type": "text"
+            },
+            {
+              "key": "language",
+              "value": "ru",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        },
+        "description": "Segments with timestamps; `words` is filled only by backends that report word timings."
+      },
+      "response": []
+    },
+    {
+      "name": "Transcribe diarized_json",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "diarized_json",
+              "type": "text"
+            },
+            {
+              "key": "diarization_backend",
+              "value": "pyannote",
+              "type": "text"
+            },
+            {
+              "key": "num_speakers",
+              "value": "2",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        },
+        "description": "Speaker diarization is switched on automatically; speakers are lettered A, B, ... pyannote needs HF_TOKEN on the server; set diarization_backend=sortformer or onnx to avoid it."
+      },
+      "response": []
+    },
+    {
+      "name": "Transcribe stream",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "json",
+              "type": "text"
+            },
+            {
+              "key": "stream",
+              "value": "true",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        },
+        "description": "Server-sent events: `: progress` comments while processing, then transcript.text.delta events and transcript.text.done. Only response_format=json or verbose_json."
+      },
+      "response": []
+    },
+    {
+      "name": "Error: unknown model",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "gpt-9",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        },
+        "description": "Expected 404 with code model_not_found in the OpenAI error envelope."
+      },
+      "response": []
+    },
+    {
+      "name": "Error: translations",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Audio or video file"
+            },
+            {
+              "key": "model",
+              "value": "whisper-1",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/translations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "translations"
+          ]
+        },
+        "description": "Expected 400 with code translation_not_supported: GigaAM does not translate."
+      },
+      "response": []
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+# Linux live capture only (PipeWire/PulseAudio via PortAudio).
+#
+# System audio needs an existing monitor source; sounddevice sees it as an
+# ordinary input device. The Linux wheel is pure Python and does NOT ship
+# PortAudio, so the system library is required as well:
+#   sudo apt install libportaudio2
+# Portable/offline builds bundle libportaudio.so.2 (see packaging/_spec_common.py).
+sounddevice==0.5.6

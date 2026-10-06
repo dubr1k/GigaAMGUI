@@ -17,8 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from ...utils.model_cache import resolve_bundled_snapshot
-from ...utils.runtime_manager import hf_cache_dir
+from ...utils.model_cache import hf_hub_cache_dir, onnx_model_subdir, resolve_bundled_snapshot
 from ..asr.onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
@@ -54,10 +53,18 @@ _SILENCE_THRESHOLD = 0.2
 
 def _cached_sortformer_artifact(model_dir: str | Path | None = None) -> Path | None:
     if model_dir is not None:
-        candidate = Path(model_dir)
-        if candidate.is_dir():
-            candidate /= SORTFORMER_ONNX_FILENAME
-        return candidate if candidate.is_file() else None
+        # model_dir — корень ONNX_MODEL_DIR: файл ищется в подкаталоге
+        # репозитория, в самом корне (старая раскладка) или указан прямо.
+        # Отсутствие файла там не повод игнорировать офлайн-набор и HF-кэш.
+        root = Path(model_dir)
+        candidates = (
+            [onnx_model_subdir(root, SORTFORMER_ONNX_REPO_ID) / SORTFORMER_ONNX_FILENAME, root / SORTFORMER_ONNX_FILENAME]
+            if root.is_dir()
+            else [root]
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
 
     bundled = resolve_bundled_snapshot(SORTFORMER_ONNX_REPO_ID)
     if bundled is not None:
@@ -71,7 +78,7 @@ def _cached_sortformer_artifact(model_dir: str | Path | None = None) -> Path | N
         SORTFORMER_ONNX_REPO_ID,
         SORTFORMER_ONNX_FILENAME,
         revision=SORTFORMER_ONNX_REVISION,
-        cache_dir=str(hf_cache_dir() / "hub"),
+        cache_dir=str(hf_hub_cache_dir()),
     )
     return Path(cached) if isinstance(cached, str) and Path(cached).is_file() else None
 
@@ -84,7 +91,7 @@ def _download_sortformer_artifact() -> Path:
             SORTFORMER_ONNX_REPO_ID,
             SORTFORMER_ONNX_FILENAME,
             revision=SORTFORMER_ONNX_REVISION,
-            cache_dir=str(hf_cache_dir() / "hub"),
+            cache_dir=str(hf_hub_cache_dir()),
         )
     )
 
@@ -484,7 +491,7 @@ class SortformerOnnxDiarizationManager(SpeakerMappingMixin):
         return merged
 
     def _predictions_to_segments(self, predictions: np.ndarray, *, audio_duration: float):
-        from ...utils.diarization import SpeakerSegment  # noqa: PLC0415
+        from .base import SpeakerSegment  # noqa: PLC0415
 
         raw = []
         for speaker in range(_NUM_SPEAKERS):

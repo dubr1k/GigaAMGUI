@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from src.core.diarization import onnx_segmentation as segmentation_module
 from src.core.diarization.onnx_segmentation import OnnxSegmentation
+from src.utils import model_cache
 
 
 class _Session:
@@ -61,8 +61,8 @@ def test_segmentation_uses_matching_bundled_snapshot(monkeypatch, tmp_path):
     session = _Session(np.full((4, 7), 1 / 7, dtype=np.float32))
     vad = SimpleNamespace(_model=session)
     monkeypatch.setattr(
-        segmentation_module,
-        "resolve_model_dir",
+        model_cache,
+        "resolve_bundled_snapshot",
         lambda repo_id, **_kwargs: bundled,
     )
     monkeypatch.setitem(

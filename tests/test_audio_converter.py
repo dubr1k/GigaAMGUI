@@ -188,4 +188,4 @@ def test_convert_to_wav_failed_ffmpeg_returns_none_and_logs(monkeypatch):
     converter = audio_converter.AudioConverter(logger=logger)
     converter.convert_to_wav("input.mkv", "/tmp")
 
-    assert any("Ошибка FFmpeg" in line for line in logged)
+    assert any("FFmpeg не смог подготовить звук" in line for line in logged)

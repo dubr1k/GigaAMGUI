@@ -7,10 +7,10 @@
 """
 
 import json
+import multiprocessing
 import os
 import platform
 import sys
-import time
 import warnings
 from pathlib import Path
 
@@ -22,10 +22,14 @@ from src.data_paths import (
     save_default_data_dir_selection,
 )
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - macOS build uses fcntl
-    fcntl = None
+# Первое действие в замороженной сборке, до любого режима. multiprocessing.resource_tracker
+# (его поднимают torch/pyannote под shared memory) стартует helper как
+# `sys.executable -B -S -I -c "from multiprocessing.resource_tracker import main;main(fd)"`.
+# В PyInstaller-бинарнике `-c` никто не разбирает: без этого вызова helper заново
+# выполняет весь app.py — без `--native-worker` в argv он уходит в Qt-ветку, даёт
+# второе приложение в Dock рядом с GigaAMLiquid и падает на импорте. Runtime-hook
+# PyInstaller подменяет freeze_support() на перехват helper-argv; вне заморозки — no-op.
+multiprocessing.freeze_support()
 
 
 # Проверка целостности сборки: импортирует всю ML-цепочку и выходит 0/1.
@@ -36,8 +40,24 @@ if "--selfcheck" in sys.argv:
     raise SystemExit(run_selfcheck())
 
 
-from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER
+# Отдельный гейт для полной macOS .app, которая не гоняет --selfcheck: проверяет,
+# что модули live-захвата действительно попали в бандл (issue #47).
+if "--live-capture-smoke" in sys.argv:
+    from src.selfcheck import run_live_capture_check
 
+    raise SystemExit(run_live_capture_check())
+
+
+from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER  # noqa: E402 — после freeze_support() и гейтов
+
+# Одна реализация блокировки экземпляра, очереди «открыть файлы» и разбора argv
+# для лаунчера и окна (модуль без torch и без Qt на уровне импорта).
+from src.gui import single_instance as _single_instance  # noqa: E402
+
+_argv_open_paths = _single_instance.argv_open_paths
+_qt_argv = _single_instance.qt_argv
+_queue_open_request = _single_instance.queue_open_request
+_try_acquire_instance_lock = _single_instance.try_acquire_instance_lock
 
 def _user_config_dir() -> Path:
     override = os.environ.get("GIGAAM_CONFIG_DIR")
@@ -48,43 +68,6 @@ def _user_config_dir() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "GigaAMTranscriber"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "GigaAMTranscriber"
-
-
-def _argv_open_paths(argv: list[str]) -> list[str]:
-    paths = []
-    skip_next = False
-    for arg in argv[1:]:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--data-dir":
-            skip_next = True
-            continue
-        if arg.startswith("--data-dir="):
-            continue
-        if arg.startswith("-psn_"):
-            continue
-        path = os.path.abspath(os.path.expanduser(arg))
-        if os.path.exists(path):
-            paths.append(path)
-    return paths
-
-
-def _qt_argv(argv: list[str]) -> list[str]:
-    """Не передавать служебный --data-dir парсеру Qt."""
-    result = [argv[0]]
-    skip_next = False
-    for arg in argv[1:]:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--data-dir":
-            skip_next = True
-            continue
-        if arg.startswith("--data-dir="):
-            continue
-        result.append(arg)
-    return result
 
 
 def _offer_data_directory_on_first_portable_launch(parent=None) -> str | None:
@@ -126,28 +109,21 @@ def _offer_data_directory_on_first_portable_launch(parent=None) -> str | None:
     return selected
 
 
-def _try_acquire_instance_lock():
-    lock_path = _user_config_dir() / "instance.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_file = lock_path.open("w", encoding="utf-8")
-    if fcntl is None:
-        return lock_file
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock_file.close()
-        return None
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
-    return lock_file
+def _create_qt_application(argv: list[str]):
+    """Существующий QApplication или GigaApplication, ловящий FileOpen из Finder."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QGuiApplication
+    from PyQt6.QtWidgets import QApplication
 
+    existing = QApplication.instance()
+    if existing is not None:
+        return existing
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+    from src.gui.application import GigaApplication
 
-def _queue_open_request(paths: list[str]) -> None:
-    queue_path = _user_config_dir() / "open_requests.jsonl"
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"paths": paths, "pid": os.getpid(), "time": time.time()}
-    with queue_path.open("a", encoding="utf-8") as queue:
-        queue.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return GigaApplication(_qt_argv(argv))
 
 
 def _torch_is_available() -> bool:
@@ -265,6 +241,33 @@ def run_asr_runtime_smoke() -> dict[str, str]:
     return {
         "backend": "mlx",
         "gigaam_mlx": getattr(gigaam_mlx, "__version__", "unknown"),
+    }
+
+
+def run_onnx_runtime_smoke() -> dict[str, object]:
+    """Прогнать нативный ONNX Runtime бандла, не скачивая веса.
+
+    Аналог MLX-смока для сборок без torch (macOS x86_64, issue #45): проверяет,
+    что onnxruntime и onnx_asr действительно попали в бандл, что нативная
+    библиотека грузится и что нужный execution provider доступен. Гейт нужен
+    отдельно от ``--offline-models-smoke``: тот требует привезённые модели, а
+    этот проверяет саму сборку до того, как рядом положили папку моделей.
+    """
+    import onnx_asr
+    import onnxruntime
+
+    from src.config import ONNX_PROVIDER
+    from src.core.asr.onnx_provider import available_onnx_providers, resolve_onnx_providers
+
+    available = available_onnx_providers(ONNX_PROVIDER)
+    selection = resolve_onnx_providers(ONNX_PROVIDER, available=available)
+    return {
+        "backend": "onnx",
+        "onnxruntime": onnxruntime.__version__,
+        "onnx_asr": getattr(onnx_asr, "__version__", "unknown"),
+        "available_providers": list(available),
+        "active_provider": selection.active,
+        "providers": list(selection.providers),
     }
 
 
@@ -417,8 +420,18 @@ def run_media_download_smoke(url: str, target_dir: str) -> dict[str, list[str]]:
 
 def main():
     """Главная функция запуска приложения."""
+    if "--native-worker" in sys.argv:
+        # JSONL worker mode for native front-ends. Keeping this entry point in
+        # the frozen executable lets GigaAMLiquid use the same self-contained
+        # PyInstaller runtime and offline model bundle as the Qt application.
+        from src.tui_worker import main as worker_main
+
+        raise SystemExit(worker_main())
     if "--asr-runtime-smoke" in sys.argv:
         print(json.dumps(run_asr_runtime_smoke(), ensure_ascii=False, sort_keys=True))
+        return
+    if "--onnx-runtime-smoke" in sys.argv:
+        print(json.dumps(run_onnx_runtime_smoke(), ensure_ascii=False, sort_keys=True))
         return
     if "--sortformer-runtime-smoke" in sys.argv:
         print(json.dumps(run_sortformer_runtime_smoke(), ensure_ascii=False, sort_keys=True))
@@ -467,13 +480,12 @@ def main():
         index = sys.argv.index("--media-download-smoke")
         if index + 2 >= len(sys.argv):
             raise SystemExit("--media-download-smoke requires URL and target directory")
-        print(
-            json.dumps(
-                run_media_download_smoke(sys.argv[index + 1], sys.argv[index + 2]),
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
+        try:
+            response = run_media_download_smoke(sys.argv[index + 1], sys.argv[index + 2])
+        except Exception as exc:
+            # Liquid shows stderr to the user verbatim: one line, not a traceback.
+            raise SystemExit(str(exc)) from None
+        print(json.dumps(response, ensure_ascii=False, sort_keys=True))
         return
 
     early_lock = _try_acquire_instance_lock()
@@ -487,15 +499,7 @@ def main():
     warnings.filterwarnings("ignore", message=".*torchaudio.*deprecated.*")
     warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*deprecated.*")
 
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QGuiApplication
-    from PyQt6.QtWidgets import QApplication
-
-    if QApplication.instance() is None:
-        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
-    app = QApplication.instance() or QApplication(_qt_argv(sys.argv))
+    app = _create_qt_application(sys.argv)
     app._gigaam_instance_lock_file = early_lock
 
     _offer_data_directory_on_first_portable_launch()
@@ -541,8 +545,10 @@ def main():
     # Для PyTorch всегда активируем сохранённый целый runtime до импорта модели.
     # Это также удаляет namespace-заглушку torch, которую может оставить PyInstaller.
     if _boot_requires_torch():
-        from src.gui.device_dialog import ensure_device_ready
+        from src.gui.device_dialog import ensure_device_ready, set_default_language
 
+        # Окна ещё нет, язык диалогу берём из сохранённых настроек.
+        set_default_language(settings.get_value("language", "ru"))
         if not _prepare_torch_runtime(rm, ensure_device_ready):
             sys.exit(0)
 

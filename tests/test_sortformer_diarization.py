@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from src.core.diarization import sortformer_nemo
 from src.core.model_preparation import PreparationState
 from src.core.processor import TranscriptionProcessor
 from src.utils import diarization
@@ -72,7 +73,7 @@ def test_sortformer_prepare_checks_its_own_model_not_pyannote(monkeypatch):
     events = []
     checked = []
     monkeypatch.setattr(
-        diarization,
+        sortformer_nemo,
         "hf_repo_is_cached",
         lambda repo: checked.append(repo) or False,
     )
@@ -283,3 +284,41 @@ def test_processor_selects_sortformer_without_hf_token(monkeypatch):
     assert processor.diarization_manager.backend == "sortformer"
     assert created[0][:3] == ("sortformer", None, "auto")
     assert created[0][3] == "auto"
+
+
+def test_sortformer_unload_evicts_the_process_wide_pipeline(monkeypatch):
+    """unload() обязан чистить кэш уровня класса, а не только ссылку экземпляра.
+
+    Базовый DiarizationManager.unload обнуляет лишь ``self._pipeline``, поэтому
+    модель NeMo переживала выгрузку до конца процесса. На CUDA это удержанная
+    VRAM на карте фиксированного объёма.
+    """
+    loads = []
+    monkeypatch.setattr(diarization.SortformerDiarizationManager, "_shared_pipelines", {})
+    monkeypatch.setattr(
+        diarization.SortformerDiarizationManager,
+        "_shared_inference_contexts",
+        {"cpu": diarization.nullcontext},
+    )
+
+    def fake_load(self):
+        # Настоящий _load_pipeline заодно регистрирует inference-контекст.
+        loads.append(self)
+        type(self)._shared_inference_contexts[self.device] = diarization.nullcontext
+        return object()
+
+    monkeypatch.setattr(diarization.SortformerDiarizationManager, "_load_pipeline", fake_load)
+
+    manager = diarization.SortformerDiarizationManager(device="cpu")
+    assert manager.pipeline is not None
+    assert "cpu" in diarization.SortformerDiarizationManager._shared_pipelines
+
+    manager.unload()
+
+    assert manager._pipeline is None
+    assert "cpu" not in diarization.SortformerDiarizationManager._shared_pipelines
+    assert "cpu" not in diarization.SortformerDiarizationManager._shared_inference_contexts
+
+    # После выгрузки следующее обращение обязано перезагрузить модель заново.
+    assert manager.pipeline is not None
+    assert len(loads) == 2

@@ -4,7 +4,47 @@ import numpy as np
 import pytest
 
 from src.core.asr import chunking
-from src.core.asr.chunking import plan_audio_chunks, stitch_overlapping_text
+from src.core.asr.chunking import (
+    plan_audio_chunks,
+    stitch_overlapping_text,
+    vad_regions_miss_active_audio,
+)
+
+
+def test_vad_active_tail_gap_triggers_full_coverage_fallback():
+    sample_rate = 100
+    audio = np.zeros(110 * sample_rate, dtype=np.float32)
+    audio[:28 * sample_rate] = 0.2
+    audio[36 * sample_rate:106 * sample_rate] = 0.15
+
+    assert vad_regions_miss_active_audio(
+        audio,
+        [(1.2, 17.0), (17.1, 28.2)],
+        sample_rate=sample_rate,
+    ) is True
+
+
+def test_vad_silent_tail_does_not_trigger_fallback():
+    sample_rate = 100
+    audio = np.zeros(110 * sample_rate, dtype=np.float32)
+    audio[:28 * sample_rate] = 0.2
+
+    assert vad_regions_miss_active_audio(
+        audio,
+        [(1.2, 17.0), (17.1, 28.2)],
+        sample_rate=sample_rate,
+    ) is False
+
+
+def test_vad_short_active_gap_keeps_normal_segmentation():
+    sample_rate = 100
+    audio = np.full(30 * sample_rate, 0.2, dtype=np.float32)
+
+    assert vad_regions_miss_active_audio(
+        audio,
+        [(0.0, 12.0), (18.0, 30.0)],
+        sample_rate=sample_rate,
+    ) is False
 
 
 def test_short_vad_region_preserves_exact_boundaries():
@@ -197,3 +237,23 @@ def test_normalize_chunk_words_drops_zero_duration_after_clipping():
     )
 
     assert words == [{"text": "после", "start": 19.9, "end": 20.0}]
+
+
+def test_overlapping_vad_regions_do_not_produce_overlapping_nominal_spans():
+    # Планировщик — единственная точка, где рождается таймлайн ASR: даже если
+    # VAD вернул перекрытые области, номинальные окна обязаны идти встык.
+    sample_rate = 100
+    audio = np.zeros(60 * sample_rate, dtype=np.float32)
+
+    chunks = plan_audio_chunks(
+        audio,
+        [(0.0, 19.97), (19.91, 39.91), (39.85, 59.85)],
+        sample_rate=sample_rate,
+        max_chunk_seconds=20.0,
+    )
+
+    previous_end = 0.0
+    for chunk in chunks:
+        assert chunk.start_sec >= previous_end
+        previous_end = chunk.end_sec
+    assert previous_end == pytest.approx(59.85)

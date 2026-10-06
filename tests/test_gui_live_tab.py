@@ -48,6 +48,39 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+def _wait_for_live_start(window, timeout=30.0):
+    """Model load and warm-up run off the Qt thread; wait for the session."""
+    deadline = time.monotonic() + timeout
+    while window._live_starting and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    QApplication.processEvents()
+    assert not window._live_starting, "live session did not finish starting"
+
+
+def _wait_for_live_devices(window, timeout=30.0):
+    """Devices are enumerated off the Qt thread; wait for the combos."""
+    deadline = time.monotonic() + timeout
+    while window._live_devices_probing and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    QApplication.processEvents()
+    assert not window._live_devices_probing, "live devices were not enumerated"
+
+
+def _wait_for_live_stop(window, timeout=5.0):
+    """Stopping drains queued decodes off the Qt thread; wait it out."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        QApplication.processEvents()
+        thread = window._live_stop_thread
+        if thread is not None and not thread.is_alive():
+            QApplication.processEvents()
+            return
+        time.sleep(0.01)
+    raise AssertionError("live session did not finish stopping")
+
+
 @pytest.fixture
 def window(qapp, request):
     instance = GigaTranscriberQtApp()
@@ -85,11 +118,75 @@ def test_live_start_passes_exact_selected_audio_tracks_to_session(window, tmp_pa
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.live_session._settings.record_mic_audio is False
     assert window.live_session._settings.record_system_audio is True
     window._stop_live_session()
 
+
+
+def test_live_session_folder_defaults_to_documents_gigaam_live(qapp, tmp_path, monkeypatch):
+    """It used to default to the batch output folder, so nobody knew where live went."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    window = GigaTranscriberQtApp()
+    try:
+        default = tmp_path / "Documents" / "GigaAM" / "live"
+        assert window.live_output_dir.text() == str(default)
+        assert "Documents/GigaAM/live" in window.lbl_live_output_folder.text()
+    finally:
+        window.close()
+
+
+def test_live_shows_the_session_folder_while_recording_and_after_stop(window, tmp_path, monkeypatch):
+    from src.live.capture.noop import NoOpCaptureAdapter
+
+    monkeypatch.setattr(
+        "src.gui.live_mixin.create_capture_adapter",
+        lambda platform, source, device_id: NoOpCaptureAdapter(source, device_id),
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "Documents" / "GigaAM" / "live"
+    window.live_output_dir.setText(str(root))
+
+    window._start_live_session()
+    _wait_for_live_start(window)
+    session_dir = window.live_session.session_dir
+
+    assert root.is_dir(), "the default folder is created on first use"
+    assert session_dir.name in window.lbl_live_output_folder.text()
+    window._stop_live_session()
+    _wait_for_live_stop(window)
+
+    assert session_dir.name in window.lbl_live_status.text()
+    assert window.btn_live_open_session.isEnabled()
+    opened = []
+    monkeypatch.setattr("src.gui.live_mixin.QDesktopServices.openUrl", lambda url: opened.append(url.toLocalFile()))
+    window.btn_live_open_session.click()
+    assert opened == [str(session_dir)]
+
+
+def test_late_llm_answer_after_stop_does_not_abort_the_app(window, tmp_path, monkeypatch):
+    """stop() freezes the conversation; the late answer raised out of a Qt slot (SIGABRT)."""
+    from src.live.capture.noop import NoOpCaptureAdapter
+
+    monkeypatch.setattr(
+        "src.gui.live_mixin.create_capture_adapter",
+        lambda platform, source, device_id: NoOpCaptureAdapter(source, device_id),
+    )
+    window.live_output_dir.setText(str(tmp_path))
+    window._start_live_session()
+    _wait_for_live_start(window)
+    turn = window.live_session.begin_conversation("когда встреча?")
+    window._live_conversation_id = turn.id
+    window._stop_live_session()
+    _wait_for_live_stop(window)
+
+    window._update_live_answer("chunk", "в пять")
+    window._update_live_answer("answer", "в пять")
+
+    assert window._live_conversation_id is None
+    assert not window.btn_live_start.isEnabled() or window.live_session.status().state.value == "stopped"
 
 
 def test_live_start_surfaces_missing_capture_runtime(window, tmp_path, monkeypatch):
@@ -102,6 +199,7 @@ def test_live_start_surfaces_missing_capture_runtime(window, tmp_path, monkeypat
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.live_session is None
     assert "PyAudioWPatch" in window.lbl_live_status.text()
@@ -145,6 +243,7 @@ def test_live_controls_drive_injected_capture_session_lifecycle(window, tmp_path
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
     assert window.live_session.status().state.value == "recording"
     assert window.btn_live_start.isEnabled() is False
     assert window.btn_live_start.text() == "НАЧАТЬ ЗАПИСЬ"
@@ -158,12 +257,14 @@ def test_live_controls_drive_injected_capture_session_lifecycle(window, tmp_path
     assert window.btn_live_pause.isEnabled() is False
 
     window._start_live_session()
+    _wait_for_live_start(window)
     assert window.live_session.status().state.value == "recording"
     assert window.btn_live_start.isEnabled() is False
     assert window.btn_live_start.text() == "НАЧАТЬ ЗАПИСЬ"
     assert window.btn_live_pause.isEnabled() is True
 
     window._stop_live_session()
+    _wait_for_live_stop(window)
     assert window.live_session.status().state.value == "stopped"
     assert window.btn_live_start.isEnabled() is True
     assert window.btn_live_stop.isEnabled() is False
@@ -201,6 +302,7 @@ def test_live_overlay_reports_missing_llm_configuration_without_blocking(window,
     )
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
     window.live_session._on_final(TranscriptEvent(
         event_id="event-1",
         revision=0,
@@ -345,6 +447,7 @@ def test_cancelling_live_question_keeps_capture_running(window, tmp_path, monkey
     )
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
     window.live_session._on_final(TranscriptEvent(
         "event-1", 0, CaptureSource.MIC, 0, 16_000, 1_000_000_000, "Final line", "final",
     ))
@@ -394,7 +497,8 @@ def test_live_uses_actual_default_device_and_live_scheduler(window, tmp_path, mo
             pass
 
     class Session:
-        def __init__(self, _root, _settings, _adapters, *, scheduler_factory, **_kwargs):
+        def __init__(self, root, _settings, _adapters, *, scheduler_factory, **_kwargs):
+            self.session_dir = root / "2026-10-01_17-21-14"
             self._schedulers = {
                 CaptureSource.MIC: scheduler_factory(
                     CaptureSource.MIC, lambda _event: None, lambda _event: None, lambda _error: None,
@@ -423,9 +527,11 @@ def test_live_uses_actual_default_device_and_live_scheduler(window, tmp_path, mo
     monkeypatch.setattr("src.gui.live_mixin.LiveSession", Session)
     window.model_loader = LoadedModel()
     window._refresh_live_devices()
+    _wait_for_live_devices(window)
     window.live_output_dir.setText(str(tmp_path))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.combo_live_mic_device.currentData() == "default-mic"
     assert window.combo_live_mic_device.findData("mic-default") == -1
@@ -437,6 +543,7 @@ def test_live_rejects_missing_output_folder_and_keeps_capture_events_out_of_tran
     window.live_output_dir.setText(str(missing))
 
     window._start_live_session()
+    _wait_for_live_start(window)
 
     assert window.live_session is None
     assert any(
@@ -535,6 +642,7 @@ def test_clear_live_display_keeps_active_session_and_saved_transcript(window, tm
     )
     window.live_output_dir.setText(str(tmp_path))
     window._start_live_session()
+    _wait_for_live_start(window)
     window._show_live_overlay()
     event = TranscriptEvent(
         "event-1", 0, CaptureSource.MIC, 0, 16_000, 1_000_000_000,
@@ -626,8 +734,8 @@ def test_live_language_toggle_translates_every_live_control(window):
     assert window.cb_live_subtitle_sentence_split.text() == "By sentences"
     assert window.lbl_live_subtitle_max_lines.text() == "Lines:"
     assert window.lbl_live_subtitle_max_width.text() == "Characters:"
-    assert window.cb_live_mic_audio.text() == "Record microphone track"
-    assert window.cb_live_system_audio.text() == "Record system audio track"
+    assert window.cb_live_mic_audio.text() == "Microphone"
+    assert window.cb_live_system_audio.text() == "System audio"
     assert window.btn_live_start.text() == "START LIVE"
     assert window.btn_live_pause.text() == "Pause"
     assert window.btn_live_stop.text() == "Stop"

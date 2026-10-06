@@ -40,12 +40,14 @@ class LiveOverlay(QWidget):
 
     question_submitted = pyqtSignal(str)
     cancel_requested = pyqtSignal()
+    visibility_changed = pyqtSignal(bool)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, language: str = "en") -> None:
         flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         super().__init__(parent, flags)
+        # Окно приложения передаёт свой язык; сам по себе оверлей англоязычный.
+        self._language = language
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowTitle("Live transcription")
         self.setMinimumWidth(360)
         self.resize(480, 240)
         self._transcript_presenter = LiveTranscriptPresenter()
@@ -81,11 +83,10 @@ class LiveOverlay(QWidget):
         header_layout.addWidget(title)
         header_layout.addStretch()
         self.collapse_button = QPushButton("−")
-        self.collapse_button.setToolTip("Collapse")
         self.collapse_button.clicked.connect(self.toggle_collapsed)
         header_layout.addWidget(self.collapse_button)
-        self.close_button = QPushButton("×")
-        self.close_button.setToolTip("Hide overlay")
+        self.close_button = QPushButton("✕")
+        self.close_button.setStyleSheet("font-weight: 700;")
         self.close_button.clicked.connect(self.hide)
         header_layout.addWidget(self.close_button)
         layout.addWidget(self.header)
@@ -106,9 +107,10 @@ class LiveOverlay(QWidget):
 
         answer_header = QHBoxLayout()
         answer_header.setContentsMargins(0, 0, 0, 0)
-        answer_header.addWidget(QLabel("ASSISTANT"))
+        self.answer_title = QLabel()
+        answer_header.addWidget(self.answer_title)
         answer_header.addStretch()
-        self.answer_toggle_button = QPushButton("Hide answer")
+        self.answer_toggle_button = QPushButton()
         self.answer_toggle_button.clicked.connect(self.toggle_answer_visibility)
         answer_header.addWidget(self.answer_toggle_button)
         content_layout.addLayout(answer_header)
@@ -125,31 +127,76 @@ class LiveOverlay(QWidget):
         question_layout = QHBoxLayout()
         question_layout.setContentsMargins(0, 0, 0, 0)
         self.question_input = QLineEdit()
-        self.question_input.setPlaceholderText("Ask about this session")
         self.question_input.returnPressed.connect(self._submit_question)
         question_layout.addWidget(self.question_input)
-        self.send_button = QPushButton("Send")
+        self.send_button = QPushButton()
         self.send_button.clicked.connect(self._submit_question)
         question_layout.addWidget(self.send_button)
-        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button = QPushButton()
         self.cancel_button.clicked.connect(self._cancel_generation)
         self.cancel_button.hide()
         question_layout.addWidget(self.cancel_button)
         content_layout.addLayout(question_layout)
         layout.addWidget(self.content)
+        self._apply_language()
+
+    def _t(self, ru: str, en: str) -> str:
+        return ru if self._language == "ru" else en
+
+    def set_language(self, language: str) -> None:
+        if language == self._language:
+            return
+        old_you, old_assistant, old_generating = self._you(), self._assistant(), self._generating_word()
+        self._language = language
+        self._apply_language()
+        # Уже показанный разговор: подписи реплик — на новом языке.
+        self.answer_text.setPlainText(
+            self.answer_text.toPlainText()
+            .replace(old_you, self._you())
+            .replace(old_assistant, self._assistant())
+            .replace(old_generating, self._generating_word())
+        )
+
+    def _apply_language(self) -> None:
+        self.setWindowTitle(self._t("Live-расшифровка", "Live transcription"))
+        self.collapse_button.setToolTip(self._t("Свернуть", "Collapse"))
+        self.close_button.setToolTip(self._t("Скрыть оверлей (Esc)", "Hide overlay (Esc)"))
+        self.answer_title.setText(self._t("АССИСТЕНТ", "ASSISTANT"))
+        self.answer_toggle_button.setText(self._answer_toggle_text(self.answer_card.isHidden() and bool(self.answer_text.toPlainText())))
+        self.question_input.setPlaceholderText(self._t("Спросите об этой сессии", "Ask about this session"))
+        self.send_button.setText(self._t("Отправить", "Send"))
+        self.cancel_button.setText(self._t("Отмена", "Cancel"))
+
+    def _answer_toggle_text(self, hidden: bool) -> str:
+        return self._t("Показать ответ", "Show answer") if hidden else self._t("Скрыть ответ", "Hide answer")
+
+    def _you(self) -> str:
+        return self._t("Вы:", "You:")
+
+    def _assistant(self) -> str:
+        return self._t("Ассистент:", "Assistant:")
+
+    def _generating_word(self) -> str:
+        return self._t("Генерация", "Generating")
 
     def update_transcript(self, event: TranscriptEvent) -> None:
-        delta = self._transcript_presenter.add_event(event)
+        presenter = self._transcript_presenter
+        delta = presenter.add_event(event)
         if not delta:
             return
         scrollbar = self.final_text.verticalScrollBar()
         at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
         position = scrollbar.value()
-        cursor = self.final_text.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if cursor.position() > 0:
-            cursor.insertText("\n")
-        cursor.insertText(self._transcript_presenter.rendered_delta(event, delta))
+        piece = presenter.rendered_delta(event, delta)
+        if presenter.rewrote:
+            # A corrected final replaces the words already shown for its event.
+            self.final_text.setPlainText("\n".join(presenter.rendered_pieces()))
+        else:
+            cursor = self.final_text.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            if cursor.position() > 0:
+                cursor.insertText("\n")
+            cursor.insertText(piece)
         scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
         self.partial_label.clear()
 
@@ -157,13 +204,6 @@ class LiveOverlay(QWidget):
         self._transcript_presenter.clear()
         self.final_text.clear()
         self.partial_label.clear()
-
-    def _render_final_text(self) -> None:
-        scrollbar = self.final_text.verticalScrollBar()
-        at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
-        position = scrollbar.value()
-        self.final_text.setPlainText(self._transcript_presenter.rendered_paragraphs())
-        scrollbar.setValue(scrollbar.maximum() if at_bottom else position)
 
     def toggle_collapsed(self) -> None:
         collapsed = self.content.isVisible()
@@ -173,10 +213,10 @@ class LiveOverlay(QWidget):
 
     def set_answer(self, text: str) -> None:
         self.answer_text.setPlainText(
-            text if self._active_question is None else f"You: {self._active_question}\nAssistant: {text}"
+            text if self._active_question is None else f"{self._you()} {self._active_question}\n{self._assistant()} {text}"
         )
         self.answer_card.show()
-        self.answer_toggle_button.setText("Hide answer")
+        self.answer_toggle_button.setText(self._answer_toggle_text(False))
         self.adjustSize()
 
     def append_answer(self, text: str) -> None:
@@ -205,10 +245,10 @@ class LiveOverlay(QWidget):
     def _begin_question(self, question: str) -> None:
         self._active_question = question
         self._generation_ellipsis = 0
-        self.answer_text.setPlainText(f"You: {question}\nAssistant: {self._generating_text()}")
+        self.answer_text.setPlainText(f"{self._you()} {question}\n{self._assistant()} {self._generating_text()}")
         self._generation_timer.start()
         self.answer_card.show()
-        self.answer_toggle_button.setText("Hide answer")
+        self.answer_toggle_button.setText(self._answer_toggle_text(False))
         self.send_button.setEnabled(False)
         self.cancel_button.show()
         self.adjustSize()
@@ -216,7 +256,7 @@ class LiveOverlay(QWidget):
     def _cancel_generation(self) -> None:
         if self._active_question is None:
             return
-        self.answer_text.setPlainText(f"You: {self._active_question}")
+        self.answer_text.setPlainText(f"{self._you()} {self._active_question}")
         self._generation_timer.stop()
         self._active_question = None
         self.cancel_button.hide()
@@ -228,10 +268,10 @@ class LiveOverlay(QWidget):
         at_bottom = scrollbar.value() >= scrollbar.maximum() - 2
         position = scrollbar.value()
         self.answer_text.setPlainText("\n\n".join(
-            f"You: {turn.question}\nAssistant: "
+            f"{self._you()} {turn.question}\n{self._assistant()} "
             f"{turn.answer or self._generating_text()}"
             if turn.status == "generating"
-            else f"You: {turn.question}" + (f"\nAssistant: {turn.answer}" if turn.answer else "")
+            else f"{self._you()} {turn.question}" + (f"\n{self._assistant()} {turn.answer}" if turn.answer else "")
             for turn in turns
         ))
         self.answer_card.setVisible(bool(turns))
@@ -247,12 +287,12 @@ class LiveOverlay(QWidget):
         ))
 
     def _generating_text(self, ellipsis: int | None = None) -> str:
-        return f"Generating{'.' * (self._generation_ellipsis if ellipsis is None else ellipsis)}"
+        return f"{self._generating_word()}{'.' * (self._generation_ellipsis if ellipsis is None else ellipsis)}"
 
     def toggle_answer_visibility(self) -> None:
         visible = self.answer_card.isVisible()
         self.answer_card.setVisible(not visible)
-        self.answer_toggle_button.setText("Show answer" if visible else "Hide answer")
+        self.answer_toggle_button.setText(self._answer_toggle_text(visible))
         self.adjustSize()
 
     def _submit_question(self) -> None:
@@ -262,6 +302,20 @@ class LiveOverlay(QWidget):
         self.question_input.clear()
         self._begin_question(question)
         self.question_submitted.emit(question)
+
+    def keyPressEvent(self, event) -> None:
+        if event is not None and event.key() == Qt.Key.Key_Escape:
+            self.hide()
+            return
+        super().keyPressEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.visibility_changed.emit(True)
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self.visibility_changed.emit(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         event.ignore()

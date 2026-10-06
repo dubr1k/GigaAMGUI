@@ -10,6 +10,9 @@ services:
         INSTALL_SORTFORMER: ${INSTALL_SORTFORMER:-0}
     container_name: gigaam-web
     restart: unless-stopped
+    # PID 1 — tini: дочерние ffmpeg/yt-dlp, осиротевшие после отмены задачи,
+    # иначе остаются зомби до перезапуска контейнера.
+    init: true
     ports:
       - "127.0.0.1:8001:8000"
     environment:
@@ -21,6 +24,15 @@ services:
       - MAX_FILE_SIZE=2147483648
       - MAX_CONCURRENT_TASKS=2
       - AUDIO_PREPROCESSING_MODE=${AUDIO_PREPROCESSING_MODE:-auto}
+      # Защита веб-панели (web/state.py); умолчания здесь равны умолчаниям кода.
+      # WEB_ALLOW_CLIENT_LLM_CLI=1 снова разрешает форме LLM задавать путь и
+      # аргументы CLI — то есть запуск любой команды из сессии. Не включать
+      # без нужды.
+      - WEB_ALLOW_CLIENT_LLM_CLI=${WEB_ALLOW_CLIENT_LLM_CLI:-0}
+      - WEB_TRUSTED_ORIGINS=${WEB_TRUSTED_ORIGINS:-}
+      - WEB_LOGIN_RATE_LIMIT=${WEB_LOGIN_RATE_LIMIT:-10/minute}
+      - WEB_MAX_CONCURRENT_LLM=${WEB_MAX_CONCURRENT_LLM:-2}
+      - WEB_MAX_LLM_BODY_SIZE=${WEB_MAX_LLM_BODY_SIZE:-52428800}
       # На хосте путь выбирается одноимённой переменной; внутри всегда /data.
       - GIGAAM_DATA_DIR=/data
       # Эти пути должны существовать до первого импорта Hugging Face/torch.
@@ -36,6 +48,8 @@ services:
       - UPLOAD_DIR=uploads
       - RESULTS_DIR=results
       - STATS_FILE=results/processing_stats.json
+      # Ключи для /mcp (Streamable HTTP MCP); файл живёт на persist-томе /data.
+      - API_KEYS_FILE=/data/.api_keys
       - HF_HUB_DISABLE_SYMLINKS_WARNING=1
       - PYTHONDONTWRITEBYTECODE=1
       - MPLCONFIGDIR=/tmp/matplotlib

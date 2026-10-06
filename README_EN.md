@@ -39,7 +39,7 @@ Russian speech-to-text transcription for audio and video powered by **GigaAM-v3*
 - Automatic quality diagnostics, conservative cleanup, and timeline-safe fallback.
 - MLX RNN-T on Apple Silicon; CPU, CUDA, Intel XPU, and MPS support.
 - LLM summaries, action items, and custom prompts.
-- OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, and arbitrary CLI LLM providers.
+- OpenAI-compatible API, Claude Code, Codex, OpenCode, Pi, oh-my-pi, and arbitrary CLI LLM providers. CLI tools are discovered automatically (PATH + homebrew/npm/bun/nvm); status and version are shown in the settings.
 - RU/EN, light/dark themes, logs, stage-aware progress, and queue cancellation.
 - Authenticated Web UI with SSE progress, restored tasks, and Docker hardening.
 
@@ -70,8 +70,12 @@ For diarization, accept the terms for `pyannote/speaker-diarization-3.1` and `py
 python -m pip install -r requirements-live-macos.txt
 
 # Linux: sounddevice; system audio is available only from a PipeWire/PulseAudio monitor source
+sudo apt install libportaudio2   # the Linux sounddevice wheel does not ship PortAudio
 python -m pip install -r requirements-live-linux.txt
 ```
+
+Portable and offline builds already bundle live capture (including PortAudio on
+Linux); the commands above are only needed when running from source.
 
 macOS requires **Microphone** permission for microphone capture and **Screen
 Recording** permission for system audio. ScreenCaptureKit requires macOS 13 or
@@ -100,8 +104,9 @@ Live capture is supported on Windows, macOS, and Linux. On Windows, install
 `requirements-live-windows.txt` (PyAudioWPatch). On macOS 13+, microphone capture
 requires `requirements-live-macos.txt` and Microphone permission; system audio also
 requires Screen Recording permission and ScreenCaptureKit. On Linux, install
-`requirements-live-linux.txt`; system audio is available only through an existing
-PipeWire/PulseAudio monitor source, which the application does not create.
+`requirements-live-linux.txt` and the system `libportaudio2`; system audio is
+available only through an existing PipeWire/PulseAudio monitor source, which the
+application does not create. Released builds already bundle all of this.
 
 ### Optional: NVIDIA Sortformer
 
@@ -136,7 +141,8 @@ For the Web UI, build the extended image with
 |---|---|---|
 | Desktop GUI | `python app.py` | Regular interactive work |
 | CLI | `python cli.py -f audio.wav -o output` | Scripts and automation |
-| REST API | `python api.py` | Integrations; docs at `http://127.0.0.1:8000/docs` |
+| REST API | `python api.py` | Integrations, OpenAI Audio API compatible: [docs/API.md](docs/API.md) |
+| MCP server | `gigaam mcp` | AI agents (Claude Code, Codex, Cursor): [docs/MCP.md](docs/MCP.md) |
 | Web GUI | `docker compose up -d --build gigaam-web` | Local web panel at `http://127.0.0.1:8001/` |
 | TUI *(preview)* | `cd tui && cargo run --release` | Interactive terminal queue |
 
@@ -146,6 +152,94 @@ For the Web UI, build the extended image with
 curl -fsSL https://raw.githubusercontent.com/dubr1k/GigaAMGUI/main/scripts/install_tui.sh | bash
 gigaam
 ```
+
+Update with `gigaam --update` (keeps the selected model, does not rebuild the
+environment; the installer's `--fresh` does a clean reinstall). Version:
+`gigaam --version`. When a PyQt or Liquid install is present on the same
+machine (`user_settings.json` found), settings — backend, model, LLM
+provider, formats, diarization, and more — are shared between the TUI and
+that app: whichever program saved last wins, and the other one picks up the
+change on its next start.
+
+**TUI 2.2.1.** The interface is Russian by default; `/lang ru|en` (the
+«Language» row in Settings, or `--lang en` at start-up) switches it and stores
+the choice in the `language` setting shared with the desktop app. Four tabs —
+**Processing**, **LLM**, **Settings**, **Log** — are reached with F1–F4,
+Tab/Shift+Tab or a click on the header. The Processing tab has the file queue
+on the left and the parameter panel (engine, model, formats, diarization,
+speakers, audio, folder) on the right: → moves the cursor into the panel, Enter
+or a click opens the value menu. The «▶ Next:» line under the main area says
+what to do next (paste a path → `s` starts → `L` runs the LLM → F9 saved files /
+F2 answer); `?` opens the help with every key and command. The mouse is on: click
+tabs, buttons, queue and settings rows, scroll lists with the wheel;
+`/mouse off` (or the «Mouse» row in Settings) hands the mouse back to the
+terminal for text selection — or hold Shift (Linux/Windows) / Option (macOS).
+`/settings` opens the Settings tab (a row list: Enter or a click changes the
+value), not a separate menu.
+
+**Queue and input.** Dropping or pasting files adds them to the queue without
+Enter. Folders are scanned recursively in the background; unsupported entries
+are skipped. A duplicate path selects the existing item without resetting its
+result. Add / Insert / `/add` opens a labelled editor with arrows, Home/End,
+Backspace/Delete and Ctrl+U; Esc closes it. Outside editing, Delete / × removes
+one item, while Undo / Ctrl+Z / `/undo` restores the last removal. Full path
+opens the selected item's path and details. The pet hides in narrow terminals
+to leave room for the queue.
+
+`s` / F5 starts pending files only. Enter on an item / Actions offers retrying
+failed files (`/retry`) or processing the selected file (`/run-selected`);
+reprocessing a completed item requires confirmation. Start locks immediately,
+before worker acknowledgement. Clear / `/clear` cancels pending additions and
+clears only the queue, preserving saved files and session results. Input errors
+appear in the log; `/retry-input` retries the last failed block preserved when
+new text was being edited or the worker disconnected. Letter shortcuts have
+Russian aliases; F1–F12 are independent of the keyboard layout.
+
+**Connection and stopping.** TUI checks worker compatibility and readiness at
+startup without blocking the interface. After a disconnect, use Ctrl+R,
+`/reconnect` or Reconnect: the queue and results stay, and the previous job is
+never automatically repeated. Reconnect waits for confirmed old-worker shutdown.
+During ASR, Esc / Stop interrupts the current file (nothing is saved for it
+and it is marked as interrupted) and stops the queue;
+during LLM, Esc / Cancel request asks for cancellation. Another Esc / Terminate
+now opens confirmation: Yes terminates the owned worker and descendants, while
+No/Esc returns to waiting for cooperative cancellation. Unfinished output may
+be lost; a remote API may continue processing on its server.
+Large answers are not truncated as diagnostic logs: TUI accepts JSON messages up
+to 8 MiB; exceeding that limit reports a connection error instead of waiting
+forever. For ASR, the worker sends TUI only statuses and result paths; full
+transcripts remain in the saved files.
+
+**Progress and results.** Overall measures the whole batch, with the current
+file's percentage below it; preparation without an estimate displays “—”. The
+summary counts successful, failed, unstarted and interrupted files and elapsed
+time. F9 / Results (also `r` when results exist) opens saved session files, even after
+clearing the queue. Arrows select, PgUp/PgDn scroll the full path, Enter opens a
+text result in the system viewer, O opens its folder, and Esc closes the picker.
+Nothing opens automatically; missing files produce an error. The list currently
+retains ASR outputs and the latest LLM run; earlier LLM-run history is not yet
+implemented. Terminal restoration
+is tested on macOS for normal exit, worker failure and panic unwinding; Windows
+has compile-only verification so far.
+
+**Colour themes.** `/theme` without an argument opens a scrollable list of
+102 schemes, `/theme dark-monokai` switches by name (Tab completes it), the
+«Theme» row in Settings opens the same list, and `--theme NAME` sets a scheme
+for one run. The choice is stored in `tui_settings.json`. Bundled: `default`
+(the previous colours), `mono` (terminal colours only, selection shown in
+bold/reverse), our own `dark-hermes-pink`, and 99 palettes from
+[oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT; licence text in
+`tui/themes/LICENSE-oh-my-pi`) — for example `dark-tokyo-night`,
+`dark-gruvbox`, `light-github`, `light-solarized`. `light-*` schemes expect a
+light terminal background, `dark-*` a dark one.
+
+**Headless / for agents.** `gigaam transcribe FILE... [options]` and
+`gigaam llm FILE... --mode summary [options]` run without the interactive UI:
+one line per file on stdout, `--json` for a line-delimited stream of worker
+events, exit codes `0`/`1`/`2`/`3` (`3` means the worker could not start —
+run `gigaam --update`). The agent contract lives in `skills/gigaam/SKILL.md`;
+`gigaam --install-skill` installs it into `~/.claude/skills`,
+`~/.codex/skills`, `~/.agents/skills`.
 
 ### Subtitle settings
 
@@ -159,9 +253,13 @@ python cli.py -f audio.wav --format srt --format vtt \
 ```
 
 The TUI provides `/subtitle-split on|off`, `/subtitle-lines 1..4`, and
-`/subtitle-width 20..100`; these values persist between runs. Cue boundaries use
-word timestamps when available, with deterministic timing inside the original
-ASR segment as the fallback. With diarization, SRT names a speaker only when the
+`/subtitle-width 20..100`; these values persist between runs. It also has
+`/audio-mode auto|off|light|denoise`, `/llm-file <path>` (run the LLM on any
+saved transcript), `/llm-path`, `/llm-provider-name`, `/llm-args`,
+`/llm-tools on|off`; F2 opens the LLM answer tab and F9 opens saved files.
+The first Esc during LLM work requests cancellation without terminating the
+worker; another Esc offers confirmed force-stop. Cue boundaries use word timestamps when available, with
+deterministic timing inside the original ASR segment as the fallback. With diarization, SRT names a speaker only when the
 speaker changes, and the width limit charges the label only to those cues — the
 rest use the full configured width. VTT keeps a standard `<v Спикер №1>` voice
 span on every cue: it is invisible in players but carries attribution and
@@ -197,6 +295,13 @@ Specialized variables (`HF_HOME`, `HUGGINGFACE_HUB_CACHE`, `TRANSFORMERS_CACHE`,
 advanced layouts. On Windows, keep model/runtime paths free of Cyrillic
 characters because some native DLL loaders cannot handle them reliably.
 
+`ONNX_MODEL_DIR` is a root, not the folder of a single model: recognition, VAD
+and the ONNX diarization models are downloaded into their own sub-folders
+`<root>/<org>--<name>` (for example `istupakov--gigaam-v3-onnx`), and an empty
+or partially downloaded sub-folder is completed. The old layout — one ASR
+model folder with `config.json` inside — is still read; the other models then
+come from the offline bundle or the Hugging Face cache.
+
 Small user settings stay in the system config directory so changing disks does
 not reset language, tokens, or processing preferences. Set `GIGAAM_CONFIG_DIR`
 separately when a fully self-contained configuration is required.
@@ -218,6 +323,20 @@ docker compose up -d --build gigaam-web
 curl -fsS http://127.0.0.1:8001/health
 ```
 
+The container listens on **8000**; Compose publishes it on the host as
+`127.0.0.1:8001`, so point your reverse proxy at 8001. The panel also serves the
+MCP endpoint `/mcp` (Streamable HTTP); its key comes from `API_KEYS_FILE`
+(`/data/.api_keys` under Compose, so it survives container recreation) and is
+printed once on first start:
+
+```bash
+docker compose logs gigaam-web | grep -m1 'gam_'
+```
+
+This container does not serve `/v1/audio/transcriptions` — that is the separate
+`api.py` service. The nginx snippet for `/mcp` (unbuffered SSE, long timeouts,
+`client_max_body_size`) is `deploy/nginx-mcp-location.conf`.
+
 Compose mounts the host-side `GIGAAM_DATA_DIR` at `/data` inside the container.
 Do not put host absolute paths into `HF_HOME`, `TORCH_HOME`, `NEMO_HOME`,
 `ONNX_MODEL_DIR`, or `GIGAAM_RUNTIME_DIR`: container caches must remain below
@@ -228,16 +347,31 @@ When upgrading, rebuild the container but preserve `GIGAAM_DATA_DIR`, `uploads`,
 `results`, and `logs`. Models and user files live in those mounts, and the new
 container reuses them automatically; they do not need to be copied into a backup
 of the container itself. If root created the bind-mount directories, grant UID
-`1000` write access before starting the service.
+`1000` write access before starting the service. `src/` and `web/` are mounted
+read-only, so new code reaches the container without a rebuild but new
+dependencies do not: a container that restarts with `ModuleNotFoundError` after
+an update needs `build`, not `restart`.
 
 After an upgrade, check the health endpoint and logs in addition to container
 status:
 
 ```bash
+docker compose build gigaam-web && docker compose up -d gigaam-web
 docker compose ps gigaam-web
 docker compose logs --tail=200 gigaam-web
 curl -fsS http://127.0.0.1:8001/health
 ```
+
+Confirm that the GPU and the word-timestamp path are alive:
+
+```bash
+docker compose exec gigaam-web python -c "import torch; print(torch.cuda.is_available())"
+docker compose exec gigaam-web python -c "from gigaam.model import GigaAMASR; print(hasattr(GigaAMASR, '_decode'))"
+```
+
+The second command must print `True`. Without `_decode` the ASR returns no word
+timestamps, and speaker labels then collapse to a single speaker per recognition
+block. The GigaAM revision is pinned in the `Dockerfile` and must match CI.
 
 For diarization workloads, also confirm that the log contains neither `Read-only
 file system` nor `VAD unavailable`, and that ASR segmentation uses VAD instead of
@@ -302,18 +436,57 @@ python cli.py --backend onnx --onnx-provider auto -f audio.wav
 python cli.py --backend pytorch -f audio.wav
 ```
 
-The same settings are available in the Desktop GUI and Web UI. The REST API
-accepts them as optional query parameters and uses server defaults when omitted:
+The same settings are available in the Desktop GUI and Web UI.
+
+### REST API (OpenAI-compatible)
+
+`python api.py` serves the OpenAI Audio API contract: OpenAI SDK clients work
+after changing `base_url` and the key (printed at first start). Backend,
+provider and diarization are optional form fields (`asr_backend`,
+`onnx_provider`, `diarize`, ...); `GET /v1/models` lists the accepted values and
+the active configuration. A selection different from the server default gets an
+isolated model loader for that request and does not reconfigure concurrent ones.
 
 ```bash
-curl -H "X-API-Key: $GIGAAM_API_KEY" \
-  -F "file=@audio.wav" \
-  "http://127.0.0.1:8000/api/v1/transcribe?asr_backend=onnx&asr_model=v3_e2e_rnnt&onnx_provider=coreml"
+curl http://127.0.0.1:8000/v1/audio/transcriptions -H "Authorization: Bearer $GIGAAM_API_KEY" \
+  -F "file=@audio.wav" -F "model=whisper-1" -F "response_format=srt" -F "asr_backend=onnx"
 ```
 
-Use `GET /api/v1/asr/options` for accepted values and active configuration.
-A selection different from the server default gets an isolated task loader and
-does not reconfigure concurrent requests.
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
+print(client.audio.transcriptions.create(model="whisper-1", file=open("audio.wav", "rb")).text)
+```
+
+The key is stored as a hash in `.api_keys` (override the path with
+`API_KEYS_FILE`); the raw value is printed once on first start — save it then.
+`/mcp` uses the same key file.
+
+Response formats, streaming, errors and extensions: [docs/API.md](docs/API.md) (Russian).
+
+> `api.py` is its own process. `docker compose` starts the **web panel**
+> (`gigaam-web`), which serves the UI and `/mcp` but **not** the `/v1/*` routes.
+
+### MCP server for agents
+
+The same engine is available to AI agents over the Model Context Protocol:
+tools `transcribe` (url / path / base64 → text, segments, speakers, SRT/VTT),
+`summarize` (summary, tasks, terms, custom prompt), `list_models`,
+`list_llm_providers`, `server_status`; resources `gigaam://models`,
+`gigaam://status`; prompts `meeting_notes`, `subtitles_review`.
+
+```bash
+claude mcp add gigaam -- gigaam mcp                       # local stdio (ships with the TUI install)
+claude mcp add --transport http gigaam https://gigaam-site.dubr1k.space/mcp \
+  --header "Authorization: Bearer gam_..."                # remote: /mcp in api.py and the web panel
+```
+
+Agent skills (`skills/gigaam`, `skills/gigaam-mcp`) are installed by
+`gigaam --install-skill`. Clients, limits, errors and the nginx snippet:
+[docs/MCP.md](docs/MCP.md) (Russian; the skills are English).
+For local Claude Code, Codex, OMP, Pi, OpenCode and Hermes setup, including
+the Python environment, skills and protocol checks, see the
+[local harness guide](docs/LOCAL_HARNESSES.md) (Russian).
 
 ONNX diarization is also available without PyTorch or an HF token:
 
@@ -369,9 +542,42 @@ GigaAMGUI/
 
 ## Screenshots
 
-| Processing | LLM | LLM settings |
-|---|---|---|
-| ![Processing](assets/screenshots/processing-en.png) | ![LLM](assets/screenshots/llm-en.png) | ![LLM settings](assets/screenshots/llm-settings-en.png) |
+The Russian README carries the full gallery; the UI is bilingual (RU/EN toggle
+in the header).
+
+**GigaAM Liquid (native macOS app)**
+
+| Processing | Settings → LLM: discovered CLI tools |
+|---|---|
+| ![Liquid — processing](assets/screenshots/liquid-processing-light.png) | ![Liquid — LLM tools](assets/screenshots/liquid-settings-llm-light.png) |
+
+**Classic PyQt app (Windows / macOS / Linux)**
+
+| Processing | LLM settings: tools table |
+|---|---|
+| ![PyQt — processing](assets/screenshots/pyqt-processing-light.png) | ![PyQt — LLM settings](assets/screenshots/pyqt-llm-settings-light.png) |
+
+**Terminal UI (TUI, macOS / Linux)** — the interface is Russian by default (`/lang en`).
+
+| Transcribing a batch of three files | LLM summary via Claude Code |
+|---|---|
+| ![TUI — processing](assets/screenshots/tui-processing.png) | ![TUI — LLM](assets/screenshots/tui-llm.png) |
+
+| F9: saved results | Settings: detected LLM CLIs with versions |
+|---|---|
+| ![TUI — results](assets/screenshots/tui-results.png) | ![TUI — LLM provider picker](assets/screenshots/tui-settings-llm.png) |
+
+### GigaAM Liquid
+
+`GigaAMLiquid-macos-arm64-<version>.zip` is a native Swift/AppKit client with a
+Liquid Glass look on macOS 26 (plain blur on 13–15). The archive holds a single
+`GigaAMLiquid.app`; the frozen Python engine lives in `Contents/Resources` and
+runs as a background worker, so no separate Python install is needed. Pages:
+Processing, Result, Live (microphone and/or system audio via ScreenCaptureKit),
+LLM with a provider status badge, API examples, Journal and Settings, where
+Settings → LLM lists every CLI tool with status, version, path, Browse…, Check
+and Rescan. The build is ad-hoc signed: open it via right-click → Open or run
+`xattr -dr com.apple.quarantine /Applications/GigaAMLiquid.app`.
 
 ## Credits
 
@@ -380,3 +586,4 @@ GigaAMGUI/
 - [aystream / gigaam-mlx](https://github.com/aystream/gigaam-mlx)
 - [NVIDIA Streaming Sortformer v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
 - [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — MIT, optional neural noise suppression
+- [oh-my-pi](https://github.com/can1357/oh-my-pi) — MIT, the colour palettes of the terminal UI (`tui/themes/`)

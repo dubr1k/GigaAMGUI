@@ -259,3 +259,54 @@ def test_legacy_factory_also_routes_sortformer_to_onnx_on_windows(monkeypatch):
 
     assert isinstance(manager, SortformerOnnxDiarizationManager)
     assert manager.provider == "directml"
+
+
+def test_cached_artifact_is_found_in_repo_subdirectory_of_onnx_root(tmp_path):
+    from src.core.diarization import sortformer_onnx
+
+    subdir = tmp_path / sortformer_onnx.SORTFORMER_ONNX_REPO_ID.replace("/", "--")
+    subdir.mkdir()
+    artifact = subdir / sortformer_onnx.SORTFORMER_ONNX_FILENAME
+    artifact.write_bytes(b"onnx")
+
+    assert sortformer_onnx._cached_sortformer_artifact(tmp_path) == artifact
+
+
+def test_cached_artifact_uses_the_hub_cache_huggingface_hub_downloads_to(tmp_path, monkeypatch):
+    # HUGGINGFACE_HUB_CACHE может не совпадать с HF_HOME/hub: тогда модель,
+    # скачанная huggingface_hub, раньше искалась не там и качалась заново.
+    from huggingface_hub import constants as hf_constants
+
+    from src.core.diarization import sortformer_onnx
+
+    hub = tmp_path / "custom-hub"
+    snapshot = (
+        hub
+        / ("models--" + sortformer_onnx.SORTFORMER_ONNX_REPO_ID.replace("/", "--"))
+        / "snapshots"
+        / sortformer_onnx.SORTFORMER_ONNX_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    artifact = snapshot / sortformer_onnx.SORTFORMER_ONNX_FILENAME
+    artifact.write_bytes(b"onnx")
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(hub))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "other-home"))
+    monkeypatch.setattr(sortformer_onnx, "resolve_bundled_snapshot", lambda _repo: None)
+
+    assert sortformer_onnx._cached_sortformer_artifact() == artifact
+
+
+def test_empty_onnx_root_does_not_hide_bundled_sortformer(tmp_path, monkeypatch):
+    # Пустой ONNX_MODEL_DIR (каталог данных, Docker) раньше означал «файла нет»,
+    # и Sortformer шёл качать модель мимо офлайн-набора.
+    from src.core.diarization import sortformer_onnx
+
+    bundled = tmp_path / "bundle"
+    bundled.mkdir()
+    artifact = bundled / sortformer_onnx.SORTFORMER_ONNX_FILENAME
+    artifact.write_bytes(b"onnx")
+    monkeypatch.setattr(sortformer_onnx, "resolve_bundled_snapshot", lambda _repo: bundled)
+    root = tmp_path / "models" / "onnx"
+    root.mkdir(parents=True)
+
+    assert sortformer_onnx._cached_sortformer_artifact(root) == artifact

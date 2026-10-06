@@ -30,24 +30,19 @@ const pages = new Map([
   ["settings", "Настройки"],
 ]);
 const apiExamples = {
-  python: `import requests
-
-url = "http://127.0.0.1:8000/api/transcribe"
-files = {"file": open("audio.mp3", "rb")}
-data = {"language": "ru", "diarize": True}
-response = requests.post(url, files=files, data=data)`,
-  curl: `curl -X POST "http://127.0.0.1:8000/api/transcribe" \\
-  -F "file=@audio.mp3" \\
-  -F "language=ru" \\
-  -F "diarize=true"`,
-  javascript: `const form = new FormData();
-form.append("file", audioFile);
-form.append("language", "ru");
-form.append("diarize", "true");
-
-const response = await fetch("http://127.0.0.1:8000/api/transcribe", {
-  method: "POST", body: form,
-});`,
+  python: `from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="gam_...")
+with open("meeting.mp3", "rb") as f:
+    result = client.audio.transcriptions.create(model="whisper-1", file=f, response_format="verbose_json")
+print(result.text)`,
+  curl: `curl http://127.0.0.1:8000/v1/audio/transcriptions \\
+  -H "Authorization: Bearer gam_..." \\
+  -F file=@meeting.mp3 -F model=whisper-1 -F diarize=true -F response_format=diarized_json`,
+  javascript: `import OpenAI from "openai";
+import fs from "node:fs";
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8000/v1", apiKey: "gam_..." });
+const result = await client.audio.transcriptions.create({ model: "whisper-1", file: fs.createReadStream("meeting.mp3") });
+console.log(result.text);`,
 };
 
 let settings = loadSettings();
@@ -57,14 +52,17 @@ let toastTimer;
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey));
-    return { ...defaults, ...(saved && typeof saved === "object" ? saved : {}) };
+    const restored = { ...defaults, ...(saved && typeof saved === "object" ? saved : {}) };
+    restored.hfToken = "";
+    return restored;
   } catch {
     return { ...defaults };
   }
 }
 
 function saveSettings(message = "Изменения сохранены на этом устройстве.") {
-  localStorage.setItem(storageKey, JSON.stringify(settings));
+  const { hfToken: _secret, ...persisted } = settings;
+  localStorage.setItem(storageKey, JSON.stringify(persisted));
   const status = document.querySelector("#settings-status");
   if (status) status.textContent = message;
 }
@@ -283,7 +281,7 @@ function setupSettings() {
       const key = control.dataset.setting;
       settings[key] = control.type === "checkbox" ? control.checked : control.value;
       applySettings();
-      saveSettings();
+      saveSettings(key === "hfToken" ? "HF Token используется только до закрытия окна и не сохраняется." : undefined);
     };
     control.addEventListener(control.type === "text" || control.type === "password" ? "input" : "change", update);
   });

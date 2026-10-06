@@ -37,17 +37,6 @@ def _autoclose(window, monkeypatch):
     window.close()
 
 
-def test_file_progress_still_accepts_integer():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    window = GigaTranscriberQtApp()
-
-    window._update_file_progress(50)
-
-    assert window.progress_bar_file.value() == 50
-    window.close()
-
-
 def test_llm_progress_updates_bar():
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
@@ -102,25 +91,28 @@ def test_default_size_needs_no_scroll():
     assert proc_scroll.horizontalScrollBar().maximum() == 0
     window.close()
 
-def test_compact_workspaces_fit_without_scrollbars():
-    """The three active workspaces retain the 760×440 desktop footprint."""
+def test_workspaces_fit_the_minimum_window_width():
+    """At the classic 940×680 minimum no page needs a horizontal scroll bar;
+    the tall Processing page may scroll vertically, Live and LLM must not."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
+    window.resize(window.minimumSize())
     window.show()
     app.processEvents()
 
-    assert window.size().width() == 760
-    assert window.size().height() == 440
+    assert window.size().width() == window._px(940)
+    assert window.size().height() == window._px(680)
     for index in (0, 1, 2):
         window.tabs.setCurrentIndex(index)
         app.processEvents()
         scroll = window.tabs.widget(index)
-        assert scroll.horizontalScrollBar().maximum() == 0
-        assert scroll.verticalScrollBar().maximum() == 0
+        assert scroll.horizontalScrollBar().maximum() == 0, index
+        if index:
+            assert scroll.verticalScrollBar().maximum() == 0, index
     window.close()
 
-def test_desktop_sidebar_stays_visible_with_large_ui_scale(monkeypatch):
+def test_header_switches_stay_visible_with_large_ui_scale(monkeypatch):
     monkeypatch.setenv("GIGAAM_UI_SCALE", "1.75")
     app = QApplication.instance() or QApplication([])
     window = GigaTranscriberQtApp()
@@ -128,7 +120,7 @@ def test_desktop_sidebar_stays_visible_with_large_ui_scale(monkeypatch):
     window.show()
     app.processEvents()
 
-    assert window._sidebar.isVisible()
+    assert window._btn_lang.isVisible() and window._btn_theme.isVisible()
     window.close()
 
 
@@ -376,7 +368,7 @@ def test_speakers_spinbox_auto_value():
 def test_desktop_gui_selects_and_persists_onnx_coreml(monkeypatch):
     window = _new_window()
     monkeypatch.setattr(
-        "src.gui.app_qt.ASRBackendDialog.pick_configuration",
+        "src.gui.menu_mixin.ASRBackendDialog.pick_configuration",
         lambda *args, **kwargs: ("onnx", "coreml"),
     )
 
@@ -501,6 +493,29 @@ def test_processing_snapshot_captures_hf_token(monkeypatch):
     window._start_processing_thread()
 
     assert captured["kwargs"]["snapshot"]["hf_token"] == "token-at-start"
+    window.is_processing = False
+    window.close()
+
+
+def test_new_processing_batch_clears_previous_result_state(monkeypatch):
+    window = _new_window()
+    window.files_to_process = ["/tmp/input.wav"]
+    window._last_generated_transcript_files = ["/tmp/old.txt"]
+    window._last_processing_results = [{"file_path": "/tmp/old.wav"}]
+
+    class FakeThread:
+        def __init__(self, *, target, kwargs, daemon):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(threading, "Thread", FakeThread)
+
+    window._start_processing_thread()
+
+    assert window._last_generated_transcript_files == []
+    assert window._last_processing_results == []
     window.is_processing = False
     window.close()
 

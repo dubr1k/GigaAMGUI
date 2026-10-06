@@ -1,13 +1,24 @@
 [package]
 name = "gigaam-tui"
-version = "0.1.0"
+version = "2.2.1"
 edition = "2021"
 description = "Terminal UI for GigaAM Transcriber"
 
 [dependencies]
-crossterm = "0.28"
-ratatui = "0.29"
-ratatui-image = { version = "8.0.1", default-features = false, features = ["crossterm", "image-defaults"] }
+crossterm = "0.29"
+# `unstable-rendered-line-info` gives `Paragraph::line_count`, which the LLM answer,
+# the log and the help use to clamp their scroll offset to the wrapped text height.
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm", "image-defaults"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
+[dev-dependencies]
+regex-lite = "0.1"

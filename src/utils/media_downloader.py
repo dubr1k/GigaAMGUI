@@ -39,6 +39,7 @@ class MediaDownloader:
         progress_callback: ProgressCallback | None = None,
         allow_playlist: bool = False,
         windows_filenames: bool = True,
+        max_filesize: int | None = None,
     ) -> DownloadResult:
         url = url.strip()
         if not url:
@@ -96,6 +97,9 @@ class MediaDownloader:
             "no_warnings": True,
             "windowsfilenames": windows_filenames,
         }
+        if max_filesize is not None:
+            # yt-dlp пропускает файл больше лимита (без исключения) — вызывающий увидит пустой DownloadResult
+            ydl_opts["max_filesize"] = int(max_filesize)
 
         exit_code = 1
         for attempt in range(2):
@@ -106,6 +110,19 @@ class MediaDownloader:
             except zlib.error:
                 if attempt == 1:
                     raise
+            except Exception as exc:
+                # YouTube регулярно меняет клиенты плеера, и старый yt-dlp получает 403
+                # уже на сами медиаданные (2026.3.17 и клиент android_vr). Голое
+                # «HTTP Error 403: Forbidden» не говорит пользователю, что делать.
+                if "HTTP Error 403" not in str(exc):
+                    raise
+                from yt_dlp.version import __version__ as yt_dlp_version
+
+                raise RuntimeError(
+                    "HTTP 403 при скачивании медиа: сервер отказал в доступе. Для YouTube это "
+                    f"обычно значит, что yt-dlp {yt_dlp_version} устарел — обновите GigaAM "
+                    f"(или yt-dlp в окружении проекта). Ошибка yt-dlp: {str(exc).strip()}"
+                ) from exc
 
         if exit_code:
             raise RuntimeError(f"yt-dlp завершился с кодом {exit_code}")

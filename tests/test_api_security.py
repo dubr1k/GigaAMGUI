@@ -3,7 +3,6 @@
 import importlib
 
 import pytest
-from fastapi import HTTPException
 
 api = importlib.import_module("api")
 
@@ -31,23 +30,6 @@ def test_safe_filename_no_null_byte():
     assert "\x00" not in api.safe_filename("a\x00b.mp3")
 
 
-# ---- validated_task_id ----
-
-def test_validated_task_id_accepts_uuid_hex():
-    import uuid
-    tid = uuid.uuid4().hex
-    assert api.validated_task_id(tid) == tid
-
-
-@pytest.mark.parametrize("bad", [
-    "../../../etc", "abc", "g" * 32, "../" + "a" * 30, "", "AABB" * 8,
-])
-def test_validated_task_id_rejects_bad(bad):
-    with pytest.raises(HTTPException) as exc:
-        api.validated_task_id(bad)
-    assert exc.value.status_code == 400
-
-
 # ---- API key hashing & constant-time compare ----
 
 def test_hash_key_is_sha256_hex():
@@ -58,9 +40,10 @@ def test_hash_key_is_sha256_hex():
 def test_verify_api_key_accept_reject(monkeypatch):
     valid_raw = "gam_secret"
     monkeypatch.setattr(api, "VALID_API_KEY_HASHES", {api._hash_key(valid_raw)})
-    assert api.verify_api_key(valid_raw) == valid_raw
-    with pytest.raises(HTTPException) as exc:
-        api.verify_api_key("wrong")
+    assert api.verify_api_key(authorization=f"Bearer {valid_raw}") == valid_raw
+    assert api.verify_api_key(x_api_key=valid_raw) == valid_raw
+    with pytest.raises(api.OpenAIError) as exc:
+        api.verify_api_key(authorization="Bearer wrong")
     assert exc.value.status_code == 401
 
 
@@ -78,4 +61,4 @@ def test_load_api_keys_migrates_plaintext(tmp_path, monkeypatch):
     assert content == api._hash_key("gam_legacyplain")
     assert "gam_legacyplain" not in content
     # И старый ключ по-прежнему проходит проверку
-    assert api.verify_api_key("gam_legacyplain") == "gam_legacyplain"
+    assert api.verify_api_key(x_api_key="gam_legacyplain") == "gam_legacyplain"

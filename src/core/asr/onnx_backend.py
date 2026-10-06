@@ -9,9 +9,15 @@ from typing import Any
 import numpy as np
 
 from ...config import ASR_SEGMENTATION_MODE
-from ...utils.model_cache import resolve_model_dir
-from .chunking import normalize_chunk_words, plan_audio_chunks, stitch_overlapping_text
+from ...utils.model_cache import OnnxModelLocation, onnx_model_location
+from .chunking import (
+    AudioChunk,
+    plan_audio_chunks,
+    vad_regions_miss_active_audio,
+)
+from .longform import VadFailureMemo, absolute_words, assemble_segments, call_logger
 from .models import onnx_model_name, onnx_model_repo, validate_asr_model
+from .onnx_loading import load_asr_model
 from .onnx_provider import (
     ProviderSelection,
     available_onnx_providers,
@@ -20,7 +26,12 @@ from .onnx_provider import (
 )
 from .onnx_vad import OnnxVadSegmenter
 from .token_timestamps import tokens_to_words
-from .types import BackendCapabilities, TranscriptionSegment, normalize_window_audio
+from .types import (
+    BackendCapabilities,
+    TranscriptionSegment,
+    TranscriptionWord,
+    normalize_window_audio,
+)
 from .vad import VadSegmenter
 
 
@@ -46,6 +57,8 @@ class OnnxBackend:
         self.requested_provider = (provider or "auto").strip().lower() or "auto"
         normalized_quantization = (quantization or "").strip().lower()
         self.quantization = normalized_quantization or None
+        # Корень ONNX-моделей (ONNX_MODEL_DIR), а не каталог одной модели:
+        # ASR, VAD и диаризация берут в нём свои подкаталоги.
         self.model_dir = model_dir
         self.vad_model = vad_model
         self.segmentation_strategy = segmentation_mode or ASR_SEGMENTATION_MODE
@@ -63,29 +76,39 @@ class OnnxBackend:
         )
         self._vad_segmenter_factory = vad_segmenter_factory or OnnxVadSegmenter
         self._vad_segmenter: VadSegmenter | None = None
-        self._vad_unavailable_reason: str | None = None
+        self._vad_failure = VadFailureMemo()
         self._logger: Callable[[str], None] | None = None
         self._inference_lock = threading.Lock()
 
     @staticmethod
     def _load_onnx_model(*args, **kwargs):
-        import onnx_asr  # noqa: PLC0415
+        return load_asr_model(*args, **kwargs)
 
-        return onnx_asr.load_model(*args, **kwargs)
+    def model_location(self) -> OnnxModelLocation:
+        """Каталог ASR-модели: подкаталог ONNX_MODEL_DIR, офлайн-набор или HF-кэш."""
+        return onnx_model_location(
+            onnx_model_repo(self.model_revision),
+            root=self.model_dir,
+            accept_flat_root=True,
+        )
 
     def _bundled_download_root(self) -> str | None:
-        return self.model_dir or resolve_model_dir(onnx_model_repo(self.model_revision))
+        # Строка: попадает в diagnostics()/health, которые сериализуются в JSON.
+        path = self.model_location().path
+        return str(path) if path is not None else None
 
     def _create_model(self, selection: ProviderSelection) -> Any:
         factory = self._model_factory or self._load_onnx_model
-        model_dir = self.model_dir or resolve_model_dir(onnx_model_repo(self.model_revision))
-        raw_model = factory(
-            onnx_model_name(self.model_revision),
-            path=model_dir,
-            quantization=self.quantization,
-            providers=onnx_session_providers(selection),
-            preprocessor_config={"use_numpy_preprocessors": False},
-        )
+        location = self.model_location()
+        kwargs: dict[str, Any] = {
+            "path": location.path,
+            "quantization": self.quantization,
+            "providers": onnx_session_providers(selection),
+            "preprocessor_config": {"use_numpy_preprocessors": False},
+        }
+        if location.offline is not None:
+            kwargs["offline"] = location.offline
+        raw_model = factory(onnx_model_name(self.model_revision), **kwargs)
         return raw_model.with_timestamps()
 
     def load(self, logger: Callable[[str], None] | None = None) -> bool:
@@ -103,12 +126,11 @@ class OnnxBackend:
             self.device = selection.active
             if logger:
                 message = (
-                    "ONNX ASR загружен: "
-                    f"{self.model_revision}, provider chain="
-                    + " → ".join(selection.providers)
+                    f"Модель готова (ONNX, {self.model_revision}); "
+                    f"вычисления выполняются на: {selection.active}"
                 )
                 if selection.fallback_reason:
-                    message += f"; {selection.fallback_reason}"
+                    message += f". {selection.fallback_reason}"
                 logger(message)
             return True
         except Exception as exc:
@@ -116,15 +138,17 @@ class OnnxBackend:
             self.provider_selection = None
             self.device = None
             if logger:
-                logger(f"КРИТИЧЕСКАЯ ОШИБКА загрузки ONNX ASR:\n{exc}")
+                logger(f"Не удалось загрузить модель распознавания (ONNX):\n{exc}")
             return False
 
     def transcribe_longform(
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+        logger: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptionSegment]:
-        with self._inference_lock:
+        with self._inference_lock, call_logger(self, logger):
             observed_total: float | None = None
 
             tracked_callback = progress_callback
@@ -139,6 +163,7 @@ class OnnxBackend:
                 return self._transcribe_longform_unlocked(
                     audio_path,
                     progress_callback=tracked_callback,
+                    cancel_check=cancel_check,
                 )
             except Exception as exc:
                 if not self._retry_on_cpu_after_provider_failure(exc):
@@ -150,6 +175,7 @@ class OnnxBackend:
                 return self._transcribe_longform_unlocked(
                     audio_path,
                     progress_callback=tracked_callback,
+                    cancel_check=cancel_check,
                 )
 
     def transcribe_window(
@@ -208,7 +234,7 @@ class OnnxBackend:
             fallback_reason=reason,
         )
         if self._logger:
-            self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {reason}")
+            self._logger(f"Внимание: {reason}")
         self.model = self._create_model(cpu_selection)
         self.provider_selection = cpu_selection
         self.device = "cpu"
@@ -232,8 +258,9 @@ class OnnxBackend:
         return "executionprovider" in message or any(marker in message for marker in markers)
 
     def _ensure_vad_segmenter(self) -> VadSegmenter:
-        if self._vad_unavailable_reason is not None:
-            raise RuntimeError(self._vad_unavailable_reason)
+        blocked = self._vad_failure.blocked(self.vad_model)
+        if blocked is not None:
+            raise RuntimeError(blocked)
         if self._vad_segmenter is None:
             try:
                 self._vad_segmenter = self._vad_segmenter_factory(
@@ -244,15 +271,18 @@ class OnnxBackend:
                 )
             except Exception as exc:
                 # Модель VAD не поднимается в этом окружении. Без запоминания
-                # каждый файл батча заново пытался бы её скачать и загрузить.
-                self._vad_unavailable_reason = f"{type(exc).__name__}: {exc}"
+                # каждый файл батча заново пытался бы её скачать и загрузить;
+                # через VAD_RETRY_COOLDOWN_SECONDS попытка повторяется.
+                self._vad_failure.remember(self.vad_model, f"{type(exc).__name__}: {exc}")
                 raise
+            self._vad_failure.clear()
         return self._vad_segmenter
 
     def _transcribe_longform_unlocked(
         self,
         audio_path: str,
         progress_callback: Callable[[float, float | None, float | None], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptionSegment]:
         if self.model is None:
             raise RuntimeError("Модель не загружена")
@@ -289,14 +319,29 @@ class OnnxBackend:
                     audio_path,
                     audio_duration=total_seconds,
                 )
-                chunks = plan_audio_chunks(
-                    audio,
-                    boundaries,
-                    sample_rate=sample_rate,
-                    max_chunk_seconds=20.0,
-                )
-                self.segmentation_mode = "vad"
-                self.segmentation_fallback_reason = None
+                if vad_regions_miss_active_audio(audio, boundaries, sample_rate=sample_rate):
+                    chunks = plan_audio_chunks(
+                        audio,
+                        [(0.0, total_seconds)],
+                        sample_rate=sample_rate,
+                        max_chunk_seconds=20.0,
+                    )
+                    self.segmentation_mode = "overlap_chunks"
+                    self.segmentation_fallback_reason = (
+                        "VAD пропустил длинный участок с активным звуком; "
+                        "использовано полное разбиение по тихим точкам с перекрытием"
+                    )
+                    if self._logger:
+                        self._logger(f"Внимание: {self.segmentation_fallback_reason}")
+                else:
+                    chunks = plan_audio_chunks(
+                        audio,
+                        boundaries,
+                        sample_rate=sample_rate,
+                        max_chunk_seconds=20.0,
+                    )
+                    self.segmentation_mode = "vad"
+                    self.segmentation_fallback_reason = None
             except Exception as exc:
                 chunks = plan_audio_chunks(
                     audio,
@@ -310,7 +355,7 @@ class OnnxBackend:
                     "использовано разбиение по тихим точкам с перекрытием"
                 )
                 if self._logger:
-                    self._logger(f"ПРЕДУПРЕЖДЕНИЕ: {self.segmentation_fallback_reason}")
+                    self._logger(f"Внимание: {self.segmentation_fallback_reason}")
         else:
             chunks = plan_audio_chunks(
                 audio,
@@ -324,100 +369,37 @@ class OnnxBackend:
                 "по тихим точкам с перекрытием"
             )
 
-        results: list[TranscriptionSegment] = []
-        previous_result_index: int | None = None
-        previous_group: int | None = None
-        reported = 0.0
-
-        for chunk in chunks:
+        def decode(chunk: AudioChunk) -> tuple[str, list[TranscriptionWord] | None]:
             start = chunk.decode_start_sample
             end = chunk.decode_end_sample
-            if end - start < max(1, sample_rate // 10):
-                continue
-
             decoded = self.model.recognize(audio[start:end], sample_rate=sample_rate)
-            text = str(getattr(decoded, "text", decoded) or "").strip()
             relative_words = tokens_to_words(
                 getattr(decoded, "tokens", None),
                 getattr(decoded, "timestamps", None),
                 duration=float(end - start) / sample_rate,
             )
-            words = None
-            if relative_words is not None:
-                decode_start_sec = float(start) / sample_rate
-                words = [
-                    {
-                        "text": word["text"],
-                        "start": round(decode_start_sec + word["start"], 9),
-                        "end": round(decode_start_sec + word["end"], 9),
-                    }
-                    for word in relative_words
-                ]
+            # Времена токенов — float32-шаг энкодера: округляем, чтобы сдвиг на
+            # начало окна не давал хвостов вроде 10.100000000000001.
+            return (
+                str(getattr(decoded, "text", decoded) or ""),
+                absolute_words(relative_words, float(start) / sample_rate, digits=9),
+            )
 
-            if text:
-                overlap_words = 0
-                if (
-                    chunk.overlaps_previous
-                    and previous_result_index is not None
-                    and previous_group == chunk.group
-                ):
-                    previous_text = results[previous_result_index]["transcription"]
-                    previous_text, text, overlap_words = stitch_overlapping_text(
-                        previous_text,
-                        text,
-                    )
-                    results[previous_result_index]["transcription"] = previous_text
-
-                start_time = max(0.0, float(chunk.start_sec))
-                end_time = min(total_seconds, float(chunk.end_sec))
-                if end_time < start_time:
-                    continue
-                if words is not None:
-                    words = normalize_chunk_words(
-                        words,
-                        start_sec=start_time,
-                        end_sec=end_time,
-                        trim_prefix_words=overlap_words,
-                    )
-                    if words is not None:
-                        text = " ".join(word["text"] for word in words).strip()
-                if not text and overlap_words and previous_result_index is not None:
-                    previous_start, _previous_end = results[previous_result_index][
-                        "boundaries"
-                    ]
-                    results[previous_result_index]["boundaries"] = (
-                        previous_start,
-                        end_time,
-                    )
-                if text and end_time >= start_time:
-                    segment: TranscriptionSegment = {
-                        "transcription": text,
-                        "boundaries": (start_time, end_time),
-                    }
-                    if words is not None:
-                        segment["words"] = words
-                    results.append(segment)
-                    previous_result_index = len(results) - 1
-                    previous_group = chunk.group
-            else:
-                previous_result_index = None
-                previous_group = None
-
-            processed_seconds = min(total_seconds, float(chunk.end_sec))
-            ratio = 1.0 if total_seconds <= 0 else min(processed_seconds / total_seconds, 1.0)
-            if progress_callback is not None and ratio >= reported:
-                progress_callback(ratio, processed_seconds, total_seconds)
-                reported = ratio
-
-        if progress_callback is not None and total_samples > 0 and reported < 1.0:
-            progress_callback(1.0, total_seconds, total_seconds)
-        return results
+        return assemble_segments(
+            chunks,
+            decode,
+            total_seconds=total_seconds,
+            # Окна короче 0.1 с не декодируем.
+            min_chunk_samples=max(1, sample_rate // 10),
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
 
     def unload(self) -> None:
         with self._inference_lock:
             self.model = None
             self._vad_segmenter = None
-            self._vad_unavailable_reason = None
+            self._vad_failure.clear()
             self.provider_selection = None
             self.device = None
             self.segmentation_mode = "not_run"

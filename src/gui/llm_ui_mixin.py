@@ -1,13 +1,11 @@
 """LLM-tab widget construction for the desktop application."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -20,6 +18,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ..services import cli_tools
 
 
 class _LlmWorkspace(QWidget):
@@ -46,12 +46,14 @@ class LlmUiMixin:
         title.setObjectName("llm_workspace_title")
         heading.addWidget(title)
         heading.addStretch()
-        self.btn_llm_settings = QPushButton("Настройки…")
+        self.btn_llm_settings = QPushButton()
+        self._bilingual(self.btn_llm_settings.setText, "Настройки…", "Settings…")
         self.btn_llm_settings.setObjectName("llm_settings_button")
         self.btn_llm_settings.setFixedHeight(self._px(22))
         self.btn_llm_settings.clicked.connect(self._open_llm_settings_dialog)
         heading.addWidget(self.btn_llm_settings)
         layout.addLayout(heading)
+        layout.addWidget(self._create_llm_provider_strip())
 
         work_surface = QWidget()
         work_surface.setObjectName("llm_workspace_columns")
@@ -77,276 +79,56 @@ class LlmUiMixin:
         layout.addWidget(work_surface, 1)
         return tab
 
-    def _create_llm_api_group(self) -> QGroupBox:
-        group = QGroupBox("LLM API")
-        layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(10))
-        layout.setSpacing(self._px(8))
+    # ── провайдер: общие виджеты страницы и диалога ─────────────────────
 
-        label_col = self._label_column_width(("Провайдер:", "Модель:", "API URL:", "API Key:"))
-        self.llm_provider_labels = {}
-        self.llm_provider_items = {5: "Другое"}
-
-        provider_row = QHBoxLayout()
-        self.llm_provider_labels["provider"] = self._form_label("Провайдер:", label_col)
-        provider_row.addWidget(self.llm_provider_labels["provider"])
+    def _ensure_llm_provider_widgets(self):
+        """Комбо провайдера, поле модели и бейдж статуса живут на странице LLM;
+        диалог настроек их не дублирует. Создаются один раз, кто первый спросил."""
+        if getattr(self, "combo_llm_provider", None) is not None:
+            return
+        self.llm_provider_items = {}
         self.combo_llm_provider = QComboBox()
-        self.combo_llm_provider.addItems(["API", "Claude Code", "Codex", "OpenCode", "Pi", "Другое"])
-        self.combo_llm_provider.setMinimumWidth(self._px(180))
-        provider_row.addWidget(self.combo_llm_provider)
-        provider_row.addStretch()
-        layout.addLayout(provider_row)
+        self.combo_llm_provider.setObjectName("llm_provider_combo")
+        for spec in cli_tools.PROVIDERS:
+            self.combo_llm_provider.addItem(self._llm_provider_display_name(spec), spec.name)
+        self._llm_other_index = self.combo_llm_provider.count() - 1
+        self.llm_provider_items[self._llm_other_index] = self.combo_llm_provider.itemText(self._llm_other_index)
+        self.combo_llm_provider.setMinimumWidth(self._px(190))
+        self.combo_llm_provider.setIconSize(QSize(self._px(10), self._px(10)))
 
-        common_row = QHBoxLayout()
-        self.llm_provider_labels["model"] = self._form_label("Модель:", label_col)
-        common_row.addWidget(self.llm_provider_labels["model"])
         self.entry_llm_model = QLineEdit()
+        self.entry_llm_model.setObjectName("llm_model_entry")
         self.entry_llm_model.setPlaceholderText("gpt-4.1-mini / sonnet / o3 / qwen ...")
-        common_row.addWidget(self.entry_llm_model, 1)
-        common_row.addSpacing(self._px(12))
-        common_row.addWidget(QLabel("Temperature:"))
-        self.entry_llm_temperature = QLineEdit()
-        self.entry_llm_temperature.setMaximumWidth(self._px(110))
-        common_row.addWidget(self.entry_llm_temperature)
-        layout.addLayout(common_row)
 
-        self.llm_api_settings_widget = QWidget()
-        self.llm_api_settings_widget.setStyleSheet("background: transparent;")
-        api_layout = QVBoxLayout(self.llm_api_settings_widget)
-        api_layout.setContentsMargins(0, 0, 0, 0)
-        api_layout.setSpacing(self._px(8))
-        row1 = QHBoxLayout()
-        row1.addWidget(self._form_label("API URL:", label_col))
-        self.entry_llm_api_url = QLineEdit()
-        self.entry_llm_api_url.setPlaceholderText("https://api.openai.com/v1")
-        row1.addWidget(self.entry_llm_api_url, 1)
-        api_layout.addLayout(row1)
-        row2 = QHBoxLayout()
-        row2.addWidget(self._form_label("API Key:", label_col))
-        self.entry_llm_api_key = QLineEdit()
-        self.entry_llm_api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.entry_llm_api_key.setPlaceholderText("Bearer token / API key")
-        row2.addWidget(self.entry_llm_api_key, 1)
-        api_layout.addLayout(row2)
-        layout.addWidget(self.llm_api_settings_widget)
+        self.lbl_llm_provider_status = QLabel("")
+        self.lbl_llm_provider_status.setObjectName("llm_provider_status")
+        self.lbl_llm_provider_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._llm_tool_statuses: dict[str, cli_tools.ToolStatus] = {}
+        self._llm_scan_running = False
 
-        self.llm_claude_settings_widget = QWidget()
-        self.llm_claude_settings_widget.setStyleSheet("background: transparent;")
-        claude_layout = QVBoxLayout(self.llm_claude_settings_widget)
-        claude_layout.setContentsMargins(0, 0, 0, 0)
-        claude_layout.setSpacing(self._px(8))
-        claude_col = self._label_column_width(("Claude Code путь:", "Claude доп. аргументы:"))
-        row4 = QHBoxLayout()
-        self.llm_provider_labels["claude_path"] = self._form_label("Claude Code путь:", claude_col)
-        row4.addWidget(self.llm_provider_labels["claude_path"])
-        self.entry_llm_claude_path = QLineEdit()
-        self.entry_llm_claude_path.setPlaceholderText("claude")
-        row4.addWidget(self.entry_llm_claude_path, 1)
-        claude_layout.addLayout(row4)
-        row5 = QHBoxLayout()
-        self.llm_provider_labels["claude_args"] = self._form_label("Claude доп. аргументы:", claude_col)
-        row5.addWidget(self.llm_provider_labels["claude_args"])
-        self.entry_llm_claude_args = QLineEdit()
-        self.entry_llm_claude_args.setPlaceholderText("например: --permission-mode bypassPermissions")
-        row5.addWidget(self.entry_llm_claude_args, 1)
-        claude_layout.addLayout(row5)
-        layout.addWidget(self.llm_claude_settings_widget)
+    def _llm_provider_display_name(self, spec) -> str:
+        if spec.id == "other":
+            return "Другое" if getattr(self, "_lang", "ru") == "ru" else "Other"
+        return spec.name
 
-        self.llm_codex_settings_widget = QWidget()
-        self.llm_codex_settings_widget.setStyleSheet("background: transparent;")
-        codex_layout = QVBoxLayout(self.llm_codex_settings_widget)
-        codex_layout.setContentsMargins(0, 0, 0, 0)
-        codex_layout.setSpacing(self._px(8))
-        codex_col = self._label_column_width(("Codex путь:", "Codex доп. аргументы:"))
-        row6 = QHBoxLayout()
-        self.llm_provider_labels["codex_path"] = self._form_label("Codex путь:", codex_col)
-        row6.addWidget(self.llm_provider_labels["codex_path"])
-        self.entry_llm_codex_path = QLineEdit()
-        self.entry_llm_codex_path.setPlaceholderText("codex")
-        row6.addWidget(self.entry_llm_codex_path, 1)
-        codex_layout.addLayout(row6)
-        row7 = QHBoxLayout()
-        self.llm_provider_labels["codex_args"] = self._form_label("Codex доп. аргументы:", codex_col)
-        row7.addWidget(self.llm_provider_labels["codex_args"])
-        self.entry_llm_codex_args = QLineEdit()
-        self.entry_llm_codex_args.setPlaceholderText("например: --dangerously-bypass-approvals-and-sandbox")
-        row7.addWidget(self.entry_llm_codex_args, 1)
-        codex_layout.addLayout(row7)
-        layout.addWidget(self.llm_codex_settings_widget)
-
-        self.llm_opencode_settings_widget = QWidget()
-        self.llm_opencode_settings_widget.setStyleSheet("background: transparent;")
-        opencode_layout = QVBoxLayout(self.llm_opencode_settings_widget)
-        opencode_layout.setContentsMargins(0, 0, 0, 0)
-        opencode_layout.setSpacing(self._px(8))
-        opencode_col = self._label_column_width(("OpenCode путь:", "OpenCode доп. аргументы:"))
-        row8 = QHBoxLayout()
-        self.llm_provider_labels["opencode_path"] = self._form_label("OpenCode путь:", opencode_col)
-        row8.addWidget(self.llm_provider_labels["opencode_path"])
-        self.entry_llm_opencode_path = QLineEdit()
-        self.entry_llm_opencode_path.setPlaceholderText("opencode")
-        row8.addWidget(self.entry_llm_opencode_path, 1)
-        opencode_layout.addLayout(row8)
-        row9 = QHBoxLayout()
-        self.llm_provider_labels["opencode_args"] = self._form_label("OpenCode доп. аргументы:", opencode_col)
-        row9.addWidget(self.llm_provider_labels["opencode_args"])
-        self.entry_llm_opencode_args = QLineEdit()
-        self.entry_llm_opencode_args.setPlaceholderText("например: --print")
-        row9.addWidget(self.entry_llm_opencode_args, 1)
-        opencode_layout.addLayout(row9)
-        layout.addWidget(self.llm_opencode_settings_widget)
-
-        self.llm_pi_settings_widget = QWidget()
-        self.llm_pi_settings_widget.setStyleSheet("background: transparent;")
-        pi_layout = QVBoxLayout(self.llm_pi_settings_widget)
-        pi_layout.setContentsMargins(0, 0, 0, 0)
-        pi_layout.setSpacing(self._px(8))
-        pi_col = self._label_column_width(("Pi путь:", "Pi provider:", "Pi доп. аргументы:"))
-        row10 = QHBoxLayout()
-        self.llm_provider_labels["pi_path"] = self._form_label("Pi путь:", pi_col)
-        row10.addWidget(self.llm_provider_labels["pi_path"])
-        self.entry_llm_pi_path = QLineEdit()
-        self.entry_llm_pi_path.setPlaceholderText("pi")
-        row10.addWidget(self.entry_llm_pi_path, 1)
-        pi_layout.addLayout(row10)
-        row11 = QHBoxLayout()
-        self.llm_provider_labels["pi_provider"] = self._form_label("Pi provider:", pi_col)
-        row11.addWidget(self.llm_provider_labels["pi_provider"])
-        self.entry_llm_pi_provider = QLineEdit()
-        self.entry_llm_pi_provider.setPlaceholderText("openai / anthropic / google ...")
-        row11.addWidget(self.entry_llm_pi_provider, 1)
-        pi_layout.addLayout(row11)
-        row12 = QHBoxLayout()
-        self.llm_provider_labels["pi_args"] = self._form_label("Pi доп. аргументы:", pi_col)
-        row12.addWidget(self.llm_provider_labels["pi_args"])
-        self.entry_llm_pi_args = QLineEdit()
-        self.entry_llm_pi_args.setPlaceholderText("например: --no-tools --thinking low")
-        row12.addWidget(self.entry_llm_pi_args, 1)
-        pi_layout.addLayout(row12)
-        layout.addWidget(self.llm_pi_settings_widget)
-
-        self.llm_other_settings_widget = QWidget()
-        self.llm_other_settings_widget.setStyleSheet("background: transparent;")
-        other_layout = QVBoxLayout(self.llm_other_settings_widget)
-        other_layout.setContentsMargins(0, 0, 0, 0)
-        other_layout.setSpacing(self._px(8))
-        other_col = self._label_column_width(("Команда:", "Аргументы:"))
-        row13 = QHBoxLayout()
-        self.llm_provider_labels["other_path"] = self._form_label("Команда:", other_col)
-        row13.addWidget(self.llm_provider_labels["other_path"])
-        self.entry_llm_other_path = QLineEdit()
-        self.entry_llm_other_path.setPlaceholderText("путь к CLI, например my-llm")
-        row13.addWidget(self.entry_llm_other_path, 1)
-        other_layout.addLayout(row13)
-        row14 = QHBoxLayout()
-        self.llm_provider_labels["other_args"] = self._form_label("Аргументы:", other_col)
-        row14.addWidget(self.llm_provider_labels["other_args"])
-        self.entry_llm_other_args = QLineEdit()
-        self.entry_llm_other_args.setPlaceholderText("аргументы; промпт будет добавлен в конец как последний параметр")
-        row14.addWidget(self.entry_llm_other_args, 1)
-        other_layout.addLayout(row14)
-        layout.addWidget(self.llm_other_settings_widget)
-
-        self.lbl_llm_provider_info = QLabel()
-        self.lbl_llm_provider_info.setWordWrap(True)
-        self.lbl_llm_provider_info.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
-        layout.addWidget(self.lbl_llm_provider_info)
-
-        self.combo_llm_provider.currentTextChanged.connect(self._update_llm_provider_fields)
-        self._update_llm_provider_fields(self.combo_llm_provider.currentText())
-        group.setLayout(layout)
-        return group
-
-    def _update_llm_provider_fields(self, provider: str):
-        provider = self._normalize_llm_provider(provider)
-        widgets = {
-            "API": self.llm_api_settings_widget,
-            "Claude Code": self.llm_claude_settings_widget,
-            "Codex": self.llm_codex_settings_widget,
-            "OpenCode": self.llm_opencode_settings_widget,
-            "Pi": self.llm_pi_settings_widget,
-            "Other": self.llm_other_settings_widget,
-        }
-        for name, widget in widgets.items():
-            widget.setVisible(name == provider)
-
-        info_map = {
-            "API": self._t("Режим автоопределения API: поддерживает OpenAI-compatible и Anthropic Messages API. localhost/local network тоже поддерживается, если сервер совместим с одним из этих форматов.", "API auto-detection mode: supports OpenAI-compatible APIs and the Anthropic Messages API. localhost/local network is also supported if the server is compatible with one of these formats."),
-            "Claude Code": self._t("Локальный Claude CLI. Используются путь к claude, модель и доп. аргументы.", "Local Claude CLI. Uses the claude path, model, and extra arguments."),
-            "Codex": self._t("Локальный Codex CLI. Используются путь к codex, модель и доп. аргументы.", "Local Codex CLI. Uses the codex path, model, and extra arguments."),
-            "OpenCode": self._t("Локальный OpenCode CLI. Будет запущен как команда + аргументы + промпт в конце.", "Local OpenCode CLI. It will be launched as command + arguments + prompt at the end."),
-            "Pi": self._t("Локальный pi CLI. Можно указать внутренний provider для pi, модель и доп. аргументы.", "Local pi CLI. You can specify the internal provider for pi, the model, and extra arguments."),
-            "Other": self._t("Произвольный CLI. Укажи команду и аргументы; промпт будет передан последним аргументом.", "Arbitrary CLI. Specify the command and arguments; the prompt will be passed as the last argument."),
-        }
-        self.lbl_llm_provider_info.setText(info_map.get(provider, ""))
-
-    def _ensure_llm_settings_dialog(self):
-        if getattr(self, "_llm_settings_dialog", None) is not None:
-            return
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Настройки LLM")
-        dialog.setMinimumWidth(self._px(760))
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(self._px(12), self._px(12), self._px(12), self._px(12))
-        layout.setSpacing(self._px(8))
-        self.grp_llm_api_settings = self._create_llm_api_group()
-        layout.addWidget(self.grp_llm_api_settings)
-
-        self.prompts_group = QGroupBox("Готовые промпты")
-        prompts_layout = QVBoxLayout()
-        prompts_layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(8))
-        prompts_layout.setSpacing(self._px(8))
-
-        self.lbl_llm_summary_prompt = QLabel("Промпт для выжимки:")
-        prompts_layout.addWidget(self.lbl_llm_summary_prompt)
-        self.txt_llm_summary_prompt = QTextEdit()
-        self.txt_llm_summary_prompt.setMinimumHeight(self._px(100))
-        prompts_layout.addWidget(self.txt_llm_summary_prompt)
-
-        self.lbl_llm_tasks_prompt = QLabel("Промпт для задач:")
-        prompts_layout.addWidget(self.lbl_llm_tasks_prompt)
-        self.txt_llm_tasks_prompt = QTextEdit()
-        self.txt_llm_tasks_prompt.setMinimumHeight(self._px(100))
-        prompts_layout.addWidget(self.txt_llm_tasks_prompt)
-
-        self.lbl_llm_custom_prompt = QLabel("Свой промпт:")
-        prompts_layout.addWidget(self.lbl_llm_custom_prompt)
-        self.txt_llm_custom_prompt = QTextEdit()
-        self.txt_llm_custom_prompt.setMinimumHeight(self._px(100))
-        self.txt_llm_custom_prompt.setPlaceholderText(
-            "Текст для режима «Свой промпт». Транскрипт будет добавлен ниже автоматически."
-        )
-        prompts_layout.addWidget(self.txt_llm_custom_prompt)
-        self.prompts_group.setLayout(prompts_layout)
-        layout.addWidget(self.prompts_group)
-
-        self.lbl_llm_settings_note = QLabel("Можно использовать OpenAI-compatible API, Anthropic Messages API, а также локальные Claude Code / Codex / OpenCode / Pi. Для API режим сам определяет тип API по URL или endpoint. Выбранный провайдер, модель, temperature, чекбоксы, prompt и файлы сохраняются между запусками. API Key лучше хранить в .env.")
-        self.lbl_llm_settings_note.setWordWrap(True)
-        self.lbl_llm_settings_note.setContentsMargins(self._px(4), self._px(2), self._px(4), self._px(2))
-        self.lbl_llm_settings_note.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
-        layout.addWidget(self.lbl_llm_settings_note)
-
-        self._llm_settings_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Close)
-        self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить")
-        self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
-        self._llm_settings_buttons.accepted.connect(self._save_llm_settings_from_dialog)
-        self._llm_settings_buttons.rejected.connect(dialog.reject)
-        self._llm_settings_buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept)
-        layout.addWidget(self._llm_settings_buttons)
-        self._llm_settings_dialog = dialog
-
-    def _save_llm_settings_from_dialog(self):
-        try:
-            self._collect_llm_settings()
-        except ValueError as e:
-            QMessageBox.warning(self, self._t("Внимание", "Attention"), str(e))
-            return
-        self._save_ui_settings()
-        QMessageBox.information(self, self._t("Настройки", "Settings"), self._t("LLM-настройки сохранены", "LLM settings saved"))
-
-    def _open_llm_settings_dialog(self):
-        self._ensure_llm_settings_dialog()
-        self._llm_settings_dialog.exec()
+    def _create_llm_provider_strip(self) -> QWidget:
+        """Строка «Провайдер · статус · Модель» над рабочей областью страницы LLM."""
+        self._ensure_llm_provider_widgets()
+        strip = QWidget()
+        strip.setObjectName("llm_provider_strip")
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(self._px(6))
+        self.llm_provider_labels = getattr(self, "llm_provider_labels", {})
+        self.llm_provider_labels["provider"] = QLabel("Провайдер:")
+        row.addWidget(self.llm_provider_labels["provider"])
+        row.addWidget(self.combo_llm_provider)
+        row.addWidget(self.lbl_llm_provider_status, 1)
+        self.llm_provider_labels["model"] = QLabel("Модель:")
+        row.addWidget(self.llm_provider_labels["model"])
+        self.entry_llm_model.setMinimumWidth(self._px(140))
+        row.addWidget(self.entry_llm_model, 1)
+        return strip
 
     def _create_llm_actions_group(self) -> QGroupBox:
         group = QGroupBox("Шаблоны")
@@ -360,14 +142,14 @@ class LlmUiMixin:
         self.llm_action_checkboxes = {}
 
         for key, label, description, checked in (
-            ("summary", "Выжимка", "Сжать текст до основных тезисов", True),
-            ("tasks", "Задачи", "Найти поручения и action items", False),
-            ("custom", "Свой промпт", "Использовать пользовательскую инструкцию", False),
+            ("summary", "Выжимка", ("Сжать текст до основных тезисов", "Condense the text to its key points"), True),
+            ("tasks", "Задачи", ("Найти поручения и action items", "Find assignments and action items"), False),
+            ("custom", "Свой промпт", ("Использовать пользовательскую инструкцию", "Use your own instruction"), False),
         ):
             cb = QCheckBox(label)
             cb.setObjectName("llm_template_checkbox")
             cb.setChecked(checked)
-            cb.setToolTip(description)
+            self._bilingual(cb.setToolTip, *description)
             layout.addWidget(cb)
             self.llm_action_checkboxes[key] = cb
 
@@ -398,7 +180,7 @@ class LlmUiMixin:
         group.setObjectName("llm_export_destination")
         group.setTitle("")
         group.setFlat(True)
-        group.setToolTip("Сохранение результата")
+        self._bilingual(group.setToolTip, "Сохранение результата", "Saving the result")
         self.grp_llm_output = group
         group.setMinimumWidth(0)
         group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
@@ -409,7 +191,7 @@ class LlmUiMixin:
         self.btn_llm_output = QPushButton("Папка")
         self.btn_llm_output.setObjectName("llm_output_folder_button")
         self.btn_llm_output.setFixedHeight(self._px(20))
-        self.btn_llm_output.setToolTip("Выбрать папку для результатов")
+        self._bilingual(self.btn_llm_output.setToolTip, "Выбрать папку для результатов", "Choose the results folder")
         self.btn_llm_output.clicked.connect(self._select_llm_output_folder)
         layout.addWidget(self.btn_llm_output)
         self.lbl_llm_output = QLabel("Рядом с транскриптом")
@@ -428,7 +210,7 @@ class LlmUiMixin:
         group.setObjectName("llm_export_formats")
         group.setTitle("")
         group.setFlat(True)
-        group.setToolTip("Форматы сохранения")
+        self._bilingual(group.setToolTip, "Форматы сохранения", "Save formats")
         self.grp_llm_save = group
         group.setMinimumWidth(0)
         group.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
@@ -459,7 +241,7 @@ class LlmUiMixin:
         self.btn_select_transcripts = QPushButton("Выбрать")
         self.btn_select_transcripts.setObjectName("llm_upload_button")
         self.btn_select_transcripts.setFixedHeight(self._px(22))
-        self.btn_select_transcripts.setToolTip("Выбрать транскрипты")
+        self._bilingual(self.btn_select_transcripts.setToolTip, "Выбрать транскрипты", "Choose transcripts")
         self.btn_select_transcripts.clicked.connect(self._select_llm_transcript_files)
         layout.addWidget(self.btn_select_transcripts)
 
@@ -517,19 +299,6 @@ class LlmUiMixin:
         group.setLayout(layout)
         return group
 
-    def _create_llm_prompt_group(self) -> QGroupBox:
-        group = QGroupBox("2. Промпт")
-        layout = QVBoxLayout()
-        layout.setContentsMargins(self._px(12), self._px(8), self._px(12), self._px(9))
-        layout.setSpacing(self._px(6))
-
-        hint = QLabel("Все промпты настраиваются в меню «Настройки → LLM API…». Здесь достаточно выбрать режимы обработки. Для режима «Свой промпт» заранее заполните пользовательский промпт в настройках.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(self._transparent_label_style(self._colors()["text_mute2"], font_pt=9))
-        layout.addWidget(hint)
-        group.setLayout(layout)
-        return group
-
     def _create_llm_result_group(self) -> QGroupBox:
         group = QGroupBox("Результат")
         group.setObjectName("llm_result_panel")
@@ -545,7 +314,8 @@ class LlmUiMixin:
         result_toolbar = QHBoxLayout(toolbar)
         result_toolbar.setContentsMargins(0, 0, 0, 0)
         result_toolbar.setSpacing(self._px(4))
-        self.btn_llm_copy = QPushButton("Копия")
+        self.btn_llm_copy = QPushButton()
+        self._bilingual(self.btn_llm_copy.setText, "Копия", "Copy")
         self.btn_llm_copy.setObjectName("llm_result_action")
         self.btn_llm_copy.setFixedHeight(self._px(20))
         self.btn_llm_copy.clicked.connect(self._copy_llm_result)
@@ -590,6 +360,59 @@ class LlmUiMixin:
         QApplication.clipboard().setText(result_text)
         self.lbl_llm_status.setText(self._t("Результат скопирован", "Result copied"))
 
-    # ──────────────────────────────────────────────────────────────
-    # Диалог HF токена
-    # ──────────────────────────────────────────────────────────────
+    def _retranslate_llm_page(self, is_ru: bool) -> None:
+        """Страница LLM: источник, шаблоны, результат, сохранение."""
+        if not hasattr(self, "grp_llm_source"):
+            return
+        if hasattr(self, "btn_llm_process"):
+            self.btn_llm_process.setText("ОБРАБОТАТЬ" if is_ru else "PROCESS")
+        if hasattr(self, "btn_llm_clear"):
+            self.btn_llm_clear.setText("ОЧИСТИТЬ ВСЕ" if is_ru else "CLEAR ALL")
+        self.grp_llm_source.setTitle("1. Источник транскрипта" if is_ru else "1. Transcript source")
+        self.grp_llm_output.setTitle("2. Куда сохранить" if is_ru else "2. Save location")
+        self.grp_llm_actions.setTitle("3. Что сделать" if is_ru else "3. What to do")
+        self.grp_llm_save.setTitle("4. Форматы вывода" if is_ru else "4. Output formats")
+        self.grp_llm_result.setTitle("5. Результат LLM" if is_ru else "5. LLM result")
+        self.btn_select_transcripts.setText("Выбрать транскрипты" if is_ru else "Choose transcripts")
+        self.btn_llm_output.setText("Выбрать папку" if is_ru else "Choose folder")
+        self.btn_llm_process.setToolTip("Запустить LLM-обработку выбранных транскриптов" if is_ru else "Run LLM processing for selected transcripts")
+        self.btn_llm_clear.setToolTip("Сбросить выбранные транскрипты, ручной текст и результат LLM" if is_ru else "Reset selected transcripts, manual text and LLM result")
+        if hasattr(self, "lbl_llm_summary_prompt"):
+            self.lbl_llm_summary_prompt.setText("Промпт для выжимки:" if is_ru else "Prompt for summary:")
+        if hasattr(self, "lbl_llm_tasks_prompt"):
+            self.lbl_llm_tasks_prompt.setText("Промпт для задач:" if is_ru else "Prompt for tasks:")
+        if hasattr(self, "lbl_llm_custom_prompt"):
+            self.lbl_llm_custom_prompt.setText("Свой промпт:" if is_ru else "Custom prompt:")
+        self.lbl_llm_supported.setText("Поддерживаемые файлы: .txt, .md, .srt, .vtt — либо вставьте транскрипт вручную ниже" if is_ru else "Supported files: .txt, .md, .srt, .vtt — or paste the transcript manually below")
+        llm_ready = ("Готово к LLM-обработке", "Ready for LLM processing")
+        if self.lbl_llm_status.text() in llm_ready:
+            self.lbl_llm_status.setText(llm_ready[0] if is_ru else llm_ready[1])
+        if hasattr(self, "llm_drop_hint"):
+            self.llm_drop_hint.setText("Перетащите или выберите" if is_ru else "Drop or choose")
+        if hasattr(self, "btn_remove_llm_file"):
+            self.btn_remove_llm_file.setText("Убрать" if is_ru else "Remove")
+        if hasattr(self, "btn_clear_llm_files"):
+            self.btn_clear_llm_files.setText("Очистить" if is_ru else "Clear")
+        if hasattr(self, "llm_files_list"):
+            self.llm_files_list.setToolTip("Список транскриптов. Выделите и нажмите Delete, чтобы убрать." if is_ru else "Transcript list. Select items and press Delete to remove them.")
+        self.lbl_llm_files.setText("Файлы не выбраны" if is_ru and not self.transcript_files_for_llm else ("No files selected" if not is_ru and not self.transcript_files_for_llm else self.lbl_llm_files.text()))
+        if hasattr(self, "lbl_llm_files_count") and not self.transcript_files_for_llm:
+            self.lbl_llm_files_count.setText("Файлы не выбраны" if is_ru else "No files selected")
+        self.txt_llm_transcript.setPlaceholderText(
+            "Вставьте транскрипт" if is_ru else "Paste transcript"
+        )
+        if hasattr(self, "llm_action_checkboxes"):
+            self.llm_action_checkboxes["summary"].setText("Выжимка" if is_ru else "Summary")
+            self.llm_action_checkboxes["tasks"].setText("Задачи" if is_ru else "Tasks")
+            self.llm_action_checkboxes["custom"].setText("Свой промпт" if is_ru else "Custom prompt")
+        if hasattr(self, "lbl_llm_actions_note"):
+            self.lbl_llm_actions_note.setText("Отметьте один или несколько режимов обработки. Для «Свой промпт» текст задается в меню «Настройки → LLM API…»." if is_ru else "Select one or more processing modes. For 'Custom prompt', set the text in Settings → LLM API…")
+        if not self.llm_output_dir:
+            # Без выбранной папки результат ложится рядом с транскриптом.
+            self.lbl_llm_output.setText("Рядом с транскриптом" if is_ru else "Next to the transcript")
+        if hasattr(self, "lbl_llm_output_note"):
+            self.lbl_llm_output_note.setText("Если папка не выбрана, результат будет сохранен рядом с исходным транскриптом." if is_ru else "If no folder is selected, the result will be saved next to the source transcript.")
+        if hasattr(self, "llm_export_checkboxes"):
+            self.llm_export_checkboxes["txt"].setText("TXT (.txt)")
+            self.llm_export_checkboxes["md"].setText("Markdown (.md)")
+            self.llm_export_checkboxes["docx"].setText("DOCX (.docx)")

@@ -6,6 +6,8 @@ import inspect
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
+from ..devices import best_torch_device
+
 
 class SpeechRegion(Protocol):
     start: float
@@ -43,16 +45,7 @@ def resolve_vad_device(requested: str, *, torch_module=None) -> str:
     normalized = (requested or "auto").strip().lower() or "auto"
     if normalized != "auto":
         return normalized
-    try:
-        torch = torch_module or __import__("torch")
-        if torch.cuda.is_available():
-            return "cuda"
-        mps = getattr(getattr(torch, "backends", None), "mps", None)
-        if mps is not None and mps.is_available():
-            return "mps"
-    except (ImportError, AttributeError):
-        pass
-    return "cpu"
+    return best_torch_device(torch_module=torch_module)
 
 
 def load_pyannote_vad_pipeline(*, token: str | None, device: str) -> VadPipeline:
@@ -133,6 +126,10 @@ def merge_speech_regions(
     ``strict_limit_duration`` остаётся в сигнатуре для совместимости. Ограничение
     конкретного декодера применяется позже общим overlap-планировщиком, которому
     доступен сам waveform и поэтому можно выбрать тихую точку разреза.
+
+    Выданные области никогда не перекрываются: VAD может отдавать куски с
+    паддингом (onnx-asr расширяет каждый кусок на ``speech_pad`` в обе стороны),
+    и такое перекрытие, пройдя дальше, ломает монотонность таймлайна ASR.
     """
 
     valid = sorted(
@@ -167,7 +164,9 @@ def merge_speech_regions(
         )
         if should_flush:
             append_boundary(current_start, current_end)
-            current_start = start
+            # Речь из перекрытия уже отдана предыдущей областью: начинать новую
+            # раньше её конца — значит выдать один и тот же кусок звука дважды.
+            current_start = max(start, current_end)
         current_end = end
 
     if current_end - current_start > new_chunk_threshold:

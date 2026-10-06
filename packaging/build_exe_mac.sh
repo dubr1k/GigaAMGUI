@@ -52,10 +52,21 @@ if [ -z "$PYTHON" ]; then
 fi
 
 $PYTHON --version
+
+# Конфликтные копии Syncthing в site-packages тихо подменяют пакеты и их
+# метаданные (пустой namespace gigaam, dist-info без METADATA) — бандл
+# собирается «зелёным», но без кода модели. Проверяем до сборки.
+if ! $PYTHON scripts/check_site_packages.py; then
+    echo "[ERROR] Окружение сборки повреждено (см. выше)."
+    exit 1
+fi
 echo ""
 
 # ── Проверить gigaam ──────────────────────────────────────────────────────────
-if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6; import mlx; import gigaam_mlx" 2>/dev/null; then
+# `from gigaam import load_model`, а не `import gigaam`: каталог-пустышка
+# gigaam/ в site-packages (конфликтные копии Syncthing) импортируется как
+# namespace-пакет и затеняет editable-установку — бандл уезжал без модели.
+if ! $PYTHON -c "from gigaam import load_model; import torch; import torchaudio; import PyQt6; import mlx; import gigaam_mlx" 2>/dev/null; then
     echo "[ERROR] Пакет gigaam не найден. Установи зависимости:"
     echo "  python3 -m venv .venv"
     echo "  .venv/bin/python -m pip install -r requirements.txt"
@@ -64,6 +75,15 @@ if ! $PYTHON -c "import gigaam; import torch; import torchaudio; import PyQt6; i
     exit 1
 fi
 echo "[OK] зависимости GUI найдены"
+
+# Без этих пакетов collect_live_capture_deps() молча собирал бандл без
+# live-захвата, и вкладка Live падала уже у пользователя (issue #47).
+if ! $PYTHON -c "import sounddevice; import AVFoundation; import ScreenCaptureKit" 2>/dev/null; then
+    echo "[ERROR] Зависимости live-захвата не найдены:"
+    echo "  $PYTHON -m pip install -r requirements-live-macos.txt"
+    exit 1
+fi
+echo "[OK] зависимости live-захвата найдены"
 
 if [[ "$GIGAAM_BUNDLE_SORTFORMER" =~ ^(1|true|yes|on)$ ]]; then
     if ! $PYTHON -c "from nemo.collections.asr.models import SortformerEncLabelModel" 2>/dev/null; then

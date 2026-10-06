@@ -1,6 +1,7 @@
 import json
+from datetime import datetime
 
-from src.live.journal import EventJournal, LiveSessionStore
+from src.live.journal import EventJournal, LiveSessionStore, default_session_root
 from src.live.types import CaptureSource, LiveSettings, TranscriptEvent
 
 
@@ -44,3 +45,115 @@ def test_session_store_creates_metadata_and_atomically_replaces_checkpoint(tmp_p
     assert json.loads((session_dir / "metadata.json").read_text())["record_mix_audio"] is False
     assert json.loads((session_dir / "checkpoint.json").read_text()) == {"next_offset": 20}
     assert not list(session_dir.glob("*.tmp"))
+
+
+def test_session_folder_is_named_after_its_start_time(tmp_path):
+    """`session-9e6564f7…` told the user nothing about which recording it held."""
+    started = datetime(2026, 10, 1, 17, 21, 14)
+    store = LiveSessionStore(tmp_path, clock=lambda: started)
+
+    first = store.create(LiveSettings())
+    second = store.create(LiveSettings())
+
+    assert first.name == "2026-10-01_17-21-14"
+    assert second.name == "2026-10-01_17-21-14-2"
+
+
+def test_default_session_root_is_documents_gigaam_live(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert default_session_root() == tmp_path / "Documents" / "GigaAM" / "live"
+
+
+def test_torn_last_line_does_not_hide_the_events_before_it(tmp_path):
+    """One torn line made every later read raise, and stop() failed at export."""
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="one"))
+    with path.open("a", encoding="utf-8") as file:
+        file.write('{"event_id":"e2","revision":0,"source":"mi')
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["one"]
+
+
+def test_append_after_a_torn_line_starts_a_new_line(tmp_path):
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="one"))
+    with path.open("a", encoding="utf-8") as file:
+        file.write('{"event_id":"e2","rev')
+
+    journal = EventJournal(path)
+    journal.append(event("e3", revision=0, text="three"))
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["one", "three"]
+
+
+def test_invalid_lines_are_skipped(tmp_path):
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="one"))
+    with path.open("a", encoding="utf-8") as file:
+        file.write("not json\n")
+        file.write('{"event_id":"e2","source":"radio"}\n')
+        file.write("[1, 2]\n")
+        file.write("\n")
+        file.write('{"event_id":"e3","unexpected":true}\n')
+    EventJournal(path).append(event("e4", revision=0, text="four"))
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["one", "four"]
+
+
+def test_latest_events_are_served_from_memory_after_the_first_read(tmp_path, monkeypatch):
+    """Every final re-read and re-parsed the whole events.jsonl under the session lock."""
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e0", revision=0, text="before"))
+    journal = EventJournal(path)
+    journal.append(event("e1", revision=0, text="one"))
+    assert [item.text for item in journal.latest_events()] == ["before", "one"]
+
+    def no_disk_reads(self, *args, **kwargs):
+        raise AssertionError("events.jsonl was read again")
+
+    monkeypatch.setattr("pathlib.Path.read_text", no_disk_reads)
+    journal.append(event("e1", revision=1, text="one, revised"))
+    journal.append(event("e2", revision=0, text="two"))
+
+    assert [item.text for item in journal.latest_events()] == ["before", "one, revised", "two"]
+
+
+def test_concurrent_appends_and_reads_stay_consistent(tmp_path):
+    import threading
+
+    journal = EventJournal(tmp_path / "events.jsonl")
+    errors = []
+
+    def writer(prefix):
+        try:
+            for index in range(200):
+                journal.append(event(f"{prefix}{index}", revision=0, text="x"))
+        except Exception as exc:
+            errors.append(exc)
+
+    def reader():
+        try:
+            for _ in range(200):
+                journal.latest_events()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(name,)) for name in "ab"] + [threading.Thread(target=reader)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(journal.latest_events()) == 400
+    assert len(EventJournal(tmp_path / "events.jsonl").latest_events()) == 400
+
+
+def test_torn_multibyte_character_does_not_break_the_read(tmp_path):
+    path = tmp_path / "events.jsonl"
+    EventJournal(path).append(event("e1", revision=0, text="привет"))
+    with path.open("ab") as file:
+        file.write('{"event_id":"e2","text":"п'.encode()[:-1])
+
+    assert [item.text for item in EventJournal(path).latest_events()] == ["привет"]

@@ -52,6 +52,18 @@ def test_cache_inside_macos_resources_is_found(tmp_path, monkeypatch):
     assert bundled_hf_cache_dir(frozen=True) == cache
 
 
+def test_cache_beside_companion_nested_in_liquid_bundle_is_found(tmp_path, monkeypatch):
+    """Самостоятельный GigaAMLiquid.app везёт companion и модели в Contents/Resources."""
+    resources = tmp_path / "GigaAMLiquid.app" / "Contents" / "Resources"
+    executable = resources / "GigaAMTranscriber.app" / "Contents" / "MacOS" / "GigaAMTranscriber"
+    executable.parent.mkdir(parents=True)
+    cache = _make_cache(resources)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    assert bundled_hf_cache_dir(frozen=True) == cache
+
+
 def test_directory_without_hub_is_ignored(tmp_path, monkeypatch):
     """Пустая папка models/hf не должна перехватывать кэш у рабочего каталога."""
     (tmp_path / "models" / "hf").mkdir(parents=True)
@@ -89,6 +101,44 @@ def test_offline_builder_covers_the_whole_onnx_chain():
         assert repo in text
 
 
+def _load_builder():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("build_offline_models", BUILDER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_offline_builder_retries_a_transient_hub_failure(monkeypatch):
+    """CI v2.3.0: silero VAD не скачался с первой попытки на shared-раннере
+    (HF вернул ошибку сети → LocalEntryNotFoundError), и офлайн-сборка Intel
+    упала целиком. Одна неудачная попытка — не повод пересобирать релиз."""
+    builder = _load_builder()
+    calls = {"vad": 0}
+
+    def flaky_vad(**kwargs):
+        calls["vad"] += 1
+        if calls["vad"] < 3:
+            return [], ["silero"]
+        return ["silero"], []
+
+    monkeypatch.setattr(builder, "_sleep", lambda seconds: None)
+    ok, failed = builder._download_with_retries(lambda: flaky_vad(), what="VAD")
+
+    assert (ok, failed) == (["silero"], [])
+    assert calls["vad"] == 3
+
+
+def test_offline_builder_gives_up_after_the_last_attempt(monkeypatch):
+    builder = _load_builder()
+    monkeypatch.setattr(builder, "_sleep", lambda seconds: None)
+
+    ok, failed = builder._download_with_retries(lambda: ([], ["silero"]), what="VAD")
+
+    assert failed == ["silero"]
+
+
 def test_offline_builder_skips_blobs():
     """Копирование вместе с blobs почти удваивает и без того большой архив."""
     text = BUILDER_PATH.read_text(encoding="utf-8")
@@ -108,8 +158,13 @@ def test_ci_publishes_offline_variant_for_every_platform():
         assert asset in text
 
     assert "scripts/build_offline_models.py --output offline/models/hf" in text
-    assert "Attach offline bundle to release" in text
-    assert "Attach offline full app to release" in text
+    # Офлайн-архивы уезжают в релиз как artifacts, которые релизная джоба
+    # выкачивает по маске и публикует целиком — отдельных "Attach ..." шагов
+    # больше нет, но контракт обязан оставаться проверяемым.
+    assert "name: ${{ matrix.offline_asset }}" in text
+    assert "name: ${{ steps.archive_offline.outputs.name }}" in text
+    assert "pattern: GigaAM*" in text
+    assert "scripts/publish_release_assets.sh \"$GITHUB_REF_NAME\" release-assets" in text
 
 
 def test_ci_proves_offline_bundle_needs_no_network():
@@ -192,13 +247,33 @@ def test_config_keeps_huggingface_writable_and_tracks_bundled_cache(tmp_path, mo
     assert config.BUNDLED_MODELS_DIR == cache
 
 
-def test_offline_bundle_switches_default_backends_to_onnx():
+def test_offline_bundle_switches_default_backends_to_onnx(tmp_path, monkeypatch):
     """auto выбрал бы MLX или PyTorch, которых в офлайн-наборе нет."""
-    text = Path("src/config.py").read_text(encoding="utf-8")
+    import importlib
 
-    assert '_DEFAULT_ASR_BACKEND = "onnx" if BUNDLED_MODELS_DIR else "auto"' in text
-    assert 'os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND)' in text
-    assert '"onnx" if BUNDLED_MODELS_DIR else "pyannote"' in text
+    import dotenv
+
+    import src.config as config
+    from src import data_paths
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+    monkeypatch.delenv("ASR_BACKEND", raising=False)
+    monkeypatch.delenv("DIARIZATION_BACKEND", raising=False)
+    cache = _make_cache(tmp_path)
+    monkeypatch.setattr(
+        "src.utils.runtime_manager.bundled_hf_cache_dir",
+        lambda frozen=None: cache,
+    )
+    try:
+        importlib.reload(config)
+
+        assert config.BUNDLED_MODELS_DIR is not None
+        assert config.ASR_BACKEND == "onnx"
+        assert config.DIARIZATION_BACKEND == "onnx"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
 
 
 def test_explicit_huggingface_home_still_wins(tmp_path, monkeypatch):

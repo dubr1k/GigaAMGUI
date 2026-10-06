@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from ..types import CaptureSource
-from .common import NativeCaptureApi, QueuedCaptureAdapter
+from .common import NativeCaptureApi, QueuedCaptureAdapter, select_device
 from .factory import CaptureUnavailable
 
 
@@ -27,6 +27,7 @@ class _PyAudioWASAPI:
         self._stream: Any = None
 
     def devices(self, source: CaptureSource) -> list[dict[str, Any]]:
+        default_index = self._default_device_index(source)
         devices = []
         for index in range(self._audio.get_device_count()):
             info = self._audio.get_device_info_by_index(index)
@@ -39,18 +40,42 @@ class _PyAudioWASAPI:
                     "name": info["name"],
                     "sample_rate": int(info["defaultSampleRate"]),
                     "channels": int(info["maxInputChannels"]),
-                    "is_default": index == self._audio.get_default_input_device_info()["index"],
+                    "is_default": index == default_index,
                 }
             )
         return devices
 
+    def _default_device_index(self, source: CaptureSource) -> int | None:
+        """Loopback endpoints are never the default *input* device.
+
+        Picking the first enumerated loopback instead gave us silent, inactive
+        outputs (S/PDIF, unplugged HDMI); the right default is the loopback
+        that belongs to the current default playback endpoint.
+        """
+        try:
+            if source is not CaptureSource.SYSTEM:
+                return self._audio.get_default_input_device_info()["index"]
+            wasapi = self._audio.get_host_api_info_by_type(self._pyaudio.paWASAPI)
+            speakers = self._audio.get_device_info_by_index(int(wasapi["defaultOutputDevice"]))
+        except Exception:
+            return None
+        if speakers.get("isLoopbackDevice", False):
+            return int(speakers["index"])
+        name = str(speakers.get("name", ""))
+        for index in range(self._audio.get_device_count()):
+            info = self._audio.get_device_info_by_index(index)
+            if bool(info.get("isLoopbackDevice", False)) and name and name in str(info.get("name", "")):
+                return index
+        return None
+
     def start(self, source: CaptureSource, device_id: str | None, callback: Callable[..., None]) -> None:
-        devices = self.devices(source)
-        selected = next((item for item in devices if item["id"] == device_id), None) if device_id else next(
-            (item for item in devices if item["is_default"]), devices[0] if devices else None
-        )
+        selected = select_device(self.devices(source), device_id)
         if selected is None:
-            raise OSError("No WASAPI microphone or loopback device is available")
+            if source is CaptureSource.SYSTEM:
+                raise OSError(
+                    "No WASAPI loopback device is available. Enable a playback device and restart capture."
+                )
+            raise OSError("No WASAPI microphone device is available")
 
         def on_audio(data: bytes, frame_count: int, _time_info: Any, _status: Any) -> tuple[None, int]:
             frames = np.frombuffer(data, dtype=np.float32).reshape(frame_count, selected["channels"])
@@ -80,7 +105,13 @@ class _PyAudioWASAPI:
             self._stream.stop_stream()
             self._stream.close()
             self._stream = None
+        self.close()
+
+    def close(self) -> None:
+        if self._audio is None:
+            return
         self._audio.terminate()
+        self._audio = None
 
 
 class _WindowsAdapter(QueuedCaptureAdapter):

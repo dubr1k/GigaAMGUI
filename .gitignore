@@ -2,16 +2,29 @@
 __pycache__/
 icns/
 GigaAM/
+!skills/gigaam/
 GigaAMv3.workflow/
 scripts/
 !scripts/
 scripts/*
 !scripts/verify_macos_bundle.py
+!scripts/check_torch_triple.py
+!scripts/check_site_packages.py
 !scripts/install_tui.sh
+!scripts/tui/
+!scripts/tui/gigaam-launcher.sh
 !scripts/__init__.py
 !scripts/benchmark_asr_backends.py
 !scripts/benchmark_diarization_backends.py
 !scripts/build_offline_models.py
+!scripts/native_worker_smoke.py
+!scripts/gen_log_translation_swift.py
+!scripts/make_liquid_icon.py
+!scripts/publish_release_assets.sh
+!scripts/render_gui_screenshots.py
+# Output of scripts/render_gui_screenshots.py
+gui-screenshots/
+.gui-screenshots-config/
 *.py[cod]
 *$py.class
 *.so
@@ -117,11 +130,16 @@ checkpoints/
 !requirements-dev.txt
 !requirements-sortformer.txt
 !requirements-macos-mlx.txt
+!requirements-macos-x86_64.txt
 !requirements-onnx-gpu.txt
 !requirements-legacy-pytorch.txt
 !requirements-live-windows.txt
+!requirements-live-linux.txt
+!requirements-live-macos.txt
 !web/static/robots.txt
 *.wav
+# 4-second speech clip for the CI companion smoke (batch + live), 130 KB.
+!tests/fixtures/liquid_smoke.wav
 *.mp3
 *.mp4
 *.avi
@@ -223,3 +241,8 @@ CLAUDE.md
 
 # Local release staging (zipped .app etc.)
 out/
+
+# Распакованные сборки и офлайн-модели (scripts/build_offline_models.py --output
+# offline/models/hf): гигабайты вендорного кода, которые иначе попадают в
+# `ruff check .` и в граф graphify (там это было 83% узлов).
+/offline/

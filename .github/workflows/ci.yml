@@ -1,0 +1,137 @@
+name: Pull request checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python-quality:
+    name: Python and release regression checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install test tools
+        run: python -m pip install "pytest==9.0.1" "ruff==0.13.3"
+      - name: Lint Python
+        run: ruff check .
+      - name: Compile Python
+        run: python -m compileall -q api.py cli.py src tests
+      # Текстовые контракты упаковки (pins, specs, Dockerfile, гейты бандла)
+      # раньше гонялись только на тегах, и дрейф всплывал уже при релизе.
+      # Все они обходятся одним pytest — без torch, numpy и dotenv.
+      - name: Run release regression tests
+        run: >-
+          python -m pytest
+          tests/test_macos_swift_packaging.py tests/test_release_hardening.py
+          tests/test_packaging_runtime_deps.py tests/test_macos_packaging_config.py
+          tests/test_tui_requirements.py tests/test_data_paths.py
+          tests/test_dockerignore.py tests/test_bundle_module_gate.py tests/test_ci_hardening.py
+          tests/test_pin_consistency.py tests/test_compose_config.py
+
+  tui:
+    name: TUI tests
+    # build.yml runs cargo test only for v* tags, so TUI changes reached main
+    # untested, and the PTY tests always skipped without a built binary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Lint
+        working-directory: tui
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      # The minimal import set of src.tui_worker and the stub worker; no torch.
+      - name: Install test tools
+        run: python -m pip install "pytest==9.0.1" psutil numpy python-dotenv typing_extensions soundfile requests
+      - name: Unit tests
+        working-directory: tui
+        run: cargo test --locked
+      - name: Build TUI
+        working-directory: tui
+        run: cargo build --locked
+      - name: Worker and terminal (PTY) tests
+        env:
+          GIGAAM_TUI_TEST_BINARY: ${{ github.workspace }}/tui/target/debug/gigaam-tui
+        run: >-
+          python -m pytest -rs
+          tests/test_tui_worker.py tests/test_tui_input_service.py
+          tests/test_tui_terminal_screen.py tests/test_tui_terminal_paste.py
+          tests/test_install_tui_launcher.py
+
+  tui-windows:
+    name: TUI (Windows build)
+    # The npm launcher builds the TUI from source on Windows, but its
+    # Windows-only code (Job objects, explorer opener) was never compiled in CI.
+    # Tests are compiled, not run: they have never been triaged on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Clippy
+        working-directory: tui
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build and compile tests
+        working-directory: tui
+        run: |
+          cargo build --locked
+          cargo test --locked --no-run
+
+  tauri-locks:
+    name: Tauri dependency and JavaScript checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install locked Node dependencies
+        run: npm ci
+      - name: Validate JavaScript
+        run: node --check ui/app.js
+      - name: Validate locked Rust dependency graph
+        run: cargo metadata --locked --no-deps --manifest-path src-tauri/Cargo.toml >/dev/null
+
+  swift-build:
+    name: Swift client build
+    # NSGlassEffectView requires the macOS 26 SDK; deployment remains macOS 13.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build native client
+        run: swift build -c release --package-path macos/GigaAMLiquid
+      - name: Test UI-free client logic
+        run: swift test --package-path macos/GigaAMLiquid

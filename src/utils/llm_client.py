@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -47,6 +48,10 @@ class LLMClient:
         url = cls._normalize_url(api_url)
         if url.endswith("/chat/completions"):
             return url
+        # Google Gemini's OpenAI-compatible base URL is /v1beta/openai/;
+        # unlike ordinary providers it already contains the API version.
+        if url.endswith("/openai"):
+            return f"{url}/chat/completions"
         if url.endswith("/v1"):
             return f"{url}/chat/completions"
         if "/v1/" in url:
@@ -63,6 +68,118 @@ class LLMClient:
         if "/v1/" in url:
             return url
         return f"{url}/v1/messages"
+
+    @staticmethod
+    def _sleep_with_cancel(delay: float, cancel_check: Callable[[], bool] | None) -> None:
+        """Ждать `delay` секунд, но прерваться, если пользователь отменил запрос."""
+        if cancel_check is None:
+            time.sleep(delay)
+            return
+        deadline = time.monotonic() + delay
+        while True:
+            if cancel_check():
+                raise RuntimeError("LLM request cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.1, remaining))
+
+    def _post_with_retry(
+        self,
+        endpoint: str,
+        *,
+        headers: dict,
+        payload: dict,
+        stream: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
+    ):
+        last_response = None
+        for attempt in range(3):
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.settings.timeout,
+                stream=stream,
+            )
+            if response.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+                return response
+            last_response = response
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = min(float(retry_after), 15.0) if retry_after else 2**attempt
+            except ValueError:
+                delay = 2**attempt
+            response.close()
+            self._sleep_with_cancel(delay, cancel_check)
+        return last_response
+
+    @staticmethod
+    def _error_detail(payload) -> str | None:
+        """Текст ошибки провайдера из JSON-тела или SSE-события."""
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("type") or error.get("code")
+            return str(message) if message else json.dumps(error, ensure_ascii=False)
+        if isinstance(error, str) and error:
+            return error
+        if payload.get("type") == "error":
+            return str(payload.get("message") or "ошибка без описания")
+        return None
+
+    @classmethod
+    def _raise_for_status(cls, response) -> None:
+        """raise_for_status с телом ответа: «404 Not Found» без него бесполезно."""
+        status = getattr(response, "status_code", 200)
+        if not isinstance(status, int) or status < 400:
+            response.raise_for_status()
+            return
+        try:
+            body = response.content.decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        detail = None
+        try:
+            detail = cls._error_detail(json.loads(body))
+        except ValueError:
+            pass
+        detail = detail or body.strip()[:500]
+        reason = getattr(response, "reason", "") or ""
+        message = f"LLM API: HTTP {status} {reason}".rstrip()
+        if detail:
+            message += f": {detail}"
+        raise requests.HTTPError(message, response=response)
+
+    def _iter_sse_events(self, response, cancel_check):
+        """JSON-события SSE-потока; ошибка в потоке становится исключением.
+
+        SSE по спецификации — UTF-8, но без charset в Content-Type requests
+        декодирует text/* как ISO-8859-1, и русский ответ превращался в мусор.
+        Ошибки посреди потока (OpenAI-совместимые {"error": ...}, Anthropic
+        event: error) раньше молча пропускались: оставался обрывок текста или
+        «ответ без текста».
+        """
+        response.encoding = "utf-8"
+        for line in response.iter_lines(decode_unicode=True):
+            if cancel_check and cancel_check():
+                response.close()
+                raise RuntimeError("LLM request cancelled")
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            detail = self._error_detail(event)
+            if detail:
+                response.close()
+                raise RuntimeError(f"LLM API вернул ошибку: {detail}")
+            yield event
 
     def process_transcript(
         self,
@@ -117,29 +234,18 @@ class LLMClient:
         }
         if stream_callback:
             payload["stream"] = True
-            response = requests.post(
-                endpoint, headers=headers, json=payload, timeout=self.settings.timeout, stream=True
-            )
-            response.raise_for_status()
+            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True, cancel_check=cancel_check)
+            self._raise_for_status(response)
             parts = []
-            for line in response.iter_lines(decode_unicode=True):
-                if cancel_check and cancel_check():
-                    response.close()
-                    raise RuntimeError("LLM request cancelled")
-                if not line or not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data == "[DONE]":
-                    break
-                chunk = json.loads(data)
+            for chunk in self._iter_sse_events(response, cancel_check):
                 delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content", "")
                 if delta:
                     parts.append(delta)
                     stream_callback(delta)
             return self._extract_text_content("".join(parts))
 
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=self.settings.timeout)
-        response.raise_for_status()
+        response = self._post_with_retry(endpoint, headers=headers, payload=payload, cancel_check=cancel_check)
+        self._raise_for_status(response)
         data = response.json()
         choices = data.get("choices") or []
         if not choices:
@@ -179,18 +285,10 @@ class LLMClient:
         }
         if stream_callback:
             payload["stream"] = True
-            response = requests.post(
-                endpoint, headers=headers, json=payload, timeout=self.settings.timeout, stream=True
-            )
-            response.raise_for_status()
+            response = self._post_with_retry(endpoint, headers=headers, payload=payload, stream=True, cancel_check=cancel_check)
+            self._raise_for_status(response)
             parts = []
-            for line in response.iter_lines(decode_unicode=True):
-                if cancel_check and cancel_check():
-                    response.close()
-                    raise RuntimeError("LLM request cancelled")
-                if not line or not line.startswith("data: "):
-                    continue
-                event = json.loads(line[6:])
+            for event in self._iter_sse_events(response, cancel_check):
                 delta = event.get("delta") or {}
                 text = delta.get("text", "") if delta.get("type") == "text_delta" else ""
                 if text:
@@ -198,8 +296,8 @@ class LLMClient:
                     stream_callback(text)
             return self._extract_text_content("".join(parts))
 
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=self.settings.timeout)
-        response.raise_for_status()
+        response = self._post_with_retry(endpoint, headers=headers, payload=payload, cancel_check=cancel_check)
+        self._raise_for_status(response)
         data = response.json()
         content = data.get("content", "")
         return self._extract_text_content(content)

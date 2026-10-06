@@ -1,0 +1,34 @@
+{
+	"name": "dark-hermes-pink",
+	"vars": {
+		"bg": "#0b0b0d",
+		"text": "#f4f4f5",
+		"pinkLight": "#f9a8d4",
+		"pink": "#f0559a",
+		"pinkDeep": "#c9257a",
+		"pinkDim": "#8a4d6f",
+		"pinkMuted": "#b06a90",
+		"mint": "#4ade80",
+		"amber": "#f6c453",
+		"red": "#ff5c8a",
+		"selectedBg": "#3a1230",
+		"statusBg": "#16101a"
+	},
+	"colors": {
+		"accent": "pink",
+		"border": "pinkDeep",
+		"borderAccent": "pink",
+		"borderMuted": "pinkDim",
+		"success": "mint",
+		"error": "red",
+		"warning": "amber",
+		"muted": "pinkMuted",
+		"dim": "pinkDim",
+		"text": "",
+		"selectedBg": "selectedBg",
+		"statusLineBg": "statusBg",
+		"statusLineSep": "pinkDim",
+		"mdHeading": "pink",
+		"link": "pinkLight"
+	}
+}

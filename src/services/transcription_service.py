@@ -11,7 +11,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.core.asr.models import validate_asr_model
-from src.core.asr.types import validate_backend_name
 from src.core.model_preparation import (
     ModelPreparationPlan,
     PreparationCancelled,
@@ -19,8 +18,7 @@ from src.core.model_preparation import (
     PreparationStep,
 )
 from src.core.processor import TranscriptionProcessor
-
-ONNX_PROVIDERS = ("auto", "cpu", "cuda", "tensorrt", "coreml", "directml")
+from src.core.runtime_options import ONNX_PROVIDERS, validate_backend_name
 
 
 def available_asr_backends(
@@ -90,7 +88,7 @@ def acquire_request_model_loader(
     *,
     loader_factory,
 ) -> tuple[object, bool]:
-    """Переиспользовать default loader либо создать изолированный loader задачи."""
+    """Переиспользовать загруженную модель либо создать изолированный loader задачи."""
 
     provider_matters = selection.backend == "onnx"
     matches_default = (
@@ -101,7 +99,7 @@ def acquire_request_model_loader(
             or selection.onnx_provider == default_loader.requested_provider
         )
     )
-    if matches_default:
+    if matches_default and default_loader.is_loaded():
         return default_loader, False
     return (
         loader_factory(

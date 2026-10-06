@@ -15,14 +15,6 @@ def test_macos_mlx_requirements_pinned_to_known_commit():
     assert "gigaam-mlx" in text
 
 
-def test_spec_includes_mlx_packages():
-    text = SPEC_PATH.read_text(encoding="utf-8")
-    assert "\"mlx\"" in text
-    assert "\"gigaam_mlx\"" in text
-    assert '"CFBundleShortVersionString": "1.4.1"' in text
-    assert '"CFBundleVersion": "1.4.1"' in text
-
-
 def test_spec_can_bundle_sortformer_runtime():
     text = SPEC_PATH.read_text(encoding="utf-8")
     assert "GIGAAM_BUNDLE_SORTFORMER" in text
@@ -78,7 +70,7 @@ def test_ci_builds_and_publishes_full_app_zip():
     assert "MAX_RELEASE_ASSET_BYTES" in text
     assert "CFBundleShortVersionString" in text
     assert "publish-release:" in text
-    assert "needs: [build, build-macos-full]" in text
+    assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in text
     assert "Download completed release artifacts" in text
     assert "requirements-sortformer.txt" in text
     assert 'GIGAAM_BUNDLE_SORTFORMER: "1"' in text
@@ -90,3 +82,18 @@ def test_bundle_verifier_smokes_sortformer_runtime_when_requested():
     assert "GIGAAM_BUNDLE_SORTFORMER" in verifier
     assert "--sortformer-runtime-smoke" in verifier
     assert "--sortformer-runtime-smoke" in entrypoint
+
+
+def test_macos_bundle_does_not_ship_raw_project_sources():
+    spec = SPEC_PATH.read_text(encoding="utf-8")
+    verifier = Path("scripts/verify_macos_bundle.py").read_text(encoding="utf-8")
+    assert '(os.path.join(project_root, "src"), "src")' not in spec
+    assert 'root / "Contents" / "Resources" / "src"' in verifier
+
+
+def test_bundle_verifier_rejects_raw_project_source_tree(tmp_path):
+    from scripts.verify_macos_bundle import verify_bundle
+
+    bundle = tmp_path / "GigaAMTranscriber.app"
+    (bundle / "Contents" / "Resources" / "src").mkdir(parents=True)
+    assert verify_bundle(str(bundle), "arm64-mlx") == 1

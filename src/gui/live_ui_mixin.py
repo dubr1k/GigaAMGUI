@@ -21,6 +21,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .live_display_mixin import LIVE_READY_TEXT, LIVE_WAVEFORM_TEXTS
+
+
+class _GrowingTextEdit(QTextEdit):
+    """QTextEdit whose size hint is its minimum, so it stretches to fill the
+    page but never forces a scroll bar on the 760×440 compact window."""
+
+    def sizeHint(self):
+        return self.minimumSizeHint()
+
 
 class LiveUiMixin:
     def _create_live_tab(self) -> QWidget:
@@ -37,7 +47,8 @@ class LiveUiMixin:
         title = QLabel(self._t("Live", "Live"))
         title.setObjectName("page_title")
         title_block.addWidget(title)
-        subtitle = QLabel(self._t("Запись и расшифровка в реальном времени", "Live capture and transcription"))
+        subtitle = QLabel()
+        self._bilingual(subtitle.setText, "Запись и расшифровка в реальном времени", "Live capture and transcription")
         subtitle.setObjectName("page_subtitle")
         title_block.addWidget(subtitle)
         heading.addLayout(title_block)
@@ -48,10 +59,32 @@ class LiveUiMixin:
         workspace.setObjectName("live_three_pane_layout")
         workspace.setSpacing(self._px(6))
 
+        workspace.addWidget(self._create_live_source_pane())
+        workspace.addWidget(self._create_live_capture_pane(), 1)
+        workspace.addWidget(self._create_live_parameters_pane())
+
+        layout.addLayout(workspace, 1)
+
+        self.combo_live_source.currentIndexChanged.connect(self._update_live_source_controls)
+        self.combo_live_diarization.currentIndexChanged.connect(self._update_live_export_controls)
+        for checkbox in self.live_export_checkboxes.values():
+            checkbox.stateChanged.connect(self._update_live_export_controls)
+        # Устройства перечитывает _restore_live_settings (в фоне, с сохранённым выбором).
+        self._update_live_output_folder_label(self.live_output_dir.text())
+        self._update_live_source_controls()
+        self._update_live_export_controls()
+        self._update_live_control_state()
+        self.signals.live_status.connect(self._update_live_recorder_display)
+        return tab
+
+    def _create_live_source_pane(self) -> QWidget:
+        """Левая колонка: источник и устройства, папка сессии, оверлей."""
         source_pane = QWidget()
         source_pane.setObjectName("live_source_pane")
-        source_pane.setMinimumWidth(self._px(155))
-        source_pane.setMaximumWidth(self._px(175))
+        # Wide enough for a label plus a readable device name; the earlier
+        # 155–175 pt cap squeezed the combos to a few characters (#54).
+        source_pane.setMinimumWidth(self._px(230))
+        source_pane.setMaximumWidth(self._px(250))
         source_layout = QVBoxLayout(source_pane)
         source_layout.setContentsMargins(0, 0, 0, 0)
         source_layout.setSpacing(self._px(6))
@@ -63,29 +96,34 @@ class LiveUiMixin:
         source_form.setHorizontalSpacing(self._px(4))
         source_form.setVerticalSpacing(self._px(3))
         source_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        # macOS' form style keeps fields at their size hint; grow them everywhere.
+        source_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.combo_live_source = QComboBox()
         self.combo_live_source.addItem(self._t("Микрофон", "Microphone"), "mic")
         self.combo_live_source.addItem(self._t("Системный звук", "System audio"), "system")
         self.combo_live_source.addItem(self._t("Микрофон + системный звук", "Microphone + system audio"), "both")
-        self.combo_live_source.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_live_source = QLabel(self._t("Источник:", "Source:"))
         source_form.addRow(self.lbl_live_source, self.combo_live_source)
 
         self.combo_live_mic_device = QComboBox()
-        self.combo_live_mic_device.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_live_mic_device = QLabel(self._t("Микрофон:", "Microphone:"))
         source_form.addRow(self.lbl_live_mic_device, self.combo_live_mic_device)
         self.combo_live_system_device = QComboBox()
-        self.combo_live_system_device.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_live_system_device = QLabel(self._t("Системный звук:", "System audio:"))
         source_form.addRow(self.lbl_live_system_device, self.combo_live_system_device)
+        for combo in (self.combo_live_mic_device, self.combo_live_system_device):
+            # Список приходит из фонового потока; пустой комбо не должен
+            # схлопываться до пары символов, пока устройства не ответили.
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setPlaceholderText(self._t("Поиск устройств…", "Looking for devices…"))
 
-        self.cb_live_mic_audio = QCheckBox(self._t("Записывать дорожку микрофона", "Record microphone track"))
+        # Short captions: the row label already says "Дорожки:" and the long
+        # "Записывать дорожку …" was cut to "Записыв" in the side pane.
+        self.cb_live_mic_audio = QCheckBox(self._t("Микрофон", "Microphone"))
         self.cb_live_mic_audio.setChecked(True)
-        self.cb_live_system_audio = QCheckBox(self._t("Записывать дорожку системного звука", "Record system audio track"))
+        self.cb_live_system_audio = QCheckBox(self._t("Системный звук", "System audio"))
         self.cb_live_system_audio.setChecked(True)
-        self.cb_live_mic_audio.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.cb_live_system_audio.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         tracks = QWidget()
         tracks.setObjectName("live_track_options")
         tracks_layout = QVBoxLayout(tracks)
@@ -106,12 +144,20 @@ class LiveUiMixin:
         self.btn_live_output_select.setObjectName("secondary_button")
         self.btn_live_output_select.setFixedHeight(self._px(26))
         self.btn_live_output_select.clicked.connect(self._select_live_output_folder)
-        output_layout.addWidget(self.btn_live_output_select)
+        self.btn_live_open_session = QPushButton(self._t("Открыть", "Open"))
+        self.btn_live_open_session.setObjectName("secondary_button")
+        self.btn_live_open_session.setFixedHeight(self._px(26))
+        self.btn_live_open_session.clicked.connect(self._open_live_session_folder)
+        output_buttons = QHBoxLayout()
+        output_buttons.setContentsMargins(0, 0, 0, 0)
+        output_buttons.setSpacing(self._px(4))
+        output_buttons.addWidget(self.btn_live_output_select, 1)
+        output_buttons.addWidget(self.btn_live_open_session)
+        output_layout.addLayout(output_buttons)
         self.lbl_live_output_folder = QLabel()
         self.lbl_live_output_folder.setObjectName("live_output_path")
         self.lbl_live_output_folder.setStyleSheet(self._transparent_label_style(self._colors()["text_mute"]))
-        self.lbl_live_output_folder.setWordWrap(True)
-        self.lbl_live_output_folder.setMaximumHeight(self._px(28))
+        self.lbl_live_output_folder.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         output_layout.addWidget(self.lbl_live_output_folder)
         self.live_output_dir = QLineEdit()
         self.live_output_dir.setVisible(False)
@@ -127,7 +173,8 @@ class LiveUiMixin:
         self.btn_live_overlay = QPushButton(self._t("Оверлей", "Overlay"))
         self.btn_live_overlay.setObjectName("secondary_button")
         self.btn_live_overlay.setFixedHeight(self._px(26))
-        self.btn_live_overlay.clicked.connect(self._show_live_overlay)
+        self.btn_live_overlay.setCheckable(True)
+        self.btn_live_overlay.clicked.connect(self._toggle_live_overlay)
         self.btn_live_clear = QPushButton(self._t("Очистить", "Clear"))
         self.btn_live_clear.setObjectName("secondary_button")
         self.btn_live_clear.setFixedHeight(self._px(26))
@@ -136,8 +183,10 @@ class LiveUiMixin:
         quick_layout.addWidget(self.btn_live_clear)
         source_layout.addWidget(quick_actions)
         source_layout.addStretch()
-        workspace.addWidget(source_pane)
+        return source_pane
 
+    def _create_live_capture_pane(self) -> QWidget:
+        """Центр: таймер, статус, кнопки записи и сама расшифровка."""
         capture_pane = QWidget()
         capture_pane.setObjectName("live_capture_pane")
         capture_pane.setMinimumWidth(self._px(235))
@@ -145,7 +194,8 @@ class LiveUiMixin:
         capture_layout.setContentsMargins(0, 0, 0, 0)
         capture_layout.setSpacing(self._px(6))
 
-        recorder = QGroupBox(self._t("Запись", "Recording"))
+        recorder = QGroupBox()
+        self._bilingual(recorder.setTitle, "Запись", "Recording")
         recorder.setObjectName("live_recorder_card")
         recorder_layout = QVBoxLayout(recorder)
         recorder_layout.setContentsMargins(self._px(10), self._px(7), self._px(10), self._px(8))
@@ -153,27 +203,42 @@ class LiveUiMixin:
         self._live_timer_clock = QElapsedTimer()
         self._live_timer_elapsed_ms = 0
         self._live_timer_active = False
-        self._live_timer_ticker = QTimer(tab)
+        self._live_timer_ticker = QTimer(capture_pane)
         self._live_timer_ticker.setInterval(1000)
         self._live_timer_ticker.timeout.connect(self._refresh_live_recorder_timer)
         self.lbl_live_timer = QLabel("00:00:00")
         self.lbl_live_timer.setObjectName("live_timer_display")
         self.lbl_live_timer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_timer.setFixedHeight(self._px(22))
-        self.lbl_live_timer.setToolTip(self._t("Таймер отражает длительность активной записи.", "The timer reflects active capture duration."))
+        self._bilingual(
+            self.lbl_live_timer.setToolTip,
+            "Таймер отражает длительность активной записи.",
+            "The timer reflects active capture duration.",
+        )
         recorder_layout.addWidget(self.lbl_live_timer)
-        self.lbl_live_waveform = QLabel(self._t("Аудиосигнал появится во время записи", "Audio signal appears during capture"))
+        self.lbl_live_waveform = QLabel(self._t(*LIVE_WAVEFORM_TEXTS["idle"]))
         self.lbl_live_waveform.setObjectName("live_waveform_display")
         self.lbl_live_waveform.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_live_waveform.setFixedHeight(self._px(24))
-        self.lbl_live_waveform.setToolTip(self._t("Индикатор аудиосигнала ожидает активную сессию.", "The audio signal indicator is waiting for an active session."))
+        self.lbl_live_waveform.setWordWrap(True)
+        self.lbl_live_waveform.setMaximumHeight(self._px(40))
+        self._bilingual(
+            self.lbl_live_waveform.setToolTip,
+            "Индикатор аудиосигнала ожидает активную сессию.",
+            "The audio signal indicator is waiting for an active session.",
+        )
         recorder_layout.addWidget(self.lbl_live_waveform)
-        self.lbl_live_status = QLabel(self._t("Готово к записи", "Ready for live capture"))
+        self.lbl_live_status = QLabel(self._t(*LIVE_READY_TEXT))
         self.lbl_live_status.setObjectName("live_status_display")
         self.lbl_live_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_status.setWordWrap(True)
         self.lbl_live_status.setMaximumHeight(self._px(24))
         recorder_layout.addWidget(self.lbl_live_status)
+        self.lbl_live_problem = QLabel("")
+        self.lbl_live_problem.setObjectName("live_problem_display")
+        self.lbl_live_problem.setWordWrap(True)
+        self.lbl_live_problem.setStyleSheet("color: #d9534f;")
+        self.lbl_live_problem.hide()
+        recorder_layout.addWidget(self.lbl_live_problem)
 
         self.live_controls_layout = QHBoxLayout()
         self.live_controls_layout.setSpacing(self._px(4))
@@ -199,30 +264,39 @@ class LiveUiMixin:
         recorder_layout.addLayout(self.live_controls_layout)
         capture_layout.addWidget(recorder)
 
-        transcript_panel = QGroupBox(self._t("Live transcript", "Live transcript"))
+        transcript_panel = QGroupBox()
+        self._bilingual(transcript_panel.setTitle, "Live-расшифровка", "Live transcript")
         transcript_panel.setObjectName("live_transcript_card")
         transcript_layout = QVBoxLayout(transcript_panel)
         transcript_layout.setContentsMargins(self._px(8), self._px(6), self._px(8), self._px(8))
         transcript_layout.setSpacing(self._px(3))
-        transcript_hint = QLabel(self._t("Таймкоды и мягкие метки спикеров появятся по мере распознавания.", "Timecodes and restrained speaker labels appear as speech is recognized."))
+        transcript_hint = QLabel()
+        self._bilingual(
+            transcript_hint.setText,
+            "Таймкоды и мягкие метки спикеров появятся по мере распознавания.",
+            "Timecodes and restrained speaker labels appear as speech is recognized.",
+        )
         transcript_hint.setObjectName("page_subtitle")
         transcript_hint.setWordWrap(True)
         transcript_hint.setMaximumHeight(self._px(28))
         transcript_layout.addWidget(transcript_hint)
-        self.live_transcript = QTextEdit()
+        self.live_transcript = _GrowingTextEdit()
         self.live_transcript.setObjectName("live_transcript_display")
         self.live_transcript.setReadOnly(True)
         self.live_transcript.setFont(self._font(10, fixed=True))
-        self.live_transcript.setFixedHeight(self._px(82))
+        # The transcript is the page's main content: let it take the spare height.
+        self.live_transcript.setMinimumHeight(self._px(60))
         self.live_transcript.setPlaceholderText(self._t("Расшифровка появится здесь", "Transcript appears here"))
         transcript_layout.addWidget(self.live_transcript, 1)
         capture_layout.addWidget(transcript_panel, 1)
-        workspace.addWidget(capture_pane, 1)
+        return capture_pane
 
+    def _create_live_parameters_pane(self) -> QWidget:
+        """Правая колонка: диаризация, усиление и форматы экспорта."""
         parameters_pane = QWidget()
         parameters_pane.setObjectName("live_parameters_pane")
-        parameters_pane.setMinimumWidth(self._px(160))
-        parameters_pane.setMaximumWidth(self._px(180))
+        parameters_pane.setMinimumWidth(self._px(220))
+        parameters_pane.setMaximumWidth(self._px(240))
         parameters_layout = QVBoxLayout(parameters_pane)
         parameters_layout.setContentsMargins(0, 0, 0, 0)
         parameters_layout.setSpacing(self._px(6))
@@ -236,10 +310,21 @@ class LiveUiMixin:
         parameters_form.setHorizontalSpacing(self._px(4))
         parameters_form.setVerticalSpacing(self._px(3))
         parameters_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        parameters_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.combo_live_diarization = QComboBox()
-        self.combo_live_diarization.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.combo_live_diarization.addItem(self._t("Выключено", "Off"), "off")
-        self.combo_live_diarization.addItem(self._t("Оценка в реальном времени", "Live estimate"), "live_estimate")
+        self.combo_live_diarization.addItem(
+            self._t("Оценка в реальном времени (недоступно)", "Live estimate (unavailable)"), "live_estimate",
+        )
+        # Ни один backend диаризации не умеет estimate_events: сессия грузила
+        # Sortformer и сообщала, что оценки нет. Пункт виден, но не выбирается.
+        estimate_item = self.combo_live_diarization.model().item(self.combo_live_diarization.findData("live_estimate"))
+        estimate_item.setEnabled(False)
+        self._bilingual(
+            estimate_item.setToolTip,
+            "Пока не поддерживается: используйте «После остановки».",
+            "Not supported yet: use After stop.",
+        )
         self.combo_live_diarization.addItem(self._t("После остановки", "After stop"), "after_stop")
         self.combo_live_diarization.setToolTip(
             self._t(
@@ -250,7 +335,6 @@ class LiveUiMixin:
         self.lbl_live_diarization = QLabel(self._t("Диаризация:", "Diarization:"))
         parameters_form.addRow(self.lbl_live_diarization, self.combo_live_diarization)
         self.spin_live_gain = QDoubleSpinBox()
-        self.spin_live_gain.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.spin_live_gain.setRange(0.0, 2.0)
         self.spin_live_gain.setSingleStep(0.1)
         self.spin_live_gain.setValue(1.0)
@@ -279,8 +363,6 @@ class LiveUiMixin:
             "srt": self.cb_live_export_srt,
             "vtt": self.cb_live_export_vtt,
         }
-        for checkbox in self.live_export_checkboxes.values():
-            checkbox.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         export_rows.addWidget(self.cb_live_export_txt, 0, 0, 1, 2)
         export_rows.addWidget(self.cb_live_export_txt_timecodes, 1, 0)
         export_rows.addWidget(self.cb_live_export_txt_diarize, 1, 1)
@@ -294,18 +376,19 @@ class LiveUiMixin:
         subtitle_layout.setSpacing(self._px(2))
         self.cb_live_subtitle_sentence_split = QCheckBox(self._t("По предложениям", "By sentences"))
         self.cb_live_subtitle_sentence_split.setChecked(True)
-        self.cb_live_subtitle_sentence_split.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         subtitle_layout.addWidget(self.cb_live_subtitle_sentence_split)
+        # Minimum, not fixed, widths: native Windows spin buttons are wider
+        # than Fusion's and a 44 pt box showed no digits at all.
         self.lbl_live_subtitle_max_lines = QLabel(self._t("Строк:", "Lines:"))
         self.spin_live_subtitle_max_lines = QSpinBox()
         self.spin_live_subtitle_max_lines.setRange(1, 4)
         self.spin_live_subtitle_max_lines.setValue(2)
-        self.spin_live_subtitle_max_lines.setFixedWidth(self._px(44))
+        self.spin_live_subtitle_max_lines.setMinimumWidth(self._px(64))
         self.lbl_live_subtitle_max_width = QLabel(self._t("Символов:", "Characters:"))
         self.spin_live_subtitle_max_width = QSpinBox()
         self.spin_live_subtitle_max_width.setRange(20, 100)
         self.spin_live_subtitle_max_width.setValue(64)
-        self.spin_live_subtitle_max_width.setFixedWidth(self._px(52))
+        self.spin_live_subtitle_max_width.setMinimumWidth(self._px(72))
         subtitle_lines = QHBoxLayout()
         subtitle_lines.setSpacing(self._px(3))
         subtitle_lines.addWidget(self.lbl_live_subtitle_max_lines)
@@ -321,54 +404,4 @@ class LiveUiMixin:
         exports_group_layout.addLayout(subtitle_layout)
         parameters_layout.addWidget(self.grp_live_exports)
         parameters_layout.addStretch()
-        workspace.addWidget(parameters_pane)
-
-        layout.addLayout(workspace, 1)
-
-        self.combo_live_source.currentIndexChanged.connect(self._update_live_source_controls)
-        self.combo_live_diarization.currentIndexChanged.connect(self._update_live_export_controls)
-        for checkbox in self.live_export_checkboxes.values():
-            checkbox.stateChanged.connect(self._update_live_export_controls)
-        self._refresh_live_devices()
-        self._update_live_output_folder_label(self.live_output_dir.text())
-        self._update_live_source_controls()
-        self._update_live_export_controls()
-        self._update_live_control_state()
-        self.signals.live_status.connect(self._update_live_recorder_display)
-        return tab
-
-    def _update_live_recorder_display(self, status) -> None:
-        state = getattr(getattr(status, "state", None), "value", "")
-        if state == "starting":
-            self._live_timer_ticker.stop()
-            self._live_timer_elapsed_ms = 0
-            self._live_timer_active = False
-            self.lbl_live_timer.setText("00:00:00")
-        elif state == "recording":
-            if not self._live_timer_active:
-                self._live_timer_clock.start()
-                self._live_timer_active = True
-                self._live_timer_ticker.start()
-            self.lbl_live_waveform.setText(self._t("Захват аудио", "Capturing audio"))
-        elif state == "paused":
-            self._pause_live_recorder_timer()
-            self.lbl_live_waveform.setText(self._t("Запись на паузе", "Capture paused"))
-        elif state in {"stopped", "failed"}:
-            self._pause_live_recorder_timer()
-            self.lbl_live_waveform.setText(self._t("Аудиосигнал завершён", "Audio capture complete"))
-
-    def _pause_live_recorder_timer(self) -> None:
-        if self._live_timer_active:
-            self._live_timer_elapsed_ms += self._live_timer_clock.elapsed()
-            self._live_timer_active = False
-        self._live_timer_ticker.stop()
-        self._refresh_live_recorder_timer()
-
-    def _refresh_live_recorder_timer(self) -> None:
-        elapsed_ms = self._live_timer_elapsed_ms
-        if self._live_timer_active:
-            elapsed_ms += self._live_timer_clock.elapsed()
-        total_seconds = elapsed_ms // 1000
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        self.lbl_live_timer.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        return parameters_pane

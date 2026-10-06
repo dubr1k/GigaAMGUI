@@ -2,6 +2,7 @@
 
 import importlib
 import os
+import sys
 
 import pytest
 
@@ -10,6 +11,18 @@ import src.config as config
 
 def test_config_env_defaults(monkeypatch):
     with monkeypatch.context() as env:
+        # Reload заново прогоняет load_env() и bootstrap_data_dir(), а те читают
+        # user/project .env и сохранённый GUI-выбор каталога данных. Без изоляции
+        # тест проверяет не дефолты, а личную конфигурацию машины, и зеленеет
+        # только на чистом CI-раннере.
+        import dotenv
+
+        from src import data_paths
+
+        env.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+        env.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+        env.delenv("GIGAAM_DATA_DIR", raising=False)
+        env.delenv("GIGAAM_PYTORCH_MODEL_DIR", raising=False)
         env.delenv("ASR_BACKEND", raising=False)
         env.delenv("ASR_ALLOW_FALLBACK", raising=False)
         env.delenv("ASR_SEGMENTATION_MODE", raising=False)
@@ -23,14 +36,20 @@ def test_config_env_defaults(monkeypatch):
         assert config.ASR_BACKEND == "auto"
         assert config.ASR_ALLOW_FALLBACK is True
         assert config.ASR_SEGMENTATION_MODE == "vad"
-        assert config.ASR_VAD_DEVICE == "cpu"
+        # На Apple Silicon память общая, отдельного бюджета у ускорителя нет:
+        # VAD на MPS даёт меньший пик, чем на CPU, и вчетверо меньшее время.
+        # На CUDA бюджет VRAM отдельный и ограниченный — там остаётся CPU.
+        assert config.ASR_VAD_DEVICE == ("auto" if sys.platform == "darwin" else "cpu")
         assert config.ONNX_PROVIDER == "auto"
         assert config.ONNX_QUANTIZATION is None
         assert config.ONNX_MODEL_DIR is None
         assert config.ONNX_VAD_MODEL == "silero"
     importlib.reload(config)
     assert config.ASR_SEGMENTATION_MODE == os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
-    assert config.ASR_VAD_DEVICE == (os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu")
+    _vad_default = "auto" if sys.platform == "darwin" else "cpu"
+    assert config.ASR_VAD_DEVICE == (
+        os.getenv("ASR_VAD_DEVICE", _vad_default).strip().lower() or _vad_default
+    )
 
 
 def test_config_parse_bool_false_and_overrides(monkeypatch):
@@ -49,7 +68,10 @@ def test_config_parse_bool_false_and_overrides(monkeypatch):
         assert config.ASR_VAD_DEVICE == "cuda"
     importlib.reload(config)
     assert config.ASR_SEGMENTATION_MODE == os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
-    assert config.ASR_VAD_DEVICE == (os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu")
+    _vad_default = "auto" if sys.platform == "darwin" else "cpu"
+    assert config.ASR_VAD_DEVICE == (
+        os.getenv("ASR_VAD_DEVICE", _vad_default).strip().lower() or _vad_default
+    )
 
 
 def test_config_accepts_safe_overlap_mode(monkeypatch):
@@ -89,4 +111,55 @@ def test_invalid_onnx_runtime_setting_is_rejected(monkeypatch, name, value, mess
         env.setenv(name, value)
         with pytest.raises(ValueError, match=message):
             importlib.reload(config)
+    importlib.reload(config)
+
+
+def test_frozen_macos_x86_64_defaults_to_onnx_backends(monkeypatch):
+    """Замороженная Intel-сборка обязана выбирать onnx сама (issue #45).
+
+    auto на не-arm64 macOS ушёл бы в PyTorch-ветку, которой там неоткуда взяться:
+    колёса torch под x86_64 закончились на 2.2.2 при требовании >=2.6.0.
+    """
+    import platform as platform_module
+
+    with monkeypatch.context() as env:
+        import dotenv
+
+        from src import data_paths
+
+        env.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+        env.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+        env.delenv("ASR_BACKEND", raising=False)
+        env.delenv("DIARIZATION_BACKEND", raising=False)
+        env.setattr(sys, "frozen", True, raising=False)
+        env.setattr(sys, "platform", "darwin")
+        env.setattr(platform_module, "machine", lambda: "x86_64")
+        importlib.reload(config)
+
+        assert config.ONNX_ONLY_BUILD is True
+        assert config.ASR_BACKEND == "onnx"
+        assert config.DIARIZATION_BACKEND == "onnx"
+    importlib.reload(config)
+
+
+def test_unfrozen_checkout_keeps_auto_backend_defaults(monkeypatch):
+    import platform as platform_module
+
+    with monkeypatch.context() as env:
+        import dotenv
+
+        from src import data_paths
+
+        env.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+        env.setattr(data_paths, "load_data_dir_selection", lambda **kwargs: None)
+        env.delenv("ASR_BACKEND", raising=False)
+        env.delenv("DIARIZATION_BACKEND", raising=False)
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        env.setattr(sys, "platform", "darwin")
+        env.setattr(platform_module, "machine", lambda: "x86_64")
+        importlib.reload(config)
+
+        assert config.ONNX_ONLY_BUILD is False
+        assert config.ASR_BACKEND == "auto"
+        assert config.DIARIZATION_BACKEND == "pyannote"
     importlib.reload(config)

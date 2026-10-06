@@ -8,13 +8,19 @@ import os
 import sys
 from collections.abc import Callable, Iterable
 
-from src.core.asr.models import ONNX_ASR_MODELS, onnx_model_name, validate_asr_model
+from src.core.asr.models import (
+    ONNX_ASR_MODELS,
+    onnx_model_name,
+    onnx_model_repo,
+    validate_asr_model,
+)
 from src.core.asr.onnx_provider import (
     available_onnx_providers,
     onnx_session_providers,
     resolve_onnx_providers,
 )
 from src.data_paths import apply_data_dir
+from src.utils.model_cache import onnx_model_location
 
 DEFAULT_ONNX_MODELS = tuple(ONNX_ASR_MODELS)
 
@@ -39,25 +45,32 @@ def download_onnx_models(
     loader: Callable | None = None,
     available_provider_probe: Callable[[], tuple[str, ...]] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Скачать ONNX-модели, сохранив отдельный результат для каждой."""
-    if loader is None:
-        import onnx_asr
+    """Скачать ONNX-модели, сохранив отдельный результат для каждой.
 
-        loader = onnx_asr.load_model
+    ``model_dir`` — корень ONNX_MODEL_DIR: каждая модель ложится в свой
+    подкаталог, тот же, где её потом ищет приложение.
+    """
+    if loader is None:
+        from src.core.asr.onnx_loading import load_asr_model
+
+        loader = load_asr_model
     probe = available_provider_probe or available_onnx_providers
     selection = resolve_onnx_providers(provider, available=probe())
     downloaded: list[str] = []
     failed: list[str] = []
     for requested in models:
         model = validate_asr_model(requested)
+        location = onnx_model_location(onnx_model_repo(model), root=model_dir, accept_flat_root=True)
+        kwargs = {
+            "path": location.path,
+            "quantization": quantization,
+            "providers": onnx_session_providers(selection),
+            "preprocessor_config": {"use_numpy_preprocessors": False},
+        }
+        if location.offline is not None:
+            kwargs["offline"] = location.offline
         try:
-            loaded = loader(
-                onnx_model_name(model),
-                path=model_dir,
-                quantization=quantization,
-            providers=onnx_session_providers(selection),
-                preprocessor_config={"use_numpy_preprocessors": False},
-            )
+            loaded = loader(onnx_model_name(model), **kwargs)
             del loaded
             downloaded.append(model)
             print(f"✓ ONNX модель {model} загружена")
@@ -81,19 +94,24 @@ def download_onnx_vad(
     Без неё offline-развёртывание падает на первом же файле: режим сегментации
     по умолчанию — `vad`, и модель тянулась бы из сети уже во время работы.
     """
-    if loader is None:
-        import onnx_asr
+    from src.core.asr.onnx_vad import OnnxVadSegmenter
 
-        loader = onnx_asr.load_vad
+    if loader is None:
+        from src.core.asr.onnx_loading import load_vad_model
+
+        loader = load_vad_model
     probe = available_provider_probe or available_onnx_providers
     selection = resolve_onnx_providers(provider, available=probe())
+    location = OnnxVadSegmenter(model=model, model_dir=model_dir).model_location()
+    kwargs = {
+        "path": location.path,
+        "quantization": quantization,
+        "providers": onnx_session_providers(selection),
+    }
+    if location.offline is not None:
+        kwargs["offline"] = location.offline
     try:
-        loaded = loader(
-            model,
-            path=model_dir,
-            quantization=quantization,
-            providers=onnx_session_providers(selection),
-        )
+        loaded = loader(model, **kwargs)
         del loaded
         print(f"✓ ONNX VAD {model} загружен")
         return [model], []

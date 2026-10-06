@@ -470,7 +470,22 @@ def test_live_session_localizes_speaker_and_diarization_messages(tmp_path, trans
     )
     session.subscribe(updates.append)
 
-    assert session._anonymous_speaker(CaptureSource.MIC, "model-speaker") == speaker
-    session._report_live_diarization_unavailable(CaptureSource.MIC, "Sortformer unavailable.")
+    assert session._speakers.anonymous(CaptureSource.MIC, "model-speaker") == speaker
+    session._speakers.report_live_unavailable(CaptureSource.MIC, "Sortformer unavailable.")
 
     assert updates[-1].detail == detail
+
+
+def test_after_stop_diarization_leaves_events_outside_every_segment_unlabelled(tmp_path):
+    """All-zero overlaps used to pick the lexicographically largest speaker."""
+    session = LiveSession(
+        tmp_path,
+        LiveSettings(record_mix_audio=False),
+        {},
+        scheduler_factory=lambda source, on_final, on_partial, on_error: FakeScheduler(on_final, on_partial),
+    )
+    inside = TranscriptEvent("inside", 0, CaptureSource.MIC, 0, 16_000, 1, "Да", "final")
+    outside = TranscriptEvent("outside", 0, CaptureSource.MIC, 160_000, 176_000, 1, "Нет", "final")
+    segments = [SpeakerSegment(0.0, 1.0, "SPEAKER_00"), SpeakerSegment(2.0, 3.0, "SPEAKER_01")]
+
+    assert session._speakers.segment_speakers([inside, outside], segments) == {"inside": "SPEAKER_00"}

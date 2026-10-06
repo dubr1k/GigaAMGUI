@@ -64,6 +64,69 @@ def _lowest_energy_cut(
     return lower + best + width // 2
 
 
+def vad_regions_miss_active_audio(
+    audio: Any,
+    regions: list[tuple[float, float]],
+    *,
+    sample_rate: int,
+    min_gap_seconds: float = 8.0,
+    window_seconds: float = 0.5,
+    min_active_fraction: float = 0.2,
+) -> bool:
+    """Detect long energetic gaps omitted by VAD and requiring full coverage.
+
+    VAD is an optimization, not permission to discard the rest of the file.
+    Archival/noisy speech can be rejected after applause or music. A long gap is
+    suspicious only when a meaningful fraction of its windows has real signal;
+    silent tails therefore keep the efficient VAD path.
+    """
+    if sample_rate <= 0 or not regions:
+        return False
+    values = _as_mono_array(audio)
+    if not len(values):
+        return False
+    total_seconds = float(len(values)) / sample_rate
+    valid = sorted(
+        (max(0.0, float(start)), min(total_seconds, float(end)))
+        for start, end in regions
+        if float(end) > float(start)
+    )
+    valid = [(start, end) for start, end in valid if end > start]
+    if not valid:
+        return False
+
+    gaps: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in valid:
+        if start > cursor:
+            gaps.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < total_seconds:
+        gaps.append((cursor, total_seconds))
+
+    window_samples = max(1, int(window_seconds * sample_rate))
+
+    def window_rms(segment: np.ndarray) -> np.ndarray:
+        count = len(segment) // window_samples
+        if count <= 0:
+            return np.empty(0, dtype=np.float64)
+        framed = segment[: count * window_samples].reshape(count, window_samples)
+        return np.sqrt(np.mean(np.square(framed, dtype=np.float64), axis=1))
+
+    reference = window_rms(values)
+    if not len(reference):
+        return False
+    activity_threshold = max(1e-4, float(np.percentile(reference, 90)) * 0.1)
+    for start, end in gaps:
+        if end - start < min_gap_seconds:
+            continue
+        gap = values[int(start * sample_rate) : int(end * sample_rate)]
+        levels = window_rms(gap)
+        if len(levels) and float(np.mean(levels >= activity_threshold)) >= min_active_fraction:
+            return True
+    return False
+
+
 def plan_audio_chunks(
     audio: Any,
     regions: list[tuple[float, float]],
@@ -81,6 +144,9 @@ def plan_audio_chunks(
     делятся около локальных минимумов энергии. Окна декодирования перекрываются,
     а ``start_sec/end_sec`` остаются смежными и не перекрываются — это сохраняет
     корректные таймкоды и даёт контекст по обе стороны вынужденного разреза.
+
+    Номинальный таймлайн монотонен независимо от того, что вернул VAD: область,
+    начинающаяся раньше конца уже спланированной, поджимается к этому концу.
     """
 
     if sample_rate <= 0:
@@ -100,15 +166,17 @@ def plan_audio_chunks(
     energy_window_samples = max(1, int(energy_window_seconds * sample_rate))
     configured_min_samples = max(1, int(min_chunk_seconds * sample_rate))
     chunks: list[AudioChunk] = []
+    timeline_end = 0.0
 
     for group, (raw_start, raw_end) in enumerate(regions):
-        boundary_start = max(0.0, float(raw_start))
+        boundary_start = max(0.0, float(raw_start), timeline_end)
         boundary_end = min(float(total_samples) / sample_rate, float(raw_end))
         region_start = max(0, int(boundary_start * sample_rate))
         region_end = min(total_samples, int(boundary_end * sample_rate))
         duration = region_end - region_start
         if duration <= 0:
             continue
+        timeline_end = boundary_end
 
         if duration <= max_samples:
             chunks.append(
@@ -305,8 +373,18 @@ def _aligned_tail_prefix_overlap(
     return trim_words, matched
 
 
+_LEADING_PUNCTUATION = " \t\r\n,.;:!?…—-"
+
+
 def stitch_overlapping_text(previous: str, current: str) -> tuple[str, str, int]:
     """Убрать повтор начала нового окна, распознанный в аудио-перекрытии."""
+
+    cleaned_previous, trimmed, trim_words, _cut = _stitch_overlap(previous, current)
+    return cleaned_previous, trimmed, trim_words
+
+
+def _stitch_overlap(previous: str, current: str) -> tuple[str, str, int, int]:
+    """Сшивка текста; четвёртое значение — позиция в ``current``, с которой он сохранён."""
 
     previous_words = _word_spans(previous)
     current_words = _word_spans(current)
@@ -335,19 +413,94 @@ def stitch_overlapping_text(previous: str, current: str) -> tuple[str, str, int]
             current_words,
         )
     if overlap == 0:
-        return previous, current, 0
+        return previous, current, 0, 0
 
     if trim_words < len(current_words):
         cut = current_words[trim_words][1]
     else:
         cut = len(current)
-    trimmed = current[cut:].lstrip(" \t\r\n,.;:!?…—-")
+    trimmed = current[cut:].lstrip(_LEADING_PUNCTUATION)
     cleaned_previous = _TRAILING_CONTINUATION_RE.sub("", previous).rstrip()
-    # Третьим значением возвращается число слов, реально удалённых из текста, а
-    # не число совпавших: при вставке между совпавшими блоками из текста уходят
-    # ещё и слова вставки. Потребители режут этим значением список words, и
-    # рассинхрон приводил к дублю слова на стыке либо к потере таймкодов.
-    return cleaned_previous, trimmed, trim_words
+    # Третьим значением возвращается число слов регулярки, реально удалённых из
+    # текста, а не число совпавших: при вставке между совпавшими блоками из
+    # текста уходят ещё и слова вставки. Список words модели этим числом резать
+    # нельзя — см. stitch_chunk.
+    return cleaned_previous, trimmed, trim_words, cut
+
+
+@dataclass(frozen=True)
+class ChunkStitch:
+    """Результат сшивки окна с предыдущим сегментом той же VAD-группы."""
+
+    previous_text: str
+    previous_words: list[TranscriptionWord] | None
+    text: str
+    # Сколько слов модели срезать с начала words текущего окна
+    # (trim_prefix_words для normalize_chunk_words).
+    trim_words: int
+
+
+def _strip_trailing_continuation(words: list[TranscriptionWord]) -> list[TranscriptionWord]:
+    """Убрать из words то же «…» в конце, что сшивка убрала из текста."""
+    result = [dict(word) for word in words]
+    while result:
+        text = str(result[-1]["text"])
+        stripped = _TRAILING_CONTINUATION_RE.sub("", text).rstrip()
+        if stripped == text:
+            break
+        if stripped:
+            result[-1]["text"] = stripped
+            break
+        result.pop()
+    return result  # type: ignore[return-value]
+
+
+def stitch_chunk(
+    previous_text: str,
+    previous_words: list[TranscriptionWord] | None,
+    text: str,
+    words: list[TranscriptionWord] | None,
+) -> ChunkStitch:
+    """Сшить окно с предыдущим сегментом, сохраняя согласованность текста и слов.
+
+    Повтор ищется по тексту (регулярка слов терпима к пунктуации и регистру),
+    но срезать нужно слова *модели*. Их число не совпадает со словами
+    регулярки: «3,5» — одно слово модели и два регулярки, отдельное «—» —
+    слово модели и ни одного регулярки. Прежний срез words по числу слов
+    регулярки терял слово после числа на стыке («…3,5 миллиона» + «рублей»)
+    или задваивал тире. Теперь срезаются слова модели, целиком лежащие до
+    позиции сшивки в тексте, и следующая за ними пунктуация — ровно то, что
+    убрала из текста сшивка. При наличии ``words`` текст окна берётся как их
+    объединение через пробел — так позиции слов в тексте известны точно.
+
+    Срезанное у предыдущего сегмента «…» убирается и из его слов: иначе
+    субтитры видели расхождение текста и слов и теряли пословные таймкоды
+    сегмента, а TXT с говорящими (собранный из слов) возвращал «…».
+    """
+    if words is not None:
+        text = " ".join(str(word["text"]) for word in words)
+    cleaned_previous, trimmed, regex_trim, cut = _stitch_overlap(previous_text, text)
+    if regex_trim == 0:
+        return ChunkStitch(previous_text, previous_words, text.strip(), 0)
+
+    if previous_words is not None and cleaned_previous != previous_text:
+        previous_words = _strip_trailing_continuation(previous_words)
+
+    if words is None:
+        return ChunkStitch(cleaned_previous, previous_words, trimmed, regex_trim)
+
+    trim = 0
+    position = 0
+    for word in words:
+        end = position + len(str(word["text"]))
+        if end > cut:
+            break
+        trim += 1
+        position = end + 1
+    while trim < len(words) and not str(words[trim]["text"]).strip(_LEADING_PUNCTUATION):
+        trim += 1
+    kept_text = " ".join(str(word["text"]) for word in words[trim:]).strip()
+    return ChunkStitch(cleaned_previous, previous_words, kept_text, trim)
 
 
 def normalize_chunk_words(

@@ -1,3 +1,6 @@
+import re
+import subprocess
+import sys
 import time
 
 import numpy as np
@@ -50,12 +53,16 @@ def test_linux_removed_device_emits_source_local_event():
     assert events[-1].source is CaptureSource.SYSTEM
 
 
-def test_linux_missing_gstreamer_has_monitor_setup_instructions():
+def test_linux_missing_runtime_has_monitor_setup_instructions(monkeypatch):
+    # Раньше тест подменял api_loader и проверял ImportError, минуя _load_linux_api,
+    # то есть сообщение с инструкцией не проверялось вообще.
     from src.live.capture.factory import CaptureUnavailable
     from src.live.capture.linux import LinuxSystemAudioAdapter
 
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
+
     with pytest.raises(CaptureUnavailable, match="PipeWire|PulseAudio"):
-        LinuxSystemAudioAdapter(api_loader=lambda: (_ for _ in ()).throw(ImportError("missing"))).devices()
+        LinuxSystemAudioAdapter().devices()
 
 
 class FakeSoundDevice:
@@ -101,6 +108,25 @@ def test_linux_sounddevice_selects_monitor_and_delivers_float32_frames():
     assert frames[0][2] == 48_000
 
 
+def test_linux_sounddevice_caps_capture_channels_for_pulse_aggregate():
+    """Pulse/PipeWire aggregates report 32 input channels; FLAC accepts at most 8."""
+    from src.live.capture.linux import SoundDeviceCapture
+
+    sounddevice = FakeSoundDevice()
+    sounddevice.query_devices = lambda: [
+        {"name": "pulse", "max_input_channels": 32, "default_samplerate": 48_000},
+        {"name": "Monitor of pulse aggregate", "max_input_channels": 32, "default_samplerate": 48_000},
+    ]
+    native = SoundDeviceCapture(sounddevice)
+    frames = []
+
+    native.start(CaptureSource.MIC, None, lambda data, timestamp_ns, rate: frames.append(data))
+    native.start(CaptureSource.SYSTEM, None, lambda data, timestamp_ns, rate: frames.append(data))
+
+    assert [kwargs["channels"] for kwargs in sounddevice.started] == [2, 2]
+    assert [chunk.shape[1] for chunk in frames] == [2, 2]
+
+
 def test_linux_system_capture_rejects_missing_monitor_source():
     from src.live.capture.factory import CaptureUnavailable
     from src.live.capture.linux import SoundDeviceCapture
@@ -110,3 +136,301 @@ def test_linux_system_capture_rejects_missing_monitor_source():
 
     with pytest.raises(CaptureUnavailable, match="monitor source"):
         native.start(CaptureSource.SYSTEM, None, lambda *_: None)
+
+
+def test_linux_bundled_portaudio_is_resolved_only_inside_a_frozen_bundle(monkeypatch, tmp_path):
+    """Вне бандла подмена ctypes не нужна и не должна происходить (issue #47)."""
+    import ctypes.util
+
+    from src.live.capture import linux
+
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    original = ctypes.util.find_library
+
+    with linux.bundled_portaudio_resolution():
+        assert ctypes.util.find_library is original
+
+
+def test_linux_bundled_portaudio_is_offered_to_sounddevice_and_restored(monkeypatch, tmp_path):
+    """Внутри бандла ldconfig не видит вшитую копию — подставляем путь сами (issue #47)."""
+    import ctypes.util
+
+    from src.live.capture import linux
+
+    library = tmp_path / linux._BUNDLED_PORTAUDIO_RELPATH
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+
+    with linux.bundled_portaudio_resolution():
+        assert ctypes.util.find_library("portaudio") == str(library)
+        assert ctypes.util.find_library("ssl") is None
+
+    assert ctypes.util.find_library("portaudio") is None
+
+
+def test_linux_missing_portaudio_names_both_the_wheel_and_the_system_package(monkeypatch):
+    """Сообщение из issue #47 советовало только несуществующий файл требований."""
+    from src.live.capture.factory import CaptureUnavailable
+    from src.live.capture.linux import _load_linux_api
+
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
+
+    with pytest.raises(CaptureUnavailable, match="requirements-live-linux.txt"):
+        _load_linux_api()
+    with pytest.raises(CaptureUnavailable, match="libportaudio2"):
+        _load_linux_api()
+
+
+class FakePactl:
+    """Настоящий формат вывода pactl — парсинг должен проверяться, а не мокаться."""
+
+    SOURCES_SHORT = (
+        "0\talsa_output.pci-0000_04_00.6.analog-stereo.monitor\tPipeWire\ts32le 2ch 48000Hz\tIDLE\n"
+        "1\talsa_input.usb-Logitech_C920.analog-stereo\tPipeWire\ts32le 1ch 44100Hz\tSUSPENDED\n"
+        "2\talsa_output.usb-Logi_USB_Headset.analog-stereo.monitor\tPipeWire\ts32le 2ch 44100Hz\tIDLE\n"
+    )
+
+    def __init__(self, *, pid=4242, move_succeeds=True):
+        self.pid = pid
+        self.move_succeeds = move_succeeds
+        #: Наша запись появляется у сервера только после открытия потока —
+        #: именно по этому признаку она и опознаётся.
+        self.open_streams = 0
+        self.calls = []
+
+    def __call__(self, args, **kwargs):
+        self.calls.append(list(args))
+        command = args[1:]
+        if command == ["list", "sources", "short"]:
+            return self._ok(self.SOURCES_SHORT)
+        if command == ["get-default-sink"]:
+            return self._ok("alsa_output.usb-Logi_USB_Headset.analog-stereo\n")
+        if command == ["list", "source-outputs"]:
+            listing = "Source Output #7\n" '\tapplication.process.id = "1"\n'
+            # Микрофон того же процесса, открытый до системного звука.
+            listing += "Source Output #9\n" f'\tapplication.process.id = "{self.pid}"\n'
+            if self.open_streams:
+                listing += "Source Output #11\n" f'\tapplication.process.id = "{self.pid}"\n'
+            return self._ok(listing)
+        if command[:1] == ["move-source-output"]:
+            return self._ok("") if self.move_succeeds else self._fail()
+        return self._fail()
+
+    @staticmethod
+    def _ok(stdout):
+        return subprocess.CompletedProcess(["pactl"], 0, stdout, "")
+
+    @staticmethod
+    def _fail():
+        return subprocess.CompletedProcess(["pactl"], 1, "", "error")
+
+
+class PulseOnlySoundDevice(FakeSoundDevice):
+    """Перечисление PortAudio из issue #49: агрегаты есть, мониторов нет."""
+
+    def __init__(self, pactl=None):
+        super().__init__()
+        self._pactl = pactl
+
+    def InputStream(self, **kwargs):
+        if self._pactl is not None:
+            self._pactl.open_streams += 1
+        return super().InputStream(**kwargs)
+
+    def query_devices(self):
+        return [
+            {"name": "HD Pro Webcam C920: USB Audio (hw:3,0)", "max_input_channels": 2, "default_samplerate": 32_000},
+            {"name": "default", "max_input_channels": 32, "default_samplerate": 48_000},
+            {"name": "pulse", "max_input_channels": 32, "default_samplerate": 48_000},
+        ]
+
+
+@pytest.fixture
+def pactl(monkeypatch):
+    from src.live.capture import pulse
+
+    fake = FakePactl()
+    monkeypatch.setattr(pulse.subprocess, "run", fake)
+    monkeypatch.setattr("src.live.capture.linux.os.getpid", lambda: fake.pid)
+    return fake
+
+
+def test_linux_system_devices_include_monitors_absent_from_portaudio(pactl):
+    """Мониторы PipeWire не попадают в перечисление PortAudio (issue #49)."""
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    native = LinuxSoundDeviceCapture(PulseOnlySoundDevice(pactl))
+
+    devices = native.devices(CaptureSource.SYSTEM)
+
+    assert [device["name"] for device in devices] == [
+        "alsa_output.pci-0000_04_00.6.analog-stereo.monitor",
+        "alsa_output.usb-Logi_USB_Headset.analog-stereo.monitor",
+    ]
+    assert [device["sample_rate"] for device in devices] == [48_000, 44_100]
+    # Монитор текущего sink по умолчанию — предвыбранный источник.
+    assert [device["is_default"] for device in devices] == [False, True]
+    # Микрофоны по-прежнему перечисляет PortAudio, звуковой сервер не спрашивается.
+    assert [device["name"] for device in native.devices(CaptureSource.MIC)] == [
+        "HD Pro Webcam C920: USB Audio (hw:3,0)",
+        "default",
+        "pulse",
+    ]
+
+
+def test_linux_pulse_monitor_opens_the_aggregate_and_moves_the_stream(pactl):
+    """Монитор открывается через агрегат pulse и перецепляется на себя."""
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    sounddevice = PulseOnlySoundDevice(pactl)
+    native = LinuxSoundDeviceCapture(sounddevice)
+    frames = []
+
+    native.start(CaptureSource.SYSTEM, None, lambda data, timestamp_ns, rate: frames.append((data, rate)))
+
+    assert sounddevice.started[0]["device"] == 2  # индекс "pulse", а не монитора
+    assert sounddevice.started[0]["channels"] == 2
+    assert frames[0][1] == 44_100
+    # Перецепляется именно новая запись, а не микрофон того же процесса (#9).
+    assert pactl.calls[-1] == [
+        "pactl",
+        "move-source-output",
+        "11",
+        "alsa_output.usb-Logi_USB_Headset.analog-stereo.monitor",
+    ]
+
+
+def test_linux_pulse_monitor_start_fails_instead_of_recording_the_microphone(pactl):
+    """Не перецепив поток, захват писал бы источник по умолчанию — то есть микрофон."""
+    from src.live.capture.factory import CaptureUnavailable
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    pactl.move_succeeds = False
+    sounddevice = PulseOnlySoundDevice(pactl)
+    native = LinuxSoundDeviceCapture(sounddevice)
+
+    with pytest.raises(CaptureUnavailable, match="move the capture stream"):
+        native.start(CaptureSource.SYSTEM, None, lambda *_: None)
+
+    assert native._stream is None
+
+
+class LocalizedPactl(FakePactl):
+    """pactl переводит вывод по локали окружения (issue #49).
+
+    На ru_RU заголовок записи — «Выход источника №101», а sample-spec —
+    «s32le 2-канальный 4800»: обе регулярки парсера рассчитаны на C-локаль и
+    не находят ничего. Здесь перевод применяется ко всему, что не запрошено с
+    ``LC_ALL=C`` — то есть тест ловит именно отсутствие фиксации локали.
+    """
+
+    def __call__(self, args, **kwargs):
+        completed = super().__call__(args, **kwargs)
+        if (kwargs.get("env") or {}).get("LC_ALL") == "C":
+            return completed
+        return subprocess.CompletedProcess(
+            completed.args, completed.returncode, self._localize(completed.stdout), completed.stderr
+        )
+
+    @staticmethod
+    def _localize(stdout):
+        stdout = re.sub(r"^Source Output #(\d+)", r"Выход источника №\1", stdout, flags=re.M)
+        return re.sub(r"(\d+)ch (\d+)Hz", lambda match: f"{match.group(1)}-канальный {match.group(2)[:-1]}", stdout)
+
+
+@pytest.fixture
+def localized_pactl(monkeypatch):
+    from src.live.capture import pulse
+
+    fake = LocalizedPactl()
+    monkeypatch.setattr(pulse.subprocess, "run", fake)
+    monkeypatch.setattr("src.live.capture.linux.os.getpid", lambda: fake.pid)
+    return fake
+
+
+def test_linux_monitors_are_enumerated_under_a_localized_pactl(localized_pactl):
+    """Локализованный sample-spec отдавал частоту 4800 вместо 48000 (issue #49)."""
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    native = LinuxSoundDeviceCapture(PulseOnlySoundDevice(localized_pactl))
+
+    devices = native.devices(CaptureSource.SYSTEM)
+
+    assert [device["sample_rate"] for device in devices] == [48_000, 44_100]
+    assert [device["is_default"] for device in devices] == [False, True]
+
+
+def test_linux_localized_pactl_still_moves_the_capture_stream(localized_pactl):
+    """Заголовок «Выход источника №N» ронял перецепку: своя запись не находилась.
+
+    Именно это ломало каждую сессию из issue #49 — таймаут 2 c, отказ старта,
+    и system.flac с двумя секундами микрофона.
+    """
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    sounddevice = PulseOnlySoundDevice(localized_pactl)
+    native = LinuxSoundDeviceCapture(sounddevice)
+
+    native.start(CaptureSource.SYSTEM, None, lambda *_: None)
+
+    assert localized_pactl.calls[-1] == [
+        "pactl",
+        "move-source-output",
+        "11",
+        "alsa_output.usb-Logi_USB_Headset.analog-stereo.monitor",
+    ]
+
+
+def test_linux_pactl_is_always_asked_in_the_c_locale(pactl, monkeypatch):
+    """Локаль задаём мы, а не окружение пользователя."""
+    from src.live.capture import pulse
+
+    monkeypatch.setenv("LC_ALL", "ru_RU.UTF-8")
+    monkeypatch.setenv("LANGUAGE", "ru")
+    environments = []
+    run = pulse.subprocess.run
+    monkeypatch.setattr(
+        pulse.subprocess, "run", lambda args, **kwargs: (environments.append(kwargs.get("env")), run(args, **kwargs))[1]
+    )
+
+    pulse.monitors()
+
+    assert environments[0]["LC_ALL"] == "C"
+    assert environments[0]["LANGUAGE"] == ""
+
+
+def test_linux_without_pactl_reports_how_to_enumerate_monitors(monkeypatch):
+    """Без pactl список пуст — сообщение должно называть причину, а не только «включите монитор»."""
+    from src.live.capture import pulse
+    from src.live.capture.factory import CaptureUnavailable
+    from src.live.capture.linux import LinuxSoundDeviceCapture
+
+    monkeypatch.setattr(pulse.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("pactl")))
+    native = LinuxSoundDeviceCapture(PulseOnlySoundDevice())
+
+    assert native.devices(CaptureSource.SYSTEM) == []
+    with pytest.raises(CaptureUnavailable, match="pulseaudio-utils"):
+        native.start(CaptureSource.SYSTEM, None, lambda *_: None)
+
+
+def test_linux_newest_source_output_is_chosen_by_number_not_by_text(monkeypatch):
+    """Sorted as strings, "99" came after "100" and the older stream was moved."""
+    from src.live.capture import pulse
+
+    class TwoNewOutputs(FakePactl):
+        def __call__(self, args, **kwargs):
+            if args[1:] == ["list", "source-outputs"]:
+                self.calls.append(list(args))
+                return self._ok(
+                    "Source Output #99\n" f'\tapplication.process.id = "{self.pid}"\n'
+                    "Source Output #100\n" f'\tapplication.process.id = "{self.pid}"\n'
+                )
+            return super().__call__(args, **kwargs)
+
+    fake = TwoNewOutputs()
+    monkeypatch.setattr(pulse.subprocess, "run", fake)
+
+    assert pulse.attach_to_monitor("sink.monitor", fake.pid)
+    assert fake.calls[-1] == ["pactl", "move-source-output", "100", "sink.monitor"]

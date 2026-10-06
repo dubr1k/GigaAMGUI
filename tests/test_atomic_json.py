@@ -37,3 +37,25 @@ def test_overwrite_preserves_validity(tmp_path):
     save_json_atomic(path, {"v": 2})
     with open(path, encoding="utf-8") as f:
         assert json.load(f) == {"v": 2}
+
+
+def test_text_is_written_with_the_platform_line_endings(monkeypatch, tmp_path):
+    # Транскрипты всегда писались обычным open(..., "w"): на Windows — с CRLF.
+    # Общий атомарный писатель не должен молча переключать их на LF (newline="").
+    import os
+
+    from src.utils import atomic_json
+
+    seen = {}
+    real_fdopen = os.fdopen
+
+    def recording_fdopen(fd, *args, **kwargs):
+        seen.update(kwargs)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(atomic_json.os, "fdopen", recording_fdopen)
+    target = tmp_path / "out" / "a.txt"
+    atomic_json.write_text_atomic(target, "one\ntwo\n")
+
+    assert seen.get("newline") is None
+    assert target.read_text(encoding="utf-8").splitlines() == ["one", "two"]

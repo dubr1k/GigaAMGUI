@@ -4,29 +4,21 @@
 """
 
 import os
+import platform
 import re
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .core.runtime_options import (
+    parse_bool,
+    validate_backend_name,
+    validate_onnx_provider,
+)
 from .data_paths import bootstrap_data_dir
 
 APP_CONFIG_DIR_NAME = "GigaAMTranscriber"
-
-
-def _validate_backend_name(value: str) -> str:
-    normalized = (value or "").strip().lower()
-    if normalized not in {"auto", "mlx", "onnx", "pytorch"}:
-        raise ValueError(f"Unsupported ASR backend: {normalized}")
-    return normalized
-
-
-def _validate_onnx_provider(value: str | None) -> str:
-    normalized = (value or "auto").strip().lower() or "auto"
-    if normalized not in {"auto", "cpu", "cuda", "tensorrt", "coreml", "directml"}:
-        raise ValueError(f"Unsupported ONNX provider: {normalized}")
-    return normalized
 
 
 def _validate_onnx_quantization(value: str | None) -> str | None:
@@ -36,19 +28,6 @@ def _validate_onnx_quantization(value: str | None) -> str | None:
     if normalized != "int8":
         raise ValueError(f"Unsupported ONNX quantization: {normalized}")
     return normalized
-
-
-def _parse_bool(value: str | bool | None, *, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "t", "yes", "y", "on", "enable", "enabled"}:
-        return True
-    if normalized in {"0", "false", "f", "no", "n", "off", "disable", "disabled"}:
-        return False
-    return default
 
 
 def user_config_dir() -> Path:
@@ -73,8 +52,35 @@ def project_env_path() -> Path:
     return Path(__file__).resolve().parent.parent / ".env"
 
 
+_ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ENV_BARE_VALUE = re.compile(r"[A-Za-z0-9_\-.:/+=@,]*")
+
+
+def _env_quoted(value: str) -> str:
+    """Значение для .env: голое, если безопасно, иначе в двойных кавычках.
+
+    python-dotenv раскрывает в двойных кавычках \\\\, \\", \\n, \\r, \\t — этим
+    и экранируем. Без кавычек перевод строки в значении (вставленный токен)
+    дописывал в .env произвольные ключи, а пробелы по краям и «#» терялись.
+    """
+    if _ENV_BARE_VALUE.fullmatch(value):
+        return value
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
 def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
-    """Save one KEY=value pair to the persistent user .env file."""
+    """Save one KEY=value pair to the persistent user .env file (atomically)."""
+    if not _ENV_KEY.fullmatch(key):
+        raise ValueError(f"Некорректное имя переменной окружения: {key!r}")
+    from .utils.atomic_json import write_text_atomic
+
     target = env_path or user_env_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
@@ -83,15 +89,11 @@ def save_env_value(key: str, value: str, env_path: Path | None = None) -> Path:
             line for line in target.read_text(encoding="utf-8").splitlines()
             if not line.startswith(f"{key}=")
         ]
-    lines.append(f"{key}={value}")
-    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines.append(f"{key}={_env_quoted(value)}")
+    # Атомарно: обрыв записи не должен оставить .env без остальных ключей.
+    write_text_atomic(target, "\n".join(lines) + "\n")
     os.environ[key] = value
     return target
-
-
-def _has_cyrillic(text: str) -> bool:
-    """Проверяет наличие кириллических символов в строке"""
-    return bool(re.search(r'[а-яА-ЯёЁ]', text))
 
 
 # Папка с моделями, привезёнными офлайн-сборкой (заполняется ниже).
@@ -161,29 +163,49 @@ if HF_TOKEN and HF_TOKEN.startswith("hf_"):
 MODEL_NAME = os.getenv("MODEL_NAME", "ai-sage/GigaAM-v3")
 MODEL_REVISION = os.getenv("MODEL_REVISION", "e2e_rnnt")
 
+# Замороженная сборка под macOS x86_64 везёт только ONNX-цепочку: колёс
+# torch>=2.6 под Intel-макax не существует (последнее — 2.2.2), а mlx есть лишь
+# под Apple Silicon. auto на не-arm64 macOS ушёл бы в PyTorch-ветку и упал бы с
+# «No module named 'gigaam'» — для пользователя это выглядит необъяснимо
+# (issue #45).
+ONNX_ONLY_BUILD = bool(
+    getattr(sys, "frozen", False)
+    and sys.platform == "darwin"
+    and platform.machine() != "arm64"
+)
+
 # ASR backend strategy. Офлайн-сборка везёт только ONNX-цепочку, а auto выбрал
 # бы MLX или PyTorch и полез бы за ними в сеть — ровно то, ради чего затевался
 # офлайн-вариант. Явная настройка пользователя по-прежнему главнее.
-_DEFAULT_ASR_BACKEND = "onnx" if BUNDLED_MODELS_DIR else "auto"
-ASR_BACKEND = _validate_backend_name(os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND))
+_DEFAULT_ASR_BACKEND = "onnx" if (BUNDLED_MODELS_DIR or ONNX_ONLY_BUILD) else "auto"
+ASR_BACKEND = validate_backend_name(os.getenv("ASR_BACKEND", _DEFAULT_ASR_BACKEND))
 # По той же причине диаризация по умолчанию тоже ONNX: pyannote требует torch
 # и токен HuggingFace, которых в офлайн-наборе нет.
+_DEFAULT_DIARIZATION_BACKEND = "onnx" if (BUNDLED_MODELS_DIR or ONNX_ONLY_BUILD) else "pyannote"
 DIARIZATION_BACKEND = (
-    os.getenv("DIARIZATION_BACKEND", "onnx" if BUNDLED_MODELS_DIR else "pyannote")
+    os.getenv("DIARIZATION_BACKEND", _DEFAULT_DIARIZATION_BACKEND)
     .strip()
     .lower()
     or "pyannote"
 )
 ASR_MODEL = os.getenv("ASR_MODEL", MODEL_REVISION)
-ASR_ALLOW_FALLBACK = _parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
+ASR_ALLOW_FALLBACK = parse_bool(os.getenv("ASR_ALLOW_FALLBACK"), default=True)
 ASR_SEGMENTATION_MODE = os.getenv("ASR_SEGMENTATION_MODE", "vad").strip().lower()
 if ASR_SEGMENTATION_MODE not in {"vad", "overlap_chunks", "fixed_chunks"}:
     ASR_SEGMENTATION_MODE = "vad"
-# Keep the additional segmentation model off the ASR accelerator by default:
-# pyannote VAD next to GigaAM on the same GPU/MPS is a real OOM source.
-ASR_VAD_DEVICE = os.getenv("ASR_VAD_DEVICE", "cpu").strip().lower() or "cpu"
+# Keep the additional segmentation model off the ASR accelerator where that
+# accelerator has its own limited budget: pyannote VAD next to GigaAM on one
+# CUDA card is a real OOM source. Apple Silicon shares memory with the CPU, so
+# there is no separate budget to blow: measured on a 117-minute file, VAD on MPS
+# peaked *lower* than on CPU (4.52 GB vs 4.88 GB) and ran 4x faster (73s vs
+# 296s). Falling back is safe either way — _resolve_chunks catches a failing VAD
+# and switches to overlap chunking.
+_DEFAULT_VAD_DEVICE = "auto" if sys.platform == "darwin" else "cpu"
+ASR_VAD_DEVICE = (
+    os.getenv("ASR_VAD_DEVICE", _DEFAULT_VAD_DEVICE).strip().lower() or _DEFAULT_VAD_DEVICE
+)
 MLX_MODEL_REPO = os.getenv("MLX_MODEL_REPO", "aystream/GigaAM-v3-e2e-rnnt-mlx")
-ONNX_PROVIDER = _validate_onnx_provider(os.getenv("ONNX_PROVIDER"))
+ONNX_PROVIDER = validate_onnx_provider(os.getenv("ONNX_PROVIDER"))
 ONNX_QUANTIZATION = _validate_onnx_quantization(os.getenv("ONNX_QUANTIZATION"))
 ONNX_MODEL_DIR = os.getenv("ONNX_MODEL_DIR", "").strip() or None
 ONNX_VAD_MODEL = os.getenv("ONNX_VAD_MODEL", "silero").strip() or "silero"
@@ -201,8 +223,10 @@ APP_TITLE = os.getenv("APP_TITLE", "GigaAM v3 Transcriber")
 APP_GEOMETRY = os.getenv("APP_GEOMETRY", "900x700")
 APP_THEME = os.getenv("APP_THEME", "blue")
 
-# Файл статистики
-STATS_FILE = os.getenv("STATS_FILE", "processing_stats.json")
+# Относительный путь из .env привязан к пользовательскому config, не к .app.
+STATS_FILE = os.path.expanduser(os.getenv("STATS_FILE", "processing_stats.json"))
+if not os.path.isabs(STATS_FILE):
+    STATS_FILE = str(user_config_dir() / STATS_FILE)
 
 # Настройки LLM API (OpenAI-compatible или Anthropic Messages API)
 LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1")

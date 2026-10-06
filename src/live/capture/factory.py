@@ -32,7 +32,8 @@ def capture_capabilities(platform_name: str) -> CaptureCapabilities:
         return CaptureCapabilities(
             "linux",
             frozenset(CaptureSource),
-            "Install requirements-live-linux.txt and expose a PipeWire/PulseAudio monitor source.",
+            "Install requirements-live-linux.txt, libportaudio2 and pulseaudio-utils, "
+            "and expose a PipeWire/PulseAudio monitor source.",
         )
     return CaptureCapabilities(platform_name, frozenset(), "Live capture is unsupported on this platform.")
 

@@ -8,11 +8,16 @@ torch>=2.6.0,<2.9.0
 torchaudio>=2.6.0,<2.9.0
 torchvision>=0.21.0,<0.24.0
 python-dotenv>=1.0.0
-transformers>=4.57.0
-huggingface-hub>=0.36.0
+# Верхние границы — по линиям, на которых проект проверен
+# (requirements.txt, Docker, сборки). Без них установщик TUI тянул
+# pyannote.audio 4.x: его pipeline возвращает DiarizeOutput вместо Annotation,
+# и диаризация pyannote в TUI падала; transformers 5 / huggingface-hub 1.x
+# приезжали вместе с ним. tests/test_tui_requirements.py следит за этим.
+transformers>=4.57.0,<5
+huggingface-hub>=0.36.0,<1
 soundfile>=0.13.0
 librosa>=0.11.0
-pyannote.audio>=3.1.1
+pyannote.audio==3.1.1
 
 # TUI предлагает `/backend onnx` и `/onnx-provider`, а диаризация на ONNX —
 # единственная, которой не нужны ни torch, ни токен HuggingFace. Без этих двух
@@ -20,6 +25,23 @@ pyannote.audio>=3.1.1
 onnx-asr==0.12.0
 onnxruntime==1.23.2
 soxr>=1.0.0
+
+# `gigaam mcp` runs python -m src.mcp_server from the TUI venv (stdio / --http).
+mcp>=2,<3
+# MCP accepts media URLs through MediaDownloader, imported at server startup.
+yt-dlp==2026.8.19
+# The MCP server's own imports: declared directly rather than trusted to mcp.
+pydantic>=2.0.0
+starlette>=0.27.0
+
+# Imported at worker/MCP startup. They used to arrive only transitively (torch,
+# transformers, accelerate); psutil did not, and `gigaam --update` failed on
+# `import psutil` in llm_service. tests/test_tui_requirements.py keeps this
+# list in step with the top-level imports of src.tui_worker and src.mcp_server.
+numpy>=1.26.0,<3
+psutil>=5.9.0
+requests>=2.32.0
+typing_extensions>=4.12.0
 
 # GigaAM is installed separately by each bootstrap with --no-build-isolation:
 # its pinned revision still imports pkg_resources during setup.

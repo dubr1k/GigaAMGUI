@@ -219,3 +219,26 @@ def test_load_pyannote_pipeline_supports_modern_token_parameter(monkeypatch):
     vad.load_pyannote_vad_pipeline(token="hf_modern", device="cpu")
 
     assert calls == [("pyannote/segmentation-3.0", "hf_modern")]
+
+
+def test_merge_speech_regions_clips_overlap_from_padded_vad_output():
+    # onnx-asr режет речь длиннее max_speech_duration_s и добавляет speech_pad
+    # с обеих сторон каждого куска, поэтому соседние области приходят
+    # перекрытыми на 2*pad. Ровно такие числа выдаёт silero на 60 с речи.
+    boundaries = merge_speech_regions(
+        [(0.0, 19.97), (19.91, 39.91), (39.85, 59.85)],
+        audio_duration=59.85,
+    )
+
+    assert boundaries == [(0.0, 19.97), (19.97, 39.91), (39.91, 59.85)]
+
+
+def test_merge_speech_regions_never_returns_overlapping_boundaries():
+    boundaries = merge_speech_regions(
+        [(0.0, 16.0), (15.5, 34.0), (33.4, 40.0), (39.8, 60.0)],
+        audio_duration=60.0,
+    )
+
+    starts = [start for start, _ in boundaries]
+    ends = [end for _, end in boundaries]
+    assert all(start >= previous_end for start, previous_end in zip(starts[1:], ends[:-1], strict=True))

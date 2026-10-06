@@ -219,8 +219,14 @@ def apply_pyannote_patch():
 
             # Создаем функцию-обертку для загрузки аудио через soundfile
             def _load_audio_with_soundfile(file_path):
-                """Загружает аудио через soundfile и возвращает в формате pyannote"""
-                audio_data, sample_rate = sf.read(file_path)
+                """Загружает аудио через soundfile и возвращает в формате pyannote
+
+                ``dtype="float32"`` обязателен: по умолчанию soundfile отдаёт
+                float64, а pyannote всё равно приводит вход к float32. На часовой
+                записи это лишний гигабайт, причём обе копии живут одновременно.
+                Тот же приём уже используется в ``core/asr/onnx_vad.py``.
+                """
+                audio_data, sample_rate = sf.read(file_path, dtype="float32")
                 audio_tensor = _audio_array_to_waveform(audio_data, torch)
                 return {"waveform": audio_tensor, "sample_rate": sample_rate}
 

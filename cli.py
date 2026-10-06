@@ -4,6 +4,7 @@ GigaAM v3 Transcriber - CLI интерфейс
 Продвинутый интерактивный командный интерфейс для транскрибации
 """
 
+import functools
 import os
 import sys
 import time
@@ -36,7 +37,6 @@ except ValueError as exc:
 import click
 import questionary
 from questionary import Style
-from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -47,12 +47,12 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from rich.table import Table
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Импорты из проекта
 from src.cli_support import interactive as cli_interactive
+from src.cli_support.ui import CLILogger, display_results, print_banner
 from src.config import (
     ASR_BACKEND,
     AUDIO_PREPROCESSING_MODE,
@@ -63,11 +63,13 @@ from src.config import (
 )
 from src.core.asr.models import ASR_MODELS
 from src.core.model_loader import ModelLoader
-from src.core.progress import ProgressEvent
+from src.core.progress import coerce_progress, stage_label
+from src.core.runtime_options import ASR_BACKENDS, ONNX_PROVIDERS
 from src.core.subtitles import SubtitleOptions
 from src.services import transcription_service
 from src.utils.audio_converter import ffmpeg_available
 from src.utils.logger import setup_logger
+from src.utils.output_naming import find_output_collisions
 from src.utils.processing_stats import ProcessingStats
 from src.utils.pyannote_patch import apply_pyannote_patch
 
@@ -94,64 +96,6 @@ custom_style = Style([
     ('instruction', ''),                     # Инструкция
     ('text', ''),                           # Текст
 ])
-
-
-class CLILogger:
-    """Логгер для CLI с красивым выводом"""
-
-    def __init__(self, verbose: bool = False):
-        self.verbose = verbose
-        self.file_logger = None
-
-    def set_file_logger(self, logger):
-        """Устанавливает файловый логгер"""
-        self.file_logger = logger
-
-    def info(self, message: str):
-        """Информационное сообщение"""
-        console.print(f"[cyan]ℹ[/cyan] {message}")
-        if self.file_logger:
-            self.file_logger.info(message)
-
-    def success(self, message: str):
-        """Успешное сообщение"""
-        console.print(f"[green]✓[/green] {message}")
-        if self.file_logger:
-            self.file_logger.info(message)
-
-    def warning(self, message: str):
-        """Предупреждение"""
-        console.print(f"[yellow]⚠[/yellow] {message}")
-        if self.file_logger:
-            self.file_logger.warning(message)
-
-    def error(self, message: str):
-        """Ошибка"""
-        console.print(f"[red]✗[/red] {message}")
-        if self.file_logger:
-            self.file_logger.error(message)
-
-    def debug(self, message: str):
-        """Отладочное сообщение"""
-        if self.verbose:
-            console.print(f"[dim]{message}[/dim]")
-        if self.file_logger:
-            self.file_logger.debug(message)
-
-
-def print_banner():
-    """Выводит красивый баннер приложения"""
-    banner = """
-    ╔═══════════════════════════════════════════════════════════╗
-    ║                                                           ║
-    ║              [bold cyan]GigaAM v3 Transcriber[/bold cyan]                 ║
-    ║                                                           ║
-    ║        [dim]Продвинутая транскрибация русской речи[/dim]         ║
-    ║                 [dim]Powered by Sber AI[/dim]                    ║
-    ║                                                           ║
-    ╚═══════════════════════════════════════════════════════════╝
-    """
-    console.print(banner)
 
 
 def process_files_with_progress(
@@ -184,6 +128,10 @@ def process_files_with_progress(
         список результатов обработки
     """
     output_formats = output_formats or ['txt']
+    collisions = find_output_collisions(files, output_dir or None)
+    if collisions:
+        names = ", ".join(sorted(os.path.basename(path) for group in collisions for path in group))
+        raise ValueError(f"Input files would overwrite the same output names: {names}")
     results = []
 
     with Progress(
@@ -204,19 +152,9 @@ def process_files_with_progress(
 
         # Текущий файл
         current_task = progress.add_task(
-            "[green]Подготовка...",
+            f"[green]{stage_label('preparing')}",
             total=100
         )
-
-        stage_names = {
-            "preparing": "Подготовка...",
-            "conversion": "Конвертация...",
-            "preprocessing": "Анализ и подготовка аудио...",
-            "transcription": "Распознавание речи...",
-            "diarization": "Диаризация...",
-            "export": "Экспорт...",
-            "finalizing": "Завершение...",
-        }
 
         batch_state = {"completed": 0.0}
         for filepath in files:
@@ -229,43 +167,21 @@ def process_files_with_progress(
             )
             def _normalize_progress_event(event_or_stage, prog=None, *, _filename=filename):
                 nonlocal current_file_progress
-                if isinstance(event_or_stage, ProgressEvent):
-                    event = event_or_stage
-                    stage = event.stage
-                    file_progress = float(event.file_progress)
-                    stage_progress = event.stage_progress
-                elif isinstance(event_or_stage, dict):
-                    stage = event_or_stage.get("stage", "preparing")
-                    file_progress = float(event_or_stage.get("file_progress", 0.0) or 0.0)
-                    stage_progress = event_or_stage.get("stage_progress")
-                else:
-                    stage = str(event_or_stage)
-                    file_progress = float(prog or 0.0)
-                    stage_progress = None
-
-                file_progress = max(0.0, min(file_progress, 1.0))
+                snapshot = coerce_progress(event_or_stage, prog)
+                # Без доли файла полоса стоит на месте, а не падает в ноль
+                file_progress = current_file_progress if snapshot.file_progress is None else snapshot.file_progress
                 current_file_progress = max(current_file_progress, file_progress)
-                task_total = 100
-                kwargs = {
-                    "description": f"[green]{_filename} — {stage_names.get(stage, stage)}",
-                    "completed": int(file_progress * 100),
-                }
-                if stage_progress is not None:
-                    kwargs["total"] = task_total
-                else:
-                    kwargs["total"] = None
-
-                progress.update(current_task, **kwargs)
+                progress.update(
+                    current_task,
+                    description=f"[green]{_filename} — {stage_label(snapshot.stage or 'preparing')}",
+                    completed=int(file_progress * 100),
+                    # Неопределённая стадия (диаризация, конвертация без длительности) — спиннер
+                    total=None if snapshot.indeterminate else 100,
+                )
                 progress.update(
                     main_task,
                     completed=int((batch_state["completed"] + current_file_progress) / len(files) * 100),
                 )
-
-                if stage == "finalizing":
-                    progress.update(
-                        current_task,
-                        description=f"[green]{_filename} — {stage_names.get(stage, stage)}"
-                    )
 
             # Процессор
             processor = transcription_service.build_processor(
@@ -308,69 +224,25 @@ def process_files_with_progress(
     return results
 
 
-def display_results(results: list[dict]):
+EXIT_FAILED = 1         # хотя бы один файл не обработан
+EXIT_INTERRUPTED = 130  # Ctrl-C: 128 + SIGINT, как у shell
+
+
+def _interrupt_exit_code(func):
+    """Ctrl-C в любой момент работы команды — сообщение и код 130.
+
+    Без этого KeyboardInterrupt ловит сам click (standalone_mode): печатает
+    «Aborted!» и выходит с 1, неотличимо от провала обработки; обработчик в
+    `__main__` до исключения так и не доходил.
     """
-    Отображает результаты обработки в виде таблицы
-
-    Args:
-        results: список результатов
-    """
-    console.print("\n")
-
-    # Создаем таблицу
-    table = Table(
-        title="📊 Результаты обработки",
-        box=box.ROUNDED,
-        show_header=True,
-        header_style="bold cyan"
-    )
-
-    table.add_column("№", style="dim", width=4, justify="right")
-    table.add_column("Файл", style="cyan")
-    table.add_column("Статус", justify="center")
-    table.add_column("Время", justify="right")
-    table.add_column("Длительность", justify="right")
-
-    total_time = 0
-    success_count = 0
-
-    for i, result in enumerate(results, 1):
-        filename = os.path.basename(result['file_path'])
-
-        # Сокращаем длинные имена
-        if len(filename) > 40:
-            filename = filename[:37] + "..."
-
-        status = "[green]✓ Успех[/green]" if result['success'] else "[red]✗ Ошибка[/red]"
-
-        processing_time = f"{result['total_time']:.1f}с"
-
-        duration = result.get('media_duration', 0)
-        duration_str = f"{int(duration//60)}:{int(duration%60):02d}" if duration > 0 else "-"
-
-        table.add_row(
-            str(i),
-            filename,
-            status,
-            processing_time,
-            duration_str
-        )
-
-        total_time += result['total_time']
-        if result['success']:
-            success_count += 1
-
-    console.print(table)
-
-    # Итоговая статистика
-    summary = Panel(
-        f"[bold green]Успешно:[/bold green] {success_count}/{len(results)} файлов\n"
-        f"[bold cyan]Общее время:[/bold cyan] {total_time:.1f}с ({total_time/60:.1f} мин)",
-        title="📈 Итого",
-        border_style="green"
-    )
-    console.print("\n")
-    console.print(summary)
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except KeyboardInterrupt:
+            console.print("\n\n[yellow]⚠ Обработка прервана пользователем[/yellow]")
+            sys.exit(EXIT_INTERRUPTED)
+    return wrapper
 
 
 @click.command()
@@ -414,7 +286,7 @@ def display_results(results: list[dict]):
 )
 @click.option(
     '--backend',
-    type=click.Choice(["auto", "mlx", "onnx", "pytorch"]),
+    type=click.Choice(ASR_BACKENDS),
     default=None,
     help='Режим ASR backend: auto/mlx/onnx/pytorch (по умолчанию берется из ASR_BACKEND)',
 )
@@ -426,7 +298,7 @@ def display_results(results: list[dict]):
 )
 @click.option(
     '--onnx-provider',
-    type=click.Choice(["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"]),
+    type=click.Choice(ONNX_PROVIDERS),
     default=None,
     help='ONNX Runtime execution provider (по умолчанию берется из ONNX_PROVIDER)',
 )
@@ -475,6 +347,7 @@ def display_results(results: list[dict]):
     show_default=True,
     help='Максимум символов в строке SRT/VTT',
 )
+@_interrupt_exit_code
 def main(
     data_dir, files, directory, output, interactive, verbose, formats, backend, model, onnx_provider,
     diarize, diarization_backend, speakers, audio_preprocessing,
@@ -507,10 +380,10 @@ def main(
         apply_data_dir(data_dir, force_specialized=True)
 
     # Баннер
-    print_banner()
+    print_banner(console)
 
     # Инициализация логгера
-    logger = CLILogger(verbose=verbose)
+    logger = CLILogger(console, verbose=verbose)
 
     # Проверка токена нужна только для pyannote. Публичный Sortformer
     # загружается без HF_TOKEN.
@@ -572,6 +445,12 @@ def main(
 
     logger.info(f"Результаты будут сохранены в: {output_dir}")
 
+    collisions = find_output_collisions(file_list, output_dir or None)
+    if collisions:
+        names = ", ".join(sorted(os.path.basename(path) for group in collisions for path in group))
+        logger.error(f"Файлы перезапишут одинаковые результаты: {names}")
+        sys.exit(2)
+
     # Настройка логирования в файл
     file_logger = setup_logger()
     logger.set_file_logger(file_logger)
@@ -586,9 +465,20 @@ def main(
             model_revision=model,
             onnx_provider=onnx_provider or ONNX_PROVIDER,
         )
-        success = model_loader.load_model(logger=lambda msg: logger.debug(msg))
+        load_messages: list[str] = []
+
+        def _loader_log(msg):
+            load_messages.append(str(msg))
+            logger.debug(msg)
+
+        success = model_loader.load_model(logger=_loader_log)
 
     if not success:
+        # Причина (нет весов в офлайн-кэше, недоступен провайдер…) раньше была
+        # видна только с -v: без него оставалась одна общая фраза.
+        reasons = [message for message in load_messages if message.startswith("Не удалось")]
+        for message in reasons or load_messages[-1:]:
+            logger.error(message)
         logger.error("Не удалось загрузить модель!")
         sys.exit(1)
 
@@ -600,11 +490,14 @@ def main(
     # Подтверждение перед обработкой
     if interactive:
         console.print("\n")
-        if not questionary.confirm(
+        confirmed = questionary.confirm(
             f"Начать обработку {len(file_list)} файлов?",
             default=True,
             style=custom_style
-        ).ask():
+        ).ask()
+        if confirmed is None:  # questionary сам ловит Ctrl-C и возвращает None
+            raise KeyboardInterrupt
+        if not confirmed:
             logger.warning("Обработка отменена пользователем")
             sys.exit(0)
 
@@ -633,7 +526,7 @@ def main(
     total_time = time.time() - start_time
 
     # Отображение результатов
-    display_results(results)
+    display_results(console, results)
 
     # Финальное сообщение
     success_count = sum(1 for r in results if r['success'])
@@ -646,14 +539,13 @@ def main(
         logger.error("Не удалось обработать ни одного файла")
 
     logger.info(f"Результаты сохранены в: {output_dir}")
+    if success_count < len(results):
+        sys.exit(EXIT_FAILED)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except KeyboardInterrupt:
-        console.print("\n\n[yellow]⚠ Обработка прервана пользователем[/yellow]")
-        sys.exit(0)
     except Exception as e:
         console.print(f"\n\n[red]❌ Критическая ошибка: {str(e)}[/red]")
         import traceback

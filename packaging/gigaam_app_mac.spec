@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for the macOS GUI bundle.
+PyInstaller spec for the macOS GUI and the headless Liquid worker.
 
-Builds dist/GigaAMTranscriber.app for Apple Silicon and bundles the installed
-PyTorch stack so the desktop GUI can use MPS without a first-run torch download.
+The default builds dist/GigaAMTranscriber.app with PyQt. GIGAAM_NATIVE_WORKER=1
+builds dist/GigaAMWorker.app without Qt from the same model and media stack.
 """
 
 import os
@@ -12,7 +12,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package
+from _spec_common import APP_BUILD_VERSION, APP_MARKETING_VERSION, APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps, collect_pure_runtime_deps, collect_static_package, collect_required, editable_package_roots
 
 runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
 onnx_d, onnx_b, onnx_h = collect_onnx_runtime_deps()
@@ -25,17 +25,14 @@ icon_icns = os.path.join(project_root, "assets", "icon.icns")
 icon_file = icon_icns if os.path.exists(icon_icns) else None
 
 
-def safe_collect(package):
-    try:
-        return collect_all(package)
-    except Exception as exc:
-        print(f"[skip] {package}: {exc}")
-        return [], [], []
-
 
 bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
     "1", "true", "yes", "on",
 }
+worker_only = os.environ.get("GIGAAM_NATIVE_WORKER", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+executable_name = "GigaAMWorker" if worker_only else "GigaAMTranscriber"
 
 packages = [
     "torch",
@@ -86,13 +83,16 @@ excluded_modules = [
 ]
 if not bundle_sortformer:
     excluded_modules.append("IPython")
+if worker_only:
+    excluded_modules += ["PyQt6", "PySide6", "src.gui"]
+
 
 datas = []
 binaries = []
 hiddenimports = []
 
 for package in packages:
-    collector = collect_static_package if package == "pyannote.audio" else safe_collect
+    collector = collect_static_package if package == "pyannote.audio" else collect_required
     package_datas, package_binaries, package_hiddenimports = collector(package)
     datas += package_datas
     binaries += package_binaries
@@ -108,11 +108,9 @@ datas += onnx_d
 binaries += onnx_b
 hiddenimports += onnx_h
 
-datas += [
-    (os.path.join(project_root, "src"), "src"),
-    (os.path.join(project_root, "assets", "icon.ico"), "."),
-    (os.path.join(project_root, "licenses", "parakeet-rs-MIT.md"), "licenses"),
-]
+if not worker_only:
+    datas.append((os.path.join(project_root, "assets", "icon.ico"), "."))
+datas.append((os.path.join(project_root, "licenses", "parakeet-rs-MIT.md"), "licenses"))
 
 bundled_gigaam_dir = os.path.join(project_root, "models", "gigaam")
 bundle_models = os.environ.get("GIGAAM_BUNDLE_MODELS", "").strip().lower() in {
@@ -148,10 +146,7 @@ hiddenimports = sorted(set(hiddenimports + [
     "scipy.signal",
     "numpy",
     "PIL",
-    "PyQt6",
-    "PyQt6.QtCore",
-    "PyQt6.QtGui",
-    "PyQt6.QtWidgets",
+    *([] if worker_only else ["PyQt6", "PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets"]),
     "dotenv",
     "dotenv.main",
     "yaml",
@@ -165,15 +160,14 @@ hiddenimports = sorted(set(hiddenimports + [
     "docx",
     "requests",
     "certifi",
-    # Ленивый src/gui/__init__ скрывает app_qt от анализа; явный hidden-import
-    # заставляет PyInstaller проанализировать его и подтянуть все mixins +
-    # core/utils/services штатно (в PYZ), а не только как сырые src/*.py.
-    "src.gui.app_qt",
+    # Lazy GUI imports are only relevant to the classic desktop app.
+    *([] if worker_only else ["src.gui.app_qt"]),
 ]))
 
 a = Analysis(
-    [os.path.join(project_root, "app.py")],
-    pathex=[project_root],
+    [os.path.join(project_root, "native_worker.py" if worker_only else "app.py")],
+    # editable gigaam (`pip install -e`) иначе невидим анализу — см. _spec_common.
+    pathex=[project_root, *editable_package_roots(["gigaam", "gigaam_mlx"])],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -194,7 +188,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="GigaAMTranscriber",
+    name=executable_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -205,7 +199,7 @@ exe = EXE(
     target_arch="arm64" if sys.platform == "darwin" else None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=icon_file,
+    icon=None if worker_only else icon_file,
 )
 
 coll = COLLECT(
@@ -215,37 +209,40 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="GigaAMTranscriber",
+    name=executable_name,
 )
 
 app = BUNDLE(
     coll,
-    name="GigaAMTranscriber.app",
-    icon=icon_file,
-    bundle_identifier="com.dubr1k.gigaamtranscriber",
+    name=executable_name + ".app",
+    icon=None if worker_only else icon_file,
+    bundle_identifier="com.dubr1k.gigaamworker" if worker_only else "com.dubr1k.gigaamtranscriber",
     info_plist={
-        "CFBundleName": "GigaAM Transcriber",
-        "CFBundleDisplayName": "GigaAM Transcriber",
-        "CFBundleShortVersionString": "1.4.1",
-        "CFBundleVersion": "1.4.1",
+        "CFBundleName": executable_name,
+        "CFBundleDisplayName": executable_name,
+        "CFBundleShortVersionString": APP_MARKETING_VERSION,
+        "GigaAMReleaseVersion": APP_VERSION,
+        "CFBundleVersion": APP_BUILD_VERSION,
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
-        "CFBundleDocumentTypes": [
-            {
-                "CFBundleTypeName": "GigaAM Supported Media",
-                "CFBundleTypeExtensions": [
-                    "mp3", "wav", "m4a", "aac", "flac", "ogg", "mp4",
-                    "avi", "mov", "mkv", "webm", "wma", "qta", "3gp",
-                ],
-                "CFBundleTypeRole": "Viewer",
-                "LSHandlerRank": "Alternate",
-            },
-            {
-                "CFBundleTypeName": "GigaAM Transcript Files",
-                "CFBundleTypeExtensions": ["txt", "md", "srt", "vtt"],
-                "CFBundleTypeRole": "Viewer",
-                "LSHandlerRank": "Alternate",
-            },
-        ],
+        **({"LSUIElement": True} if worker_only else {
+            "CFBundleDocumentTypes": [
+                {
+                    "CFBundleTypeName": "GigaAM Supported Media",
+                    "CFBundleTypeExtensions": [
+                        "mp3", "wav", "m4a", "aac", "flac", "ogg", "mp4",
+                        "avi", "mov", "mkv", "webm", "wma", "qta", "3gp",
+                    ],
+                    "CFBundleTypeRole": "Viewer",
+                    "LSHandlerRank": "Alternate",
+                },
+                {
+                    "CFBundleTypeName": "GigaAM Transcript Files",
+                    "CFBundleTypeExtensions": ["txt", "md", "srt", "vtt"],
+                    "CFBundleTypeRole": "Viewer",
+                    "LSHandlerRank": "Alternate",
+                },
+            ],
+        }),
     },
 )

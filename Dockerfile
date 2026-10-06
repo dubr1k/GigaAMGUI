@@ -43,9 +43,14 @@ RUN pip install --no-cache-dir \
 
 # Копирование requirements и установка зависимостей
 COPY requirements.txt requirements-sortformer.txt /app/
-# Установка gigaam из git (без build isolation, чтобы работал pkg_resources)
+# Установка gigaam из git (без build isolation, чтобы работал pkg_resources).
+# Ревизия обязана совпадать с CI (.github/workflows/build.yml) и сборками для
+# macOS: до 559d88d6 у GigaAMASR нет `_decode(word_timestamps=True)`, поэтому
+# ASR не отдаёт пословные тайминги, а без них разметка по говорящим
+# схлопывается в одного спикера на весь ASR-блок (mapping.py разрезает блок
+# только по словам) и `word_timestamps` в API возвращает пустой список.
 RUN git clone https://github.com/salute-developers/GigaAM.git /tmp/gigaam && \
-    cd /tmp/gigaam && git checkout 0a3f1036d93287d5ef226911ec795bde8ef05d57 && \
+    cd /tmp/gigaam && git checkout 559d88d6b72541412743929f633a6ae7c9950b85 && \
     pip install --no-cache-dir --no-build-isolation . && \
     rm -rf /tmp/gigaam
 # Установка остальных зависимостей (без gigaam, torchcodec и PyQt6 —

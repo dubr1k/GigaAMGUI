@@ -9,6 +9,7 @@ pyannote.audio, torchmetrics, docx). Возвращает 0, если всё и�
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import sys
@@ -39,8 +40,22 @@ _CHAIN = [
     "pyannote.audio.models.embedding.wespeaker",
     "pyannote.audio.pipelines.speaker_verification",
     "pyannote.audio.pipelines.speaker_diarization",
+    # Подмодуль, а не сам пакет: каталог-пустышка gigaam/ (конфликтные копии
+    # Syncthing) импортируется как namespace-пакет, и `import gigaam` проходит,
+    # хотя модели в бандле нет — так собирались локальные сборки Liquid.
+    "gigaam.model",
     "docx",
 ]
+
+
+#: Модули live-захвата, которые обязана содержать сборка под данной ОС.
+#: Проверяем именно импорт, а не открытие устройства: на CI-раннере звуковых
+#: устройств нет, а отсутствовал в сборке (issue #47) именно модуль.
+_LIVE_CAPTURE_MODULES = {
+    "win32": ["pyaudiowpatch"],
+    "darwin": ["sounddevice", "AVFoundation", "CoreMedia", "ScreenCaptureKit"],
+    "linux": ["sounddevice"],
+}
 
 
 def _log_path() -> Path:
@@ -81,7 +96,8 @@ def _import_module(name: str) -> None:
 def _apply_app_patches() -> None:
     """Применяет те же рантайм-патчи, что и приложение ПЕРЕД импортом pyannote.
 
-    Реальный путь диаризации (src/utils/diarization.py::_load_pipeline) сначала
+    Реальный путь диаризации (src/core/diarization/pyannote_backend.py,
+    DiarizationManager._load_pipeline) сначала
     вызывает apply_pyannote_patch(), и только потом импортирует pyannote.audio.
     Импорт модуля pyannote_patch на уровне модуля ставит заглушки torchaudio
     backend (set_audio_backend/get_audio_backend удалены в torchaudio 2.10+),
@@ -111,6 +127,113 @@ def _ensure_torch() -> None:
     runtime_manager.activate(variant)
 
 
+def run_recording_writer_check() -> int:
+    """Пишет короткий FLAC и читает его обратно — так же, как ``SessionRecorder``.
+
+    Импорта модулей захвата мало: в 1.5.1 live-сессия стартовала и распознавала
+    речь, но запись падала на каждом чанке, потому что libsndfile не открывает
+    FLAC на 32 канала (issue #48). Гейт проверяет реальную запись тем же
+    ``soundfile``/``PCM_24``, а не только importability.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    from src.live.recorder import FLAC_MAX_CHANNELS
+
+    sample_rate = 48_000
+    channels = 2
+    frames = np.zeros((sample_rate // 10, channels), dtype=np.float32)
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "selfcheck.flac"
+            with sf.SoundFile(
+                path,
+                mode="w",
+                samplerate=sample_rate,
+                channels=channels,
+                format="FLAC",
+                subtype="PCM_24",
+            ) as writer:
+                writer.write(frames)
+            written, rate = sf.read(path, dtype="float32", always_2d=True)
+        if rate != sample_rate or written.shape != frames.shape:
+            raise RuntimeError(f"FLAC round-trip mismatch: {rate} Hz, shape {written.shape}")
+        if channels > FLAC_MAX_CHANNELS:
+            raise RuntimeError("session recording exceeds the FLAC channel ceiling")
+    except Exception as e:
+        _emit(f"SELFCHECK FAIL: recording writer: {type(e).__name__}: {e}")
+        _emit(traceback.format_exc())
+        return 1
+    _emit(f"SELFCHECK ok: recording writer FLAC PCM_24 {channels}ch")
+    return 0
+
+
+def run_live_capture_check() -> int:
+    """Проверяет, что live-захват реально попал в сборку.
+
+    До 1.5.1 CI ставил live-runtime только под Windows, поэтому
+    ``collect_live_capture_deps()`` печатал `[skip]`, сборка проходила зелёной,
+    а вкладка Live на Linux/macOS падала у пользователя (issue #47). Здесь
+    закрываем эту дыру тем же способом, что и #19: гейтом на собранном бинаре.
+    """
+    if run_recording_writer_check():
+        return 1
+
+    if sys.platform.startswith("win"):
+        platform_key = "win32"
+    elif sys.platform.startswith("linux"):
+        platform_key = "linux"
+    else:
+        platform_key = sys.platform
+
+    modules = _LIVE_CAPTURE_MODULES.get(platform_key)
+    if modules is None:
+        _emit(f"SELFCHECK skip: live capture is unsupported on {platform_key}")
+        return 0
+
+    if platform_key == "linux":
+        # Тот же контекст, что и в рантайме: с подстановкой вшитого PortAudio.
+        from src.live.capture.linux import bundled_portaudio_resolution
+
+        resolution = bundled_portaudio_resolution()
+    else:
+        resolution = contextlib.nullcontext()
+
+    with resolution:
+        for name in modules:
+            try:
+                _import_module(name)
+                _emit(f"SELFCHECK ok: live capture {name}")
+            except Exception as e:
+                _emit(f"SELFCHECK FAIL: live capture {name}: {type(e).__name__}: {e}")
+                _emit(traceback.format_exc())
+                return 1
+
+    if platform_key == "linux":
+        _emit_monitor_source_probe()
+    return 0
+
+
+def _emit_monitor_source_probe() -> None:
+    """Сообщить, видит ли сборка мониторы звукового сервера (issue #49).
+
+    Гейтом это быть не может — на CI-раннере звукового сервера нет, — но в
+    логе пользователя строка отвечает на первый вопрос поддержки: пустой
+    список системных источников это отсутствие pactl или отсутствие мониторов.
+    """
+    try:
+        from src.live.capture import pulse
+
+        names = [monitor.name for monitor in pulse.monitors()]
+    except Exception as e:
+        _emit(f"SELFCHECK info: monitor sources unavailable: {type(e).__name__}: {e}")
+        return
+    if not names:
+        _emit("SELFCHECK info: no PipeWire/PulseAudio monitor sources (pactl missing or no sound server)")
+        return
+    _emit(f"SELFCHECK info: monitor sources {len(names)}: {', '.join(names)}")
+
+
 def run_selfcheck(check_torch: bool = True) -> int:
     if check_torch:
         try:
@@ -133,5 +256,7 @@ def run_selfcheck(check_torch: bool = True) -> int:
             _emit(f"SELFCHECK FAIL: {name}: {type(e).__name__}: {e}")
             _emit(traceback.format_exc())
             return 1
+    if run_live_capture_check():
+        return 1
     _emit("SELFCHECK PASS")
     return 0

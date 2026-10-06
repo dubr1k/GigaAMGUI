@@ -48,3 +48,21 @@ def test_dialog_exposes_onnx_backend_and_independent_provider():
     assert dialog.backend_combo.findData("onnx") >= 0
     assert dialog.selected_backend == "onnx"
     assert dialog.selected_provider == "cuda"
+
+
+def test_dialog_lists_come_from_runtime_options_in_the_same_order():
+    from src.core.runtime_options import ASR_BACKENDS, ONNX_PROVIDERS
+
+    app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    parent._lang = "en"
+    dialog = ASRBackendDialog(parent=parent, mlx_supported=True)
+
+    combo = dialog.provider_combo
+    assert [combo.itemData(i) for i in range(combo.count())] == list(ONNX_PROVIDERS)
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        "Auto", "CPU", "CUDA", "TENSORRT", "COREML", "DIRECTML",
+    ]
+    backends = dialog.backend_combo
+    assert [backends.itemData(i) for i in range(backends.count())] == list(ASR_BACKENDS)
+    assert [backends.itemText(i) for i in range(backends.count())] == ["Auto", "MLX", "ONNX Runtime", "PyTorch"]

@@ -8,7 +8,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_data_files
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import collect_live_capture_deps, collect_pure_runtime_deps, collect_static_package
+from _spec_common import collect_live_capture_deps, collect_pure_runtime_deps, collect_static_package, windows_conda_extra_binaries
 runtime_d, runtime_b, runtime_h = collect_pure_runtime_deps()
 live_d, live_b, live_h = collect_live_capture_deps()
 
@@ -37,7 +37,7 @@ pyannote_d,     pyannote_b,     pyannote_h     = collect_static_package('pyannot
 lightning_d,    lightning_b,    lightning_h    = safe_collect('lightning_fabric')
 ptl_d,          ptl_b,          ptl_h          = safe_collect('pytorch_lightning')
 
-project_root = r'C:\Users\baggr\Desktop\USB_backup\GigaAMGUI'
+project_root = os.path.dirname(os.path.abspath(SPECPATH))  # spec лежит в packaging/, корень проекта — на уровень выше
 
 datas = (
     torch_d + torchaudio_d + torchvision_d +
@@ -50,14 +50,7 @@ datas = (
      (os.path.join(project_root, 'bin'), 'bin')]
 )
 
-_extra_bins = []
-for _dll in ['_lzma.pyd', '_bz2.pyd', '_sqlite3.pyd']:
-    _p = os.path.join(r'C:\Users\baggr\miniconda3\envs\gigaam_gpu\DLLs', _dll)
-    if os.path.exists(_p):
-        _extra_bins.append((_p, '.'))
-_liblzma = r'C:\Users\baggr\miniconda3\Library\bin\liblzma.dll'
-if os.path.exists(_liblzma):
-    _extra_bins.append((_liblzma, '.'))
+_extra_bins = windows_conda_extra_binaries()
 
 binaries = (
     torch_b + torchaudio_b + torchvision_b +

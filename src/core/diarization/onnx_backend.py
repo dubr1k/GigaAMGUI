@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from ...utils.model_cache import hf_repo_is_cached
+from ...utils.model_cache import onnx_model_is_local
 from ..model_preparation import PreparationCancelled, PreparationState
 from .clustering import cluster_embeddings
 from .mapping import SpeakerMappingMixin
@@ -94,13 +94,13 @@ class OnnxDiarizationBackend(SpeakerMappingMixin):
         cancelled = cancel_check or (lambda: False)
         if cancelled():
             raise PreparationCancelled("Подготовка ONNX-диаризации отменена")
-        if not hf_repo_is_cached(ONNX_SEGMENTATION_REPO):
+        if not onnx_model_is_local(ONNX_SEGMENTATION_REPO, root=self.model_dir):
             emit(PreparationState.DOWNLOADING, message="ONNX segmentation-3.0")
         emit(PreparationState.LOADING, message="ONNX segmentation-3.0")
         self._segmenter._ensure_session()  # noqa: SLF001
         if cancelled():
             raise PreparationCancelled("Подготовка ONNX-диаризации отменена")
-        if not hf_repo_is_cached(ONNX_EMBEDDING_REPO):
+        if not onnx_model_is_local(ONNX_EMBEDDING_REPO, root=self.model_dir):
             emit(PreparationState.DOWNLOADING, message="WeSpeaker embeddings")
         emit(PreparationState.LOADING, message="WeSpeaker embeddings")
         self._embedding_extractor._ensure_model()  # noqa: SLF001

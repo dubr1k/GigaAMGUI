@@ -1,22 +1,29 @@
-__pycache__
-*.pyc
-*.pyo
-.git
-.github
-docs
-tests
-*.md
-.env
-.env.example
-processing_stats.json
-uploads
-results
-logs
-gigaam-gui.desktop
-scripts/run_gui*.bat
-scripts/run_gui_qt.bat
-scripts/create_desktop_shortcut.ps1
-.opencode-backups
-.pytest_cache
-.ruff_cache
-cache
+# Allowlist: в контекст сборки (а значит в `COPY . /app`) попадает только то,
+# что нужно web-рантайму. Раньше здесь был denylist, и всё, о чём забыли, —
+# .api_keys, бэкапы .env (.env.auth-backup-*), .deploy-backups, локальные
+# конфиги агентов, логи, bin/ffmpeg под macOS — уезжало в слои образа и
+# оставалось там даже после ротации ключей. Новый каталог, нужный контейнеру,
+# вписывается сюда явно.
+*
+
+!src
+!web
+!api.py
+!cli.py
+!download_models.py
+!docker-entrypoint.sh
+!pyproject.toml
+!requirements.txt
+!requirements-sortformer.txt
+
+# Внутри разрешённых каталогов: GUI (PyQt6 в образе нет), вендорная копия
+# GigaAM (пакет ставится из git в Dockerfile), кэши, конфликтные копии
+# Syncthing и любые .env.
+src/gui
+src/gigaam
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.sync-conflict-*
+**/.env*
+**/.api_keys*

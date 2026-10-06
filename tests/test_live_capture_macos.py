@@ -134,6 +134,119 @@ def test_macos_system_audio_copies_cmblockbuffer_bytes_before_numpy_conversion()
     assert delivered[0][1:] == (None, 48_000)
 
 
+def test_float_pcm_bytes_become_frames_for_both_layouts():
+    from src.live.capture.macos import float_pcm_frames
+
+    interleaved = np.array([1, -1, 2, -2], dtype=np.float32).tobytes()
+    planar = np.array([1, 2, -1, -2], dtype=np.float32).tobytes()
+
+    expected = [[1.0, -1.0], [2.0, -2.0]]
+    assert float_pcm_frames(interleaved, 2, non_interleaved=False).tolist() == expected
+    assert float_pcm_frames(planar, 2, non_interleaved=True).tolist() == expected
+    assert float_pcm_frames(planar, 1, non_interleaved=True).tolist() == [[1.0], [2.0], [-1.0], [-2.0]]
+    with pytest.raises(OSError, match="frame size"):
+        float_pcm_frames(b"\x00" * 12, 2, non_interleaved=True)
+
+
+def _core_media_with_format(pcm: bytes, flags: int, channels: int = 2):
+    class Asbd:
+        mFormatFlags = flags
+        mChannelsPerFrame = channels
+        mSampleRate = 48_000.0
+
+    class CoreMedia:
+        @staticmethod
+        def CMSampleBufferGetFormatDescription(_sample_buffer):
+            return "format"
+
+        @staticmethod
+        def CMAudioFormatDescriptionGetStreamBasicDescription(description):
+            assert description == "format"
+            return Asbd()
+
+        @staticmethod
+        def CMBlockBufferGetDataLength(_block):
+            return len(pcm)
+
+        @staticmethod
+        def CMBlockBufferCopyDataBytes(_block, _offset, length, _destination):
+            return 0, pcm[:length]
+
+    return CoreMedia
+
+
+class _BlockAVFoundation:
+    @staticmethod
+    def CMSampleBufferGetDataBuffer(_sample_buffer):
+        return "block"
+
+
+def test_macos_system_audio_reads_planar_buffers_channel_by_channel():
+    """ScreenCaptureKit delivers non-interleaved float: all left samples, then
+    all right ones. Reading that as interleaved paired neighbouring samples
+    of one channel, so recognition heard each half of a buffer at double speed."""
+    from src.live.capture.macos import _ScreenCaptureKitCapture
+
+    planar = np.array([1, 2, 3, 4, -1, -2, -3, -4], dtype=np.float32).tobytes()
+    capture = _ScreenCaptureKitCapture(_BlockAVFoundation, _core_media_with_format(planar, 0x29), None, None)
+    delivered = []
+
+    capture._deliver_audio(object(), lambda frames, timestamp, rate: delivered.append(np.array(frames)))
+
+    assert delivered[0].tolist() == [[1.0, -1.0], [2.0, -2.0], [3.0, -3.0], [4.0, -4.0]]
+
+
+def test_macos_system_audio_keeps_interleaved_buffers_as_they_are():
+    from src.live.capture.macos import _ScreenCaptureKitCapture
+
+    interleaved = np.array([1, -1, 2, -2], dtype=np.float32).tobytes()
+    capture = _ScreenCaptureKitCapture(_BlockAVFoundation, _core_media_with_format(interleaved, 0x09), None, None)
+    delivered = []
+
+    capture._deliver_audio(object(), lambda frames, timestamp, rate: delivered.append(np.array(frames)))
+
+    assert delivered[0].tolist() == [[1.0, -1.0], [2.0, -2.0]]
+
+
+def test_macos_system_audio_reads_a_real_planar_core_media_buffer():
+    """The same layout through the real CoreMedia API (no capture hardware needed)."""
+    AVFoundation = pytest.importorskip("AVFoundation")
+    CoreAudio = pytest.importorskip("CoreAudio")
+    CoreMedia = pytest.importorskip("CoreMedia")
+    from src.live.capture.macos import _ScreenCaptureKitCapture
+
+    planar = np.array([1, 2, 3, 4, -1, -2, -3, -4], dtype=np.float32).tobytes()
+    asbd = CoreAudio.AudioStreamBasicDescription()
+    asbd.mSampleRate = 48_000.0
+    asbd.mFormatID = CoreAudio.kAudioFormatLinearPCM
+    asbd.mFormatFlags = (
+        CoreAudio.kAudioFormatFlagIsFloat
+        | CoreAudio.kAudioFormatFlagIsNonInterleaved
+        | CoreAudio.kAudioFormatFlagIsPacked
+    )
+    asbd.mBytesPerPacket = asbd.mBytesPerFrame = 4
+    asbd.mFramesPerPacket = 1
+    asbd.mChannelsPerFrame = 2
+    asbd.mBitsPerChannel = 32
+    status, description = CoreMedia.CMAudioFormatDescriptionCreate(None, asbd, 0, None, 0, None, None, None)
+    assert status == 0
+    status, block = CoreMedia.CMBlockBufferCreateWithMemoryBlock(
+        None, None, len(planar), None, None, 0, len(planar), 0, None,
+    )
+    assert status == 0
+    assert CoreMedia.CMBlockBufferReplaceDataBytes(planar, block, 0, len(planar)) == 0
+    status, sample_buffer = CoreMedia.CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+        None, block, description, 4, CoreMedia.CMTimeMake(0, 48_000), None, None,
+    )
+    assert status == 0
+    capture = _ScreenCaptureKitCapture(AVFoundation, CoreMedia, None, None)
+    delivered = []
+
+    capture._deliver_audio(sample_buffer, lambda frames, timestamp, rate: delivered.append(np.array(frames)))
+
+    assert delivered[0].tolist() == [[1.0, -1.0], [2.0, -2.0], [3.0, -3.0], [4.0, -4.0]]
+
+
 def test_macos_system_audio_ignores_empty_cmblockbuffer_callback():
     from src.live.capture.macos import _ScreenCaptureKitCapture
 

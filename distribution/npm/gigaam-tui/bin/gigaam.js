@@ -25,7 +25,7 @@ function bootstrap() {
   } else {
     run("git", ["-C", repo, "pull", "--ff-only"]);
   }
-  run("cargo", ["build", "--release", "--manifest-path", join(repo, "tui", "Cargo.toml")]);
+  run("cargo", ["build", "--release", "--locked", "--manifest-path", join(repo, "tui", "Cargo.toml")]);
   run(systemPython, ["-m", "venv", join(repo, ".venv")]);
   run(python, ["-m", "pip", "install", "--upgrade", "pip", "setuptools<81", "wheel"]);
   run(python, ["-m", "pip", "install", "-r", join(repo, "requirements-tui.txt")]);

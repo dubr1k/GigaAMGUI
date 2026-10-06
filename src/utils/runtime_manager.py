@@ -31,9 +31,16 @@ import re
 import shutil
 import subprocess
 import sys
+from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 
 from . import torch_downloader
+from .atomic_json import save_json_atomic
+
+# Суффикс C-расширений текущего интерпретатора (`.cpython-312-darwin.so`,
+# `.cp311-win_amd64.pyd`). Колёса torch привязаны к нему: кэш, скачанный сборкой
+# на Python 3.12, для сборки на 3.11 — не установлен, а не «почти установлен».
+_EXT_SUFFIX = EXTENSION_SUFFIXES[0]
 
 # ── Описание доступных вариантов рантайма ─────────────────────────────────────
 #
@@ -120,10 +127,6 @@ _RUNTIME_MODULE_PREFIXES = (
 )
 
 
-def _has_cyrillic(text: str) -> bool:
-    return bool(re.search(r"[а-яА-ЯёЁ]", text))
-
-
 def base_dir() -> Path:
     """
     Корневая папка кэша приложения. Внутри — рантаймы torch, кэш моделей
@@ -190,9 +193,34 @@ def _runtimes_root() -> Path:
     return base_dir() / "torch"
 
 
+def _python_tag() -> str:
+    return f"cp{sys.version_info.major}{sys.version_info.minor}"
+
+
+def _torch_extension_abi(target: Path) -> str | None:
+    """'own' — расширение torch/_C собрано под этот интерпретатор, 'foreign' —
+    под другой, None — расширения нет (пусто или не torch)."""
+    torch_dir = target / "torch"
+    if (torch_dir / f"_C{_EXT_SUFFIX}").is_file():
+        return "own"
+    if any(path.is_file() for path in torch_dir.glob("_C.*")):
+        return "foreign"
+    return None
+
+
 def variant_dir(variant: str) -> Path:
-    """Папка, куда устанавливается конкретный вариант torch."""
-    return _runtimes_root() / variant
+    """Папка, куда устанавливается конкретный вариант torch.
+
+    Кэш общий для всех сборок приложения на машине. Если в исторической папке
+    ``<root>/<variant>`` лежит torch другой сборки Python (например, cp312 от
+    локальной PyQt-сборки, а мы — CI-компаньон на 3.11), эта папка не наша:
+    возвращаем ``<root>/<variant>-cp311``, чтобы обе сборки жили рядом, а не
+    перезаписывали torch друг друга при каждом запуске.
+    """
+    legacy = _runtimes_root() / variant
+    if _torch_extension_abi(legacy) == "foreign":
+        return _runtimes_root() / f"{variant}-{_python_tag()}"
+    return legacy
 
 
 def _config_path() -> Path:
@@ -219,11 +247,11 @@ def _read_config() -> dict:
 
 
 def _write_config(cfg: dict) -> None:
+    # Уникальный временный файл + fsync: два процесса (GUI и worker) больше
+    # не пишут в один и тот же runtime.json.tmp, а обрыв питания не оставляет
+    # пустой runtime.json вместо выбранного варианта.
     ensure_data_dir()
-    tmp = _config_path().with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, _config_path())
+    save_json_atomic(str(_config_path()), cfg)
 
 
 def get_selected_variant() -> str | None:
@@ -292,7 +320,9 @@ def _runtime_stack_matches(variant: str, target: Path | None = None) -> bool:
             return False
         if _installed_package_version(target, package) != version:
             return False
-    return True
+    # Колесо под другой Python: torch/_C остаётся папкой .pyi-заглушек, и
+    # `import torch` падает с «Failed to load PyTorch C extensions».
+    return _torch_extension_abi(target) == "own"
 
 
 def installed_variants() -> list[str]:
@@ -532,12 +562,26 @@ def detect_recommended_variant() -> str:
     if not name:
         return "cpu"
     upper = name.upper()
-    # RTX 50xx: ищем "50" сразу после RTX (5060/5070/5080/5090).
-    if re.search(r"RTX\s*50\d0", upper) or re.search(r"RTX\s*5[0-9]{3}", upper):
+    if _is_blackwell(upper):
         return "cu128"
     if "NVIDIA" in upper or "GEFORCE" in upper or "RTX" in upper or "QUADRO" in upper or "TESLA" in upper:
         return "cu124"
     return "cpu"
+
+
+def _is_blackwell(upper_name: str) -> bool:
+    """Карта Blackwell (sm_100/sm_120), которой нужны колёса cu128.
+
+    GeForce 50-й серии — 5050…5090 (``RTX 50[5-9]0``). Прежняя проверка
+    ``RTX 5\\d{3}`` отправляла в cu128 Quadro RTX 5000 (Turing) и RTX 5000 Ada,
+    а «RTX PRO 6000 Blackwell» без номера 50x0 получала cu124, в котором её
+    архитектуры нет вовсе.
+    """
+    return bool(
+        "BLACKWELL" in upper_name
+        or re.search(r"\bRTX\s*50[5-9]0\b", upper_name)
+        or re.search(r"\bG?B(?:100|200|300)\b", upper_name)
+    )
 
 
 def _detect_gpu_name() -> str | None:

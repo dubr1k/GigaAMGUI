@@ -1,7 +1,10 @@
 """Тесты чистой логики диаризации без загрузки моделей (Phase 4.1)."""
 
+import numpy as np
 import pytest
 
+from src.core.asr.chunking import normalize_chunk_words, plan_audio_chunks
+from src.core.asr.vad import merge_speech_regions
 from src.utils.diarization import (
     DiarizationManager,
     SortformerDiarizationManager,
@@ -315,3 +318,58 @@ def test_real_speaker_turn_survives_smoothing(make_manager):
     mapped = mgr.map_speakers_to_transcription(trans, speaker_segs)
 
     assert [seg["speaker"] for seg in mapped] == ["A", "B", "A"]
+
+
+@_MANAGER_FACTORIES
+def test_issue_46_padded_vad_regions_do_not_break_diarization(make_manager):
+    """Речь длиннее 20 с: ONNX VAD отдаёт перекрытые области (issue #46)."""
+
+    sample_rate = 100
+    audio = np.zeros(60 * sample_rate, dtype=np.float32)
+    # Так silero из onnx-asr режет непрерывную речь: куски по 20 с, каждый
+    # расширен на speech_pad=30 мс в обе стороны, поэтому стыки перекрыты.
+    regions = merge_speech_regions(
+        [(0.0, 19.97), (19.91, 39.91), (39.85, 59.85)],
+        audio_duration=59.85,
+    )
+    chunks = plan_audio_chunks(
+        audio,
+        regions,
+        sample_rate=sample_rate,
+        max_chunk_seconds=20.0,
+    )
+
+    segments = []
+    for index, chunk in enumerate(chunks):
+        # Непрерывная речь: слова заполняют окно до самой правой границы
+        raw_words = []
+        position = chunk.start_sec
+        while position < chunk.end_sec:
+            raw_words.append({
+                "text": f"слово{index}_{len(raw_words)}",
+                "start": position,
+                "end": min(position + 0.4, chunk.end_sec),
+            })
+            position += 0.4
+        words = normalize_chunk_words(
+            raw_words,
+            start_sec=chunk.start_sec,
+            end_sec=chunk.end_sec,
+        )
+        segments.append({
+            "transcription": " ".join(word["text"] for word in words),
+            "boundaries": (chunk.start_sec, chunk.end_sec),
+            "words": words,
+        })
+
+    mapped = make_manager().map_speakers_to_transcription(
+        segments,
+        [SpeakerSegment(0.0, 60.0, "SPEAKER_00")],
+    )
+
+    assert mapped
+    previous_end = 0.0
+    for turn in mapped:
+        start, end = turn["boundaries"]
+        assert start >= previous_end
+        previous_end = end

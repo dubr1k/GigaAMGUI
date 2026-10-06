@@ -1,6 +1,5 @@
 import Foundation
-import CoreFoundation
-import Darwin
+import GigaAMLiquidCore
 
 struct NativeTranscriptionSettings {
     var formats: [String] = ["txt"]
@@ -29,6 +28,7 @@ enum NativeTranscriptionEvent {
     case log(String)
     /// The file index is zero-based, matching src.tui_worker.
     case fileStarted(URL, Int, Int)
+    /// Overall fraction for the bar, or nil to leave it as it is; plus a status line.
     case progress(Double?, String)
     case fileCompleted(NativeTranscriptionResult)
     case completed(success: Bool, cancelled: Bool)
@@ -39,14 +39,12 @@ enum NativeTranscriptionEvent {
 /// callbacks are ordered on the main queue, with exactly one terminal event.
 final class NativeTranscriptionJob {
     private let files: [URL]
-    private let outputDirectory: URL
+    /// `nil` means "next to each input file", which src.tui_worker applies per file.
+    private let outputDirectory: URL?
     private let settings: NativeTranscriptionSettings
     private let onEvent: (NativeTranscriptionEvent) -> Void
     private let queue = DispatchQueue(label: "GigaAMLiquid.transcription", qos: .userInitiated)
-    private var process: Process?
-    private var input: FileHandle?
-    private var stdout: LineReader?
-    private var stderr: LineReader?
+    private var worker: WorkerProcess?
     private var started = false
     private var cancellationRequested = false
     private var pendingTerminal: NativeTranscriptionEvent?
@@ -55,14 +53,20 @@ final class NativeTranscriptionJob {
     private var resolvedOutputDirectory: URL?
     private var completedIndices = Set<Int>()
     private var hadFileError = false
+    /// Set once `hello` is sent; the first protocol event is its reply.
+    private var awaitingHelloReply = false
     private var diagnostics = ""
     private var secrets: [String] = []
 
-    init(files: [URL], outputDirectory: URL, settings: NativeTranscriptionSettings,
+    private let resolveRuntime: PythonRuntime.Provider
+
+    init(files: [URL], outputDirectory: URL?, settings: NativeTranscriptionSettings,
+         runtime: @escaping PythonRuntime.Provider = PythonRuntime.resolveDefault,
          onEvent: @escaping (NativeTranscriptionEvent) -> Void) {
         self.files = files.map { $0.standardizedFileURL }
-        self.outputDirectory = outputDirectory.standardizedFileURL
+        self.outputDirectory = outputDirectory?.standardizedFileURL
         self.settings = settings
+        self.resolveRuntime = runtime
         self.onEvent = onEvent
     }
 
@@ -95,40 +99,38 @@ final class NativeTranscriptionJob {
         queue.sync {
             guard !self.finished else { return }
             self.requestTerminal(.completed(success: false, cancelled: true))
-            if let task = self.process, task.isRunning {
-                Darwin.kill(task.processIdentifier, SIGKILL)
-            }
+            self.worker?.kill()
         }
     }
 
     private func launch() throws {
-        guard !files.isEmpty else { throw Failure("No input files supplied.") }
+        guard !files.isEmpty else { throw WorkerFailure(L10n.text("Не выбраны файлы для обработки.")) }
         let manager = FileManager.default
         for file in files {
             guard file.isFileURL,
                   (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
                   manager.isReadableFile(atPath: file.path) else {
-                throw Failure("Input file is not readable: \(file.path)")
+                throw WorkerFailure(L10n.format("Файл недоступен для чтения: %@", file.path))
             }
         }
-        guard outputDirectory.isFileURL else { throw Failure("Output directory must be a local folder.") }
-        let runtime = try PythonRuntime.resolve()
+        if let outputDirectory, !outputDirectory.isFileURL { throw WorkerFailure(L10n.text("Папка результатов должна быть локальной.")) }
+        let runtime = try resolveRuntime()
         runtimeRoot = runtime.root
-        guard manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path) else {
-            throw Failure("The Python project is missing src/tui_worker.py.")
+        // The frozen companion runs `--native-worker`; only the source-tree runtime needs src.tui_worker.
+        guard runtime.frozenCompanion || manager.isReadableFile(atPath: runtime.root.appendingPathComponent("src/tui_worker.py").path) else {
+            throw WorkerFailure(L10n.text("В Python-проекте нет src/tui_worker.py."))
         }
-        try manager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        resolvedOutputDirectory = outputDirectory.resolvingSymlinksInPath().standardizedFileURL
+        if let outputDirectory {
+            try manager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            resolvedOutputDirectory = outputDirectory.resolvingSymlinksInPath().standardizedFileURL
+        }
         var environment = runtime.environment
         if let token = settings.hfToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             environment["HF_TOKEN"] = token
         }
-        secrets = environment.compactMap { key, value in
-            let name = key.uppercased()
-            return value.count >= 6 && ["TOKEN", "SECRET", "PASSWORD", "API_KEY"].contains(where: name.contains) ? value : nil
-        }
+        secrets = WorkerRedaction.secrets(in: environment)
         let command: [String: Any] = [
-            "type": "start", "files": files.map(\.path), "output_dir": outputDirectory.path,
+            "type": "start", "files": files.map(\.path), "output_dir": outputDirectory?.path ?? "",
             "formats": settings.formats, "backend": settings.backend, "model": settings.model,
             "onnx_provider": settings.onnxProvider, "diarization": settings.diarization,
             "diarization_backend": settings.diarizationBackend,
@@ -137,159 +139,148 @@ final class NativeTranscriptionJob {
             "subtitle_sentence_split": settings.subtitleSentenceSplit,
             "subtitle_max_lines": settings.subtitleMaxLines, "subtitle_max_width": settings.subtitleMaxWidth
         ]
-        let task = Process()
-        task.executableURL = runtime.executable
-        task.arguments = ["-m", "src.tui_worker"]
-        task.currentDirectoryURL = runtime.root
-        task.environment = environment
-        let stdinPipe = Pipe(), stdoutPipe = Pipe(), stderrPipe = Pipe()
-        task.standardInput = stdinPipe
-        task.standardOutput = stdoutPipe
-        task.standardError = stderrPipe
-        // A worker exiting between isRunning and write must not SIGPIPE the app.
-        guard fcntl(stdinPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
-            throw Failure("Could not configure the worker input pipe: \(String(cString: strerror(errno)))")
-        }
-        input = stdinPipe.fileHandleForWriting
-        stdout = try LineReader(handle: stdoutPipe.fileHandleForReading, queue: queue, limit: 8 * 1024 * 1024,
-                                truncate: false, onLine: { [weak self] in self?.consume($0) },
-                                onError: { [weak self] in self?.requestTerminal(.failed($0)) },
-                                onEnd: { [weak self] in
-                                    guard let self, self.process?.isRunning == true else { return }
-                                    self.requestTerminal(.failed(self.failureDetails("The transcription worker closed stdout without a completion event.")))
-                                })
-        stderr = try LineReader(handle: stderrPipe.fileHandleForReading, queue: queue, limit: 16 * 1024,
-                                truncate: true, onLine: { [weak self] in self?.recordLog(String(decoding: $0, as: UTF8.self)) },
-                                onError: { [weak self] in self?.requestTerminal(.failed($0)) })
-        // Retain the job until the OS has reaped the worker, even if its UI is rebuilt.
-        task.terminationHandler = { _ in self.queue.async { self.workerExited() } }
-        do {
-            try task.run()
-            process = task
-        } catch {
-            task.terminationHandler = nil
-            throw Failure("Could not launch the project Python (\(runtime.executable.path)): \(error.localizedDescription)")
-        }
-        try? stdinPipe.fileHandleForReading.close()
-        try? stdoutPipe.fileHandleForWriting.close()
-        try? stderrPipe.fileHandleForWriting.close()
+        // The job retains itself through the worker callbacks until the OS has
+        // reaped the process, even if its UI is rebuilt meanwhile.
+        let worker = try WorkerProcess(
+            role: .transcription, runtime: runtime, arguments: runtime.transcriptionArguments, environment: environment, queue: queue,
+            onLine: { self.consume($0) },
+            // Library warnings and tracebacks are for failure reports, not the user-facing log.
+            onStderr: { self.recordDiagnostic($0) },
+            onStdoutEnd: { self.requestTerminal(.failed(self.failureDetails(L10n.format("%@ закрыл вывод, не сообщив о завершении.", WorkerRole.transcription.name)))) },
+            onError: { self.requestTerminal(.failed($0)) },
+            onExit: { self.workerExited(status: $0) }
+        )
+        self.worker = worker
+        // First the handshake: it asks the worker to keep `completed` to per-file
+        // metadata (file_completed already carried each full result), so a long
+        // batch's completion line stays far below the 8 MiB event cap. The batch
+        // never waits for `ready`: an older worker answers with an error or not at all.
+        try send(Self.hello)
+        awaitingHelloReply = true
         try send(command)
-        emit(.progress(nil, "Loading GigaAM model…"))
+        emit(.progress(nil, "Загружаем модель распознавания речи…"))
     }
 
+    static let hello: [String: Any] = ["type": "hello", "client": "liquid", "features": ["compact_completed"]]
+
     private func send(_ command: [String: Any]) throws {
-        guard let input, let process, process.isRunning else { throw Failure("The transcription worker is not running.") }
-        var data = try JSONSerialization.data(withJSONObject: command)
-        data.append(10)
-        try input.write(contentsOf: data)
+        guard let worker else { throw WorkerFailure(L10n.format("%@ не запущен.", WorkerRole.transcription.name)) }
+        try worker.send(command)
     }
 
     private func consume(_ line: Data) {
-        guard !finished, pendingTerminal == nil, !line.isEmpty else { return }
-        let object: Any
-        do { object = try JSONSerialization.jsonObject(with: line) }
-        catch {
-            // Some Python dependencies print ordinary messages to stdout.
-            let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if text.hasPrefix("{") {
-                requestTerminal(.failed("The transcription worker returned malformed JSON."))
-            } else {
-                recordLog(text)
-            }
+        guard !finished, pendingTerminal == nil else { return }
+        // The worker answers commands in order, so the first event replies to hello.
+        let helloReply: Bool
+        switch BatchEventDecoder.decode(line) {
+        case nil:
             return
-        }
-        guard let message = object as? [String: Any], let type = message["type"] as? String else {
-            requestTerminal(.failed("The transcription worker returned an invalid event."))
+        case .text(let text):
+            // Some Python dependencies print to stdout: plain text, a Python repr such as
+            // "{'loaded': True}", a bare JSON value. That is log material, not a protocol
+            // violation; the batch goes on and its results decide the outcome.
+            recordLog(text)
             return
+        case .unknown(let type):
+            // The worker is shared with the TUI and gains events over time.
+            awaitingHelloReply = false
+            recordLog(L10n.format("Пропущено неизвестное событие воркера: %@", type))
+            return
+        case .invalid(let type):
+            requestTerminal(.failed(safeText(L10n.format("%@ прислал событие %@ в неверном формате.", WorkerRole.transcription.name, type))))
+            return
+        case .event(let event):
+            helloReply = awaitingHelloReply
+            awaitingHelloReply = false
+            do { try handle(event, helloReply: helloReply) }
+            catch { requestTerminal(.failed(safeText(error.localizedDescription))) }
         }
-        do {
-            switch type {
-            case "started":
-                guard integer(message["total_files"]) == files.count else { throw Failure("Invalid worker batch size.") }
-            case "log", "cancelling":
-                guard let text = message["message"] as? String else { throw Failure("Invalid worker log event.") }
-                recordLog(text)
-            case "file_started":
-                let index = try fileIndex(message)
-                emit(.fileStarted(files[index], index, files.count))
-                emit(.progress(Double(index) / Double(files.count), files[index].lastPathComponent))
-            case "progress":
-                let index = try fileIndex(message)
-                guard let stage = message["stage"] as? String else { throw Failure("Invalid worker progress stage.") }
-                let text = safeText(message["message"] as? String ?? stage)
-                let fraction: Double?
-                if message["stage_progress"] is NSNull || message["file_progress"] is NSNull {
-                    fraction = nil
-                } else if let value = message["file_progress"] as? NSNumber,
-                          CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite {
-                    fraction = (Double(index) + min(1, max(0, value.doubleValue))) / Double(files.count)
-                } else { throw Failure("Invalid worker progress value.") }
-                emit(.progress(fraction, text))
-            case "file_completed":
-                let index = try fileIndex(message, requireTotal: false)
-                guard let raw = message["result"] as? [String: Any] else { throw Failure("Invalid worker file result.") }
-                try acceptResult(raw, index: index)
-            case "completed":
-                guard let success = boolean(message["success"]), let cancelled = boolean(message["cancelled"]),
-                      let results = message["results"] as? [[String: Any]], results.count <= files.count else {
-                    throw Failure("Invalid worker completion event.")
-                }
-                for (index, raw) in results.enumerated() { try acceptResult(raw, index: index) }
-                if let text = message["message"] as? String { recordLog(text) }
-                if success && completedIndices.count != files.count { throw Failure("The worker completed without results for every file.") }
-                if !success && !cancelled && completedIndices.isEmpty {
-                    requestTerminal(.failed(failureDetails(message["message"] as? String ?? "Transcription failed before processing any files.")))
-                } else {
-                    requestTerminal(.completed(success: success && !hadFileError, cancelled: cancelled))
-                }
-            case "error":
-                guard let text = message["message"] as? String else { throw Failure("Invalid worker error event.") }
-                recordLog(text)
-                if let traceback = message["traceback"] as? String { recordLog(traceback) }
-                requestTerminal(.failed(safeText(text)))
-            default:
-                throw Failure("Unexpected transcription worker event: \(safeText(type))")
-            }
-        } catch { requestTerminal(.failed(safeText(error.localizedDescription))) }
     }
 
-    private func fileIndex(_ message: [String: Any], requireTotal: Bool = true) throws -> Int {
-        guard let index = integer(message["file_index"]), files.indices.contains(index),
-              let path = message["file"] as? String,
-              URL(fileURLWithPath: path).standardizedFileURL == files[index],
-              !requireTotal || integer(message["total_files"]) == files.count else {
-            throw Failure("The transcription worker returned an invalid file reference.")
+    private func handle(_ event: BatchEvent, helloReply: Bool) throws {
+        switch event {
+        case .ready:
+            break  // compact_completed acknowledged; nothing here depends on it
+        case .started(let total):
+            guard total == files.count else { throw WorkerFailure(L10n.text("Воркер сообщил неверное число файлов.")) }
+        case .log(let text):
+            recordLog(text)
+        case .fileStarted(let index, let file, let total):
+            let index = try fileIndex(index, file: file, total: total)
+            emit(.fileStarted(files[index], index, files.count))
+            emit(.progress(Double(index) / Double(files.count), files[index].lastPathComponent))
+        case .progress(let index, let file, let total, let stage, let message, let fileProgress):
+            let index = try fileIndex(index, file: file, total: total)
+            // Без `message` воркер шлёт только id стадии — показываем его название,
+            // как PyQt (_STAGE_NAMES), а не «preprocessing».
+            let text = safeText(message ?? StageLabel.text(stage, english: L10n.isEnglish))
+            // `stage_progress: null` (conversion without a duration, diarization) only
+            // means the stage is indeterminate; nil leaves the bar where it is.
+            let fraction = fileProgress.map { (Double(index) + min(1, max(0, $0))) / Double(files.count) }
+            emit(.progress(fraction, text))
+        case .fileCompleted(let index, let file, let result):
+            try acceptResult(result, index: fileIndex(index, file: file, total: nil, requireTotal: false))
+        case .completed(let success, let cancelled, let results, let message):
+            guard results.count <= files.count else { throw WorkerFailure(L10n.text("Воркер прислал неверное событие завершения.")) }
+            // With compact_completed these are metadata only; every file already came
+            // in full through file_completed and is skipped here.
+            for (index, result) in results.enumerated() { try acceptResult(result, index: index) }
+            if let message { recordLog(message) }
+            if success && completedIndices.count != files.count { throw WorkerFailure(L10n.text("Воркер завершил пакет без результатов для всех файлов.")) }
+            if !success && !cancelled && completedIndices.isEmpty {
+                requestTerminal(.failed(failureDetails(message ?? L10n.text("Распознавание остановилось до обработки первого файла."))))
+            } else {
+                requestTerminal(.completed(success: success && !hadFileError, cancelled: cancelled))
+            }
+        case .error(let message, let traceback, let command):
+            guard let text = message else { throw WorkerFailure(L10n.text("Воркер прислал ошибку без текста.")) }
+            switch BatchErrorPolicy.disposition(command: command, helloReply: helloReply) {
+            case .diagnostic:
+                // A worker older than the handshake rejects `hello`; `start` follows.
+                recordDiagnostic(text)
+            case .logged:
+                // Another command's answer, e.g. a `cancel` that crossed the end of the
+                // batch: the files keep coming and `completed` decides the outcome.
+                recordLog(text)
+            case .fatal:
+                recordLog(text)
+                if let traceback { recordLog(traceback) }
+                requestTerminal(.failed(safeText(text)))
+            }
+        }
+    }
+
+    private func fileIndex(_ index: Int, file: String, total: Int?, requireTotal: Bool = true) throws -> Int {
+        guard files.indices.contains(index), URL(fileURLWithPath: file).standardizedFileURL == files[index],
+              !requireTotal || total == files.count else {
+            throw WorkerFailure(L10n.text("Воркер сослался на неизвестный файл."))
         }
         return index
     }
 
-    private func acceptResult(_ raw: [String: Any], index: Int) throws {
-        guard files.indices.contains(index), let success = boolean(raw["success"]),
-              let path = raw["file_path"] as? String,
-              URL(fileURLWithPath: path).standardizedFileURL == files[index],
-              let saved = raw["saved_files"] as? [String] else { throw Failure("The transcription worker returned an invalid result payload.") }
-        // `completed` repeats the same result objects; do not re-read files or re-emit them.
+    private func acceptResult(_ result: BatchFileResult, index: Int) throws {
+        guard files.indices.contains(index), URL(fileURLWithPath: result.filePath).standardizedFileURL == files[index] else {
+            throw WorkerFailure(L10n.text("Воркер прислал неверный результат файла."))
+        }
+        // `completed` repeats the same results; do not re-read files or re-emit them.
         guard !completedIndices.contains(index) else { return }
-        if !success { stderr?.drain() }
-        let metadata = try JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys])
+        // Pull the traceback in before the failure is reported. Only stderr: this
+        // runs inside the stdout callback, which must not be re-entered.
+        if !result.success { worker?.drainDiagnostics() }
         let stem = files[index].deletingPathExtension().lastPathComponent
-        let suffixes = ["txt": ".txt", "txt_timecodes": "_timecodes.txt", "txt_diarize": "_diarize.txt",
-                        "txt_diarize_timecodes": "_diarize_timecodes.txt", "md": ".md", "srt": ".srt", "vtt": ".vtt"]
         var outputFiles: [String: URL] = [:]
-        var errors: [String] = []
-        if let error = raw["error"] as? String, !error.isEmpty { errors.append(error) }
-        if let diarization = raw["diarization"] as? [String: Any],
-           let error = diarization["error"] as? String, !error.isEmpty { errors.append(error) }
-        for savedPath in saved {
-            guard let root = runtimeRoot, let directory = resolvedOutputDirectory else { throw Failure("Missing Python runtime context.") }
+        var errors = [result.error, result.diarizationError].compactMap { $0 }
+        for savedPath in result.savedFiles {
+            guard let root = runtimeRoot else { throw WorkerFailure(L10n.text("Нет данных о Python-окружении.")) }
+            let directory = resolvedOutputDirectory ?? files[index].deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
             let reported = URL(fileURLWithPath: savedPath, relativeTo: root).standardizedFileURL
             let file = reported.resolvingSymlinksInPath().standardizedFileURL
             let expectedName = reported.lastPathComponent
             guard !savedPath.contains("\0"), file.deletingLastPathComponent().path == directory.path,
-                  let format = suffixes.first(where: { stem + $0.value == expectedName })?.key,
+                  let format = OutputNaming.format(ofOutputNamed: expectedName, stem: stem),
                   let values = try? file.resourceValues(forKeys: [.isRegularFileKey]), values.isRegularFile == true,
                   FileManager.default.isReadableFile(atPath: file.path) else {
-                errors.append("The worker returned an unavailable or unsafe output file: \(savedPath)")
+                errors.append(L10n.format("Воркер вернул недоступный или небезопасный файл результата: %@", savedPath))
                 continue
             }
             outputFiles[format] = file
@@ -303,32 +294,20 @@ final class NativeTranscriptionJob {
                 defer { try? handle.close() }
                 let limit = 32 * 1024 * 1024
                 let data = try handle.read(upToCount: limit + 1) ?? Data()
-                guard data.count <= limit else { throw Failure("Transcript is larger than the 32 MiB preview limit; open the saved file.") }
-                guard let text = String(data: data, encoding: .utf8) else { throw Failure("The saved transcript is not valid UTF-8.") }
+                guard data.count <= limit else { throw WorkerFailure(L10n.text("Транскрипт больше 32 МиБ — откройте сохранённый файл.")) }
+                guard let text = String(data: data, encoding: .utf8) else { throw WorkerFailure(L10n.text("Сохранённый транскрипт не в кодировке UTF-8.")) }
                 transcript = text
                 break
             } catch { errors.append(error.localizedDescription) }
         }
-        if !success && errors.isEmpty { errors.append(failureDetails("The Python processor could not transcribe this file.")) }
-        if success && outputFiles.isEmpty { errors.append("The Python processor did not produce any readable output files.") }
+        if !result.success && errors.isEmpty { errors.append(failureDetails(L10n.text("Python-обработчик не смог распознать этот файл."))) }
+        if result.success && outputFiles.isEmpty { errors.append(L10n.text("Python-обработчик не создал ни одного читаемого файла результата.")) }
         let error = errors.isEmpty ? nil : safeText(errors.joined(separator: "\n"))
-        hadFileError = hadFileError || !success || error != nil
+        hadFileError = hadFileError || !result.success || error != nil
         completedIndices.insert(index)
         emit(.fileCompleted(NativeTranscriptionResult(inputURL: files[index], transcript: transcript,
                                                      outputFiles: outputFiles, error: error,
-                                                     metadataJSON: String(decoding: metadata, as: UTF8.self))))
-    }
-
-    private func boolean(_ value: Any?) -> Bool? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
-        return number.boolValue
-    }
-
-    private func integer(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-              number.doubleValue.isFinite, number.doubleValue >= 0,
-              number.doubleValue < Double(Int.max), number.doubleValue.rounded(.down) == number.doubleValue else { return nil }
-        return number.intValue
+                                                     metadataJSON: result.metadataJSON)))
     }
 
     private func emit(_ event: NativeTranscriptionEvent) {
@@ -337,32 +316,25 @@ final class NativeTranscriptionJob {
     }
 
     private func recordLog(_ text: String) {
-        guard !finished, pendingTerminal == nil else { return }
-        let text = safeText(text).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        diagnostics = String((diagnostics + "\n" + text).suffix(16 * 1024))
+        guard let text = recordDiagnostic(text) else { return }
         emit(.log(text))
     }
 
-    private static let credentialPatterns = [
-        #"\b(?:hf_|sk-)[A-Za-z0-9_-]+"#,
-        #"(?i)\bBearer\s+\S+"#,
-        #"(?i)((?:token|api[_-]?key|password|secret)[\"']?\s*[:=]\s*[\"']?)[^\s\"'&,}]+"#,
-        #"(?i)(https?://)[^\s/@]+:[^\s/@]+@"#
-    ].compactMap { try? NSRegularExpression(pattern: $0) }
-
-    private func safeText(_ text: String) -> String {
-        var value = text
-        for secret in secrets { value = value.replacingOccurrences(of: secret, with: "[redacted]") }
-        for pattern in Self.credentialPatterns {
-            value = pattern.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: "[redacted]")
-        }
-        return String(value.suffix(8192))
+    /// Keeps the raw line for failure reports; returns it redacted, or nil when blank.
+    @discardableResult
+    private func recordDiagnostic(_ text: String) -> String? {
+        guard !finished, pendingTerminal == nil else { return nil }
+        let text = safeText(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        diagnostics = String((diagnostics + "\n" + text).suffix(16 * 1024))
+        return text
     }
+
+    private func safeText(_ text: String) -> String { WorkerRedaction.safeText(text, secrets: secrets) }
 
     private func failureDetails(_ message: String) -> String {
         let summary = safeText(message)
-        return diagnostics.isEmpty ? summary : summary + "\n" + safeText(diagnostics)
+        return diagnostics.isEmpty ? summary : summary + "\n\n" + L10n.text("Технические подробности для отчёта об ошибке:") + "\n" + safeText(diagnostics)
     }
 
     private func requestTerminal(_ event: NativeTranscriptionEvent) {
@@ -370,139 +342,24 @@ final class NativeTranscriptionJob {
         pendingTerminal = event
         // main() loops over stdin and its processing thread is a daemon. EOF is
         // the normal shutdown protocol, but only AFTER the batch has completed.
-        try? input?.close()
-        input = nil
-        guard let task = process else { finish(); return }
-        queue.asyncAfter(deadline: .now() + 2) { [weak self, weak task] in
-            guard let self, let task, self.process === task, task.isRunning else { return }
-            task.terminate()
-            self.queue.asyncAfter(deadline: .now() + 2) { [weak self, weak task] in
-                guard let self, let task, self.process === task, task.isRunning else { return }
-                Darwin.kill(task.processIdentifier, SIGKILL)
-            }
-        }
+        guard let worker, worker.isRunning else { finish(); return }
+        worker.closeInput()
+        worker.terminateGracefully(after: 2)
     }
 
-    private func workerExited() {
-        guard !finished, let task = process else { return }
-        // Exit notification can win the race with a read-source callback. Drain
-        // the remaining bytes first, without waiting on inherited child pipe FDs.
-        stdout?.drain()
-        stderr?.drain()
+    private func workerExited(status: Int32) {
+        guard !finished else { return }
         if pendingTerminal == nil {
-            pendingTerminal = .failed(failureDetails("The transcription worker exited without a completion event (status \(task.terminationStatus))."))
+            pendingTerminal = .failed(failureDetails(L10n.format("%@ завершился, не сообщив о завершении (код %@).", WorkerRole.transcription.name, String(status))))
         }
-        task.terminationHandler = nil
-        process = nil
         finish()
     }
 
     private func finish() {
         guard !finished, let event = pendingTerminal else { return }
         finished = true
-        try? input?.close()
-        input = nil
-        stdout?.close()
-        stderr?.close()
-        stdout = nil
-        stderr = nil
+        worker?.close()
+        worker = nil
         DispatchQueue.main.async { self.onEvent(event) }
-    }
-
-    private struct Failure: LocalizedError {
-        let message: String
-        init(_ message: String) { self.message = message }
-        var errorDescription: String? { message }
-    }
-
-    /// Nonblocking readers drain both pipes concurrently without growing an
-    /// unbounded callback queue or waiting forever for a descendant's open pipe.
-    private final class LineReader {
-        private let handle: FileHandle
-        private let limit: Int
-        private let truncate: Bool
-        private let onLine: (Data) -> Void
-        private let onError: (String) -> Void
-        private let onEnd: () -> Void
-        private var source: DispatchSourceRead?
-        private var buffer = [UInt8](repeating: 0, count: 8192)
-        private var line = Data()
-        private var dropping = false
-
-        init(handle: FileHandle, queue: DispatchQueue, limit: Int, truncate: Bool,
-             onLine: @escaping (Data) -> Void, onError: @escaping (String) -> Void,
-             onEnd: @escaping () -> Void = {}) throws {
-            self.handle = handle
-            self.limit = limit
-            self.truncate = truncate
-            self.onLine = onLine
-            self.onError = onError
-            self.onEnd = onEnd
-            let flags = fcntl(handle.fileDescriptor, F_GETFL)
-            guard flags != -1, fcntl(handle.fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
-                throw Failure("Could not configure the transcription output pipe.")
-            }
-            let source = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
-            self.source = source
-            source.setEventHandler { [weak self] in self?.drain() }
-            source.setCancelHandler { try? handle.close() }
-            source.resume()
-        }
-
-        func drain() {
-            guard source != nil else { return }
-            // Bound one turn so busy diagnostics cannot starve Cancel/teardown.
-            for _ in 0..<64 {
-                let count = buffer.withUnsafeMutableBytes { Darwin.read(handle.fileDescriptor, $0.baseAddress, $0.count) }
-                if count > 0 {
-                    consume(count)
-                } else if count == 0 {
-                    if !line.isEmpty && !dropping { onLine(line) }
-                    line.removeAll(keepingCapacity: false)
-                    close()
-                    onEnd()
-                    return
-                } else if errno == EINTR {
-                    continue
-                } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                    return
-                } else {
-                    onError("Could not read transcription worker output: \(String(cString: strerror(errno)))")
-                    close()
-                    return
-                }
-            }
-        }
-
-        private func consume(_ count: Int) {
-            var start = 0
-            while start < count {
-                let newline = buffer[start..<count].firstIndex(of: 10)
-                let end = newline ?? count
-                if !dropping {
-                    let available = max(0, limit - line.count)
-                    line.append(contentsOf: buffer[start..<min(end, start + available)])
-                    if end - start > available {
-                        dropping = true
-                        if truncate { onLine(line) }
-                        else { onError("The transcription worker exceeded the 8 MiB JSONL event limit.") }
-                        line.removeAll(keepingCapacity: true)
-                    }
-                }
-                if let newline {
-                    if !dropping { onLine(line) }
-                    line.removeAll(keepingCapacity: true)
-                    dropping = false
-                    start = newline + 1
-                } else { break }
-            }
-        }
-
-        func close() {
-            source?.cancel()
-            source = nil
-        }
-
-        deinit { close() }
     }
 }

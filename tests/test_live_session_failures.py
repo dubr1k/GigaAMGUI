@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.live.session import MAX_PENDING_MIX_CHUNKS, LiveSession
+from src.live.session import MAX_PENDING_MIX_CHUNKS, MAX_RECORDING_FAILURES, LiveSession
 from src.live.types import CaptureEvent, CaptureEventKind, CaptureSource, CaptureState, LiveSettings, PcmChunk
 
 
@@ -200,10 +200,13 @@ def test_staggered_source_callbacks_produce_timestamp_aligned_mix(tmp_path):
     )
     session.start()
     mic.emit(source_chunk(CaptureSource.MIC, offset=100, timestamp_ns=1_000_000_000, frame_count=4))
-    system.emit(source_chunk(CaptureSource.SYSTEM, offset=200, timestamp_ns=1_000_041_667, frame_count=2))
+    system.emit(source_chunk(CaptureSource.SYSTEM, offset=200, timestamp_ns=1_000_041_667, frame_count=4))
+    mic.emit(source_chunk(CaptureSource.MIC, offset=104, timestamp_ns=1_000_083_334, frame_count=4))
+    system.emit(source_chunk(CaptureSource.SYSTEM, offset=204, timestamp_ns=1_000_145_833, frame_count=4))
 
-    assert len(recorders[0].mixes) == 1
-    assert recorders[0].mixes[0].frames.shape == (4, 1)
+    # Оба источника отдали по 8 фреймов — столько же должно оказаться и в
+    # миксе: разнобой моментов прихода колбэков не еда для длины файла (issue #50).
+    assert sum(mix.frames.shape[0] for mix in recorders[0].mixes) == 8
 
 
 def test_distinct_device_timestamp_epochs_produce_normal_mix(tmp_path):
@@ -281,7 +284,10 @@ def test_small_normalized_clock_jitter_and_drift_keeps_mix_bounded(tmp_path):
     mic.emit(source_chunk(CaptureSource.MIC, offset=480, timestamp_ns=1_010_000_000, frame_count=480))
     system.emit(source_chunk(CaptureSource.SYSTEM, offset=480, timestamp_ns=8_010_300_000, frame_count=480))
 
-    assert [mix.frames.shape for mix in recorders[0].mixes] == [(480, 1), (494, 1)]
+    # Раньше второй блок был (494, 1): 14 фреймов набивки за 300 мкс дрожания
+    # меток прихода. На сессии в 5 300 пар такая надбавка и растянула mix.flac
+    # в пять раз (issue #50); теперь позиция берётся из смещений сэмплов.
+    assert [mix.frames.shape for mix in recorders[0].mixes] == [(480, 1), (480, 1)]
     assert session._mix_recording_enabled is True
 
 
@@ -335,7 +341,10 @@ def test_large_skew_disables_mix_once_without_interrupting_source_recording_or_a
     session.start()
     mic.emit(source_chunk(CaptureSource.MIC, timestamp_ns=1, frame_count=480))
     system.emit(source_chunk(CaptureSource.SYSTEM, timestamp_ns=15_000_000_001, frame_count=480))
-    mic.emit(source_chunk(CaptureSource.MIC, offset=480, timestamp_ns=10_000_001, frame_count=480))
+    # Микрофон перепрыгивает четыре секунды звука: разрыв больше секунды
+    # SourceTimeline не зашивает тишиной, так что потоки расходятся по-настоящему,
+    # а не по часам — именно такое расхождение и должно гасить микс.
+    mic.emit(source_chunk(CaptureSource.MIC, offset=200_480, timestamp_ns=10_000_001, frame_count=480))
     system.emit(source_chunk(CaptureSource.SYSTEM, offset=480, timestamp_ns=16_500_000_001, frame_count=480))
 
     assert len(recorders[0].mixes) == 1
@@ -347,7 +356,7 @@ def test_large_skew_disables_mix_once_without_interrupting_source_recording_or_a
         if isinstance(event, CaptureEvent) and "Mixed audio recording disabled" in event.detail
     ]
     assert len(mix_notices) == 1
-    assert mix_notices[0].source is CaptureSource.MIC
+    assert mix_notices[0].source is CaptureSource.SYSTEM
     assert session._mix_recording_enabled is False
 
 
@@ -400,8 +409,106 @@ def test_missing_peer_cannot_grow_mix_queue_or_mix_recording_without_bound(tmp_p
     for index in range(MAX_PENDING_MIX_CHUNKS + 5):
         mic.emit(source_chunk(CaptureSource.MIC, offset=index * 480, timestamp_ns=index * 10_000_000, frame_count=480))
 
-    assert session._mix_inputs == {}
-    assert session._mix_recording_enabled is False
+    # A peer that never delivers audio must not starve the mix track: the
+    # queue stays bounded, mixing continues with the source that is live, and
+    # the session keeps mixed recording enabled (issue #42).
+    assert all(len(pending) <= MAX_PENDING_MIX_CHUNKS + 1 for pending in session._mix_inputs.values())
+    assert session._mix_recording_enabled is True
+    assert CaptureSource.SYSTEM in session._mix_stalled_sources
     assert len(recorders[0].written) == MAX_PENDING_MIX_CHUNKS + 5
-    assert recorders[0].mixes == []
+    assert len(recorders[0].mixes) == MAX_PENDING_MIX_CHUNKS + 5
     assert len(schedulers[CaptureSource.MIC].submitted) == MAX_PENDING_MIX_CHUNKS + 5
+
+
+def test_repeatedly_failing_source_recording_is_disabled_instead_of_retried(tmp_path):
+    """A writer that cannot open its file will not start working on chunk 5000.
+
+    Issue #48 produced 15 255 identical "recording write failed" lines in one
+    session because every chunk re-attempted the doomed segment open.
+    """
+    class AlwaysFailingRecorder:
+        def __init__(self, *args):
+            self.attempts = 0
+
+        def write(self, chunk):
+            self.attempts += 1
+            raise RuntimeError("Format not recognised")
+
+        def write_mix(self, chunk):
+            return None
+
+        def close(self):
+            return {}
+
+    mic = FakeAdapter()
+    recorders = []
+    updates = []
+
+    def recorder_factory(*args):
+        recorder = AlwaysFailingRecorder(*args)
+        recorders.append(recorder)
+        return recorder
+
+    session = LiveSession(
+        tmp_path,
+        LiveSettings(record_mix_audio=False),
+        {CaptureSource.MIC: mic},
+        scheduler_factory=lambda source, on_final, on_partial, on_error: FakeScheduler(),
+        recorder_factory=recorder_factory,
+    )
+    session.subscribe(updates.append)
+    session.start()
+    for index in range(MAX_RECORDING_FAILURES + 20):
+        mic.emit(source_chunk(CaptureSource.MIC, offset=index * 4_800, timestamp_ns=index + 1))
+
+    assert recorders[0].attempts == MAX_RECORDING_FAILURES
+    assert session.status().active_sources == {CaptureSource.MIC}
+    assert session.status().state is CaptureState.RECORDING
+    disabled = [
+        event for event in updates
+        if isinstance(event, CaptureEvent) and "recording disabled" in event.detail.casefold()
+    ]
+    assert len(disabled) == 1
+    assert disabled[0].source is CaptureSource.MIC
+
+
+def test_a_recovering_source_recording_is_not_disabled(tmp_path):
+    """Only consecutive failures count; a transient write error must not kill the track."""
+    class FlakyRecorder:
+        def __init__(self, *args):
+            self.written = []
+            self.fail_at = {0, 3}
+
+        def write(self, chunk):
+            index = len(self.written)
+            if index in self.fail_at:
+                self.written.append(None)
+                raise RuntimeError("temporary disk hiccup")
+            self.written.append(chunk)
+
+        def write_mix(self, chunk):
+            return None
+
+        def close(self):
+            return {}
+
+    mic = FakeAdapter()
+    recorders = []
+
+    def recorder_factory(*args):
+        recorder = FlakyRecorder(*args)
+        recorders.append(recorder)
+        return recorder
+
+    session = LiveSession(
+        tmp_path,
+        LiveSettings(record_mix_audio=False),
+        {CaptureSource.MIC: mic},
+        scheduler_factory=lambda source, on_final, on_partial, on_error: FakeScheduler(),
+        recorder_factory=recorder_factory,
+    )
+    session.start()
+    for index in range(MAX_RECORDING_FAILURES + 10):
+        mic.emit(source_chunk(CaptureSource.MIC, offset=index * 4_800, timestamp_ns=index + 1))
+
+    assert len(recorders[0].written) == MAX_RECORDING_FAILURES + 10

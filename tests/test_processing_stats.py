@@ -1,5 +1,13 @@
 """Тесты статистики обработки: персистентность и восстановление (Phase 0.8 / 4.1)."""
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 from src.utils.processing_stats import ProcessingStats
 
 
@@ -28,3 +36,30 @@ def test_estimate_uses_history(tmp_path):
                             conversion_time=10.0, transcription_time=40.0, success=True)
     est = s.estimate_processing_time("b.mp3", media_duration=100.0)
     assert est > 0
+
+
+@pytest.mark.parametrize("absolute_override", [False, True], ids=["relative", "absolute"])
+def test_configured_stats_do_not_modify_application_bundle(tmp_path, absolute_override):
+    bundle_dir = tmp_path / "GigaAMTranscriber.app" / "Contents" / "MacOS"
+    bundle_dir.mkdir(parents=True)
+    config_dir = tmp_path / "user-config"
+    stats_file = tmp_path / "custom" / "stats.json" if absolute_override else config_dir / "processing_stats.json"
+    env = {
+        **os.environ,
+        "GIGAAM_CONFIG_DIR": str(config_dir),
+        "GIGAAM_DATA_DIR": str(tmp_path / "data"),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+    }
+    env["STATS_FILE"] = str(stats_file) if absolute_override else "processing_stats.json"
+    subprocess.run(
+        [
+            sys.executable, "-c",
+            "from src.config import STATS_FILE; "
+            "from src.utils.processing_stats import ProcessingStats; "
+            "ProcessingStats(STATS_FILE).add_processing_record('speech.wav', 1024, 1.0)",
+        ],
+        cwd=bundle_dir, env=env, check=True, capture_output=True, text=True,
+    )
+    assert not (bundle_dir / "processing_stats.json").exists()
+    saved = json.loads(stats_file.read_text(encoding="utf-8"))
+    assert saved["history"][0]["file_name"] == "speech.wav"

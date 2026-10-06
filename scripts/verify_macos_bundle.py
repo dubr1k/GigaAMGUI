@@ -1,13 +1,73 @@
-"""Практические проверки для dist/GigaAMTranscriber.app."""
+"""Практические проверки для dist/GigaAMTranscriber.app.
+
+Два профиля сборки, две разные проверки. ``arm64-mlx`` — обычный Apple Silicon
+бандл с torch и MLX. ``x86_64-onnx`` — Intel-бандл из
+``packaging/gigaam_app_mac_x86_64.spec``, где ни torch, ни mlx быть не должно:
+под macOS x86_64 колёс torch>=2.6 не существует, поэтому цепочка целиком ONNX
+(issue #45). Профиль определяется автоматически по архитектуре машины, но его
+можно задать явно через ``--profile``.
+"""
 
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import sys
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _APP_ARCHIVE_EXT = ".app"
+
+
+@dataclass(frozen=True)
+class BundleProfile:
+    """Чего мы ждём от собранного .app под конкретную архитектуру."""
+
+    name: str
+    arch: str
+    #: Пакеты, без которых бандл бесполезен (ищем в Contents/Frameworks).
+    required_packages: tuple[str, ...]
+    #: Пакеты, присутствие которых означает сломанную сборку.
+    forbidden_packages: tuple[str, ...]
+    #: Смок нативного рантайма (флаг app.py) и обязательный маркер в его выводе.
+    runtime_smoke: tuple[str, str]
+    extra_smokes: tuple[tuple[str, str | None], ...] = field(default=())
+    #: Модули, которые обязаны лежать в PYZ-архиве исполняемого файла. Каталог
+    #: пакета в Frameworks/Resources ещё не значит, что код внутри: пустой
+    #: namespace-пакет gigaam (только конфликтные копии Syncthing) проходил
+    #: проверку required_packages, а PyTorch-бэкенд падал у пользователя.
+    required_modules: tuple[str, ...] = field(default=())
+
+
+PROFILES = {
+    "arm64-mlx": BundleProfile(
+        name="arm64-mlx",
+        arch="arm64",
+        required_packages=("mlx", "gigaam_mlx"),
+        forbidden_packages=(),
+        runtime_smoke=("--asr-runtime-smoke", '"backend": "mlx"'),
+        required_modules=("gigaam.model", "gigaam.decoding", "gigaam_mlx.model", "onnx_asr"),
+    ),
+    "x86_64-onnx": BundleProfile(
+        name="x86_64-onnx",
+        arch="x86_64",
+        required_packages=("onnxruntime", "onnx_asr"),
+        # torch/mlx внутри Intel-бандла — это либо бинарники не той архитектуры,
+        # либо лишний гигабайт веса; и то и другое должно валить сборку.
+        forbidden_packages=("torch", "mlx", "gigaam_mlx", "pyannote"),
+        runtime_smoke=("--onnx-runtime-smoke", '"backend": "onnx"'),
+        required_modules=("onnx_asr",),
+        # Смока диаризации здесь сознательно нет: он тянет модель из сети, а тот
+        # же путь уже закрыт `--offline-models-smoke` на привезённых моделях —
+        # и в CI, и локально, без стомегабайтной докачки посреди сборки.
+    ),
+}
+
+
+def default_profile() -> str:
+    return "arm64-mlx" if platform.machine() == "arm64" else "x86_64-onnx"
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
@@ -16,7 +76,63 @@ def _run(cmd: list[str]) -> tuple[int, str]:
     return proc.returncode, out
 
 
-def verify_bundle(bundle_path: str) -> int:
+def _run_smoke(executable: Path, flag: str, marker: str | None, timeout: int = 60) -> int:
+    try:
+        smoke = subprocess.run(
+            [str(executable), flag],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"Frozen smoke timed out: {flag}")
+        return 1
+    output = (smoke.stdout or "") + (smoke.stderr or "")
+    if smoke.returncode != 0 or (marker is not None and marker not in output):
+        print(f"Frozen smoke failed {flag} ({smoke.returncode}): {output[-4000:]}")
+        return 1
+    return 0
+
+
+def frozen_modules(executable: Path) -> set[str]:
+    """Имена модулей из PYZ-архива внутри исполняемого файла PyInstaller."""
+    from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
+
+    archive = CArchiveReader(str(executable))
+    names: set[str] = set()
+    for entry in archive.toc:
+        if not entry.endswith(".pyz"):
+            continue
+        # ZlibArchiveReader читает только файл, поэтому PYZ из CArchive
+        # выгружаем во временный файл.
+        with tempfile.NamedTemporaryFile(suffix=".pyz", delete=False) as handle:
+            handle.write(archive.extract(entry))
+            pyz_path = handle.name
+        try:
+            names.update(ZlibArchiveReader(pyz_path).toc)
+        finally:
+            os.unlink(pyz_path)
+    return names
+
+
+def check_required_modules(executable: Path, modules: tuple[str, ...]) -> int:
+    if not modules:
+        return 0
+    try:
+        present = frozen_modules(executable)
+    except Exception as exc:
+        print(f"Cannot read the PYZ archive of {executable}: {type(exc).__name__}: {exc}")
+        return 1
+    missing = [module for module in modules if module not in present]
+    if missing:
+        print(f"Modules missing from the frozen archive of {executable.name}: {', '.join(missing)}")
+        return 1
+    return 0
+
+
+def verify_bundle(bundle_path: str, profile_name: str | None = None) -> int:
+    profile = PROFILES[profile_name or default_profile()]
+
     root = Path(bundle_path)
     if not root.exists():
         print(f"Bundle not found: {root}")
@@ -24,6 +140,11 @@ def verify_bundle(bundle_path: str) -> int:
 
     if not root.name.endswith(_APP_ARCHIVE_EXT):
         print(f"Expected .app bundle, got {root.name}")
+        return 1
+
+    raw_project_sources = root / "Contents" / "Resources" / "src"
+    if raw_project_sources.exists():
+        print(f"Raw project sources must not be shipped: {raw_project_sources}")
         return 1
 
     if sys.platform != "darwin":
@@ -45,8 +166,8 @@ def verify_bundle(bundle_path: str) -> int:
             continue
         if "Mach-O" not in info:
             continue
-        if "arm64" not in info:
-            print(f"Non-arm64 Mach-O detected: {path}")
+        if profile.arch not in info:
+            print(f"Non-{profile.arch} Mach-O detected: {path}")
             return 1
 
     out_plist = root / "Contents" / "Info.plist"
@@ -54,7 +175,8 @@ def verify_bundle(bundle_path: str) -> int:
         print("Info.plist not found")
         return 1
 
-    if not (root / "Contents" / "Frameworks").exists():
+    frameworks = root / "Contents" / "Frameworks"
+    if not frameworks.exists():
         print("No bundled Frameworks")
 
     ffmpeg = root.rglob("**/ffmpeg")
@@ -62,61 +184,85 @@ def verify_bundle(bundle_path: str) -> int:
         print("ffmpeg not found in bundle")
         return 1
 
-    frameworks = root / "Contents" / "Frameworks"
-    for package in ("mlx", "gigaam_mlx"):
+    for package in profile.required_packages:
         if not (frameworks / package).exists():
-            print(f"Required MLX package not found in bundle: {package}")
+            print(f"Required package not found in bundle ({profile.name}): {package}")
             return 1
 
-    try:
-        smoke = subprocess.run(
-            [str(candidates[0]), "--asr-runtime-smoke"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        print("Frozen MLX runtime smoke timed out")
+    for package in profile.forbidden_packages:
+        if (frameworks / package).exists():
+            print(
+                f"Package must not be bundled in the {profile.name} build: {package}"
+            )
+            return 1
+
+    if check_required_modules(candidates[0], profile.required_modules):
         return 1
-    smoke_output = (smoke.stdout or "") + (smoke.stderr or "")
-    if smoke.returncode != 0 or '"backend": "mlx"' not in smoke_output:
-        print(f"Frozen MLX runtime smoke failed ({smoke.returncode}): {smoke_output[-2000:]}")
+
+    smoke_flag, smoke_marker = profile.runtime_smoke
+    if _run_smoke(candidates[0], smoke_flag, smoke_marker, timeout=120):
         return 1
+
+    # Без этого гейта полная .app уезжала в релиз без sounddevice/ScreenCaptureKit,
+    # а вкладка Live падала уже у пользователя (issue #47).
+    if _run_smoke(candidates[0], "--live-capture-smoke", None):
+        return 1
+
+    for flag, marker in profile.extra_smokes:
+        if _run_smoke(candidates[0], flag, marker):
+            return 1
 
     bundle_sortformer = os.environ.get("GIGAAM_BUNDLE_SORTFORMER", "").strip().lower() in {
         "1", "true", "yes", "on",
     }
     if bundle_sortformer:
-        try:
-            sortformer_smoke = subprocess.run(
-                [str(candidates[0]), "--sortformer-runtime-smoke"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            print("Frozen Sortformer runtime smoke timed out")
-            return 1
-        sortformer_output = (sortformer_smoke.stdout or "") + (sortformer_smoke.stderr or "")
-        if (
-            sortformer_smoke.returncode != 0
-            or '"sortformer": "SortformerEncLabelModel"' not in sortformer_output
+        if _run_smoke(
+            candidates[0],
+            "--sortformer-runtime-smoke",
+            '"sortformer": "SortformerEncLabelModel"',
         ):
-            print(
-                f"Frozen Sortformer runtime smoke failed ({sortformer_smoke.returncode}): "
-                f"{sortformer_output[-4000:]}"
-            )
             return 1
 
-    print(f"Bundle verification passed: {root}")
+    print(f"Bundle verification passed ({profile.name}): {root}")
+    return 0
+
+
+def verify_modules_only(bundle_path: str, profile_name: str | None = None) -> int:
+    """Только проверка PYZ — для GigaAMWorker.app, у которого нет GUI-смоков."""
+    profile = PROFILES[profile_name or default_profile()]
+    exe = Path(bundle_path) / "Contents" / "MacOS"
+    candidates = [p for p in exe.iterdir() if p.is_file() and os.access(p, os.X_OK)] if exe.exists() else []
+    if not candidates:
+        print(f"No executable found in {exe}")
+        return 1
+    if check_required_modules(candidates[0], profile.required_modules):
+        return 1
+    print(f"Frozen modules verified ({profile.name}): {bundle_path}")
     return 0
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage: python scripts/verify_macos_bundle.py <path_to_app>")
+    args = [arg for arg in sys.argv[1:]]
+    modules_only = "--modules-only" in args
+    if modules_only:
+        args.remove("--modules-only")
+    profile_name = None
+    if "--profile" in args:
+        index = args.index("--profile")
+        if index + 1 >= len(args):
+            print("--profile requires a value: " + ", ".join(sorted(PROFILES)))
+            return 1
+        profile_name = args[index + 1]
+        if profile_name not in PROFILES:
+            print(f"Unknown profile {profile_name}; expected one of {', '.join(sorted(PROFILES))}")
+            return 1
+        del args[index:index + 2]
+    if len(args) != 1:
+        print("Usage: python scripts/verify_macos_bundle.py [--profile NAME] [--modules-only] <path_to_app>")
         return 1
-    return verify_bundle(sys.argv[1])
+    if modules_only:
+        return verify_modules_only(args[0], profile_name)
+    return verify_bundle(args[0], profile_name)
 
 
 if __name__ == "__main__":

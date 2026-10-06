@@ -14,6 +14,7 @@ PyInstaller НЕ видит, что они импортируют. Их чист
 импорта: добавь <pkg> в PURE_RUNTIME_DEPS — НЕ перечисляй подмодули вручную в спеке.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,9 +25,60 @@ from PyInstaller.utils.hooks import (
     get_all_package_paths,
 )
 
+#: Тег релиза показывается в About; macOS требует числовой маркетинговый
+#: номер и не более трёх компонентов в CFBundleVersion.
+APP_VERSION = "2.6.2"
+APP_MARKETING_VERSION = APP_VERSION.split("-", 1)[0]
+APP_BUILD_VERSION = "2.6.20"
+
+
 # Пакеты, которые импортирует рантайм-torchvision/pyannote, но не видит
 # замороженный анализ. Собираем целиком.
 PURE_RUNTIME_DEPS = ["PIL", "asteroid_filterbanks"]
+
+
+#: Куда кладём libportaudio для Linux-сборки. Читается из
+#: ``src/live/capture/linux.py`` — менять только вместе с ним.
+BUNDLED_PORTAUDIO_RELPATH = "_portaudio/libportaudio.so.2"
+
+
+def collect_linux_portaudio():
+    """Вшивает системный ``libportaudio.so.2`` в Linux-сборку.
+
+    Linux-колесо sounddevice — чистопитоновое: в отличие от macOS/Windows оно НЕ
+    содержит ``_sounddevice_data/portaudio-binaries``, а загрузчик ищет библиотеку
+    через ``ctypes.util.find_library`` и на Linux не имеет запасного пути. Поэтому
+    саму библиотеку кладём в бандл сами, а ``src/live/capture/linux.py`` при старте
+    из бандла подставляет sounddevice этот путь (issue #47).
+    """
+    soname = Path(BUNDLED_PORTAUDIO_RELPATH).name
+    candidates = []
+
+    for ldconfig in ("/sbin/ldconfig", "/usr/sbin/ldconfig", "ldconfig"):
+        try:
+            listing = subprocess.run(
+                [ldconfig, "-p"], capture_output=True, text=True, check=False
+            ).stdout
+        except OSError:
+            continue
+        for line in listing.splitlines():
+            name, _, path = line.strip().partition(" => ")
+            if name.split(" ", maxsplit=1)[0] == soname and path:
+                candidates.append(path)
+        break
+
+    candidates += [
+        str(path)
+        for pattern in (f"/usr/lib/*/{soname}", f"/usr/lib/{soname}", f"/lib/*/{soname}")
+        for path in sorted(Path("/").glob(pattern.lstrip("/")))
+    ]
+
+    for candidate in candidates:
+        if Path(candidate).is_file():
+            return [(candidate, str(Path(BUNDLED_PORTAUDIO_RELPATH).parent))]
+
+    print(f"[skip] {soname} not found on the build host: Linux live capture will need the system package")
+    return []
 
 
 def collect_live_capture_deps():
@@ -34,9 +86,19 @@ def collect_live_capture_deps():
     if sys.platform.startswith("win"):
         packages = ("pyaudiowpatch",)
     elif sys.platform == "darwin":
-        packages = ("sounddevice", "AVFoundation", "CoreMedia", "ScreenCaptureKit")
+        # ``_sounddevice`` — cffi-обвязка, ``_sounddevice_data`` — отдельный
+        # top-level пакет с libportaudio.dylib, который collect_all('sounddevice')
+        # не видит; без него замороженный импорт sounddevice падает.
+        packages = (
+            "sounddevice",
+            "_sounddevice",
+            "_sounddevice_data",
+            "AVFoundation",
+            "CoreMedia",
+            "ScreenCaptureKit",
+        )
     elif sys.platform.startswith("linux"):
-        packages = ("sounddevice",)
+        packages = ("sounddevice", "_sounddevice")
     else:
         packages = ()
 
@@ -50,6 +112,9 @@ def collect_live_capture_deps():
         datas += package_data
         binaries += package_binaries
         hiddenimports += package_hiddenimports
+
+    if sys.platform.startswith("linux"):
+        binaries += collect_linux_portaudio()
     return datas, binaries, hiddenimports
 
 
@@ -100,6 +165,32 @@ def collect_pure_runtime_deps():
     return datas, binaries, hiddenimports
 
 
+def collect_required(package):
+    """collect_all() для пакета, без которого бандл неработоспособен.
+
+    Спеки собирали всё через safe_collect(), который при ошибке печатал
+    `[skip]` и возвращал пустые списки: сборка зеленела, а у пользователя
+    падал импорт (тот же класс ошибок, что #19). Пустой результат тоже
+    ошибка — collect_all() не бросает исключение для неустановленного пакета.
+    """
+    try:
+        datas, binaries, hiddenimports = collect_all(package)
+    except Exception as exc:
+        raise SystemExit(f"Не удалось собрать обязательный пакет {package}: {exc}") from exc
+    if not (datas or binaries or hiddenimports):
+        raise SystemExit(f"Обязательный пакет {package} собрался пустым — он не установлен в окружении сборки?")
+    return datas, binaries, hiddenimports
+
+
+def collect_optional(package):
+    """collect_all() для необязательного пакета: отсутствие — не ошибка."""
+    try:
+        return collect_all(package)
+    except Exception as exc:
+        print(f"[skip] {package}: {exc}")
+        return [], [], []
+
+
 def collect_onnx_runtime_deps():
     """Собирает Python-код, model metadata/data и native-библиотеки ONNX runtime."""
     datas, binaries, hiddenimports = [], [], []
@@ -114,3 +205,55 @@ def collect_onnx_runtime_deps():
         binaries += b
         hiddenimports += h
     return datas, binaries, hiddenimports
+
+
+def windows_conda_extra_binaries(dll_names=("_lzma.pyd", "_bz2.pyd", "_sqlite3.pyd")):
+    """DLL стандартной библиотеки conda-окружения, которые PyInstaller не видит сам.
+
+    Раньше пути были прописаны под одну машину (C:\\Users\\<имя>\\miniconda3\\…),
+    и на любой другой спеки собирались без них, а project_root рядом указывал на
+    чужой диск. Берём активное окружение сборки (sys.prefix) и корень conda
+    (на два уровня выше envs/<имя>): на исходной машине это те же самые пути.
+    """
+    prefix = Path(sys.prefix)
+    found = [
+        (str(prefix / "DLLs" / name), ".")
+        for name in dll_names
+        if (prefix / "DLLs" / name).exists()
+    ]
+    # liblzma.dll нужна _lzma.pyd, но обычно лежит только в корне conda.
+    roots = [prefix]
+    if prefix.parent.name.lower() == "envs":
+        roots.append(prefix.parent.parent)
+    for root in roots:
+        liblzma = root / "Library" / "bin" / "liblzma.dll"
+        if liblzma.exists():
+            found.append((str(liblzma), "."))
+            break
+    return found
+
+
+def editable_package_roots(packages):
+    """Каталоги, через которые анализ PyInstaller увидит пакеты из `pip install -e`.
+
+    PEP 660 editable-установка (так ставит gigaam строка `-e git+…` в
+    requirements.txt) кладёт в site-packages не путь, а import-finder.
+    Python пакет находит, а modulegraph PyInstaller ищет модули только по путям:
+    он пишет «ERROR: Hidden import 'gigaam.model' not found» и продолжает, и
+    локальные сборки уходили без кода модели, хотя в CI (обычная установка)
+    всё было на месте. Корень такого пакета надо явно добавить в pathex.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    roots = []
+    for name in packages:
+        spec = importlib.util.find_spec(name)
+        if spec is None or not spec.origin or spec.origin == "namespace":
+            continue
+        if importlib.machinery.PathFinder.find_spec(name, sys.path) is not None:
+            continue  # и так виден по путям (обычная установка)
+        root = str(Path(spec.origin).resolve().parent.parent)
+        if root not in roots:
+            roots.append(root)
+    return roots

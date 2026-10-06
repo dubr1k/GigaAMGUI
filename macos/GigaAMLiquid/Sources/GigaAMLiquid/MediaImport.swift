@@ -69,6 +69,14 @@ final class MediaDownloadJob {
         return url
     }
 
+    /// Only a source run has a project Python environment to check; the bundled
+    /// worker's own error line (on the next lines) says what went wrong.
+    static func failureMessage(frozenCompanion: Bool) -> String {
+        frozenCompanion
+            ? L10n.text("Не удалось загрузить медиа по ссылке.")
+            : L10n.text("Не удалось загрузить медиа. Проверьте ссылку и Python-окружение проекта: нужны yt-dlp и зависимости requirements.txt.")
+    }
+
     func start() {
         lock.lock()
         guard !started else { lock.unlock(); return }
@@ -124,7 +132,6 @@ final class MediaDownloadJob {
         if isCancelled { throw Failure.cancelled }
         let manager = FileManager.default
         let runtime = try PythonRuntime.resolve()
-        let root = runtime.root
         let python = runtime.executable
         let cache = try manager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let target = cache.appendingPathComponent("GigaAMLiquid/Media", isDirectory: true)
@@ -135,8 +142,8 @@ final class MediaDownloadJob {
 
         let task = Process()
         task.executableURL = python
-        task.arguments = [root.appendingPathComponent("app.py").path, "--media-download-smoke", url.absoluteString, target.path]
-        task.currentDirectoryURL = root
+        task.arguments = runtime.mediaDownloadArguments(url: url, target: target)
+        task.currentDirectoryURL = runtime.workingDirectory
         task.environment = runtime.environment
         task.standardInput = FileHandle.nullDevice
         let stdout = Pipe()
@@ -181,7 +188,7 @@ final class MediaDownloadJob {
         if wasCancelled { throw Failure.cancelled }
         guard task.terminationReason == .exit, task.terminationStatus == 0 else {
             let diagnostics = String((errors.text.isEmpty ? output.text : errors.text).suffix(8192))
-            let message = L10n.text("Не удалось загрузить медиа. Проверьте ссылку и Python-окружение проекта: нужны yt-dlp и зависимости requirements.txt.")
+            let message = Self.failureMessage(frozenCompanion: runtime.frozenCompanion)
             throw Failure.message("\(message)\n\(L10n.text("Код завершения")): \(task.terminationStatus)\n\(diagnostics)")
         }
         // yt-dlp writes progress before app.py prints the final JSON response.
