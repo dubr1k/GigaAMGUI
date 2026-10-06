@@ -411,6 +411,45 @@ def test_tui_worker_forwards_onnx_provider(tmp_path, monkeypatch):
     assert captured["args"][-4:] == ("denoise", False, 3, 72)
 
 
+def test_tui_worker_defaults_preprocessing_to_config(tmp_path, monkeypatch):
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"wav")
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            captured["args"] = args
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr("src.tui_worker.threading.Thread", FakeThread)
+    monkeypatch.setattr("src.tui_worker.AUDIO_PREPROCESSING_MODE", "light")
+
+    TuiWorker(output=io.StringIO()).handle({"type": "start", "files": [str(sample)]})
+
+    assert captured["args"][-4] == "light"
+
+
+def test_tui_worker_rejects_explicit_invalid_preprocessing_mode(tmp_path):
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"wav")
+    output = io.StringIO()
+
+    TuiWorker(output=output).handle({
+        "type": "start",
+        "files": [str(sample)],
+        "audio_preprocessing_mode": "invalid",
+    })
+
+    message = _messages(output)[0]
+    assert message["type"] == "error"
+    assert message["message"] == "Unknown audio preprocessing mode: 'invalid'"
+
+
 def test_tui_worker_rejects_invalid_subtitle_limits(tmp_path):
     sample = tmp_path / "sample.wav"
     sample.write_bytes(b"wav")

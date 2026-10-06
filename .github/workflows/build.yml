@@ -75,8 +75,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-05-13-07/ffmpeg-N-127203-ga35c879992-win64-gpl.zip"
+          $expected = "34517bf39addbcfcdf01236074491e3ba94d6d137801f88803903a87cb76d1aa"
           Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          if ((Get-FileHash -Path ffmpeg.zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw "Downloaded FFmpeg archive checksum does not match the pinned release."
+          }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract -Force
           New-Item -ItemType Directory -Force -Path bin | Out-Null
           Copy-Item (Get-ChildItem -Recurse ffmpeg_extract -Filter ffmpeg.exe  | Select-Object -First 1).FullName bin/ffmpeg.exe  -Force
@@ -87,8 +91,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-05-13-07/ffmpeg-N-127203-ga35c879992-linux64-gpl.tar.xz"
+          expected="2d96f2594789e62c271049b8bb1988008165b1c9a220defff3d87dfba99495e6"
           curl -fL "$url" -o ffmpeg.tar.xz
+          echo "$expected  ffmpeg.tar.xz" | sha256sum --check --status
           mkdir -p ffmpeg_extract bin
           tar -xf ffmpeg.tar.xz -C ffmpeg_extract --strip-components=1
           cp ffmpeg_extract/bin/ffmpeg  bin/ffmpeg
