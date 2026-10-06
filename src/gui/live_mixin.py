@@ -8,13 +8,14 @@ import threading
 import time
 from pathlib import Path
 
+from PyQt6.QtGui import QTextCursor
+from PyQt6.QtWidgets import QFileDialog
+
+from ..live.asr import LiveAsrScheduler
 from ..live.capture.factory import CaptureUnavailable, create_capture_adapter
 from ..live.exports import ExportSelection
-from ..live.asr import LiveAsrScheduler
 from ..live.session import LiveSession, LiveStatus
 from ..live.types import CaptureEvent, CaptureSource, CaptureState, DiarizationMode, LiveSettings, TranscriptEvent
-from PyQt6.QtWidgets import QFileDialog
-from PyQt6.QtGui import QTextCursor
 from .live_overlay import LiveOverlay
 from .live_transcript import LiveTranscriptPresenter
 
@@ -338,7 +339,7 @@ class LiveMixin:
     @staticmethod
     def _stable_text_prefix_length(previous: str, current: str) -> int:
         shared = 0
-        for previous_char, current_char in zip(previous, current):
+        for previous_char, current_char in zip(previous, current, strict=False):
             if previous_char != current_char:
                 break
             shared += 1

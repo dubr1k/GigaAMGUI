@@ -4,9 +4,29 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QListWidget, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QSlider, QSpinBox, QStackedWidget, QTabWidget, QTableWidget, QTextEdit, QVBoxLayout, QWidget,
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QStackedWidget,
+    QTableWidget,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..config import APP_TITLE, OUTPUT_FORMATS
@@ -578,7 +598,7 @@ class UiBuildMixin:
             "Audio and video transcription.\nFast. Precise. Convenient."
         )
         self._sidebar_footer.setText("GigaAMGUI v3\nЛокально. Быстро. Точно." if is_ru else "GigaAMGUI v3\nLocal. Fast. Accurate.")
-        for index, (button, labels) in enumerate(zip(self._nav_buttons, self._tab_labels)):
+        for index, (button, labels) in enumerate(zip(self._nav_buttons, self._tab_labels, strict=True)):
             button.setText(f"{self._nav_icons[index]}   {labels[0] if is_ru else labels[1]}")
         for index, labels in enumerate(self._tab_labels):
             self.tabs.setTabText(index, labels[0] if is_ru else labels[1])

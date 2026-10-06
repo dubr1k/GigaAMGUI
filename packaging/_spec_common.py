@@ -14,8 +14,8 @@ PyInstaller НЕ видит, что они импортируют. Их чист
 импорта: добавь <pkg> в PURE_RUNTIME_DEPS — НЕ перечисляй подмодули вручную в спеке.
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from PyInstaller.utils.hooks import (
     collect_all,

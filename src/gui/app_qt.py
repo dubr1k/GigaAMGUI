@@ -48,8 +48,8 @@ from .llm_ui_mixin import LlmUiMixin
 from .processing_mixin import ProcessingMixin
 from .processing_options_ui_mixin import ProcessingOptionsUiMixin
 from .settings_mixin import SettingsMixin
-from .support_surfaces_mixin import SupportSurfacesMixin
 from .style_mixin import StyleMixin
+from .support_surfaces_mixin import SupportSurfacesMixin
 from .theme_mixin import ThemeMixin
 from .ui_build_mixin import UiBuildMixin
 

@@ -4,7 +4,7 @@ from threading import Event
 import numpy as np
 import pytest
 
-from src.live.types import CaptureEventKind, CaptureSource
+from src.live.types import CaptureSource
 
 
 class FakeWindowsApi:

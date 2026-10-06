@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
 import shutil
+from datetime import datetime
 
 from PyQt6.QtCore import QByteArray, QUrl
 from PyQt6.QtGui import QDesktopServices

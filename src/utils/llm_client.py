@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import requests
 

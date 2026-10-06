@@ -68,7 +68,7 @@ class I18nMixin:
             )
         if hasattr(self, "_nav_buttons"):
             nav_labels = ("Обработка", "Live", "LLM", "Журнал") if is_ru else ("Process", "Live", "LLM", "Log")
-            for nav_button, title in zip(self._nav_buttons, nav_labels):
+            for nav_button, title in zip(self._nav_buttons, nav_labels, strict=True):
                 nav_button.setText(title)
         if hasattr(self, "tabs"):
             self.tabs.setTabText(0, "Обработка" if is_ru else "Process")

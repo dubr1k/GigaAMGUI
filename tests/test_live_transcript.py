@@ -1,4 +1,5 @@
 from dataclasses import replace
+
 import pytest
 
 from src.gui.live_transcript import LiveTranscriptPresenter
