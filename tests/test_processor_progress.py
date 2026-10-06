@@ -291,6 +291,40 @@ def test_processor_multiple_output_formats_progresses_export_deterministically(m
     assert result["success"]
 
 
+def test_processor_preserves_existing_results_and_disambiguates_same_stem_inputs(monkeypatch, tmp_path):
+    first_input = tmp_path / "first" / "meeting.wav"
+    second_input = tmp_path / "second" / "meeting.mp3"
+    first_input.parent.mkdir()
+    second_input.parent.mkdir()
+    first_input.write_bytes(b"first")
+    second_input.write_bytes(b"second")
+    output_dir = tmp_path / "results"
+    output_dir.mkdir()
+    existing_result = output_dir / "meeting.txt"
+    existing_result.write_text("previous result", encoding="utf-8")
+
+    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
+    monkeypatch.setattr(
+        processor.audio_converter,
+        "convert_to_wav",
+        lambda filepath, *_args, **_kwargs: str(filepath),
+    )
+    monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
+
+    first_result = processor.process_file(
+        str(first_input), str(output_dir), 0, 2, output_formats=["txt"]
+    )
+    second_result = processor.process_file(
+        str(second_input), str(output_dir), 1, 2, output_formats=["txt"]
+    )
+
+    assert first_result["saved_files"] == [str(output_dir / "meeting_1.txt")]
+    assert second_result["saved_files"] == [str(output_dir / "meeting_2.txt")]
+    assert existing_result.read_text(encoding="utf-8") == "previous result"
+    assert (output_dir / "meeting_1.txt").read_text(encoding="utf-8") == "x"
+    assert (output_dir / "meeting_2.txt").read_text(encoding="utf-8") == "x"
+
+
 def test_plain_txt_joins_decoder_chunks_without_artificial_newlines(monkeypatch, tmp_path):
     path = _prepare_inputs(tmp_path)
     processor = TranscriptionProcessor(DummyLoaderChunks(), DummyStats())

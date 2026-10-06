@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 private enum Page: String, CaseIterable {
     case processing, result, live, llm, api, history, settings
@@ -53,7 +54,16 @@ private enum Page: String, CaseIterable {
 }
 
 private enum Palette {
-    static var isDark: Bool { UserDefaults.standard.string(forKey: "settings.theme") == "Тёмная" }
+    private static var preference: String? { UserDefaults.standard.string(forKey: "settings.theme") }
+
+    static var isDark: Bool {
+        switch preference {
+        case "Тёмная": return true
+        case "Светлая": return false
+        default: return NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+    }
+
     static var ink: NSColor { isDark ? NSColor(calibratedWhite: 0.94, alpha: 1) : NSColor(calibratedWhite: 0.05, alpha: 1) }
     static var body: NSColor { isDark ? NSColor(calibratedWhite: 0.72, alpha: 1) : NSColor(calibratedRed: 0.22, green: 0.27, blue: 0.33, alpha: 1) }
     static var muted: NSColor { isDark ? NSColor(calibratedWhite: 0.50, alpha: 1) : NSColor(calibratedRed: 0.34, green: 0.38, blue: 0.44, alpha: 1) }
@@ -64,6 +74,20 @@ private enum Palette {
 
     static func fieldBackground(enabled: Bool) -> NSColor {
         NSColor.white.withAlphaComponent(isDark ? (enabled ? 0.16 : 0.04) : (enabled ? 0.52 : 0.20))
+    }
+}
+
+private struct ProcessingHistoryEntry: Codable {
+    let inputPath: String
+    let filename: String
+    let status: String
+    let completedAt: Date
+
+    init(result: NativeTranscriptionResult) {
+        inputPath = result.inputURL.standardizedFileURL.path
+        filename = result.inputURL.lastPathComponent
+        status = result.error == nil ? "Готово" : "Ошибка"
+        completedAt = Date()
     }
 }
 
@@ -286,6 +310,38 @@ private final class EmptyTimelineView: NSView {
 }
 
 private final class DropZoneView: NSView {
+    private let onDrop: ([URL]) -> Void
+
+    init(onDrop: @escaping ([URL]) -> Void) {
+        self.onDrop = onDrop
+        super.init(frame: .zero)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        fileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        !fileURLs(from: sender).isEmpty
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = fileURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+        onDrop(urls)
+        return true
+    }
+
+    private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.pasteboardItems?.compactMap { item in
+            guard let value = item.string(forType: .fileURL), let url = URL(string: value), url.isFileURL else { return nil }
+            return url
+        } ?? []
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         let path = NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14)
@@ -765,16 +821,37 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private var searchResults = NSView()
     private var searchCapsule: GlassView?
     private var searchWidth: NSLayoutConstraint?
+    private var processingHistory: [ProcessingHistoryEntry] = []
+
+    private static let historyKey = "processing.history"
+    private static let mlxCompatibleModels: Set<String> = ["v3_e2e_rnnt"]
+
+    private static var supportsMLX: Bool {
+        #if arch(arm64)
+        true
+        #else
+        false
+        #endif
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         for (old, current) in [("settings.sentences", "subtitle.sentences"), ("settings.subtitleLines", "subtitle.lines"), ("settings.subtitleCharacters", "subtitle.characters")] {
             if defaults.object(forKey: current) == nil, let value = defaults.object(forKey: old) { defaults.set(value, forKey: current) }
             defaults.removeObject(forKey: old)
         }
+        loadProcessingHistory()
+        NotificationCenter.default.addObserver(self, selector: #selector(systemAppearanceChanged(_:)), name: Notification.Name("NSApplicationDidChangeEffectiveAppearanceNotification"), object: NSApp)
         buildWindow()
         show(page: .processing)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    @objc private func systemAppearanceChanged(_ notification: Notification) {
+        guard defaults.string(forKey: "settings.theme") != "Светлая", defaults.string(forKey: "settings.theme") != "Тёмная" else { return }
+        rebuildInterface()
     }
 
     private func buildWindow() {
@@ -796,7 +873,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         navigationButtons.removeAll()
         selectedFilesLabel = nil
         settingsCategoryButtons.removeAll()
-        window.appearance = NSAppearance(named: Palette.isDark ? .darkAqua : .aqua)
+        switch defaults.string(forKey: "settings.theme") {
+        case "Тёмная": window.appearance = NSAppearance(named: .darkAqua)
+        case "Светлая": window.appearance = NSAppearance(named: .aqua)
+        default: window.appearance = nil
+        }
         let background = BlobBackgroundView()
         background.translatesAutoresizingMaskIntoConstraints = false
         window.contentView = background
@@ -861,7 +942,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         navGroup.orientation = .vertical
         navGroup.alignment = .leading
         navGroup.spacing = 8
-        for page in Page.allCases where page != .result {
+        for page in Page.allCases {
             let button = navigationButton(for: page)
             navigationButtons[page] = button
             navGroup.addArrangedSubview(button)
@@ -1068,7 +1149,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
     private func buildProcessing(into content: NSStackView) {
         let upload = card("Загрузка файлов")
-        let zone = DropZoneView()
+        let zone = DropZoneView { [weak self] urls in self?.addSelectedFiles(urls) }
         let zoneText = vertical([
             symbol("square.and.arrow.up", size: 28),
             label("Перетащите сюда аудио или видео", size: 17, weight: .regular, color: Palette.ink),
@@ -1098,7 +1179,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let settings = contentStack(processing)
         settings.spacing = 12
         settings.addArrangedSubview(compactField("Подготовка аудио", control: popup(["auto", "off", "light", "denoise"], key: "processing.preprocessing")))
-        settings.addArrangedSubview(compactField("Модель", control: popup(["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"], key: "settings.model")))
+        settings.addArrangedSubview(compactField("Модель", control: modelPopup()))
         settings.addArrangedSubview(toggleRow("Диаризация", key: "settings.diarization", defaultValue: false))
         settings.addArrangedSubview(compactField("Кол-во спикеров", control: popup(["Авто", "1", "2", "3", "4", "5", "6"], key: "processing.speakers")))
         processing.widthAnchor.constraint(equalToConstant: 252).isActive = true
@@ -1406,64 +1487,23 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private func buildHistory(into content: NSStackView) {
         let history = card("История")
         let body = contentStack(history)
-        body.spacing = 18
-        let filters = PillSelector(labels: ["Все", "Успешные", "В обработке", "Ошибки"], target: nil, action: nil)
-        filters.selectedSegment = 0
-        filters.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        filters.isEnabled = false
-        filters.toolTip = L10n.text("В истории пока нет записей.")
-        let search = NSSearchField()
-        search.isBezeled = false
-        search.drawsBackground = false
-        search.focusRingType = .none
-        search.placeholderString = L10n.text("Поиск по истории")
-        search.isEnabled = false
-        let searchCapsule = insetPanel()
-        searchCapsule.layer?.cornerRadius = 19
-        search.translatesAutoresizingMaskIntoConstraints = false
-        searchCapsule.addSubview(search)
-        NSLayoutConstraint.activate([
-            search.leadingAnchor.constraint(equalTo: searchCapsule.leadingAnchor, constant: 12),
-            search.trailingAnchor.constraint(equalTo: searchCapsule.trailingAnchor, constant: -12),
-            search.centerYAnchor.constraint(equalTo: searchCapsule.centerYAnchor)
-        ])
-        size(searchCapsule, width: 238, height: 38)
-        let toolbar = horizontal([filters, flexibleSpace(), searchCapsule], spacing: 12)
-        toolbar.alignment = .centerY
-        body.addArrangedSubview(toolbar)
+        body.spacing = 12
+        let entries = processingHistory.sorted { $0.completedAt > $1.completedAt }
+        body.addArrangedSubview(columnHeadings([("Файл", 390), ("Статус", 170), ("Дата", 250)]))
         body.addArrangedSubview(divider())
-        body.addArrangedSubview(columnHeadings([("Файл", 306), ("Длительность", 140), ("Статус", 134), ("Дата", 180)]))
-        body.addArrangedSubview(divider())
-        let table = NSTableView()
-        table.headerView = nil
-        table.backgroundColor = .clear
-        table.rowHeight = 56
-        table.intercellSpacing = NSSize(width: 12, height: 0)
-        table.gridStyleMask = .solidHorizontalGridLineMask
-        table.gridColor = Palette.line.withAlphaComponent(0.65)
-        for (title, width) in [("Файл", 306.0), ("Длительность", 140.0), ("Статус", 134.0), ("Дата", 180.0)] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(title))
-            column.title = L10n.text(title)
-            column.width = width
-            table.addTableColumn(column)
+        if entries.isEmpty {
+            body.addArrangedSubview(wrappedLabel("История пуста. Завершённые обработки появятся здесь.", size: 14, color: Palette.body))
+        } else {
+            for entry in entries {
+                let filename = wrappedLabel(entry.filename, size: 14, color: Palette.ink)
+                filename.toolTip = entry.inputPath
+                let status = label(entry.status, size: 13, color: entry.status == "Готово" ? Palette.body : Palette.muted)
+                let date = label(entry.completedAt.formatted(date: .abbreviated, time: .shortened), size: 13, color: Palette.body)
+                body.addArrangedSubview(horizontal([filename, status, date], spacing: 12))
+                body.addArrangedSubview(divider())
+            }
         }
-        table.setAccessibilityLabel(L10n.text("История обработок: записей нет"))
-        let tableScroll = NSScrollView()
-        tableScroll.drawsBackground = false
-        tableScroll.documentView = table
-        tableScroll.heightAnchor.constraint(equalToConstant: 388).isActive = true
-        let tableArea = NSView()
-        embed(tableScroll, in: tableArea, inset: 0, fillHeight: true)
-        let note = wrappedLabel("История пуста. Завершённые обработки появятся здесь.", size: 14, color: Palette.body)
-        note.translatesAutoresizingMaskIntoConstraints = false
-        tableArea.addSubview(note)
-        NSLayoutConstraint.activate([
-            note.leadingAnchor.constraint(equalTo: tableArea.leadingAnchor),
-            note.trailingAnchor.constraint(equalTo: tableArea.trailingAnchor),
-            note.topAnchor.constraint(equalTo: tableArea.topAnchor, constant: 16)
-        ])
-        body.addArrangedSubview(tableArea)
-        body.addArrangedSubview(label("0 записей", size: 12, color: Palette.muted))
+        body.addArrangedSubview(label("\(entries.count) записей", size: 12, color: Palette.muted))
         size(history, width: 878, height: 640)
         content.addArrangedSubview(history)
     }
@@ -1500,8 +1540,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             body.addArrangedSubview(wrappedLabel("Модель распознавания и устройство вычислений.", size: 13, color: Palette.body))
             body.addArrangedSubview(divider())
             body.spacing = 16
-            body.addArrangedSubview(settingsField("ASR backend", control: popup(["auto", "mlx", "onnx", "pytorch"], key: "settings.backend")))
-            body.addArrangedSubview(settingsField("Модель", control: popup(["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"], key: "settings.model")))
+            body.addArrangedSubview(settingsField("ASR backend", control: backendPopup()))
+            body.addArrangedSubview(settingsField("Модель", control: modelPopup()))
             body.addArrangedSubview(settingsField("ONNX provider", control: popup(["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"], key: "settings.onnxProvider")))
             body.addArrangedSubview(settingsField("Устройство", control: inactive(popup(["Auto / GPU", "CPU", "GPU"], key: "settings.device"))))
             body.addArrangedSubview(inactive(toggleRow("Fallback на CPU", key: "settings.cpuFallback", defaultValue: false)))
@@ -1858,6 +1898,24 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return popup
     }
 
+    private func backendPopup() -> NSPopUpButton {
+        let popup = popup(["auto", "mlx", "onnx", "pytorch"], key: "settings.backend")
+        if !Self.supportsMLX {
+            popup.item(withTitle: "mlx")?.isEnabled = false
+            popup.toolTip = L10n.text("MLX доступен только на Mac с Apple Silicon.")
+        }
+        return popup
+    }
+
+    private func modelPopup() -> NSPopUpButton {
+        let popup = popup(["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"], key: "settings.model")
+        if option("settings.backend", values: ["auto", "mlx", "onnx", "pytorch"]) == "mlx" {
+            for model in ["multilingual_ctc", "multilingual_large_ctc"] { popup.item(withTitle: model)?.isEnabled = false }
+            popup.toolTip = L10n.text("MLX поддерживает только модель v3_e2e_rnnt.")
+        }
+        return popup
+    }
+
     private func editableText(_ value: String, key: String, placeholder: String) -> NSTextField {
         let field = RoundedTextField(string: value)
         field.cell = CenteredTextCell(textCell: value)
@@ -2126,6 +2184,29 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         return settings
     }
 
+    private var animationsEnabled: Bool {
+        enabledOption("settings.animations", defaultValue: true) && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    private func mlxValidation(_ settings: NativeTranscriptionSettings) -> String? {
+        guard settings.backend == "mlx" else { return nil }
+        guard Self.supportsMLX else { return "MLX доступен только на Mac с Apple Silicon. Выберите auto, ONNX или PyTorch." }
+        guard Self.mlxCompatibleModels.contains(settings.model) else { return "MLX поддерживает только модель v3_e2e_rnnt. Выберите её или другой ASR backend." }
+        return nil
+    }
+
+    private func loadProcessingHistory() {
+        guard let data = defaults.data(forKey: Self.historyKey),
+              let entries = try? JSONDecoder().decode([ProcessingHistoryEntry].self, from: data) else { return }
+        processingHistory = Array(entries.sorted { $0.completedAt > $1.completedAt }.prefix(100))
+    }
+
+    private func recordHistory(_ result: NativeTranscriptionResult) {
+        processingHistory.append(ProcessingHistoryEntry(result: result))
+        processingHistory = Array(processingHistory.sorted { $0.completedAt > $1.completedAt }.prefix(100))
+        if let data = try? JSONEncoder().encode(processingHistory) { defaults.set(data, forKey: Self.historyKey) }
+    }
+
     private var outputDirectory: URL? {
         let raw = (defaults.string(forKey: "output.path") ?? "~/Documents/GigaAM").trimmingCharacters(in: .whitespacesAndNewlines)
         let path = (raw as NSString).expandingTildeInPath
@@ -2156,6 +2237,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let reason: String
         if transcriptionJob != nil { reason = "Настройки зафиксированы до завершения обработки. Навигация доступна." }
         else if mediaDownloadJob != nil { reason = "Дождитесь завершения импорта медиа." }
+        else if let mlxError = mlxValidation(transcriptionSettings()) { reason = mlxError }
         else if selectedFileURLs.isEmpty { reason = "Добавьте аудио или видео для начала обработки." }
         else if outputDirectory == nil { reason = "Укажите абсолютный путь к доступной папке результатов." }
         else if outputFormats.isEmpty { reason = "Выберите хотя бы один формат вывода." }
@@ -2181,6 +2263,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         window.makeFirstResponder(nil)
         guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
         let settings = transcriptionSettings()
+        if let mlxError = mlxValidation(settings) {
+            showNotice("Недоступная конфигурация MLX", mlxError)
+            return
+        }
         guard !selectedFileURLs.isEmpty, !settings.formats.isEmpty, let destination = outputDirectory else {
             showNotice("Не удалось начать обработку", "Выберите файлы, доступную папку и хотя бы один формат.")
             return
@@ -2233,9 +2319,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             if let index = transcriptionResults.firstIndex(where: { $0.inputURL == result.inputURL }) { transcriptionResults[index] = result }
             else { transcriptionResults.append(result) }
             if selectedResultURL == nil { selectedResultURL = result.inputURL }
+            recordHistory(result)
             if let error = result.error { transcriptionLog += "\(result.inputURL.lastPathComponent): \(error)\n" }
             refreshSelectedFiles()
-            if !isClosing, currentPage == .result { show(page: .result) }
+            if !isClosing && (currentPage == .result || currentPage == .history) { show(page: currentPage) }
         case .completed(let success, let cancelled):
             finishTranscription(status: cancelled ? "Обработка остановлена. Готовые результаты сохранены." : (success ? "Обработка завершена. Результаты доступны в разделе «Результат»." : "Обработка завершена с ошибками. Подробности — в журнале обработки."), pendingState: cancelled ? "Не обработан: остановлено" : "Не обработан")
             if success && !cancelled { transcriptionProgress = 1 }
@@ -2274,7 +2361,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     @objc private func popupChanged(_ sender: NSPopUpButton) {
         guard let key = sender.identifier?.rawValue, let value = sender.titleOfSelectedItem else { return }
         defaults.set(value, forKey: key)
-        if key == "settings.theme" || key == "settings.language" { rebuildInterface() }
+        if key == "settings.theme" || key == "settings.language" || key == "settings.backend" { rebuildInterface() }
         refreshProcessingControls()
     }
 
@@ -2300,11 +2387,24 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         panel.allowedContentTypes = [.audio, .movie]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self else { return }
-            guard self.transcriptionJob == nil, !self.isClosing else { return }
-            var known = Set(self.selectedFileURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
-            self.selectedFileURLs.append(contentsOf: panel.urls.map { $0.standardizedFileURL.resolvingSymlinksInPath() }.filter { known.insert($0).inserted })
-            self.refreshSelectedFiles()
+            self.addSelectedFiles(panel.urls)
         }
+    }
+
+    private func addSelectedFiles(_ urls: [URL]) {
+        guard !isClosing, transcriptionJob == nil, mediaDownloadJob == nil else { return }
+        var known = Set(selectedFileURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
+        for candidate in urls {
+            let file = candidate.standardizedFileURL.resolvingSymlinksInPath()
+            guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .contentTypeKey]),
+                  values.isRegularFile == true,
+                  let type = values.contentType,
+                  type.conforms(to: .audio) || type.conforms(to: .movie),
+                  FileManager.default.isReadableFile(atPath: file.path),
+                  known.insert(file).inserted else { continue }
+            selectedFileURLs.append(file)
+        }
+        refreshSelectedFiles()
     }
 
     @objc private func chooseMediaURL(_ sender: Any?) {
@@ -2390,9 +2490,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             }
             switch result {
             case .success(let files):
-                var known = Set(self.selectedFileURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
-                self.selectedFileURLs.append(contentsOf: files.filter { known.insert($0).inserted })
-                self.refreshSelectedFiles()
+                self.addSelectedFiles(files)
             case .failure(let error):
                 if let failure = error as? MediaDownloadJob.Failure, case .cancelled = failure { return }
                 self.presentMediaURLSheet(value: url.absoluteString, error: error.localizedDescription)
@@ -2625,8 +2723,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
             window.makeFirstResponder(nil)
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
-            context.allowsImplicitAnimation = true
+            context.duration = animationsEnabled ? 0.18 : 0
+            context.allowsImplicitAnimation = animationsEnabled
             searchWidth.animator().constant = opening ? 340 : 44
             window.contentView?.layoutSubtreeIfNeeded()
         } completionHandler: { [weak self] in

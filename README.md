@@ -369,6 +369,21 @@ python scripts/benchmark_diarization_backends.py corpus/diarization.json --backe
 python scripts/build_offline_models.py --output offline/models/hf
 ```
 
+## Разработка и CI
+
+Для pull request и обычных веток GitHub Actions запускает быстрые проверки: Ruff,
+целевые Python-тесты core и упаковки, а также `cargo test --locked` для TUI. Полные
+кроссплатформенные артефакты и публикация релиза выполняются только для тегов
+`v*` или при ручном запуске workflow.
+
+Перед отправкой изменений локально выполните:
+
+```bash
+ruff check .
+python -m pytest -q
+(cd tui && cargo test --locked)
+```
+
 ## Структура
 
 ```text

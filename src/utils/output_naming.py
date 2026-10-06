@@ -35,6 +35,16 @@ def output_path(output_dir, stem: str, fmt: str) -> str:
     return os.path.join(str(output_dir), output_filename(stem, fmt))
 
 
+def unique_output_stem(output_dir, stem: str) -> str:
+    """Возвращает свободное базовое имя, сохраняя уже созданные результаты."""
+    candidate = stem
+    suffix = 1
+    while any(os.path.lexists(output_path(output_dir, candidate, fmt)) for fmt in FORMAT_SUFFIX):
+        candidate = f"{stem}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def find_result_file(result_dir, stem: str, fmt: str) -> Path | None:
     """Возвращает путь к существующему файлу результата нужного формата либо None.
 

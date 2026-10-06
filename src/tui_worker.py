@@ -15,6 +15,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from src.config import AUDIO_PREPROCESSING_MODE
 from src.core.subtitles import SubtitleOptions
 
 
@@ -78,7 +79,7 @@ class TuiWorker:
         except (TypeError, ValueError) as exc:
             self.emit("error", message=str(exc))
             return
-        audio_preprocessing_mode = str(command.get("audio_preprocessing_mode") or "auto")
+        audio_preprocessing_mode = str(command.get("audio_preprocessing_mode") or AUDIO_PREPROCESSING_MODE)
         if audio_preprocessing_mode not in {"auto", "off", "light", "denoise"}:
             self.emit("error", message=f"Unknown audio preprocessing mode: {audio_preprocessing_mode!r}")
             return

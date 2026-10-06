@@ -8,18 +8,63 @@ name: Build portable
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
+    branches:
+      - "**"
     tags:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  quality-gate:
+    name: Fast quality gate
+    if: github.event_name == 'pull_request' || !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install quality-gate tools
+        run: >-
+          python -m pip install
+          "pytest==8.4.2" "ruff==0.14.0" "python-dotenv==1.0.0"
+          "numpy==2.2.6" "soundfile==0.13.1"
+
+      - name: Lint Python
+        run: ruff check .
+
+      - name: Test changed core and packaging contracts
+        run: >-
+          python -m pytest
+          tests/test_processor_progress.py
+          tests/test_tui_worker.py
+          tests/test_macos_packaging_config.py
+          tests/test_packaging_runtime_deps.py
+          -q
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: Test TUI
+        working-directory: tui
+        run: cargo test --locked
+
   build:
     name: ${{ matrix.label }}
+    if: >-
+      always() && (github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
-    needs: test-tui
+    needs: quality-gate
 
     strategy:
       fail-fast: false
@@ -48,10 +93,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
           cache: pip
@@ -69,8 +114,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-05-13-07/ffmpeg-N-127203-ga35c879992-win64-gpl.zip"
+          $expectedSha256 = "34517bf39addbcfcdf01236074491e3ba94d6d137801f88803903a87cb76d1aa"
           Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          $actualSha256 = (Get-FileHash -Path ffmpeg.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "Checksum verification failed for bundled FFmpeg: $actualSha256"
+          }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extract -Force
           New-Item -ItemType Directory -Force -Path bin | Out-Null
           Copy-Item (Get-ChildItem -Recurse ffmpeg_extract -Filter ffmpeg.exe  | Select-Object -First 1).FullName bin/ffmpeg.exe  -Force
@@ -81,8 +131,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-          curl -fL "$url" -o ffmpeg.tar.xz
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-05-13-07/ffmpeg-N-127203-ga35c879992-linux64-gpl.tar.xz"
+          expected_sha256="2d96f2594789e62c271049b8bb1988008165b1c9a220defff3d87dfba99495e6"
+          curl --fail --location "$url" --output ffmpeg.tar.xz
+          printf '%s  %s\n' "$expected_sha256" ffmpeg.tar.xz | sha256sum --check --status
           mkdir -p ffmpeg_extract bin
           tar -xf ffmpeg.tar.xz -C ffmpeg_extract --strip-components=1
           cp ffmpeg_extract/bin/ffmpeg  bin/ffmpeg
@@ -301,7 +353,7 @@ jobs:
           }
 
       - name: Upload offline artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.offline_asset }}
           path: out/${{ matrix.offline_asset }}
@@ -310,7 +362,7 @@ jobs:
 
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.asset }}
           path: out/${{ matrix.asset }}
@@ -319,18 +371,21 @@ jobs:
 
   build-macos-full:
     name: macOS arm64 full app bundle
+    if: >-
+      always() && (github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v'))
     runs-on: macos-14
-    needs: test-tui
+    needs: quality-gate
     timeout-minutes: 60
     env:
       GIGAAM_BUNDLE_SORTFORMER: "1"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
           cache: pip
@@ -393,7 +448,7 @@ jobs:
           echo "size_bytes=$ARCHIVE_BYTES" >> "$GITHUB_OUTPUT"
 
       - name: Upload full app artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.path }}
@@ -433,7 +488,7 @@ jobs:
           echo "name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
 
       - name: Upload offline full app artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.archive_offline.outputs.name }}
           path: ${{ steps.archive_offline.outputs.path }}
@@ -441,17 +496,6 @@ jobs:
           compression-level: 0
 
 
-  test-tui:
-    name: TUI tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Test TUI
-        working-directory: tui
-        run: cargo test --locked
 
   publish-release:
     name: Publish release after all artifacts complete
@@ -462,7 +506,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Resolve matching release notes
         id: notes
@@ -478,14 +522,14 @@ jobs:
           echo "path=$NOTES" >> "$GITHUB_OUTPUT"
 
       - name: Download completed release artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: release-assets
           pattern: GigaAMTranscriber-*
           merge-multiple: true
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: GigaAM Transcriber ${{ steps.notes.outputs.version }}
           body_path: ${{ steps.notes.outputs.path }}

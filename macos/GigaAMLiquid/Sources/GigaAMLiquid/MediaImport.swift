@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// One real downloader invocation. Start once; completion is always delivered on the main queue.
 final class MediaDownloadJob {
@@ -20,6 +21,7 @@ final class MediaDownloadJob {
 
     private final class OutputTail {
         private let limit: Int
+        private let lock = NSLock()
         private var data = Data()
 
         init(limit: Int) { self.limit = limit }
@@ -28,18 +30,25 @@ final class MediaDownloadJob {
         func drain(_ handle: FileHandle) {
             defer { try? handle.close() }
             while let chunk = try? handle.read(upToCount: 8192), !chunk.isEmpty {
+                lock.lock()
                 data.append(chunk)
                 if data.count > limit { data.removeFirst(data.count - limit) }
+                lock.unlock()
             }
         }
 
-        var text: String { String(decoding: data, as: UTF8.self) }
+        var text: String {
+            lock.lock()
+            defer { lock.unlock() }
+            return String(decoding: data, as: UTF8.self)
+        }
     }
 
     private let url: URL
     private let completion: (Result<[URL], Error>) -> Void
     private let lock = NSLock()
     private var process: Process?
+    private var processGroup: pid_t?
     private var cancelled = false
     private var started = false
 
@@ -84,8 +93,22 @@ final class MediaDownloadJob {
     func cancel() {
         lock.lock()
         cancelled = true
-        if let process, process.isRunning { process.terminate() }
+        if let process { signal(process, with: SIGTERM) }
         lock.unlock()
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.forceCancel()
+        }
+    }
+
+    private func forceCancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        if cancelled, let process { signal(process, with: SIGKILL) }
+    }
+
+    private func signal(_ process: Process, with signal: Int32) {
+        if let processGroup { Darwin.kill(-processGroup, signal) }
+        Darwin.kill(process.processIdentifier, signal)
     }
 
     private var isCancelled: Bool {
@@ -128,6 +151,8 @@ final class MediaDownloadJob {
         if cancelled { lock.unlock(); throw Failure.cancelled }
         do {
             try task.run()
+            let pid = task.processIdentifier
+            processGroup = Darwin.setpgid(pid, pid) == 0 || Darwin.getpgid(pid) == pid ? pid : nil
             process = task
             lock.unlock()
         } catch {
@@ -143,9 +168,14 @@ final class MediaDownloadJob {
             }
         }
         task.waitUntilExit()
-        readers.wait()
+        if readers.wait(timeout: .now() + 2) == .timedOut {
+            try? stdout.fileHandleForReading.close()
+            try? stderr.fileHandleForReading.close()
+            _ = readers.wait(timeout: .now() + 1)
+        }
         lock.lock()
         process = nil
+        processGroup = nil
         let wasCancelled = cancelled
         lock.unlock()
         if wasCancelled { throw Failure.cancelled }
