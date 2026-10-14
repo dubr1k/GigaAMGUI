@@ -14,7 +14,7 @@ from ..utils.audio_converter import AudioConverter
 from ..utils.audio_preprocessing import AudioPreprocessor, FFmpegAudioPreprocessingBackend
 from ..utils.cancellation import CancelCheck, ProcessingCancelled, raise_if_cancelled
 from ..utils.deepfilter_backend import DeepFilterNetBinaryBackend
-from ..utils.output_naming import output_filename
+from ..utils.output_naming import next_available_output_stem, output_filename
 from ..utils.time_formatter import TimeFormatter
 from . import export, formatters
 from .diarization_stage import DiarizationStageMixin
@@ -522,6 +522,7 @@ class TranscriptionProcessor(DiarizationStageMixin):
             output_formats,
             diarization_applied=diarization.applied,
         )
+        stem = next_available_output_stem(output_dir, stem, formats)
         self._update_progress("export", 0.0)
         outcome = export.write_outputs(
             output_dir,

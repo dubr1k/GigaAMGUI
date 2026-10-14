@@ -551,17 +551,16 @@ jobs:
 
       # Закоммиченный bin/ffmpeg собран под arm64: на Intel он просто не
       # запускается, а внутри бандла уронил бы гейт «все Mach-O — x86_64».
-      # Кладём статическую x86_64-сборку поверх, как это делают Windows- и
-      # Linux-джобы, и проверяем архитектуру сразу — молча приехавший arm64
-      # означал бы неработающую конвертацию уже у пользователя.
+      # Берём versioned x86_64 binaries из GitHub Release вместо удалённого
+      # evermeet download API и проверяем архитектуру до сборки бандла.
       - name: Provision bundled ffmpeg (macOS x86_64)
         shell: bash
         run: |
-          mkdir -p bin ffmpeg_extract
+          FFMPEG_RELEASE="b6.1.1"
           for tool in ffmpeg ffprobe; do
-            curl -fL "https://evermeet.cx/ffmpeg/getrelease/$tool/zip" -o "ffmpeg_extract/$tool.zip"
-            unzip -o -q "ffmpeg_extract/$tool.zip" -d ffmpeg_extract
-            mv "ffmpeg_extract/$tool" "bin/$tool"
+            curl --fail --location --retry 3 --retry-all-errors \
+              "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/${tool}-darwin-x64" \
+              -o "bin/$tool"
             chmod +x "bin/$tool"
             TOOL_ARCH=$(lipo -archs "bin/$tool")
             test "$TOOL_ARCH" = "x86_64" || {

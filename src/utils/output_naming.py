@@ -37,6 +37,18 @@ def output_path(output_dir, stem: str, fmt: str) -> str:
     return os.path.join(str(output_dir), output_filename(stem, fmt))
 
 
+def next_available_output_stem(
+    output_dir: str | os.PathLike[str], stem: str, formats: list[str]
+) -> str:
+    """Return a stem whose selected output files do not overwrite prior results."""
+    candidate = stem
+    suffix = 1
+    while any(Path(output_path(output_dir, candidate, fmt)).exists() for fmt in formats):
+        candidate = f"{stem}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def normalized_output_stem(path: str | os.PathLike[str]) -> str:
     """Normalize a media stem for collision checks across filesystems/locales."""
     stem = Path(path).stem
