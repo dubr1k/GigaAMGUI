@@ -44,6 +44,9 @@ final class LiveSessionJob {
     private var captures: [LiveCaptureSource] = []
     private let onEvent: (LiveSessionEvent) -> Void
     private let queue = DispatchQueue(label: "GigaAMLiquid.live", qos: .userInitiated)
+    private let captureStopQueue = DispatchQueue(label: "GigaAMLiquid.live.captureStop", qos: .userInitiated)
+    private let stopLock = NSLock()
+    private var stopRequested = false
     private var worker: WorkerProcess?
     private var finished = false
     private var stopping = false
@@ -81,7 +84,7 @@ final class LiveSessionJob {
 
     func pause() {
         queue.async {
-            guard !self.finished else { return }
+            guard !self.finished, !self.isStopRequested else { return }
             self.captures.forEach { $0.pause() }
             try? self.worker?.send(["type": "live_pause"])
         }
@@ -89,20 +92,21 @@ final class LiveSessionJob {
 
     func resume() {
         queue.async {
-            guard !self.finished else { return }
+            guard !self.finished, !self.isStopRequested else { return }
             self.captures.forEach { $0.resume() }
             try? self.worker?.send(["type": "live_resume"])
         }
     }
 
     func stop() {
-        queue.async {
-            guard !self.finished, !self.stopping else { return }
-            self.stopping = true
-            // Stopping a source flushes its trailing chunk synchronously through handleCapture,
-            // which enqueues after this block; the worker receives it before live_stop.
+        guard claimStopRequest() else { return }
+        // Do not make capture teardown wait behind stale audio writes: it is what
+        // physically stops the microphone while queued chunks are discarded.
+        captureStopQueue.async {
             self.captures.forEach { $0.stop() }
             self.queue.async {
+                guard !self.finished else { return }
+                self.stopping = true
                 do { try self.worker?.send(["type": "live_stop"]) }
                 catch { self.finish(.failed(self.safe(error.localizedDescription))) }
             }
@@ -132,17 +136,32 @@ final class LiveSessionJob {
         }
     }
 
+    private func claimStopRequest() -> Bool {
+        stopLock.lock()
+        defer { stopLock.unlock() }
+        guard !stopRequested else { return false }
+        stopRequested = true
+        return true
+    }
+
+    private var isStopRequested: Bool {
+        stopLock.lock()
+        defer { stopLock.unlock() }
+        return stopRequested
+    }
+
     // MARK: - Capture → worker
 
     func handleCapture(_ event: LiveCaptureEvent) {
         switch event {
         case .chunk(let chunk):
+            guard !isStopRequested else { return }
             // One report per burst of dropped chunks, not one status update and two
-            // log lines (ours and the worker's echo) per 100 ms of audio.
+            // log lines (ours and the worker's echo) per 100 ms chunk.
             switch backlog.admit() {
             case .dropFirst:
                 queue.async {
-                    guard !self.finished else { return }
+                    guard !self.finished, !self.isStopRequested else { return }
                     self.emit(.captureEvent(source: chunk.source, kind: "overflow", detail: L10n.text("Worker не успевает обрабатывать звук; фрагмент пропущен.")))
                     try? self.worker?.send(["type": "live_capture_event", "source": chunk.source.rawValue, "kind": "overflow", "detail": Self.backlogDetail])
                 }
@@ -156,7 +175,7 @@ final class LiveSessionJob {
             }
             queue.async {
                 defer { self.backlog.release() }
-                guard !self.finished else { return }
+                guard !self.finished, !self.isStopRequested else { return }
                 try? self.worker?.send([
                     "type": "live_audio", "source": chunk.source.rawValue, "seq": chunk.seq,
                     "sample_offset": chunk.sampleOffset, "timestamp_ns": chunk.timestampNs,
@@ -216,7 +235,7 @@ final class LiveSessionJob {
     }
 
     private func startCaptures() {
-        guard !capturing, !stopping, !finished else { return }
+        guard !capturing, !stopping, !finished, !isStopRequested else { return }
         capturing = true
         for capture in captures {
             do { try capture.start() }

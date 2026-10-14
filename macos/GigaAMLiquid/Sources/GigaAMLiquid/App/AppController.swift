@@ -49,10 +49,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     weak var liveRootField: NSTextField?
     /// The folder of the running or last finished session; nil before the first one.
     var liveSessionDir: URL?
-    weak var liveLevelView: ProgressTrackView?
+    weak var liveLevelView: LiveWaveformView?
     weak var liveStartButton: NSButton?
     weak var livePauseButton: NSButton?
     weak var liveStopButton: NSButton?
+    weak var liveRevealButton: NSButton?
     weak var liveQuestionField: NSTextField?
     weak var liveAskButton: NSButton?
     weak var liveAskCancelButton: NSButton?

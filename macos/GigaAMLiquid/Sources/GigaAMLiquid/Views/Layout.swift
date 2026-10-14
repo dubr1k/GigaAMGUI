@@ -55,6 +55,47 @@ final class DropZoneView: NSView {
     }
 }
 
+/// A rolling, audio-driven signal trace. It advances only when a captured audio chunk
+/// reports a new RMS level, rather than running a decorative timer.
+final class LiveWaveformView: NSView {
+    private static let sampleCount = 96
+    private var samples = Array(repeating: CGFloat.zero, count: sampleCount)
+    private var nextSample = 0
+    private var displayedLevel: CGFloat = 0
+
+    func append(level: Double) {
+        let target = min(1, max(0, CGFloat(level)))
+        displayedLevel = max(target, displayedLevel * 0.55)
+        samples[nextSample] = displayedLevel
+        nextSample = (nextSample + 1) % Self.sampleCount
+        needsDisplay = true
+    }
+
+    func reset() {
+        for index in samples.indices { samples[index] = 0 }
+        nextSample = 0
+        displayedLevel = 0
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let count = min(Self.sampleCount, max(1, Int(bounds.width / 4)))
+        let spacing = bounds.width / CGFloat(count)
+        let barWidth = min(2, max(1, spacing - 2))
+        let minimumHeight: CGFloat = 2
+        Palette.ink.setFill()
+        for index in 0..<count {
+            let sampleIndex = (nextSample - count + index + Self.sampleCount) % Self.sampleCount
+            let height = minimumHeight + samples[sampleIndex] * max(0, bounds.height - minimumHeight)
+            let rect = NSRect(x: CGFloat(index) * spacing + (spacing - barWidth) / 2,
+                              y: (bounds.height - height) / 2,
+                              width: barWidth,
+                              height: height)
+            NSBezierPath(roundedRect: rect, xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
+        }
+    }
+}
+
 final class ProgressTrackView: NSView {
     var fraction: Double = 0 { didSet { needsDisplay = true } }
 

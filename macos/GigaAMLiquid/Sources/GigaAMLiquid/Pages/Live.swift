@@ -49,8 +49,8 @@ extension AppController {
         folderPath.isSelectable = true
         liveFolderLabel = folderPath
         recorderBody.addArrangedSubview(folderPath)
-        let meter = ProgressTrackView()
-        meter.heightAnchor.constraint(equalToConstant: 8).isActive = true
+        let meter = LiveWaveformView()
+        meter.heightAnchor.constraint(equalToConstant: 36).isActive = true
         meter.setAccessibilityLabel(L10n.text("Уровень сигнала"))
         liveLevelView = meter
         recorderBody.addArrangedSubview(meter)
@@ -65,7 +65,10 @@ extension AppController {
         liveStopButton = stop
         let reveal = iconButton("folder", hint: "Открыть папку сессии", action: #selector(revealLiveSession(_:)))
         reveal.identifier = NSUserInterfaceItemIdentifier("live.reveal")
-        recorderBody.addArrangedSubview(centered(horizontal([start, pause, stop, reveal], spacing: 8)))
+        liveRevealButton = reveal
+        let transport = horizontal([start, pause, stop, reveal], spacing: 8)
+        transport.detachesHiddenViews = true
+        recorderBody.addArrangedSubview(centered(transport))
         recorder.heightAnchor.constraint(equalToConstant: 306).isActive = true
 
         let parameters = card("Параметры", dense: true)
@@ -297,8 +300,15 @@ extension AppController {
     @objc private func pauseLive(_ sender: Any?) { liveJob?.pause() }
 
     @objc private func stopLive(_ sender: Any?) {
+        guard let job = liveJob, liveState != "stopping" else { return }
+        // Recording ends now; the worker can still drain recognition and write exports.
+        liveState = "stopping"
+        liveTimer?.invalidate()
+        liveTimer = nil
+        liveLevelView?.reset()
         liveStatusLabel?.stringValue = L10n.text("Остановка…")
-        liveJob?.stop()
+        refreshLiveControls()
+        job.stop()
     }
 
     @objc private func askLive(_ sender: Any?) {
@@ -322,14 +332,17 @@ extension AppController {
         case .loading:
             liveStatusLabel?.stringValue = L10n.text("Загрузка модели распознавания… Запись начнётся, когда она будет готова.")
         case .status(let state, _, let failed, let sessionDir):
+            if let sessionDir, sessionDir != liveSessionDir {
+                liveSessionDir = sessionDir
+                refreshLiveFolderLabel()
+            }
+            // The local stop latch is authoritative until the terminal result arrives:
+            // queued recording statuses must not make the UI look active again.
+            guard liveState != "stopping" else { return }
             liveState = state
             if state == "recording", liveStartedAt == nil {
                 liveStartedAt = Date()
                 refreshLiveClock()
-            }
-            if let sessionDir, sessionDir != liveSessionDir {
-                liveSessionDir = sessionDir
-                refreshLiveFolderLabel()
             }
             if !failed.isEmpty {
                 liveStatusLabel?.stringValue = L10n.text("Источник недоступен: ") + failed.map(\.rawValue).joined(separator: ", ")
@@ -354,7 +367,7 @@ extension AppController {
             renderLiveTranscript()
             if firstFinal { refreshLiveControls() }  // the assistant needs at least one final
         case .level(_, let rms):
-            liveLevelView?.fraction = Double(min(1, rms * 4))
+            if liveState == "recording" { liveLevelView?.append(level: Double(min(1, rms * 4))) }
         case .captureEvent(let source, let kind, let detail):
             // The status line holds the recording state; an idle gap of a silent
             // system-audio loopback replaced it with "idle gap=3.512s" every time.
@@ -414,7 +427,7 @@ extension AppController {
         liveTimer?.invalidate()
         liveTimer = nil
         liveStartedAt = nil
-        liveLevelView?.fraction = 0
+        liveLevelView?.reset()
         liveStatusLabel?.stringValue = status
         // A draft whose final never came (too short, low confidence) is not in
         // the exports; leaving it on screen after stop misrepresented the session.
@@ -453,14 +466,21 @@ extension AppController {
 
     func refreshLiveControls() {
         let running = liveJob != nil
-        liveStartButton?.isEnabled = !isClosing && (!running || liveState == "paused") && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil
-        livePauseButton?.isEnabled = running && liveState == "recording"
-        liveStopButton?.isEnabled = running && liveState != "stopping"
-        liveQuestionField?.isEnabled = running
+        let recording = running && liveState == "recording"
+        let paused = running && liveState == "paused"
+        let stopping = running && liveState == "stopping"
+        liveStartButton?.isHidden = running && !paused
+        livePauseButton?.isHidden = !recording
+        liveStopButton?.isHidden = !running
+        liveRevealButton?.isHidden = running || liveSessionDir == nil
+        liveStartButton?.isEnabled = !isClosing && (!running || paused) && transcriptionJob == nil && mediaDownloadJob == nil && llmJob == nil
+        livePauseButton?.isEnabled = recording
+        liveStopButton?.isEnabled = running && !stopping
+        liveQuestionField?.isEnabled = running && !stopping
         // One question at a time: a second one cleared the streaming answer, the
         // worker rejected it, and the old answer's chunks kept arriving.
-        liveAskButton?.isEnabled = running && !liveFinals.isEmpty && !liveAsking
-        liveAskCancelButton?.isEnabled = running && liveAsking
+        liveAskButton?.isEnabled = running && !stopping && !liveFinals.isEmpty && !liveAsking
+        liveAskCancelButton?.isEnabled = running && !stopping && liveAsking
         func update(_ view: NSView) {
             if let control = view as? NSControl, let key = control.identifier?.rawValue,
                key.hasPrefix("live."), !["live.question", "live.start", "live.pause", "live.stop", "live.ask", "live.askCancel", "live.reveal", "live.folderPath"].contains(key) {
