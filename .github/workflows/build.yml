@@ -71,12 +71,15 @@ jobs:
       # портативный бинарник (спек забирает bin/ffmpeg.exe на Windows и
       # bin/ffmpeg на других ОС). Так у пользователя всё работает без ручной
       # установки ffmpeg. macOS использует уже закоммиченный arm64-бинарь bin/ffmpeg.
+      # Только сборка BtbN последнего дня месяца: дневные autobuild удаляются
+      # примерно через две недели, и пин на них ломает следующий теговый релиз
+      # (test_release_hardening.py::test_bundled_ffmpeg_downloads_are_retained_and_checksummed).
       - name: Provision bundled ffmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-05-13-07/ffmpeg-N-127203-ga35c879992-win64-gpl.zip"
-          $expected = "34517bf39addbcfcdf01236074491e3ba94d6d137801f88803903a87cb76d1aa"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-N-127021-ge0c94b2d1c-win64-gpl.zip"
+          $expected = "85c4a4636b93d681a07588ffa6f1d8f5c064d9c3fb0622066662906b6fd718a1"
           Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
           if ((Get-FileHash -Path ffmpeg.zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
             throw "Downloaded FFmpeg archive checksum does not match the pinned release."
@@ -91,8 +94,8 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-05-13-07/ffmpeg-N-127203-ga35c879992-linux64-gpl.tar.xz"
-          expected="2d96f2594789e62c271049b8bb1988008165b1c9a220defff3d87dfba99495e6"
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-N-127021-ge0c94b2d1c-linux64-gpl.tar.xz"
+          expected="3a2a94e704752287833604501a79505c2319ad1d8b2f5577c63f2b1b7a6f2b66"
           curl -fL "$url" -o ffmpeg.tar.xz
           echo "$expected  ffmpeg.tar.xz" | sha256sum --check --status
           mkdir -p ffmpeg_extract bin
@@ -553,14 +556,20 @@ jobs:
       # запускается, а внутри бандла уронил бы гейт «все Mach-O — x86_64».
       # Берём versioned x86_64 binaries из GitHub Release вместо удалённого
       # evermeet download API и проверяем архитектуру до сборки бандла.
+      # Суммы — SHA256 ассетов релиза b6.1.1 (digest GitHub Releases).
       - name: Provision bundled ffmpeg (macOS x86_64)
         shell: bash
         run: |
           FFMPEG_RELEASE="b6.1.1"
           for tool in ffmpeg ffprobe; do
+            case "$tool" in
+              ffmpeg)  expected="ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894" ;;
+              ffprobe) expected="fa3add0ce901f7241abe0dfc0155d958fc834aca3f8ce61f87cc712ae669c1e0" ;;
+            esac
             curl --fail --location --retry 3 --retry-all-errors \
               "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/${tool}-darwin-x64" \
               -o "bin/$tool"
+            echo "$expected  bin/$tool" | shasum -a 256 --check --status
             chmod +x "bin/$tool"
             TOOL_ARCH=$(lipo -archs "bin/$tool")
             test "$TOOL_ARCH" = "x86_64" || {

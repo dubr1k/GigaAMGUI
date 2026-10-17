@@ -137,3 +137,25 @@ def test_build_version_scheme_matches_history_and_ci_accepts_it():
     # Патч 10+ даёт трёхзначный третий компонент (2.5.10 → 2.5.100).
     for build in ("2.5.70", "2.5.100", "2.10.995"):
         assert re.fullmatch(pattern, build), (pattern, build)
+
+
+def test_bundled_ffmpeg_downloads_are_retained_and_checksummed():
+    import calendar
+    import re
+
+    workflow = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+    # BtbN хранит дневные autobuild около двух недель, долго живут только сборки
+    # последнего дня месяца. Пин 2.6.3 на дневную autobuild-2026-10-05 сломал бы
+    # скачивание ffmpeg уже в следующем теговом релизе; `latest` не воспроизводим.
+    tags = re.findall(r"BtbN/FFmpeg-Builds/releases/download/([^/\"]+)/", workflow)
+    assert tags
+    for tag in tags:
+        dated = re.fullmatch(r"autobuild-(\d{4})-(\d{2})-(\d{2})-\d{2}-\d{2}", tag)
+        assert dated, tag
+        year, month, day = map(int, dated.groups())
+        assert day == calendar.monthrange(year, month)[1], f"{tag}: не месячная сборка BtbN"
+
+    steps = [step for step in workflow.split("\n      - name: ") if step.startswith("Provision bundled ffmpeg")]
+    assert len(steps) == 3
+    for step in steps:
+        assert re.search(r"\b[0-9a-f]{64}\b", step), step.splitlines()[0]
