@@ -11,7 +11,7 @@ from pathlib import Path
 from ...utils.model_cache import hf_repo_is_cached
 from ..devices import best_torch_device
 from ..model_preparation import PreparationCancelled, PreparationState
-from .base import SpeakerSegment
+from .base import SpeakerSegment, backend_import_error
 from .hf_access import _DIARIZATION_REQUIRED_REPOS, diagnose_hf_access
 from .mapping import SpeakerMappingMixin
 
@@ -103,9 +103,14 @@ class DiarizationManager(SpeakerMappingMixin):
             import torch
             from pyannote.audio import Pipeline
         except ImportError as e:
-            raise ImportError(
-                "pyannote.audio не установлен. "
-                "Установите: pip install pyannote.audio"
+            logger.warning("Импорт pyannote.audio не удался", exc_info=True)
+            # Голый `pip install pyannote.audio` ставит 4.x мимо пинов проекта
+            # (pyannote.audio==3.1.1, torchaudio<2.9), поэтому — requirements.txt.
+            raise backend_import_error(
+                e,
+                package="pyannote.audio",
+                package_modules=("pyannote", "pyannote.audio"),
+                install="pip install -r requirements.txt",
             ) from e
 
         # pyannote.audio 3.1 не передаёт use_auth_token в загрузчик ONNX-модели

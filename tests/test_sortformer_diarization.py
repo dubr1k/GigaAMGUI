@@ -1,3 +1,4 @@
+import builtins
 import inspect
 import sys
 import types
@@ -322,3 +323,32 @@ def test_sortformer_unload_evicts_the_process_wide_pipeline(monkeypatch):
     # После выгрузки следующее обращение обязано перезагрузить модель заново.
     assert manager.pipeline is not None
     assert len(loads) == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "expected", "unexpected"),
+    [
+        (ModuleNotFoundError("No module named 'nemo'", name="nemo"), "не установлен", "не загружается"),
+        (ModuleNotFoundError("No module named 'lhotse'", name="lhotse"), "No module named 'lhotse'", "не установлен"),
+    ],
+)
+def test_sortformer_import_error_names_the_real_cause(monkeypatch, error, expected, unexpected):
+    # Issue #72 для pyannote: «не установлен» только когда нет самого пакета.
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "nemo.collections.asr.models":
+            raise error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    manager = diarization.SortformerDiarizationManager(device="cpu")
+
+    with pytest.raises(ImportError) as raised:
+        manager._load_pipeline()
+
+    message = str(raised.value)
+    assert expected in message
+    assert unexpected not in message
+    assert "requirements-sortformer.txt" in message
