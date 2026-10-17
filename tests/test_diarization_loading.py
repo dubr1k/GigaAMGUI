@@ -1,3 +1,4 @@
+import builtins
 import os
 import sys
 import types
@@ -5,7 +6,12 @@ import types
 import pytest
 
 from src.core.diarization import pyannote_backend
-from src.core.model_preparation import PreparationState
+from src.core.model_preparation import (
+    ModelPreparationPlan,
+    PreparationError,
+    PreparationState,
+    PreparationStep,
+)
 from src.core.processor import TranscriptionProcessor
 from src.utils import diarization
 
@@ -150,6 +156,62 @@ def test_pyannote_prepare_eagerly_loads_pipeline(monkeypatch):
     assert prepared is manager
     assert manager.pipeline is pipeline
     assert events[-1][0] is PreparationState.LOADING
+
+
+def test_pipeline_reports_the_dependency_that_breaks_pyannote_import(monkeypatch):
+    # Issue #72: pyannote.audio установлен, но его импорт падает на зависимости
+    # (на Windows — типично DLL). Любой ImportError превращался в «pyannote.audio
+    # не установлен», и пользователь переустанавливал пакет, который стоит.
+    _install_pipeline_dependencies(monkeypatch, object)
+    _fail_import(
+        monkeypatch,
+        "pyannote.audio",
+        ImportError(
+            "DLL load failed while importing _soundfile: Не найден указанный модуль.",
+            name="_soundfile",
+        ),
+    )
+    manager = diarization.DiarizationManager(hf_token="hf_runtime", device="cpu")
+    plan = ModelPreparationPlan([PreparationStep("diarization", manager.prepare)])
+
+    with pytest.raises(PreparationError) as raised:
+        plan.run()
+
+    message = str(raised.value)
+    assert "не установлен" not in message
+    assert "DLL load failed while importing _soundfile" in message
+    assert "_soundfile" in message
+
+
+def test_pipeline_names_pinned_requirements_when_pyannote_is_missing(monkeypatch):
+    # Голый `pip install pyannote.audio` ставит 4.x с torch 2.9+/torchcodec мимо
+    # пинов проекта (pyannote.audio==3.1.1, torchaudio<2.9) — подсказка ломала стек.
+    _install_pipeline_dependencies(monkeypatch, object)
+    _fail_import(
+        monkeypatch,
+        "pyannote.audio",
+        ModuleNotFoundError("No module named 'pyannote.audio'", name="pyannote.audio"),
+    )
+    manager = diarization.DiarizationManager(hf_token="hf_runtime", device="cpu")
+
+    with pytest.raises(ImportError) as raised:
+        manager._load_pipeline()
+
+    message = str(raised.value)
+    assert "pyannote.audio не установлен" in message
+    assert "requirements.txt" in message
+    assert "pip install pyannote.audio" not in message
+
+
+def _fail_import(monkeypatch, module_name, error):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == module_name:
+            raise error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
 def _install_pipeline_dependencies(monkeypatch, pipeline_class):

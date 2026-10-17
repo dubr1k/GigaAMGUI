@@ -11,6 +11,7 @@ scripts/*
 !scripts/check_torch_triple.py
 !scripts/check_site_packages.py
 !scripts/install_tui.sh
+!scripts/install_liquid_local.sh
 !scripts/tui/
 !scripts/tui/gigaam-launcher.sh
 !scripts/__init__.py

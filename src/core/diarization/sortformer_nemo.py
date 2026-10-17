@@ -10,7 +10,7 @@ from pathlib import Path
 from ...utils.model_cache import hf_repo_is_cached
 from ..devices import best_torch_device, empty_accelerator_cache
 from ..model_preparation import PreparationCancelled, PreparationState
-from .base import SpeakerSegment
+from .base import SpeakerSegment, backend_import_error
 from .pyannote_backend import DiarizationManager
 
 logger = logging.getLogger(__name__)
@@ -114,9 +114,12 @@ class SortformerDiarizationManager(DiarizationManager):
             import torch
             from nemo.collections.asr.models import SortformerEncLabelModel
         except ImportError as exc:
-            raise ImportError(
-                "NVIDIA Sortformer не установлен. Установите опциональные "
-                "зависимости: pip install -r requirements-sortformer.txt"
+            logger.warning("Импорт NVIDIA NeMo не удался", exc_info=True)
+            raise backend_import_error(
+                exc,
+                package="NVIDIA Sortformer (nemo_toolkit)",
+                package_modules=("nemo",),
+                install="pip install -r requirements-sortformer.txt",
             ) from exc
 
         logger.info("Загрузка модели диаризации: %s", _SORTFORMER_MODEL_ID)

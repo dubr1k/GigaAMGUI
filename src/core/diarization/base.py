@@ -36,3 +36,20 @@ class DiarizationBackend(Protocol):
     ) -> list: ...
 
     def unload(self) -> None: ...
+
+
+def backend_import_error(
+    exc: ImportError, *, package: str, package_modules: tuple[str, ...], install: str
+) -> ImportError:
+    """ImportError бэкенда, который называет настоящую причину.
+
+    «Не установлен» верно, только если не нашёлся сам пакет. Если пакет на месте,
+    а падает его зависимость (на Windows — обычно DLL), такой текст отправлял
+    пользователя переустанавливать то, что уже стоит (issue #72).
+    """
+    if exc.name in package_modules:
+        return ImportError(f"{package} не установлен. Установите: {install}")
+    return ImportError(
+        f"{package} не загружается — {type(exc).__name__}: {exc}. "
+        f"Переустановите зависимости: {install}"
+    )

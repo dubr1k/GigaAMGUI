@@ -189,13 +189,13 @@ itsdangerous>=2.2.0
 # GigaAM (установлен из git репозитория)
 -e git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85#egg=gigaam
 
-# Diarization dependencies (опционально, для функции диаризации спикеров)
-# Установите отдельно, если нужна диаризация: pip install pyannote.audio
-# pyannote.audio>=3.1.0
+# Диаризация: pyannote.audio==3.1.1 закреплён выше вместе с torch/torchaudio.
+# Не ставьте его отдельно голым `pip install pyannote.audio` — придёт 4.x,
+# которому нужны torch 2.9+ и torchcodec, и стек разъедется с пинами.
 
 # Примечания:
 # - Установка: pip install -r requirements.txt (автоматически выберет правильную версию torch)
 # - FFmpeg должен быть установлен отдельно в системе
 # - Требуется HuggingFace токен для доступа к pyannote/segmentation-3.0
 # - Все секреты и настройки должны быть в файле .env (см. .env.example)
-# - Для использования диаризации установите pyannote.audio: pip install pyannote.audio
+# - Диаризация pyannote ставится этим же файлом; нужен только HF-токен
