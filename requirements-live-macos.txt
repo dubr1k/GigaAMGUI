@@ -9,3 +9,11 @@ sounddevice==0.5.6
 # ScreenCaptureKit. CoreMedia/Foundation arrive with the two frameworks below.
 pyobjc-framework-AVFoundation==11.1
 pyobjc-framework-ScreenCaptureKit==11.1
+
+# Match the transitive stack from the last successful Intel release. CoreMedia
+# 13.0 links libswiftCoreMedia.dylib without LC_RPATH and fails on macOS 15 Intel.
+pyobjc-core==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-CoreAudio==12.2.2
+pyobjc-framework-CoreMedia==12.2.2
+pyobjc-framework-Quartz==12.2.2
