@@ -75,7 +75,7 @@ echo "[OK] зависимости ONNX и GUI найдены"
 
 # Без этих пакетов collect_live_capture_deps() молча собирал бандл без
 # live-захвата, и вкладка Live падала уже у пользователя (issue #47).
-if ! $PYTHON -c "import sounddevice, AVFoundation, ScreenCaptureKit" 2>/dev/null; then
+if ! $PYTHON -c "import sounddevice, AVFoundation, ScreenCaptureKit"; then
     echo "[ERROR] Зависимости live-захвата не найдены:"
     echo "  $PYTHON -m pip install -r requirements-live-macos.txt"
     exit 1
