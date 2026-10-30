@@ -250,6 +250,13 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke-test frozen GUI imports
+        shell: bash
+        run: |
+          BIN="${{ matrix.built }}"
+          chmod +x "$BIN" || true
+          "$BIN" --gui-import-smoke
+
       - name: Smoke-test Windows Sortformer ONNX and Linux CPU fallback
         if: runner.os != 'macOS'
         shell: bash

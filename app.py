@@ -48,6 +48,13 @@ if "--live-capture-smoke" in sys.argv:
     raise SystemExit(run_live_capture_check())
 
 
+# Проверяет фактическую цепочку импорта GUI без создания окна и подготовки runtime (#74).
+if "--gui-import-smoke" in sys.argv:
+    from src.selfcheck import run_gui_import_check
+
+    raise SystemExit(run_gui_import_check())
+
+
 from src.config import ASR_BACKEND, HF_TOKEN, ONNX_PROVIDER  # noqa: E402 — после freeze_support() и гейтов
 
 # Одна реализация блокировки экземпляра, очереди «открыть файлы» и разбора argv

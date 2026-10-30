@@ -168,6 +168,19 @@ def run_recording_writer_check() -> int:
     return 0
 
 
+def run_gui_import_check() -> int:
+    """Проверяет реальную цепочку импорта Qt GUI в замороженной сборке (#74)."""
+    try:
+        _import_module("src.gui.app_qt")
+    except Exception as e:
+        _emit(f"SELFCHECK FAIL: GUI import src.gui.app_qt: {type(e).__name__}: {e}")
+        _emit(traceback.format_exc())
+        return 1
+    _emit("SELFCHECK ok: GUI import src.gui.app_qt")
+    _emit("GUI IMPORT SMOKE PASS")
+    return 0
+
+
 def run_live_capture_check() -> int:
     """Проверяет, что live-захват реально попал в сборку.
 

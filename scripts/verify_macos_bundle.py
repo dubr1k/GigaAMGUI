@@ -203,6 +203,10 @@ def verify_bundle(bundle_path: str, profile_name: str | None = None) -> int:
     if _run_smoke(candidates[0], smoke_flag, smoke_marker, timeout=120):
         return 1
 
+    # Проверяет GUI dependency chain в настоящем .app без запуска окна/runtime (#74).
+    if _run_smoke(candidates[0], "--gui-import-smoke", "GUI IMPORT SMOKE PASS"):
+        return 1
+
     # Без этого гейта полная .app уезжала в релиз без sounddevice/ScreenCaptureKit,
     # а вкладка Live падала уже у пользователя (issue #47).
     if _run_smoke(candidates[0], "--live-capture-smoke", None):

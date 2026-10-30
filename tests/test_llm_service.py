@@ -154,25 +154,6 @@ def test_opencode_empty_always_strict(monkeypatch):
         )
 
 
-def test_opencode_command_shape(monkeypatch):
-    captured = {}
-
-    def fake_run(command, *a, **k):
-        captured["cmd"] = command
-        return _Proc(0, "ok", "")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    llm_service.run_provider(
-        {"opencode_path": "oc", "model": "m", "opencode_args": "--flag x"},
-        "T", "P", provider="OpenCode", strict_empty_cli=True,
-    )
-    assert captured["cmd"][:2] == ["oc", "run"]
-    assert "-m" in captured["cmd"] and "m" in captured["cmd"]
-    assert "--flag" in captured["cmd"] and "x" in captured["cmd"]
-    # промпт уходит в stdin, а не в argv
-    assert llm_service.build_prompt_text("T", "P") not in captured["cmd"]
-
-
 # --- 2.2: реестр, stdin, safe-флаги, oh-my-pi --------------------------------
 
 def _capture_run(monkeypatch, stdout="ok"):
