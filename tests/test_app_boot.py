@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import sys
 import types
@@ -8,22 +7,14 @@ import pytest
 import app
 
 
-def test_torch_availability_rejects_namespace_stub(monkeypatch):
-    """PyInstaller may expose an empty torch namespace although no runtime is usable."""
-    namespace_spec = type("Spec", (), {"origin": None, "loader": None})()
-    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: namespace_spec)
-
-    assert app._torch_is_available() is False
-
-
-def test_prepare_torch_runtime_switches_saved_runtime_before_model_import(monkeypatch):
+def test_prepare_torch_runtime_switches_saved_runtime_before_model_import():
     calls = []
     runtime_manager = types.SimpleNamespace(
         get_selected_variant=lambda: "cpu",
         is_installed=lambda variant: variant == "cpu",
+        torch_is_available=lambda: True,
         switch_runtime=lambda variant: calls.append(variant),
     )
-    monkeypatch.setattr(app, "_torch_is_available", lambda: True)
 
     ready = app._prepare_torch_runtime(runtime_manager, lambda: pytest.fail("unexpected chooser"))
 

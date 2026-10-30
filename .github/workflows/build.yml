@@ -226,6 +226,7 @@ jobs:
           tests/test_portable_data_interfaces.py
           tests/test_gui_data_directory.py
           tests/test_app_boot.py
+          tests/test_gui_processing_runs.py
           tests/test_download_models.py
           -q
 

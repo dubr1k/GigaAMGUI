@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import sys
 import types
@@ -70,6 +71,13 @@ def _mark_installed(variant: str) -> None:
     path = rm.variant_dir(variant)
     _write_stack(path)
     (path / ".installed_ok").write_text("ok", encoding="utf-8")
+
+
+def test_torch_is_available_rejects_namespace_stub(monkeypatch):
+    namespace_spec = types.SimpleNamespace(origin=None, loader=None)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: namespace_spec)
+
+    assert rm.torch_is_available() is False
 
 
 def test_hf_cache_dir_prefers_explicit_hf_home_over_runtime_dir(monkeypatch, tmp_path):

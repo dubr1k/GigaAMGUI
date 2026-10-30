@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import gc
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -36,6 +37,15 @@ from pathlib import Path
 
 from . import torch_downloader
 from .atomic_json import save_json_atomic
+
+
+def torch_is_available() -> bool:
+    """True, если доступен настоящий пакет torch, а не namespace-заглушка."""
+    try:
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
+        return False
+    return spec is not None and spec.loader is not None and spec.origin is not None
 
 # Суффикс C-расширений текущего интерпретатора (`.cpython-312-darwin.so`,
 # `.cp311-win_amd64.pyd`). Колёса torch привязаны к нему: кэш, скачанный сборкой

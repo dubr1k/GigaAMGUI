@@ -22,6 +22,7 @@ from ..core.model_preparation import (
 from ..core.progress import STAGE_LABELS, coerce_progress, stage_label
 from ..core.subtitles import SubtitleOptions
 from ..services import transcription_service
+from ..utils import runtime_manager as rm
 from ..utils.output_naming import find_output_collisions
 
 
@@ -110,6 +111,37 @@ class ProcessingMixin:
         is_alive = getattr(self._processing_thread, "is_alive", None)
         return bool(is_alive and is_alive())
 
+    def _ensure_pyannote_runtime(self) -> bool:
+        if not self.enable_diarization or self.diarization_backend != "pyannote":
+            return True
+        if rm.torch_is_available():
+            return True
+        try:
+            from .device_dialog import ensure_device_ready
+
+            selected_variant = ensure_device_ready(parent=self)
+            if not selected_variant:
+                self.log(self._t(
+                    "Подготовка PyTorch не завершена. Обработка не запущена; выберите устройство и повторите запуск.",
+                    "PyTorch setup did not finish. Processing was not started; choose a device and try again.",
+                ))
+                return False
+            if not rm.switch_runtime(selected_variant):
+                raise RuntimeError("Runtime activation returned false")
+        except Exception as exc:
+            message = self._t(
+                "Не удалось подготовить PyTorch для диаризации. Проверьте подключение к интернету и выбранный вариант устройства, затем повторите запуск.",
+                "Could not prepare PyTorch for diarization. Check your internet connection and selected device, then try again.",
+            )
+            self.log(f"{message} ({exc})")
+            QMessageBox.warning(
+                self,
+                self._t("Ошибка подготовки PyTorch", "PyTorch setup failed"),
+                f"{message}\n\n{exc}",
+            )
+            return False
+        return True
+
     def _start_processing_thread(self):
         if self.is_processing:
             return
@@ -125,10 +157,6 @@ class ProcessingMixin:
                 ),
             )
             return
-        if hasattr(self, "processing_stack"):
-            self.processing_stack.setCurrentWidget(self._processing_start_page)
-        if hasattr(self, "_progress_frame"):
-            self._progress_frame.setVisible(True)
         if self.is_downloading:
             QMessageBox.information(self, self._t("Информация", "Information"), self._t("Дождитесь завершения загрузки по ссылке.", "Wait for the URL download to finish."))
             return
@@ -155,6 +183,12 @@ class ProcessingMixin:
                 ),
             )
             return
+        if not self._ensure_pyannote_runtime():
+            return
+        if hasattr(self, "processing_stack"):
+            self.processing_stack.setCurrentWidget(self._processing_start_page)
+        if hasattr(self, "_progress_frame"):
+            self._progress_frame.setVisible(True)
         # A failed preparation must not reuse files/results from the previous
         # successful batch when the completion handler decides what to show.
         self._last_generated_transcript_files = []

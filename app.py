@@ -126,24 +126,13 @@ def _create_qt_application(argv: list[str]):
     return GigaApplication(_qt_argv(argv))
 
 
-def _torch_is_available() -> bool:
-    """True, если доступен настоящий пакет torch, а не namespace-заглушка."""
-    import importlib.util
-
-    try:
-        spec = importlib.util.find_spec("torch")
-    except (ImportError, ValueError):
-        return False
-    return spec is not None and spec.loader is not None and spec.origin is not None
-
-
 def _prepare_torch_runtime(runtime_manager, ensure_ready) -> bool:
     """Активирует целый runtime и очищает возможную PyInstaller-заглушку torch."""
     selected = runtime_manager.get_selected_variant()
     if selected and runtime_manager.is_installed(selected):
         runtime_manager.switch_runtime(selected)
         return True
-    if _torch_is_available():
+    if runtime_manager.torch_is_available():
         return True
     selected = ensure_ready()
     if not selected:

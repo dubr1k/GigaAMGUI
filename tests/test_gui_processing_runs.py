@@ -6,6 +6,7 @@
 запуск, а не общий флаг окна, который следующий «Старт» тут же опустит обратно.
 """
 
+import importlib.util
 import os
 import sys
 import threading
@@ -57,6 +58,7 @@ def window(monkeypatch, tmp_path):
     instance = GigaTranscriberQtApp()
     monkeypatch.setattr(threading, "Thread", _CapturedThread)
     instance._lang = "ru"
+    instance.enable_diarization = False
     processed = []
 
     class FakePlan:
@@ -223,3 +225,113 @@ def test_failed_file_reason_reaches_the_log_journal_and_summary(window, monkeypa
     assert {"file": "first.wav", "status": "error"}.items() <= next(
         entry for entry in window._journal_entries if entry["file"] == "first.wav"
     ).items()
+
+
+def test_cancel_pyannote_runtime_install_does_not_start_batch(window, monkeypatch):
+    """ONNX users can cancel the first torch download and keep the GUI usable."""
+    import importlib.util
+
+    from src.gui import device_dialog
+
+    original_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name, *args, **kwargs: None if name == "torch" else original_find_spec(name, *args, **kwargs),
+    )
+    monkeypatch.setattr(device_dialog, "ensure_device_ready", lambda parent=None: None)
+    window.asr_backend = "onnx"
+    window.enable_diarization = True
+    window.diarization_backend = "pyannote"
+    window.files_to_process = [window.media[0]]
+
+    window._start_processing_thread()
+
+    assert _CapturedThread.started == []
+    assert window.is_processing is False
+    assert window.btn_start.isEnabled() is True
+    assert window.processed == []
+
+
+def test_pyannote_activation_failure_keeps_batch_idle_and_reports_error(window, monkeypatch):
+    from src.gui import device_dialog
+
+    monkeypatch.setattr(processing_mixin.rm, "torch_is_available", lambda: False)
+    monkeypatch.setattr(device_dialog, "ensure_device_ready", lambda parent=None: "cpu")
+
+    def fail_activation(variant):
+        assert variant == "cpu"
+        raise RuntimeError("activation failed")
+
+    monkeypatch.setattr(processing_mixin.rm, "switch_runtime", fail_activation)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, _title, text: shown.append(text))
+    window.asr_backend = "onnx"
+    window.enable_diarization = True
+    window.diarization_backend = "pyannote"
+    window.files_to_process = [window.media[0]]
+
+    window._start_processing_thread()
+
+    assert _CapturedThread.started == []
+    assert window.is_processing is False
+    assert window.btn_start.isEnabled() is True
+    assert len(shown) == 1
+    assert "PyTorch" in shown[0]
+    assert "повторите запуск" in shown[0]
+    assert "activation failed" in shown[0]
+
+
+def test_onnx_diarization_skips_torch_runtime_setup(window, monkeypatch):
+    from src.gui import device_dialog
+
+    monkeypatch.setattr(processing_mixin.rm, "torch_is_available", lambda: False)
+    monkeypatch.setattr(
+        device_dialog, "ensure_device_ready",
+        lambda parent=None: pytest.fail("ONNX diarization must not install torch"),
+    )
+    monkeypatch.setattr(
+        processing_mixin.rm, "switch_runtime",
+        lambda variant: pytest.fail("ONNX diarization must not activate torch"),
+    )
+    window.asr_backend = "onnx"
+    window.enable_diarization = True
+    window.diarization_backend = "onnx"
+    window.files_to_process = [window.media[0]]
+
+    window._start_processing_thread()
+
+    assert len(_CapturedThread.started) == 1
+    assert window.is_processing is True
+
+
+def test_pyannote_preserves_loaded_native_modules(window, monkeypatch):
+    from src.gui import device_dialog
+
+    original_find_spec = importlib.util.find_spec
+    native_spec = types.SimpleNamespace(loader=object(), origin="/native/torch/__init__.py")
+    torch_module = types.SimpleNamespace(__spec__=native_spec, __file__=native_spec.origin)
+    pyannote_module = types.SimpleNamespace(__file__="/native/pyannote/audio/__init__.py")
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name, *args, **kwargs: native_spec if name == "torch" else original_find_spec(name, *args, **kwargs),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_module)
+    monkeypatch.setattr(
+        device_dialog, "ensure_device_ready",
+        lambda parent=None: pytest.fail("an importable torch runtime must not prompt for installation"),
+    )
+    monkeypatch.setattr(
+        processing_mixin.rm, "switch_runtime",
+        lambda variant: pytest.fail("an importable torch runtime must not be purged or switched"),
+    )
+    window.asr_backend = "onnx"
+    window.enable_diarization = True
+    window.diarization_backend = "pyannote"
+    window.files_to_process = [window.media[0]]
+
+    window._start_processing_thread()
+
+    assert len(_CapturedThread.started) == 1
+    assert sys.modules["torch"] is torch_module
+    assert sys.modules["pyannote.audio"] is pyannote_module
