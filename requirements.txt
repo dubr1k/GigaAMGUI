@@ -179,7 +179,10 @@ questionary>=2.0.0
 # rich уже указан выше
 
 # GUI (PyQt6 - строгий профессиональный интерфейс)
-PyQt6>=6.10.0
+# Frozen-build compatibility: pins from the last successful frozen build.
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.13.0
 python-docx>=1.1.2
 
 # Web GUI (web/web_app.py)
