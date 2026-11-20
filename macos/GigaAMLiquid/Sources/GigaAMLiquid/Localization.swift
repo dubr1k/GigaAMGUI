@@ -406,7 +406,7 @@ enum L10n {
         "Транскрипт больше 32 МиБ — откройте сохранённый файл.": "The transcript is larger than the 32 MiB preview limit; open the saved file.",
         "Сохранённый транскрипт не в кодировке UTF-8.": "The saved transcript is not valid UTF-8.",
         "Python-обработчик не смог распознать этот файл.": "The Python processor could not transcribe this file.",
-        "Python-обработчик не создал ни одного читаемого файла результата.": "The Python processor did not produce any readable output files.",
+        "Нет доступных файлов результата.": "No output files are available.",
         "%@ завершился, не сообщив о завершении (код %@).": "%@ exited without a completion event (status %@).",
         "%@ закрыл вывод, не остановив сессию.": "%@ closed its output without stopping the session.",
         "%@ завершился, не остановив сессию (код %@).": "%@ exited without stopping the session (status %@).",

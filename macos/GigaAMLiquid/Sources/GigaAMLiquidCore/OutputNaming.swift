@@ -20,9 +20,21 @@ public enum OutputNaming {
         formatSuffix[format].map { "\(stem)\($0.suffix).\($0.ext)" }
     }
 
-    /// The format whose result for an input called `stem` is named `name`.
+    /// Recognize both the original stem and the numbered stem chosen by
+    /// next_available_output_stem when an export already exists.
     public static func format(ofOutputNamed name: String, stem: String) -> String? {
-        formatSuffix.keys.sorted().first { fileName(stem: stem, format: $0) == name }
+        let numberedPrefix = "\(stem)_"
+        let zero = UInt8(ascii: "0")
+        let digits = zero...UInt8(ascii: "9")
+        return formatSuffix.first { _, parts in
+            let ending = "\(parts.suffix).\(parts.ext)"
+            if name == stem + ending { return true }
+            guard let prefix = name.range(of: numberedPrefix, options: .anchored),
+                  let suffix = name.range(of: ending, options: [.anchored, .backwards]),
+                  prefix.upperBound < suffix.lowerBound else { return false }
+            let number = name[prefix.upperBound..<suffix.lowerBound].utf8
+            return number.first != zero && number.allSatisfy { digits.contains($0) }
+        }?.key
     }
 
     /// normalized_output_stem: compatibility-decomposed, combining marks dropped,
