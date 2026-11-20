@@ -27,20 +27,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            label: Windows x64
-            asset: GigaAMTranscriber-windows-x64.exe
-            offline_asset: GigaAMTranscriber-windows-x64-offline.zip
-            built: dist/GigaAMTranscriber_portable.exe
-            torch_index: "--index-url https://download.pytorch.org/whl/cpu"
-
-          - os: macos-15
-            label: macOS arm64
-            asset: GigaAMTranscriber-macos-arm64
-            offline_asset: GigaAMTranscriber-macos-arm64-offline.zip
-            built: dist/GigaAMTranscriber_portable
-            torch_index: ""
-
           # Keep the portable build on the validated glibc and PortAudio baseline.
           - os: ubuntu-24.04
             label: Linux x64
@@ -360,6 +346,7 @@ jobs:
 
 
   build-macos-full:
+    if: github.event_name == 'push'
     name: macOS arm64 full app bundle
     runs-on: macos-15
     needs: test-tui
@@ -543,6 +530,7 @@ jobs:
 
 
   build-macos-intel:
+    if: github.event_name == 'push'
     name: macOS x86_64 (Intel) ONNX app bundle
     runs-on: macos-15-intel
     needs: test-tui
