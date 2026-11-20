@@ -41,7 +41,8 @@ jobs:
             built: dist/GigaAMTranscriber_portable
             torch_index: ""
 
-          - os: ubuntu-latest
+          # Keep the portable build on the validated glibc and PortAudio baseline.
+          - os: ubuntu-24.04
             label: Linux x64
             asset: GigaAMTranscriber-linux-x64
             offline_asset: GigaAMTranscriber-linux-x64-offline.zip
