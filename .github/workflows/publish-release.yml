@@ -11,7 +11,10 @@ on:
         description: Release tag (vX.Y.Z)
         required: true
       run_id:
-        description: build.yml run id whose artifacts to publish
+        description: Build portable run with the verified Windows and macOS artifacts
+        required: true
+      linux_run_id:
+        description: Linux-only Build portable run with both verified Linux assets
         required: true
 
 jobs:
@@ -22,11 +25,10 @@ jobs:
       contents: write
       actions: read
     steps:
-      # Checks out the dispatching branch (main), not the tag: the script and
-      # the release notes must be the current ones even for an older tag.
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          ref: 470ede2ddd373feec5e97503f309f66d087c8646
           persist-credentials: false
 
       - name: Download release artifacts
@@ -38,6 +40,60 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
 
+      - name: Wait for the Linux build
+        timeout-minutes: 25
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LINUX_RUN: ${{ inputs.linux_run_id }}
+        run: |
+          while true; do
+            run=$(gh run view "$LINUX_RUN" --json headSha,status,conclusion)
+            jq -e '.headSha == "3b982b17f0b7265daf3a160f155958ee020afeb4"' <<< "$run" >/dev/null
+            if jq -e '.status == "completed"' <<< "$run" >/dev/null; then
+              jq -e '.conclusion == "success"' <<< "$run"
+              break
+            fi
+            sleep 15
+          done
+      - name: Download verified Linux assets
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          pattern: GigaAMTranscriber-linux-x64*
+          merge-multiple: true
+          run-id: ${{ inputs.linux_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Normalize and verify the release asset names
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" == v2.6.9 ]]
+          cd release-assets
+          export LC_ALL=C
+          for asset in *-fix-liquid-numbered-exports.zip; do
+            test -f "$asset"
+            mv "$asset" "${asset%-fix-liquid-numbered-exports.zip}-$TAG.zip"
+          done
+          printf '%s\n' * | diff -u - <(cat <<EOF
+          GigaAMLiquid-macos-arm64-offline-$TAG.zip
+          GigaAMLiquid-macos-arm64-$TAG.zip
+          GigaAMTranscriber-linux-x64
+          GigaAMTranscriber-linux-x64-offline.zip
+          GigaAMTranscriber-macos-app-offline-$TAG.zip
+          GigaAMTranscriber-macos-app-$TAG.zip
+          GigaAMTranscriber-macos-arm64
+          GigaAMTranscriber-macos-arm64-offline.zip
+          GigaAMTranscriber-macos-x86_64-app-offline-$TAG.zip
+          GigaAMTranscriber-windows-x64-offline.zip
+          GigaAMTranscriber-windows-x64.exe
+          EOF
+          )
+
       - name: Publish GitHub release
         shell: bash
         env:
@@ -46,4 +102,7 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           VERSION="${TAG#v}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --target "$(git rev-parse HEAD)" --title "$VERSION" --notes-file "docs/RELEASE_NOTES_${VERSION}.md"
+          fi
           bash scripts/publish_release_assets.sh "$TAG" release-assets "docs/RELEASE_NOTES_${VERSION}.md"
