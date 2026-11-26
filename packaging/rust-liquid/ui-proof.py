@@ -409,8 +409,15 @@ def run_proof(app, fixture, diagnostics, timeout):
                 raise RuntimeError("TXT output is not selected")
 
             choose(driver, "#choose-media", fixture)
-            wait_for("the chosen fixture in the UI", lambda: any(
-                same_path(line, fixture) for line in driver.text("#selected-files").splitlines()), 30)
+            def fixture_selected():
+                try:
+                    return same_path(driver.text("#selected-files .selected-file span"), fixture)
+                except WebDriverError as error:
+                    if error.code == "no such element":
+                        return False
+                    raise
+
+            wait_for("the chosen fixture in the UI", fixture_selected, 30)
             choose(driver, "#choose-output", output, folder=True)
             wait_for("the chosen output directory in the UI", lambda: same_path(
                 driver.property("#output-directory", "value"), output), 30)
