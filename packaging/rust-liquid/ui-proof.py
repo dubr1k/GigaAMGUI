@@ -15,6 +15,7 @@ import ctypes
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ import time
 import urllib.error
 import urllib.request
 
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -37,6 +39,23 @@ def wait_for(description, predicate, seconds, interval=0.25):
             return value
         time.sleep(interval)
     raise RuntimeError(f"Timed out waiting for {description} ({seconds}s)")
+
+@contextmanager
+def proof_temporary_directory():
+    temporary = tempfile.TemporaryDirectory(prefix="rust-liquid-ui-", dir=os.environ.get("RUNNER_TEMP"))
+    try:
+        yield temporary.name
+    except BaseException as original:
+        try:
+            temporary.cleanup()
+        except Exception as error:
+            print(f"Temporary directory cleanup also failed ({temporary.name}): {error}",
+                  file=sys.stderr, flush=True)
+            original.add_note(f"Temporary directory cleanup failed: {error}")
+        raise
+    else:
+        temporary.cleanup()
+
 
 
 def check_display():
@@ -123,6 +142,7 @@ class WebDriver:
         self.process = subprocess.Popen(
             [executable, "--native-driver", native_driver],
             stdout=self.log, stderr=subprocess.STDOUT, env=env,
+            start_new_session=sys.platform.startswith("linux"),
         )
         self.session = None
         self.app = app
@@ -191,19 +211,46 @@ class WebDriver:
                 print(f"Could not capture WebDriver screenshot: {error}", file=sys.stderr)
 
     def close(self):
-        if self.session:
-            try:
-                self.command("DELETE", "", timeout=3)
-            except Exception:
-                pass
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-        self.log.close()
+        try:
+            if self.session:
+                try:
+                    self.command("DELETE", "", timeout=3)
+                except Exception as error:
+                    print(f"WebDriver session did not close cleanly: {error}", file=sys.stderr)
+
+            if sys.platform.startswith("linux"):
+                # The driver, native WebDriver, packaged app and its WebKit
+                # children share this private session, not the runner's group.
+                def group_running():
+                    self.process.poll()  # Reap the group leader if it has exited.
+                    try:
+                        os.killpg(self.process.pid, 0)
+                        return True
+                    except ProcessLookupError:
+                        return False
+
+                for sig, seconds in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+                    if not group_running():
+                        break
+                    try:
+                        os.killpg(self.process.pid, sig)
+                    except ProcessLookupError:
+                        break
+                    deadline = time.monotonic() + seconds
+                    while group_running() and time.monotonic() < deadline:
+                        time.sleep(0.1)
+                if group_running():
+                    raise RuntimeError("Owned Linux WebDriver process group did not exit")
+            elif self.process.poll() is None:
+                # On Windows tauri-driver owns a kill-on-close Job Object.
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+        finally:
+            self.log.close()
 
 
 def xdotool(*args, check=True):
@@ -385,7 +432,7 @@ def run_proof(app, fixture, diagnostics, timeout):
     if not native_driver:
         raise RuntimeError(f"Required native WebDriver is missing from PATH: {native_name}")
     diagnostics.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="rust-liquid-ui-", dir=os.environ.get("RUNNER_TEMP")) as temporary:
+    with proof_temporary_directory() as temporary:
         root = Path(temporary)
         output = root / "output"
         output.mkdir()
@@ -409,9 +456,31 @@ def run_proof(app, fixture, diagnostics, timeout):
                 raise RuntimeError("TXT output is not selected")
 
             choose(driver, "#choose-media", fixture)
+            last_fixture_diagnostic = None
+
             def fixture_selected():
+                nonlocal last_fixture_diagnostic
+                selector = "#selected-files .selected-file span"
                 try:
-                    return same_path(driver.text("#selected-files .selected-file span"), fixture)
+                    displayed = driver.state(selector, "displayed")
+                    observed = driver.property(selector, "textContent")
+                    if not isinstance(observed, str):
+                        raise RuntimeError("The selected-file path is not a string")
+                    if displayed and same_path(observed, fixture):
+                        return True
+                    rendered = driver.text(selector)
+                    diagnostic = (
+                        f"Selected-file path mismatch: displayed={displayed}, "
+                        f"DOM characters={len(observed)}, rendered characters={len(rendered)}, "
+                        f"absolute={os.path.isabs(observed)}, "
+                        f"basename matches={os.path.normcase(os.path.basename(observed)) == os.path.normcase(fixture.name)}, "
+                        f"rendered matches DOM={rendered == observed}, "
+                        f"surrounding whitespace={observed != observed.strip()}"
+                    )
+                    if diagnostic != last_fixture_diagnostic:
+                        print(diagnostic, flush=True)
+                        last_fixture_diagnostic = diagnostic
+                    return False
                 except WebDriverError as error:
                     if error.code == "no such element":
                         return False
@@ -452,7 +521,8 @@ def run_proof(app, fixture, diagnostics, timeout):
             paths = driver.text("#result-content ul")
             if not any(same_path(line, result) for line in paths.splitlines()):
                 raise RuntimeError("The application did not list the saved file on the result page")
-            print(f"PASS: real UI saved a nonempty {result.name} ({result.stat().st_size} bytes)", flush=True)
+            result_name = result.name
+            result_size = result.stat().st_size
         except Exception:
             if sys.platform.startswith("linux"):
                 try:
@@ -463,7 +533,16 @@ def run_proof(app, fixture, diagnostics, timeout):
             driver.screenshot(diagnostics / "failure.png")
             raise
         finally:
-            driver.close()
+            original = sys.exc_info()[1]
+            try:
+                driver.close()
+            except Exception as error:
+                if original is None:
+                    raise
+                print(f"WebDriver process cleanup also failed: {error}", file=sys.stderr, flush=True)
+                original.add_note(f"WebDriver process cleanup failed: {error}")
+
+    print(f"PASS: real UI saved a nonempty {result_name} ({result_size} bytes)", flush=True)
 
 
 def main():
