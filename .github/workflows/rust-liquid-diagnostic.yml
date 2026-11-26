@@ -1,0 +1,29 @@
+name: Temporary Rust Liquid Linux diagnostic
+on:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths: [.github/workflows/rust-liquid-diagnostic.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Inspect previous diagnostic bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP"
+          gh run download 45821335226 --repo dubr1k/GigaAMGUI --name rust-liquid-linux-diagnostic
+          image=(./*.AppImage)
+          chmod +x "${image[0]}"
+          "${image[0]}" --appimage-extract >/dev/null
+          root="$PWD/squashfs-root"
+          binary="$root/usr/bin/gigaam-desktop"
+          file "$binary"
+          /lib64/ld-linux-x86-64.so.2 --verify "$binary" || echo "loader verify failed: $?"
+          env LD_LIBRARY_PATH="$root/usr/lib" ldd "$binary" || echo "ldd failed: $?"
+          env LD_LIBRARY_PATH="$root/usr/lib" /lib64/ld-linux-x86-64.so.2 --list "$binary" || echo "loader list failed: $?"
