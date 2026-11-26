@@ -6,7 +6,7 @@ name: Rust Liquid packaged UI proof
 on:
   push:
     branches: [feat/rust-liquid-windows-linux]
-    paths: [.github/workflows/rust-liquid-ui-proof.yml]
+    paths: [.github/workflows/rust-liquid-ui-proof.yml, packaging/rust-liquid/ui-proof.py]
   workflow_dispatch:
     inputs:
       source_run_id:

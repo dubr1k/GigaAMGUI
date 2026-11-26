@@ -210,7 +210,7 @@ def xdotool(*args, check=True):
     return subprocess.run(["xdotool", *args], text=True, capture_output=True, check=check, timeout=10)
 
 
-def linux_dialog(title, path, folder):
+def linux_dialog(title, path):
     import pyatspi  # type: ignore[import-not-found]
 
     def find_window():
@@ -232,7 +232,7 @@ def linux_dialog(title, path, folder):
             yield node
             pending.extend(node)
 
-    def focused_entry():
+    def accessible_dialog():
         for application in pyatspi.Registry.getDesktop(0):
             if application.get_process_id() != pid:
                 continue
@@ -245,17 +245,22 @@ def linux_dialog(title, path, folder):
             ]
             if len(dialogs) > 1:
                 raise RuntimeError(f"More than one accessible GTK dialog titled {title!r}")
-            if not dialogs:
-                return None
-            for node in descendants(dialogs[0]):
-                state = node.getState()
-                if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_SHOWING):
-                    try:
-                        node.queryEditableText()
-                    except NotImplementedError:
-                        pass
-                    else:
-                        return node
+            return dialogs[0] if dialogs else None
+        return None
+
+    def focused_entry():
+        dialog = accessible_dialog()
+        if not dialog:
+            return None
+        for node in descendants(dialog):
+            state = node.getState()
+            if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_SHOWING):
+                try:
+                    node.queryEditableText()
+                except NotImplementedError:
+                    pass
+                else:
+                    return node
         return None
 
     entry = wait_for("the native GTK location field to receive focus", focused_entry, 15)
@@ -263,13 +268,24 @@ def linux_dialog(title, path, folder):
         raise RuntimeError("Could not enter the path into the native GTK location field")
     wait_for("the native GTK location field to contain the requested path",
              lambda: entry.queryText().getText(0, -1) == str(path), 15)
-    xdotool("key", "--clearmodifiers", "Return")
-    if folder:
-        # GTK first navigates to the entered directory; its default Open button confirms it.
-        try:
-            wait_for("folder chooser to close", lambda: not find_window(), 2)
-        except RuntimeError:
-            xdotool("key", "--clearmodifiers", "alt+o")
+    def open_button():
+        dialog = accessible_dialog()
+        if not dialog:
+            raise RuntimeError("GTK dialog closed before its Open button was activated")
+        buttons = [
+            node for node in descendants(dialog)
+            if node.getRole() == pyatspi.ROLE_PUSH_BUTTON and node.name == "Open"
+            and node.getState().contains(pyatspi.STATE_SHOWING)
+            and node.getState().contains(pyatspi.STATE_ENABLED)
+        ]
+        if len(buttons) > 1:
+            raise RuntimeError("More than one enabled Open button in the GTK dialog")
+        return buttons[0] if buttons else None
+
+    button = wait_for("the native GTK Open button to be enabled", open_button, 15)
+    action = button.queryAction()
+    if action.nActions != 1 or action.getName(0) != "click" or not action.doAction(0):
+        raise RuntimeError("Could not activate the native GTK Open button")
     wait_for(f"native GTK dialog {title!r} to close", lambda: not find_window(), 15)
 
 
@@ -319,8 +335,9 @@ def windows_dialog(app, path, folder):
             if not find_dialog():
                 return True
             address = os.path.normcase(str(path)).rstrip("\\/")
-            return any(os.path.normcase(item.window_text()).rstrip("\\/").endswith(address)
-                       for item in uia.wrapper_object().descendants(auto_id="1001"))
+            return any(item.element_info.automation_id == "1001" and
+                       os.path.normcase(item.window_text()).rstrip("\\/").endswith(address)
+                       for item in uia.wrapper_object().descendants())
 
         wait_for("Windows folder picker to navigate to the requested directory", navigated, 15)
     else:
@@ -347,7 +364,7 @@ def choose(driver, selector, path, folder=False):
     if sys.platform == "win32":
         windows_dialog(driver.app, path, folder)
     else:
-        linux_dialog("Select Folder" if folder else "Open File", path, folder)
+        linux_dialog("Select Folder" if folder else "Open File", path)
     thread.join(timeout=20)
     if thread.is_alive():
         raise RuntimeError(f"WebDriver click on {selector} did not return after closing the dialog")
