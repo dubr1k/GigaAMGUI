@@ -293,7 +293,7 @@ def xdotool(*args, check=True):
     return subprocess.run(["xdotool", *args], text=True, capture_output=True, check=check, timeout=10)
 
 
-def linux_dialog(title, path):
+def linux_dialog(title, path, folder):
     import pyatspi  # type: ignore[import-not-found]
 
     def find_window():
@@ -351,6 +351,10 @@ def linux_dialog(title, path):
         raise RuntimeError("Could not enter the path into the native GTK location field")
     wait_for("the native GTK location field to contain the requested path",
              lambda: entry.queryText().getText(0, -1) == str(path), 15)
+    if folder:
+        # A folder path must first be opened in GTK's location entry; the
+        # dialog's Open button then selects that directory.
+        xdotool("key", "--clearmodifiers", "Return")
     def open_button():
         dialog = accessible_dialog()
         if not dialog:
@@ -476,7 +480,7 @@ def choose(driver, selector, path, folder=False):
     if sys.platform == "win32":
         windows_dialog(driver.app, path, folder)
     else:
-        linux_dialog("Select Folder" if folder else "Open File", path)
+        linux_dialog("Select Folder" if folder else "Open File", path, folder)
     thread.join(timeout=20)
     if thread.is_alive():
         raise RuntimeError(f"WebDriver click on {selector} did not return after closing the dialog")
