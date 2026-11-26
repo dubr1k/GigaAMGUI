@@ -13,7 +13,7 @@ identifier. Icons are generated from `assets/icon-liquid.png` under the ignored
 `generated/` directory; neither the original Tauri configuration nor the UI is
 modified. The Windows overlay embeds the offline WebView2 installer and puts
 DirectML and the x64 Visual C++ CRT beside the application. The Linux overlay
-adds GNU libstdc++ to the AppImage and enables the GStreamer bundle.
+adds GNU libstdc++ and audio runtimes to the AppImage and enables the GStreamer bundle.
 
 ## Prerequisites and limitations
 
@@ -63,6 +63,8 @@ unset TAURI_CONFIG
 npm run build -- --no-bundle --target x86_64-unknown-linux-gnu --config ../packaging/rust-liquid/tauri.conf.json -- --locked
 mkdir -p ../packaging/rust-liquid/generated/linux
 cp -L /usr/lib/x86_64-linux-gnu/libstdc++.so.6 ../packaging/rust-liquid/generated/linux/libstdc++.so.6
+cp -L /usr/lib/x86_64-linux-gnu/libasound.so.2 ../packaging/rust-liquid/generated/linux/libasound.so.2
+cp -L /usr/lib/x86_64-linux-gnu/libpulse.so.0 ../packaging/rust-liquid/generated/linux/libpulse.so.0
 npx --no-install tauri bundle --target x86_64-unknown-linux-gnu --bundles appimage --config ../packaging/rust-liquid/tauri.conf.json --config ../packaging/rust-liquid/tauri.linux.conf.json
 ```
 

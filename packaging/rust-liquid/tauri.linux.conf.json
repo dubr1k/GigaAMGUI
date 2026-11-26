@@ -4,7 +4,9 @@
       "appimage": {
         "bundleMediaFramework": true,
         "files": {
-          "/usr/lib/libstdc++.so.6": "../../packaging/rust-liquid/generated/linux/libstdc++.so.6"
+          "/usr/lib/libstdc++.so.6": "../../packaging/rust-liquid/generated/linux/libstdc++.so.6",
+          "/usr/lib/libasound.so.2": "../../packaging/rust-liquid/generated/linux/libasound.so.2",
+          "/usr/lib/libpulse.so.0": "../../packaging/rust-liquid/generated/linux/libpulse.so.0"
         }
       }
     }
