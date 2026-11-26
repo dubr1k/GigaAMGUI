@@ -142,14 +142,14 @@ fn youtube_live_url(url: &Url) -> Option<Url> {
 
 // ytdown rewrites vm/vt shortlinks to www.tiktok.com/t/{code}. Follow the
 // supplied mobile URL instead; those hosts may route the same code differently.
-async fn tiktok_mobile_redirect(client: &Client, url: &Url) -> Option<Url> {
-    if !matches!(url.host_str()?, "vm.tiktok.com" | "vt.tiktok.com") {
-        return None;
+async fn tiktok_mobile_redirect(client: &Client, url: &Url) -> Result<Option<Url>, String> {
+    if !matches!(url.host_str(), Some("vm.tiktok.com" | "vt.tiktok.com")) {
+        return Ok(None);
     }
-    let mut segments = url.path_segments()?.filter(|segment| !segment.is_empty());
-    segments.next()?;
-    if segments.next().is_some() {
-        return None;
+    let Some(segments) = url.path_segments() else { return Ok(None) };
+    let mut segments = segments.filter(|segment| !segment.is_empty());
+    if segments.next().is_none() || segments.next().is_some() {
+        return Ok(None);
     }
     let response = tokio::time::timeout(
         Duration::from_secs(120),
@@ -157,26 +157,28 @@ async fn tiktok_mobile_redirect(client: &Client, url: &Url) -> Option<Url> {
             .header(USER_AGENT, TIKTOK_USER_AGENT)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .send(),
-    ).await.ok()?.ok()?;
+    ).await.map_err(|_| "Истекло время ожидания ответа TikTok".to_string())?
+        .map_err(|_| "Не удалось открыть ссылку TikTok".to_string())?;
+    if matches!(response.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) {
+        return Err(format!("TikTok отклонил запрос (HTTP {})", response.status().as_u16()));
+    }
     if !response.status().is_success() {
-        return None;
+        return Ok(None);
     }
     let target = response.url();
-    let host = target.host_str()?;
+    let Some(host) = target.host_str() else { return Ok(None) };
     if host != "tiktok.com" && !host.ends_with(".tiktok.com") {
-        return None;
+        return Ok(None);
     }
-    let mut path = target.path_segments()?.filter(|segment| !segment.is_empty());
-    let user = path.next()?;
-    let kind = path.next()?;
-    let id = path.next()?;
+    let Some(mut path) = target.path_segments() else { return Ok(None) };
+    let (Some(user), Some(kind), Some(id)) = (path.next(), path.next(), path.next()) else { return Ok(None) };
     if user.len() <= 1 || !user.starts_with('@')
         || !matches!(kind, "video" | "photo")
         || id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit())
     {
-        return None;
+        return Ok(None);
     }
-    Some(target.clone())
+    Ok(Some(target.clone()))
 }
 
 fn safe_redirect(previous: &Url, next: &Url) -> bool {
@@ -249,20 +251,35 @@ fn format_extension(format: &Format) -> Option<&'static str> {
     container.or_else(|| format.mime_type.as_deref().and_then(extension_from_mime))
 }
 
-fn select_format(formats: &[Format], limit: u64) -> Result<&Format, String> {
-    let supported = |format: &&Format| {
-        format.audio.is_some()
-            && format_extension(format).is_some()
-            && validate_url(&format.url).is_ok()
-    };
-    let mut candidates = formats.iter().filter(supported).peekable();
-    if candidates.peek().is_none() {
-        return Err("На странице нет поддерживаемой аудиодорожки; трансляции и защищённое медиа не поддерживаются".into());
+fn select_format(formats: &[Format], limit: u64) -> Result<(&Format, Url, HeaderMap), String> {
+    let mut supported = false;
+    let mut oversized = false;
+    let mut invalid_headers = false;
+    let mut best = None;
+    for format in formats {
+        if format.audio.is_none() || format_extension(format).is_none() {
+            continue;
+        }
+        let Ok(url) = validate_url(&format.url) else { continue };
+        supported = true;
+        if format.filesize.is_some_and(|size| size > limit) {
+            oversized = true;
+            continue;
+        }
+        let Ok(headers) = safe_headers(format, &url) else {
+            invalid_headers = true;
+            continue;
+        };
+        let rank = (format.video.is_none(), format.audio.as_ref().and_then(|audio| audio.bitrate).or(format.bitrate).unwrap_or(0));
+        if best.as_ref().is_none_or(|(previous, _, _, _)| rank >= *previous) {
+            best = Some((rank, format, url, headers));
+        }
     }
-    candidates
-        .filter(|format| format.filesize.is_none_or(|size| size <= limit))
-        .max_by_key(|format| (format.video.is_none(), format.audio.as_ref().and_then(|audio| audio.bitrate).or(format.bitrate).unwrap_or(0)))
-        .ok_or_else(|| TOO_LARGE.into())
+    best.map(|(_, format, url, headers)| (format, url, headers)).ok_or_else(|| {
+        if invalid_headers { "Площадка вернула недопустимые параметры загрузки".into() }
+        else if supported && oversized { TOO_LARGE.into() }
+        else { "На странице нет поддерживаемой аудиодорожки; трансляции и защищённое медиа не поддерживаются".into() }
+    })
 }
 
 fn extraction_error(error: ytdown::Error) -> String {
@@ -304,7 +321,7 @@ fn safe_headers(format: &Format, url: &Url) -> Result<HeaderMap, String> {
         }
         let mut value = HeaderValue::from_str(value).map_err(|_| "Площадка вернула недопустимые параметры загрузки")?;
         value.set_sensitive(true);
-        headers.insert(name, value);
+        headers.append(name, value);
     }
     Ok(headers)
 }
@@ -326,7 +343,7 @@ async fn media_response(client: &Client, url: &Url, headers: HeaderMap) -> Resul
     let response = client.get(url.clone()).headers(headers).send().await.map_err(|error| {
         if error.is_timeout() { "Истекло время ожидания загрузки" } else { "Не удалось загрузить медиа; проверьте подключение" }
     })?;
-    if response.status() == StatusCode::PARTIAL_CONTENT || response.headers().contains_key(CONTENT_RANGE) {
+    if response.status() == StatusCode::PARTIAL_CONTENT {
         return Err("Сервер вернул частичный файл; загрузка не поддерживается".into());
     }
     if response.status() != StatusCode::OK {
@@ -338,6 +355,9 @@ async fn media_response(client: &Client, url: &Url, headers: HeaderMap) -> Resul
             _ => "Сервер отклонил загрузку медиа",
         };
         return Err(format!("{message} (HTTP {})", response.status().as_u16()));
+    }
+    if response.headers().contains_key(CONTENT_RANGE) {
+        return Err("Сервер вернул частичный файл; загрузка не поддерживается".into());
     }
     Ok(response)
 }
@@ -442,7 +462,7 @@ async fn import_url<F>(
 where
     F: FnMut(u64, Option<u64>),
 {
-    let url = tiktok_mobile_redirect(client, &url).await.unwrap_or(url);
+    let url = tiktok_mobile_redirect(client, &url).await?.unwrap_or(url);
     let resolved = resolve_media(extractor, &url).await?;
     tokio::time::timeout(Duration::from_secs(60 * 60), async {
         let mut direct_response = None;
@@ -468,9 +488,7 @@ where
         let (target, headers, hint, expected) = match resolved {
             Some(Ok(MediaInfo::Single(info))) => {
                 if info.is_live { return Err("Прямые эфиры не поддерживаются".into()); }
-                let format = select_format(&info.formats, limit)?;
-                let target = validate_url(&format.url)?;
-                let headers = safe_headers(format, &target)?;
+                let (format, target, headers) = select_format(&info.formats, limit)?;
                 (target, headers, format_extension(format), format.filesize)
             }
             Some(Ok(MediaInfo::Collection(_))) => return Err("Плейлисты и каналы не поддерживаются; укажите отдельную запись".into()),
@@ -487,14 +505,19 @@ where
     }).await.map_err(|_| "Истекло время загрузки; файл не добавлен в очередь".to_string())?
 }
 
-async fn import_inner(app: &AppHandle, job_id: &str, url: Url) -> Result<(String, TempDir), String> {
-    let client = Client::builder()
+fn media_client() -> Result<Client, String> {
+    Client::builder()
         .use_native_tls()
         .connect_timeout(Duration::from_secs(20))
         .read_timeout(Duration::from_secs(45))
         .redirect(redirect_policy())
+        .cookie_store(true)
         .referer(false)
-        .build().map_err(|_| "Не удалось подготовить сетевой клиент")?;
+        .build().map_err(|_| "Не удалось подготовить сетевой клиент".into())
+}
+
+async fn import_inner(app: &AppHandle, job_id: &str, url: Url) -> Result<(String, TempDir), String> {
+    let client = media_client()?;
     let extractor = Ytdown::builder().client(client.clone()).build()
         .map_err(|_| "Не удалось подготовить загрузчик медиа")?;
     import_url(&client, &extractor, url, MAX_BYTES, &std::env::temp_dir(),
@@ -545,6 +568,27 @@ mod tests {
         });
         (Url::parse(&format!("http://{address}/audio.mp3")).unwrap(), worker)
     }
+    #[tokio::test]
+    async fn client_keeps_ephemeral_site_session_for_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut request = [0; 2048];
+            let _ = first.read(&mut request).unwrap();
+            first.write_all(b"HTTP/1.1 302 Found\r\nLocation: /media\r\nSet-Cookie: session=temporary; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            let count = second.read(&mut request).unwrap();
+            let received = String::from_utf8_lossy(&request[..count]).to_ascii_lowercase();
+            second.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            received
+        });
+        let client = media_client().unwrap();
+        let response = client.get(format!("http://{address}/start")).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(worker.join().unwrap().contains("cookie: session=temporary"));
+    }
+
     #[tokio::test]
     async fn downloads_probeable_audio_and_removes_it_when_released() {
         const WAV: &[u8] = b"RIFF\x26\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x7d\x00\x00\x02\x00\x10\x00data\x02\x00\x00\x00\x00\x00";
@@ -633,9 +677,41 @@ mod tests {
         oversized.filesize = Some(101);
         oversized.bitrate = Some(2_000_000);
         let formats = [progressive, oversized, audio];
-        let selected = select_format(&formats, 100).unwrap();
+        let (selected, _, _) = select_format(&formats, 100).unwrap();
         assert!(selected.video.is_none());
         assert_eq!(selected.filesize, Some(10));
+    }
+
+    #[test]
+    fn skips_formats_with_invalid_headers_before_ranking() {
+        let mut invalid = Format::default();
+        invalid.url = "https://example.test/broken".into();
+        invalid.container = Some(Container::M4a);
+        invalid.audio = Some(ytdown::AudioStream::default());
+        invalid.bitrate = Some(1_000_000);
+        invalid.http_headers.push(("bad header".into(), "secret".into()));
+        let mut usable = invalid.clone();
+        usable.url = "https://example.test/usable".into();
+        usable.bitrate = Some(10);
+        usable.http_headers.clear();
+        let formats = [invalid, usable];
+        let (selected, _, _) = select_format(&formats, 100).unwrap();
+        assert_eq!(selected.url, "https://example.test/usable");
+    }
+
+    #[tokio::test]
+    async fn shortlink_forbidden_is_not_retried() {
+        let (url, worker) = serve(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let address = url.socket_addrs(|| None).unwrap()[0];
+        let client = Client::builder().no_proxy().redirect(redirect_policy()).resolve("vm.tiktok.com", address).build().unwrap();
+        let extractor = Ytdown::builder().client(client.clone()).build().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let url = Url::parse(&format!("http://vm.tiktok.com:{}/code?token=secret", address.port())).unwrap();
+        let error = import_url(&client, &extractor, url, 100, root.path(), |_, _| {}).await.err().unwrap();
+        worker.join().unwrap();
+        assert!(error.contains("403"));
+        assert!(!error.contains("secret"));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
 
@@ -664,6 +740,13 @@ mod tests {
         format.url = "https://example.test/audio".into();
         let headers = safe_headers(&format, &validate_url(&format.url).unwrap()).unwrap();
         assert!(headers.get(COOKIE).unwrap().is_sensitive());
+        format.http_headers.push(("cookie".into(), "other=value".into()));
+        let headers = safe_headers(&format, &validate_url(&format.url).unwrap()).unwrap();
+        let values: Vec<_> = headers.get_all(COOKIE).iter().collect();
+        assert_eq!(values.len(), 2);
+        assert!(values.iter().all(|value| value.is_sensitive()));
+        assert_eq!(values[0], "token=secret");
+        assert_eq!(values[1], "other=value");
 
         let secure = Url::parse("https://example.test/audio").unwrap();
         let same_origin = Url::parse("https://example.test/other").unwrap();
@@ -888,6 +971,7 @@ mod tests {
             (&b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "ограничил"),
             (&b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "Ошибка сервера"),
             (&b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "частичный"),
+            (&b"HTTP/1.1 403 Forbidden\r\nContent-Range: bytes 0-1/3\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "доступ"),
         ] {
             let (mut url, worker) = serve(response);
             url.set_query(Some("token=secret"));
