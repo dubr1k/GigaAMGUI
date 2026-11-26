@@ -28,7 +28,8 @@ adds GNU libstdc++ and ALSA to the AppImage and enables the GStreamer bundle.
   x64 processor. The candidate is built on Ubuntu 24.04; compatibility with
   older glibc releases and other distributions has not been established.
   AppImage execution normally needs FUSE, or its extraction-based alternative.
-  Linux also requires host PulseAudio client libraries and an EGL/OpenGL stack.
+  Linux also requires host PulseAudio client libraries and an EGL/OpenGL ES
+  stack (on Ubuntu, `libpulse0`, `libegl1` and `libgles2`).
   PulseAudio libraries are deliberately excluded from the bundle to avoid a
   loader crash observed with the bundled copy.
 - Models are not included. They must be downloaded by the application on first
@@ -38,6 +39,10 @@ adds GNU libstdc++ and ALSA to the AppImage and enables the GStreamer bundle.
   installation, GUI operation, inference, microphone permissions, GPU support,
   full multimedia codec coverage or all transitive dependencies. The Windows
   installer is not code-signed by this workflow.
+- A separate one-off CI smoke installed the Windows candidate and launched it
+  for 10 seconds; the extracted Linux candidate ran for 10 seconds under Xvfb
+  on Ubuntu 24.04 with the host libraries above. Neither check exercised audio,
+  inference, or interactive GUI operation.
 - Treat these as candidates until both platforms have been tested from the
   actual packages on clean systems, including model download and real audio
   transcription. Review third-party redistribution notices before publication.
