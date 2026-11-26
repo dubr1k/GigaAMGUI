@@ -1,0 +1,56 @@
+name: Temporary Rust Liquid package smoke
+on:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths: [.github/workflows/rust-liquid-smoke.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Launch extracted AppImage under Xvfb
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libpulse0 xvfb xauth
+          cd "$RUNNER_TEMP"
+          gh run download 45826240483 --repo dubr1k/GigaAMGUI --name rust-liquid-linux-x64-candidate
+          image=(./*.AppImage)
+          chmod +x "${image[0]}"
+          "${image[0]}" --appimage-extract >/dev/null
+          xvfb-run -a bash -c '
+            "$1" > "$2" 2>&1 & pid=$!
+            sleep 10
+            if ! kill -0 "$pid" 2>/dev/null; then cat "$2"; wait "$pid" || true; exit 1; fi
+            kill "$pid"
+            wait "$pid" || true
+          ' _ "$RUNNER_TEMP/squashfs-root/AppRun" "$RUNNER_TEMP/linux-app.log"
+  windows:
+    runs-on: windows-2022
+    steps:
+      - name: Install and launch NSIS candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:RUNNER_TEMP
+          gh run download 45826240483 --repo dubr1k/GigaAMGUI --name rust-liquid-windows-x64-candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Download failed' }
+          $installer = Get-ChildItem -File -Filter '*setup.exe' | Select-Object -First 1
+          if (!$installer) { throw 'Installer missing' }
+          $dest = Join-Path $env:RUNNER_TEMP 'gigaam-install'
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$dest") -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          $exe = Get-ChildItem $dest -Recurse -Filter 'gigaam-desktop.exe' -File | Select-Object -First 1
+          if (!$exe) { throw 'Installed executable missing' }
+          $app = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 10
+          $app.Refresh()
+          if ($app.HasExited) { throw "App exited during smoke: $($app.ExitCode)" }
+          Stop-Process -Id $app.Id -Force
