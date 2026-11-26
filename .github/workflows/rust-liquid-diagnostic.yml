@@ -31,5 +31,7 @@ jobs:
           env LD_LIBRARY_PATH="$root/usr/lib" /lib64/ld-linux-x86-64.so.2 --list "$binary" || echo "loader list failed: $?"
           gdb --batch -ex "set environment LD_LIBRARY_PATH=$root/usr/lib" -ex run -ex bt --args /lib64/ld-linux-x86-64.so.2 --list "$binary" || true
           mv "$root/usr/lib/libpulse.so.0" "$RUNNER_TEMP/bundled-libpulse.so.0"
+          env LD_LIBRARY_PATH="$root/usr/lib" /lib64/ld-linux-x86-64.so.2 --list "$binary" || echo "host pulse with bundled common failed: $?"
           for f in "$root"/usr/lib/libpulsecommon-*.so; do [ ! -e "$f" ] || mv "$f" "$RUNNER_TEMP/"; done
           env LD_LIBRARY_PATH="$root/usr/lib" /lib64/ld-linux-x86-64.so.2 --list "$binary" || echo "host pulse loader list failed: $?"
+          env LD_LIBRARY_PATH="$root/usr/lib" ldd "$binary" || echo "host pulse ldd failed: $?"
