@@ -13,7 +13,7 @@ identifier. Icons are generated from `assets/icon-liquid.png` under the ignored
 `generated/` directory; neither the original Tauri configuration nor the UI is
 modified. The Windows overlay embeds the offline WebView2 installer and puts
 DirectML and the x64 Visual C++ CRT beside the application. The Linux overlay
-adds libc++ and libc++abi to the AppImage and enables the GStreamer bundle.
+adds GNU libstdc++ to the AppImage and enables the GStreamer bundle.
 
 ## Prerequisites and limitations
 
@@ -25,8 +25,8 @@ adds libc++ and libc++abi to the AppImage and enables the GStreamer bundle.
   requires packaging and testing the correct DLL/SO, its loader path, dependent
   libraries, and its version on each platform.
 - The ort prebuilt x86-64 ONNX Runtime requires **x86-64-v3** CPUs, not every
-  x64 processor. Linux is built on Ubuntu 22.04; the actual minimum glibc and
-  distribution compatibility of all bundled dependencies still need checking.
+  x64 processor. The candidate is built on Ubuntu 24.04; compatibility with
+  older glibc releases and other distributions has not been established.
   AppImage execution normally needs FUSE, or its extraction-based alternative.
 - Models are not included. They must be downloaded by the application on first
   use; an installer with offline WebView2 is not an offline model bundle.
@@ -57,14 +57,12 @@ For a focused local Linux build on a machine with the packages in the workflow:
 cd desktop
 npm ci
 npx --no-install tauri icon ../assets/icon-liquid.png --output ../packaging/rust-liquid/generated/icons
-export ORT_CXX_STDLIB=c++
 export TAURI_CONFIG="$(cat ../packaging/rust-liquid/tauri.conf.json)"
 cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu
 unset TAURI_CONFIG
 npm run build -- --no-bundle --target x86_64-unknown-linux-gnu --config ../packaging/rust-liquid/tauri.conf.json -- --locked
 mkdir -p ../packaging/rust-liquid/generated/linux
-cp -L /usr/lib/x86_64-linux-gnu/libc++.so.1 ../packaging/rust-liquid/generated/linux/libc++.so.1
-cp -L /usr/lib/x86_64-linux-gnu/libc++abi.so.1 ../packaging/rust-liquid/generated/linux/libc++abi.so.1
+cp -L /usr/lib/x86_64-linux-gnu/libstdc++.so.6 ../packaging/rust-liquid/generated/linux/libstdc++.so.6
 npx --no-install tauri bundle --target x86_64-unknown-linux-gnu --bundles appimage --config ../packaging/rust-liquid/tauri.conf.json --config ../packaging/rust-liquid/tauri.linux.conf.json
 ```
 
