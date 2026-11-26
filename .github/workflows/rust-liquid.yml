@@ -123,6 +123,7 @@ jobs:
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if ($LASTEXITCODE -ne 0 -or !$vs) { throw 'Visual C++ tools not found' }
           $redist = Get-ChildItem (Join-Path $vs 'VC/Redist/MSVC') -Directory |
+            Where-Object { $_.Name -match '^\d+(\.\d+){1,3}$' } |
             Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
           if (!$redist) { throw 'Visual C++ redistributable not found' }
           $crt = Get-ChildItem (Join-Path $redist.FullName 'x64/Microsoft.VC*.CRT') -Directory | Select-Object -First 1
@@ -154,7 +155,10 @@ jobs:
           test -x "$binary"
           LC_ALL=C readelf -h "$binary" | grep -q 'Advanced Micro Devices X86-64'
           test -s "$root/usr/lib/libstdc++.so.6"
-          cmp "$root/usr/lib/libstdc++.so.6" ../packaging/rust-liquid/generated/linux/libstdc++.so.6
+          # linuxdeploy may strip or patch the library; compare its ELF build ID.
+          staged_id="$(readelf -n ../packaging/rust-liquid/generated/linux/libstdc++.so.6 | awk '/Build ID:/ {print $3; exit}')"
+          bundled_id="$(readelf -n "$root/usr/lib/libstdc++.so.6" | awk '/Build ID:/ {print $3; exit}')"
+          test -n "$staged_id" && test "$staged_id" = "$bundled_id"
           test -n "$(find "$root/usr" -name 'libwebkit2gtk-4.1.so*' -print -quit)"
           if find "$root" -type f \( -iname 'python' -o -iname 'python[0-9]*' -o -iname 'libpython*.so*' \) | grep -q .; then
             echo 'Unexpected Python runtime in AppImage' >&2; exit 1
