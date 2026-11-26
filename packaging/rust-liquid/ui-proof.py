@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 
@@ -305,7 +306,6 @@ def linux_dialog(title, path, folder):
 
     window = wait_for(f"native GTK dialog {title!r}", find_window, 30)
     xdotool("windowfocus", "--sync", window)
-    xdotool("key", "--clearmodifiers", "ctrl+l")
     pid = int(xdotool("getwindowpid", window).stdout.strip())
 
     def descendants(root):
@@ -331,30 +331,80 @@ def linux_dialog(title, path, folder):
             return dialogs[0] if dialogs else None
         return None
 
-    def focused_entry():
-        dialog = accessible_dialog()
-        if not dialog:
-            return None
-        for node in descendants(dialog):
-            state = node.getState()
-            if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_SHOWING):
-                try:
-                    node.queryEditableText()
-                except NotImplementedError:
-                    pass
-                else:
-                    return node
-        return None
-
-    entry = wait_for("the native GTK location field to receive focus", focused_entry, 15)
-    if not entry.queryEditableText().setTextContents(str(path)):
-        raise RuntimeError("Could not enter the path into the native GTK location field")
-    wait_for("the native GTK location field to contain the requested path",
-             lambda: entry.queryText().getText(0, -1) == str(path), 15)
     if folder:
-        # A folder path must first be opened in GTK's location entry; the
-        # dialog's Open button then selects that directory.
-        xdotool("key", "--clearmodifiers", "Return")
+        try:
+            components = path.relative_to(Path.home()).parts
+        except ValueError as error:
+            raise RuntimeError("GTK proof output directory is outside the runner's home") from error
+        if not components:
+            raise RuntimeError("GTK proof output must be a directory below the runner's home")
+
+        # GTK's folder chooser keeps Open disabled in Recent until a folder is
+        # selected. Navigate using its Home shortcut and real file-list rows.
+        xdotool("key", "--clearmodifiers", "alt+Home")
+
+        def folder_row(name):
+            dialog = accessible_dialog()
+            if not dialog:
+                raise RuntimeError("GTK folder dialog closed during navigation")
+            matches = []
+            for node in descendants(dialog):
+                if (node.getRole() not in (pyatspi.ROLE_TABLE, pyatspi.ROLE_TREE_TABLE)
+                        or not node.getState().contains(pyatspi.STATE_SHOWING)):
+                    continue
+                try:
+                    table = node.queryTable()
+                except NotImplementedError:
+                    continue
+                if not table.nColumns:
+                    continue
+                for row in range(table.nRows):
+                    cell = table.getAccessibleAt(row, 0)
+                    if cell and any(child.name == name for child in descendants(cell)):
+                        matches.append((table, row, cell))
+            if len(matches) > 1:
+                raise RuntimeError(f"More than one GTK folder row named {name!r}")
+            return matches[0] if matches else None
+
+        for index, component in enumerate(components):
+            table, row, cell = wait_for(
+                f"GTK folder row {component!r}", lambda: folder_row(component), 30)
+            if index + 1 < len(components):
+                action = cell.queryAction()
+                indices = [i for i in range(action.nActions) if action.getName(i) == "activate"]
+                if len(indices) != 1 or not action.doAction(indices[0]):
+                    raise RuntimeError(f"Could not open GTK folder row {component!r}")
+            else:
+                if not cell.queryComponent().grabFocus():
+                    raise RuntimeError("Could not focus the GTK output folder row")
+                if not table.isRowSelected(row) and not table.addRowSelection(row):
+                    raise RuntimeError("Could not select the GTK output folder row")
+                wait_for("the GTK output folder row to be selected",
+                         lambda: table.isRowSelected(row), 15)
+    else:
+        xdotool("key", "--clearmodifiers", "ctrl+l")
+
+        def focused_entry():
+            dialog = accessible_dialog()
+            if not dialog:
+                return None
+            for node in descendants(dialog):
+                state = node.getState()
+                if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_SHOWING):
+                    try:
+                        node.queryEditableText()
+                    except NotImplementedError:
+                        pass
+                    else:
+                        return node
+            return None
+
+        entry = wait_for("the native GTK location field to receive focus", focused_entry, 15)
+        if not entry.queryEditableText().setTextContents(str(path)):
+            raise RuntimeError("Could not enter the path into the native GTK location field")
+        wait_for("the native GTK location field to contain the requested path",
+                 lambda: entry.queryText().getText(0, -1) == str(path), 15)
+
     def open_button():
         dialog = accessible_dialog()
         if not dialog:
@@ -593,6 +643,7 @@ def run_proof(app, fixture, diagnostics, timeout):
             result_name = result.name
             result_size = result.stat().st_size
         except Exception:
+            traceback.print_exc()
             if sys.platform.startswith("linux"):
                 try:
                     subprocess.run(["scrot", str(diagnostics / "native-desktop.png")],
