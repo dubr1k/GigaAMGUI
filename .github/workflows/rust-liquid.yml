@@ -107,6 +107,14 @@ jobs:
             export PATH="$GITHUB_WORKSPACE/desktop/src-tauri/target/$TARGET/debug:$PATH"
           fi
           cargo test --locked --manifest-path src-tauri/Cargo.toml --target "$TARGET"
+      - name: Run real CPU inference on the audio fixture
+        run: |
+          export TAURI_CONFIG="$(cat ../packaging/rust-liquid/tauri.conf.json)"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export PATH="$PWD/src-tauri/target/$TARGET/debug/build:$PWD/src-tauri/target/$TARGET/debug:$PATH"
+          fi
+          cargo run --locked --manifest-path src-tauri/Cargo.toml --target "$TARGET" \
+            --example native_inference_smoke -- "$RUNNER_TEMP/gigaam-smoke-model" ../tests/fixtures/liquid_smoke.wav
       - name: Compile the application without bundling
         run: >-
           npm run build -- --no-bundle --target "$TARGET"

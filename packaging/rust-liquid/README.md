@@ -56,8 +56,10 @@ gh workflow run rust-liquid.yml --ref feat/rust-liquid-windows-linux
 ```
 
 The jobs install the platform prerequisites, generate icons, check JavaScript,
-run `cargo test --locked` on each native runner, build with Tauri and `--locked`,
-then inspect the extracted NSIS/AppImage before uploading a candidate.
+run `cargo test --locked`, download the model and perform CPU inference on a
+short fixture on each native runner, build with Tauri and `--locked`, then inspect
+the extracted NSIS/AppImage before uploading a candidate. The inference check
+uses the same engine dependency as the app, not the installed application UI.
 
 For a focused local Linux build on a machine with the packages in the workflow:
 
