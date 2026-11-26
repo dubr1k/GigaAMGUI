@@ -17,7 +17,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y libegl1
+          sudo apt-get install -y libegl1 gdb
           cd "$RUNNER_TEMP"
           gh run download 45821335226 --repo dubr1k/GigaAMGUI --name rust-liquid-linux-diagnostic
           image=(./*.AppImage)
@@ -29,3 +29,4 @@ jobs:
           /lib64/ld-linux-x86-64.so.2 --verify "$binary" || echo "loader verify failed: $?"
           env LD_LIBRARY_PATH="$root/usr/lib" ldd "$binary" || echo "ldd failed: $?"
           env LD_LIBRARY_PATH="$root/usr/lib" /lib64/ld-linux-x86-64.so.2 --list "$binary" || echo "loader list failed: $?"
+          gdb --batch -ex "set environment LD_LIBRARY_PATH=$root/usr/lib" -ex run -ex bt --args /lib64/ld-linux-x86-64.so.2 --list "$binary" || true
