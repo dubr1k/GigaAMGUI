@@ -200,6 +200,42 @@ class WebDriver:
     def property(self, selector, name):
         return self.command("GET", f"/element/{self.element(selector)}/property/{name}")
 
+    def visible_text(self, selector):
+        # Read rendered text and layout without changing the page. WebKit's
+        # WebDriver displayed/text endpoints misreport these overflow-clipped
+        # selected-file elements even while they are visible.
+        script = """
+            const element = arguments[0];
+            const rect = element.getBoundingClientRect();
+            let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+            let right = Math.min(window.innerWidth, rect.right);
+            let bottom = Math.min(window.innerHeight, rect.bottom);
+            let visible = element.isConnected && rect.width > 0 && rect.height > 0;
+            for (let node = element; node; node = node.parentElement) {
+                const style = getComputedStyle(node);
+                if (style.display === "none" || style.visibility !== "visible" ||
+                    Number(style.opacity) === 0) visible = false;
+                if (node !== element) {
+                    const clip = node.getBoundingClientRect();
+                    if (["hidden", "clip", "scroll", "auto"].includes(style.overflowX)) {
+                        left = Math.max(left, clip.left);
+                        right = Math.min(right, clip.right);
+                    }
+                    if (["hidden", "clip", "scroll", "auto"].includes(style.overflowY)) {
+                        top = Math.max(top, clip.top);
+                        bottom = Math.min(bottom, clip.bottom);
+                    }
+                }
+            }
+            visible = visible && left <= rect.left + 1 && top <= rect.top + 1 &&
+                right >= rect.right - 1 && bottom >= rect.bottom - 1 &&
+                element.scrollWidth <= element.clientWidth;
+            return {text: element.innerText, visible};
+        """
+        return self.command("POST", "/execute/sync", {
+            "script": script, "args": [{ELEMENT: self.element(selector)}],
+        })
+
     def state(self, selector, name):
         return self.command("GET", f"/element/{self.element(selector)}/{name}")
 
@@ -339,6 +375,8 @@ def linux_dialog(title, path):
 def windows_dialog(app, path, folder):
     import win32api  # type: ignore[import-not-found]
     import win32clipboard  # type: ignore[import-not-found]
+    import win32con  # type: ignore[import-not-found]
+    import win32gui  # type: ignore[import-not-found]
     import win32process  # type: ignore[import-not-found]
     from pywinauto import Desktop, keyboard  # type: ignore[import-not-found]
 
@@ -356,14 +394,40 @@ def windows_dialog(app, path, folder):
         except Exception:
             return False
 
+    last_ambiguity = None
+
     def find_dialog():
-        dialogs = [window for window in native.windows(class_name="#32770", visible_only=True)
-                   if belongs_to_app(window)]
+        nonlocal last_ambiguity
+        # Deduplicate actual top-level HWNDs; an enabled foreground dialog is
+        # the interactive one when Windows exposes more than one chooser.
+        dialogs = {
+            window.handle: window
+            for window in native.windows(class_name="#32770", top_level_only=True,
+                                         visible_only=True, enabled_only=True)
+            if win32gui.GetAncestor(window.handle, win32con.GA_ROOT) == window.handle
+            and belongs_to_app(window)
+        }
+        if len(dialogs) == 1:
+            return next(iter(dialogs.values()))
         if len(dialogs) > 1:
-            raise RuntimeError(f"More than one visible Windows file dialog for the candidate: {[w.window_text() for w in dialogs]}")
-        return dialogs[0] if dialogs else None
+            foreground = win32gui.GetForegroundWindow()
+            root = win32gui.GetAncestor(foreground, win32con.GA_ROOT) if foreground else 0
+            if root in dialogs:
+                return dialogs[root]
+            ambiguity = (tuple(sorted(dialogs)), root)
+            if ambiguity != last_ambiguity:
+                print(f"Waiting for an active candidate dialog; HWNDs={ambiguity[0]}, "
+                      f"foreground root={root}", flush=True)
+                last_ambiguity = ambiguity
+        return None
 
     dialog = wait_for("native Windows file/folder dialog owned by the candidate", find_dialog, 30)
+    handle = dialog.handle
+    dialog_pid = dialog.element_info.process_id
+
+    def dialog_open():
+        return (win32gui.IsWindow(handle) and win32gui.IsWindowVisible(handle)
+                and win32process.GetWindowThreadProcessId(handle)[1] == dialog_pid)
     uia = automation.window(handle=dialog.handle)
     if folder:
         # The folder picker selects its current directory. Navigate through its
@@ -379,8 +443,8 @@ def windows_dialog(app, path, folder):
         keyboard.send_keys("^v{ENTER}", pause=0.05)
 
         def navigated():
-            if not find_dialog():
-                return True
+            if not dialog_open():
+                raise RuntimeError("Windows folder picker closed before navigation completed")
             address = os.path.normcase(str(path)).rstrip("\\/")
             return any(item.element_info.automation_id == "1001" and
                        os.path.normcase(item.window_text()).rstrip("\\/").endswith(address)
@@ -391,9 +455,10 @@ def windows_dialog(app, path, folder):
         edit = uia.child_window(auto_id="1148", control_type="Edit")
         edit.wait("ready", timeout=15)
         edit.set_edit_text(str(path))
-    if find_dialog():
-        uia.child_window(auto_id="1", control_type="Button").invoke()
-    wait_for("native Windows file/folder dialog to close", lambda: not find_dialog(), 15)
+    if not dialog_open():
+        raise RuntimeError("Windows file/folder picker closed before confirmation")
+    uia.child_window(auto_id="1", control_type="Button").invoke()
+    wait_for("native Windows file/folder dialog to close", lambda: not dialog_open(), 15)
 
 
 def choose(driver, selector, path, folder=False):
@@ -460,22 +525,22 @@ def run_proof(app, fixture, diagnostics, timeout):
 
             def fixture_selected():
                 nonlocal last_fixture_diagnostic
-                selector = "#selected-files .selected-file span"
+                path_selector = "#selected-files .selected-file span"
+                name_selector = "#selected-files .selected-file strong"
                 try:
-                    displayed = driver.state(selector, "displayed")
-                    observed = driver.property(selector, "textContent")
-                    if not isinstance(observed, str):
-                        raise RuntimeError("The selected-file path is not a string")
-                    if displayed and same_path(observed, fixture):
+                    observed = driver.property(path_selector, "textContent")
+                    label = driver.visible_text(name_selector)
+                    if not isinstance(observed, str) or not isinstance(label.get("text"), str):
+                        raise RuntimeError("The selected-file path or name is not a string")
+                    path_matches = same_path(observed, fixture)
+                    name_matches = label["text"] == fixture.name
+                    if path_matches and name_matches and label.get("visible") is True:
                         return True
-                    rendered = driver.text(selector)
                     diagnostic = (
-                        f"Selected-file path mismatch: displayed={displayed}, "
-                        f"DOM characters={len(observed)}, rendered characters={len(rendered)}, "
+                        f"Selected-file mismatch: path matches={path_matches}, "
                         f"absolute={os.path.isabs(observed)}, "
                         f"basename matches={os.path.normcase(os.path.basename(observed)) == os.path.normcase(fixture.name)}, "
-                        f"rendered matches DOM={rendered == observed}, "
-                        f"surrounding whitespace={observed != observed.strip()}"
+                        f"name matches={name_matches}, name visible={label.get('visible')}"
                     )
                     if diagnostic != last_fixture_diagnostic:
                         print(diagnostic, flush=True)
