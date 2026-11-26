@@ -65,9 +65,19 @@ jobs:
           sudo apt-get install -y \
             build-essential curl file wget patchelf \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
-            libssl-dev libxdo-dev libasound2-dev libpulse-dev \
+            libssl-dev libxdo-dev libasound2-dev libpulse-dev libegl1 \
             gstreamer1.0-tools gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-pulseaudio
+      - name: Prepare verified linuxdeploy with host PulseAudio exclusions
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/tauri"
+          tool="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"
+          curl -fL --retry 3 https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy-07333c6/linuxdeploy-x86_64.AppImage -o "$tool"
+          echo "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62  $tool" | sha256sum -c -
+          chmod +x "$tool"
+          echo 'LINUXDEPLOY_EXCLUDED_LIBRARIES=libpulse.so.0;libpulsecommon-*.so' >> "$GITHUB_ENV"
       - name: Install locked frontend dependencies
         run: npm ci
       - name: Check JavaScript syntax
@@ -107,7 +117,6 @@ jobs:
           mkdir -p ../packaging/rust-liquid/generated/linux
           cp -L /usr/lib/x86_64-linux-gnu/libstdc++.so.6 ../packaging/rust-liquid/generated/linux/libstdc++.so.6
           cp -L /usr/lib/x86_64-linux-gnu/libasound.so.2 ../packaging/rust-liquid/generated/linux/libasound.so.2
-          cp -L /usr/lib/x86_64-linux-gnu/libpulse.so.0 ../packaging/rust-liquid/generated/linux/libpulse.so.0
       - name: Stage Windows ONNX and VC runtime dependencies
         if: runner.os == 'Windows'
         shell: pwsh
@@ -162,6 +171,9 @@ jobs:
           bundled_id="$(readelf -n "$root/usr/lib/libstdc++.so.6" | awk '/Build ID:/ {print $3; exit}')"
           test -n "$staged_id" && test "$staged_id" = "$bundled_id"
           test -n "$(find "$root/usr" -name 'libwebkit2gtk-4.1.so*' -print -quit)"
+          if find "$root/usr" \( -name 'libpulse.so.0' -o -name 'libpulsecommon-*.so' \) -print -quit | grep -q .; then
+            echo 'Bundled PulseAudio runtime conflicts with host; expected system libraries' >&2; exit 1
+          fi
           if find "$root" -type f \( -iname 'python' -o -iname 'python[0-9]*' -o -iname 'libpython*.so*' \) | grep -q .; then
             echo 'Unexpected Python runtime in AppImage' >&2; exit 1
           fi
@@ -170,11 +182,11 @@ jobs:
           if grep -Eiq 'Shared library: \[(libonnxruntime|libpython)' "$RUNNER_TEMP/rust-liquid-needed.txt"; then
             echo 'Unexpected dynamically linked ONNX Runtime or Python' >&2; exit 1
           fi
-          # glibc and the low-level GCC runtime belong to the host; all other
-          # direct dependencies of the executable must actually be in the image.
+          # glibc, GCC support and PulseAudio are supplied by the host; other
+          # direct dependencies of the executable must be in the image.
           while IFS= read -r library; do
             case "$library" in
-              libc.so.6|libm.so.6|libpthread.so.0|libdl.so.2|librt.so.1|libgcc_s.so.1|ld-linux-x86-64.so.2) continue ;;
+              libc.so.6|libm.so.6|libpthread.so.0|libdl.so.2|librt.so.1|libgcc_s.so.1|libpulse.so.0|ld-linux-x86-64.so.2) continue ;;
             esac
             if [ -z "$(find "$root/usr" -name "$library" -print -quit)" ]; then
               echo "Missing direct dependency in AppImage: $library" >&2; exit 1

@@ -13,7 +13,7 @@ identifier. Icons are generated from `assets/icon-liquid.png` under the ignored
 `generated/` directory; neither the original Tauri configuration nor the UI is
 modified. The Windows overlay embeds the offline WebView2 installer and puts
 DirectML and the x64 Visual C++ CRT beside the application. The Linux overlay
-adds GNU libstdc++ and audio runtimes to the AppImage and enables the GStreamer bundle.
+adds GNU libstdc++ and ALSA to the AppImage and enables the GStreamer bundle.
 
 ## Prerequisites and limitations
 
@@ -28,6 +28,9 @@ adds GNU libstdc++ and audio runtimes to the AppImage and enables the GStreamer 
   x64 processor. The candidate is built on Ubuntu 24.04; compatibility with
   older glibc releases and other distributions has not been established.
   AppImage execution normally needs FUSE, or its extraction-based alternative.
+  Linux also requires host PulseAudio client libraries and an EGL/OpenGL stack.
+  PulseAudio libraries are deliberately excluded from the bundle to avoid a
+  loader crash observed with the bundled copy.
 - Models are not included. They must be downloaded by the application on first
   use; an installer with offline WebView2 is not an offline model bundle.
 - Automated checks inspect extracted packages, native dependencies, CPU
@@ -61,10 +64,15 @@ export TAURI_CONFIG="$(cat ../packaging/rust-liquid/tauri.conf.json)"
 cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu
 unset TAURI_CONFIG
 npm run build -- --no-bundle --target x86_64-unknown-linux-gnu --config ../packaging/rust-liquid/tauri.conf.json -- --locked
+mkdir -p "$HOME/.cache/tauri"
+tool="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"
+curl -fL https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy-07333c6/linuxdeploy-x86_64.AppImage -o "$tool"
+echo "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62  $tool" | sha256sum -c -
+chmod +x "$tool"
+export LINUXDEPLOY_EXCLUDED_LIBRARIES='libpulse.so.0;libpulsecommon-*.so'
 mkdir -p ../packaging/rust-liquid/generated/linux
 cp -L /usr/lib/x86_64-linux-gnu/libstdc++.so.6 ../packaging/rust-liquid/generated/linux/libstdc++.so.6
 cp -L /usr/lib/x86_64-linux-gnu/libasound.so.2 ../packaging/rust-liquid/generated/linux/libasound.so.2
-cp -L /usr/lib/x86_64-linux-gnu/libpulse.so.0 ../packaging/rust-liquid/generated/linux/libpulse.so.0
 npx --no-install tauri bundle --target x86_64-unknown-linux-gnu --bundles appimage --config ../packaging/rust-liquid/tauri.conf.json --config ../packaging/rust-liquid/tauri.linux.conf.json
 ```
 
