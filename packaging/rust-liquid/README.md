@@ -43,6 +43,10 @@ adds GNU libstdc++ and ALSA to the AppImage and enables the GStreamer bundle.
   for 10 seconds; the extracted Linux candidate ran for 10 seconds under Xvfb
   on Ubuntu 24.04 with the host libraries above. Neither check exercised audio,
   inference, or interactive GUI operation.
+- On candidate build run 45833159438, a separate UI proof installed the Windows
+  package and extracted the Linux AppImage, selected a WAV and output directory
+  in the real interface, and verified the saved nonempty TXT against the visible
+  transcript on both platforms. This does not cover live audio or diarization.
 - Treat these as candidates until both platforms have been tested from the
   actual packages on clean systems, including model download and real audio
   transcription. Review third-party redistribution notices before publication.

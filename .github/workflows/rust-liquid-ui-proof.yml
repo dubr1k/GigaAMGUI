@@ -4,9 +4,6 @@ name: Rust Liquid packaged UI proof
 # Manual dispatch accepts a successful, trusted candidate-build run ID. Never
 # execute a PR/fork artifact in this privileged workflow_run context.
 on:
-  push:
-    branches: [feat/rust-liquid-windows-linux]
-    paths: [.github/workflows/rust-liquid-ui-proof.yml, packaging/rust-liquid/ui-proof.py]
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -25,7 +22,7 @@ permissions:
 jobs:
   packaged-ui:
     if: >-
-      github.event_name == 'workflow_dispatch' || github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
        contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event))
@@ -47,7 +44,7 @@ jobs:
         id: source
         uses: actions/github-script@v8
         env:
-          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id || '45833159438' }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}
         with:
           script: |
             const id = process.env.SOURCE_RUN_ID;
