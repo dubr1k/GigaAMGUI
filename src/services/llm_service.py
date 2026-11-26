@@ -257,11 +257,16 @@ def _run_claude(settings: dict, prompt_text: str, strict_empty: bool, cancel_che
 
 
 def _run_codex(settings: dict, prompt_text: str, strict_empty: bool, cancel_check=None) -> str:
+    if not _allow_tools(settings):
+        raise RuntimeError(
+            "Codex может использовать инструменты и сохранять историю. "
+            "Разрешите инструменты и сессии агента в настройках перед запуском."
+        )
     spec = cli_tools.provider_by_name("Codex")
     with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
         output_path = tmp.name
     try:
-        command = [_tool_binary(settings, spec), "exec", "--json", "-o", output_path]
+        command = [_tool_binary(settings, spec), "exec", "--json", "-o", output_path, "--skip-git-repo-check"]
         if settings.get("codex_model"):
             command += ["-m", settings["codex_model"]]
         command += _extra_args(settings, spec)
@@ -288,6 +293,7 @@ def _run_codex(settings: dict, prompt_text: str, strict_empty: bool, cancel_chec
 
 
 def _codex_agent_message(output: str | None) -> str:
+    answer = ""
     for line in (output or "").splitlines():
         try:
             event = json.loads(line)
@@ -297,8 +303,8 @@ def _codex_agent_message(output: str | None) -> str:
         if event.get("type") == "item.completed" and item.get("type") == "agent_message":
             text = item.get("text")
             if isinstance(text, str) and text.strip():
-                return text.strip()
-    return ""
+                answer = text.strip()
+    return answer
 
 
 def _run_generic(spec, command: list[str], error_name: str, *, input_text=None, cancel_check=None) -> str:

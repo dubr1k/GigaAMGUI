@@ -1,0 +1,231 @@
+name: Rust Liquid candidate builds
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "packaging/rust-liquid/**"
+      - ".github/workflows/rust-liquid.yml"
+  push:
+    branches:
+      - main
+      - feat/rust-liquid-windows-linux
+    paths:
+      - "desktop/**"
+      - "packaging/rust-liquid/**"
+      - ".github/workflows/rust-liquid.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Rust Liquid ${{ matrix.platform }} candidate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+            bundle: appimage
+            config: linux
+            asset: GigaAMGUI-Rust-Liquid-linux-x64.AppImage
+          - os: windows-2022
+            platform: windows-x64
+            target: x86_64-pc-windows-msvc
+            bundle: nsis
+            config: windows
+            asset: GigaAMGUI-Rust-Liquid-windows-x64-setup.exe
+    env:
+      TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Linux build and multimedia dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl file wget patchelf \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libxdo-dev libasound2-dev libpulse-dev libc++-dev libc++abi-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-pulseaudio
+          # ort's prebuilt Linux ONNX Runtime is built with libc++.
+          echo 'ORT_CXX_STDLIB=c++' >> "$GITHUB_ENV"
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Check JavaScript syntax
+        run: node --check ui/app.js
+      - name: Generate Liquid icons outside the Tauri source directory
+        run: npx --no-install tauri icon ../assets/icon-liquid.png --output ../packaging/rust-liquid/generated/icons
+      - name: Check inference dependency and supported linking mode
+        run: |
+          cargo tree --locked --manifest-path src-tauri/Cargo.toml --target "$TARGET" -e features > "$RUNNER_TEMP/rust-liquid-features.txt"
+          grep -q 'gigastt-core v' "$RUNNER_TEMP/rust-liquid-features.txt"
+          if grep -q 'ort feature "load-dynamic"' "$RUNNER_TEMP/rust-liquid-features.txt"; then
+            echo 'Dynamic ONNX Runtime needs a separately verified packaging and loader configuration.' >&2
+            exit 1
+          fi
+      - name: Run locked Rust tests
+        run: |
+          export TAURI_CONFIG="$(cat ../packaging/rust-liquid/tauri.conf.json)"
+          # ort can copy DirectML.dll to target/debug but not target/debug/deps.
+          export PATH="$GITHUB_WORKSPACE/desktop/src-tauri/target/$TARGET/debug:$PATH"
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --target "$TARGET"
+      - name: Compile the application without bundling
+        run: >-
+          npm run build -- --no-bundle --target "$TARGET"
+          --config ../packaging/rust-liquid/tauri.conf.json -- --locked
+      - name: Stage Linux C++ runtimes
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p ../packaging/rust-liquid/generated/linux
+          cp -L /usr/lib/x86_64-linux-gnu/libc++.so.1 ../packaging/rust-liquid/generated/linux/libc++.so.1
+          cp -L /usr/lib/x86_64-linux-gnu/libc++abi.so.1 ../packaging/rust-liquid/generated/linux/libc++abi.so.1
+      - name: Stage Windows ONNX and VC runtime dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $env:GITHUB_WORKSPACE "desktop/src-tauri/target/$env:TARGET/release"
+          $runtime = Join-Path $env:GITHUB_WORKSPACE 'packaging/rust-liquid/generated/windows'
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          $directML = Join-Path $release 'DirectML.dll'
+          if (!(Test-Path -PathType Leaf $directML)) { throw 'ort did not place DirectML.dll in the release directory' }
+          Copy-Item $directML $runtime
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$vs) { throw 'Visual C++ tools not found' }
+          $redist = Get-ChildItem (Join-Path $vs 'VC/Redist/MSVC') -Directory |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (!$redist) { throw 'Visual C++ redistributable not found' }
+          $crt = Get-ChildItem (Join-Path $redist.FullName 'x64/Microsoft.VC*.CRT') -Directory | Select-Object -First 1
+          if (!$crt) { throw 'x64 Visual C++ CRT redistributable not found' }
+          Copy-Item (Join-Path $crt.FullName '*.dll') $runtime
+          foreach ($name in @('vcruntime140.dll', 'msvcp140.dll')) {
+            if (!(Test-Path -PathType Leaf (Join-Path $runtime $name))) { throw "Missing CRT DLL: $name" }
+          }
+      - name: Package the compiled application
+        run: >-
+          npx --no-install tauri bundle --target "$TARGET" --bundles "${{ matrix.bundle }}"
+          --config ../packaging/rust-liquid/tauri.conf.json
+          --config ../packaging/rust-liquid/tauri.${{ matrix.config }}.conf.json
+      - name: Inspect the Linux AppImage
+        if: runner.os == 'Linux'
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(src-tauri/target/"$TARGET"/release/bundle/appimage/*.AppImage)
+          if [ "${#images[@]}" -ne 1 ]; then echo 'Expected exactly one AppImage' >&2; exit 1; fi
+          image="$PWD/${images[0]}"
+          chmod +x "$image"
+          extracted="$(mktemp -d)"
+          (cd "$extracted" && "$image" --appimage-extract > /dev/null)
+          root="$extracted/squashfs-root"
+          binary="$root/usr/bin/gigaam-desktop"
+          test -x "$binary"
+          LC_ALL=C readelf -h "$binary" | grep -q 'Advanced Micro Devices X86-64'
+          test -s "$root/usr/lib/libc++.so.1"
+          test -s "$root/usr/lib/libc++abi.so.1"
+          cmp "$root/usr/lib/libc++.so.1" ../packaging/rust-liquid/generated/linux/libc++.so.1
+          test -n "$(find "$root/usr" -name 'libwebkit2gtk-4.1.so*' -print -quit)"
+          if find "$root" -type f \( -iname 'python' -o -iname 'python[0-9]*' -o -iname 'libpython*.so*' \) | grep -q .; then
+            echo 'Unexpected Python runtime in AppImage' >&2; exit 1
+          fi
+          readelf -d "$binary" > "$RUNNER_TEMP/rust-liquid-needed.txt"
+          grep -Fq 'Shared library: [libc++.so.1]' "$RUNNER_TEMP/rust-liquid-needed.txt"
+          if grep -Eiq 'Shared library: \[(libonnxruntime|libpython)' "$RUNNER_TEMP/rust-liquid-needed.txt"; then
+            echo 'Unexpected dynamically linked ONNX Runtime or Python' >&2; exit 1
+          fi
+          # glibc and the low-level GCC runtime belong to the host; all other
+          # direct dependencies of the executable must actually be in the image.
+          while IFS= read -r library; do
+            case "$library" in
+              libc.so.6|libm.so.6|libpthread.so.0|libdl.so.2|librt.so.1|libgcc_s.so.1|ld-linux-x86-64.so.2) continue ;;
+            esac
+            if [ -z "$(find "$root/usr" -name "$library" -print -quit)" ]; then
+              echo "Missing direct dependency in AppImage: $library" >&2; exit 1
+            fi
+          done < <(awk -F'[][]' '/\(NEEDED\)/ { print $2 }' "$RUNNER_TEMP/rust-liquid-needed.txt")
+          LD_LIBRARY_PATH="$root/usr/lib" ldd "$binary" | tee "$RUNNER_TEMP/rust-liquid-ldd.txt"
+          if grep -q 'not found' "$RUNNER_TEMP/rust-liquid-ldd.txt"; then exit 1; fi
+          mkdir -p ../artifacts
+          cp "$image" "../artifacts/$ASSET"
+      - name: Inspect the Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $env:GITHUB_WORKSPACE "desktop/src-tauri/target/$env:TARGET/release"
+          $installers = @(Get-ChildItem (Join-Path $release 'bundle/nsis/*.exe') -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          $extracted = Join-Path $env:RUNNER_TEMP 'rust-liquid-installer'
+          & 7z x -y "-o$extracted" $installers[0].FullName | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract installer' }
+          $apps = @(Get-ChildItem $extracted -Recurse -File -Filter 'gigaam-desktop.exe')
+          if ($apps.Count -ne 1) { throw 'Installer must contain exactly one desktop executable' }
+          $app = $apps[0]
+          foreach ($name in @('DirectML.dll', 'vcruntime140.dll', 'msvcp140.dll')) {
+            if (!(Test-Path -PathType Leaf (Join-Path $app.DirectoryName $name))) { throw "Missing adjacent runtime DLL: $name" }
+          }
+          $staged = Join-Path $env:GITHUB_WORKSPACE 'packaging/rust-liquid/generated/windows/DirectML.dll'
+          if ((Get-FileHash $staged).Hash -ne (Get-FileHash (Join-Path $app.DirectoryName 'DirectML.dll')).Hash) {
+            throw 'The installer contains a different DirectML.dll'
+          }
+          if (!(Get-ChildItem $extracted -Recurse -File -Filter '*WebView2RuntimeInstaller*.exe')) {
+            throw 'The offline WebView2 installer was not found inside NSIS'
+          }
+          $python = Get-ChildItem $extracted -Recurse -File | Where-Object {
+            $_.Name -match '^(pythonw?(\d+)?\.(exe|dll)|pyvenv\.cfg)$'
+          }
+          if ($python) { throw 'Unexpected Python runtime in installer' }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$vs) { throw 'Visual C++ tools not found' }
+          $dumpbin = Get-ChildItem (Join-Path $vs 'VC/Tools/MSVC') -Recurse -File -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match '\\bin\\Hostx64\\x64\\dumpbin\.exe$' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$dumpbin) { throw 'x64 dumpbin not found' }
+          $headers = & $dumpbin.FullName /headers $app.FullName | Out-String
+          if ($LASTEXITCODE -ne 0 -or $headers -notmatch '(?i)8664 machine') { throw 'Application is not an x64 PE executable' }
+          $imports = & $dumpbin.FullName /dependents $app.FullName | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect executable imports' }
+          if ($imports -notmatch '(?i)\bDirectML\.dll\b') { throw 'Expected statically linked ONNX Runtime with DirectML' }
+          if ($imports -match '(?i)\b(onnxruntime|python\d*)\.dll\b') { throw 'Unexpected ONNX Runtime or Python DLL dependency' }
+          $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          Copy-Item $installers[0].FullName (Join-Path $output $env:ASSET)
+      - name: Upload candidate, not a release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-${{ matrix.platform }}-candidate
+          path: artifacts/${{ matrix.asset }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Describe verification limits
+        run: |
+          echo 'Candidate only: inspect on a clean target system and exercise real inference before release.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Models are downloaded separately; ort prebuilt x64 binaries require x86-64-v3.' >> "$GITHUB_STEP_SUMMARY"

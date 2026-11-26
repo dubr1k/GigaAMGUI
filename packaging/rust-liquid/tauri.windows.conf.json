@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "../../packaging/rust-liquid/generated/windows/": ""
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      }
+    }
+  }
+}

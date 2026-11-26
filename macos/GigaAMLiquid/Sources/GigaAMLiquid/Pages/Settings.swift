@@ -107,9 +107,9 @@ extension AppController {
                 settingsField("Другое — аргументы", control: editableText(defaults.string(forKey: "llm.otherArgs") ?? "", key: "llm.otherArgs", placeholder: "--model x {stdin}"))
             ], spacing: 20))
             let allowTools = toggleRow("Разрешить инструменты и сессии агента", key: "llm.allowTools", defaultValue: false)
-            allowTools.toolTip = L10n.text("Выключено: claude/codex/opencode/pi/omp запускаются как чистый запрос к модели — без доступа к файлам и без записи в историю сессий агента.")
+            allowTools.toolTip = L10n.text("Codex требует явного разрешения инструментов и сессий. Дополнительные аргументы и сторонние CLI могут менять поведение.")
             body.addArrangedSubview(allowTools)
-            body.addArrangedSubview(wrappedLabel("Выключено — CLI работает как чистый запрос к модели: агент не читает файлы и не сохраняет сессию. Включайте, только если хотите, чтобы он мог пользоваться своими инструментами. Ключ API хранится в Связке ключей.", size: 12, color: Palette.muted))
+            body.addArrangedSubview(wrappedLabel("Codex запускается только с разрешением инструментов и сессий. Другие CLI и дополнительные аргументы могут менять поведение; проверяйте их настройки. Ключ API хранится в Связке ключей.", size: 12, color: Palette.muted))
             refreshLLMToolRows()
             refreshLLMTools(fresh: false)
         case "API":

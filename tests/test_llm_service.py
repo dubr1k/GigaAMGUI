@@ -110,7 +110,7 @@ def test_codex_uses_json_output_without_a_shared_model_and_reads_agent_message(m
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     result = llm_service.run_provider(
-        {"codex_path": "codex", "model": "shared-api-model"},
+        {"codex_path": "codex", "model": "shared-api-model", "llm_allow_tools": True},
         "T", "P", provider="Codex", strict_empty_cli=True,
     )
 
@@ -118,6 +118,7 @@ def test_codex_uses_json_output_without_a_shared_model_and_reads_agent_message(m
     assert captured["command"][0].split("/")[-1] == "codex"  # может быть резолвлен в абсолютный путь
     assert captured["command"][1:4] == ["exec", "--json", "-o"]
     assert "-m" not in captured["command"]
+    assert "--skip-git-repo-check" in captured["command"]
     assert captured["command"][-1] == "-"
 
 
@@ -131,7 +132,7 @@ def test_codex_uses_output_file_when_json_has_no_agent_message(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     result = llm_service.run_provider(
-        {"codex_path": "codex"}, "T", "P", provider="Codex", strict_empty_cli=True,
+        {"codex_path": "codex", "llm_allow_tools": True}, "T", "P", provider="Codex", strict_empty_cli=True,
     )
 
     assert result == "file answer"
@@ -142,8 +143,25 @@ def test_codex_failure_surfaces_concise_actionable_diagnostics(monkeypatch):
 
     with pytest.raises(RuntimeError, match=r"Codex failed \(exit 2\).*codex login"):
         llm_service.run_provider(
-            {"codex_path": "codex"}, "T", "P", provider="Codex", strict_empty_cli=True,
+            {"codex_path": "codex", "llm_allow_tools": True}, "T", "P", provider="Codex", strict_empty_cli=True,
         )
+
+
+def test_codex_requires_explicit_agent_permission(monkeypatch):
+    def unexpected_run(*args, **kwargs):
+        pytest.fail("Codex must not start without agent permission")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_run)
+    with pytest.raises(RuntimeError, match="Разрешите инструменты"):
+        llm_service.run_provider({}, "T", "P", provider="Codex", strict_empty_cli=True)
+
+
+def test_codex_returns_last_agent_message():
+    events = (
+        '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n'
+        '{"type":"item.completed","item":{"type":"agent_message","text":"final"}}\n'
+    )
+    assert llm_service._codex_agent_message(events) == "final"
 
 
 def test_opencode_empty_always_strict(monkeypatch):

@@ -12,7 +12,7 @@ extension AppController {
     /// Example flags shown as placeholders; each is a real option of that CLI.
     static let llmArgsExamples: [String: String] = [
         "claude": "--permission-mode bypassPermissions",
-        "codex": "--dangerously-bypass-approvals-and-sandbox",
+        "codex": "--profile work",
         "opencode": "--agent build",
         "pi": "--thinking low",
         "omp": "--thinking low --profile work",
@@ -187,7 +187,7 @@ extension AppController {
         return [
             "provider": provider, "api_url": apiURL, "api_key": apiKey, "model": model, "temperature": temperature,
             "claude_path": text("llm.claudePath", "claude"), "claude_args": text("llm.claudeArgs"),
-            "codex_path": text("llm.codexPath", "codex"), "codex_args": text("llm.codexArgs"),
+            "codex_path": text("llm.codexPath", "codex"), "codex_args": text("llm.codexArgs"), "codex_model": provider == "Codex" ? model : "",
             "opencode_path": text("llm.opencodePath", "opencode"), "opencode_args": text("llm.opencodeArgs"),
             "pi_path": text("llm.piPath", "pi"), "pi_provider": text("llm.piProvider"), "pi_args": text("llm.piArgs"),
             "omp_path": text("llm.ompPath", "omp"), "omp_provider": text("llm.ompProvider"), "omp_args": text("llm.ompArgs"),

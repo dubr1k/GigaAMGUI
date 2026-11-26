@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true,
+        "files": {
+          "/usr/lib/libc++.so.1": "../../packaging/rust-liquid/generated/linux/libc++.so.1",
+          "/usr/lib/libc++abi.so.1": "../../packaging/rust-liquid/generated/linux/libc++abi.so.1"
+        }
+      }
+    }
+  }
+}

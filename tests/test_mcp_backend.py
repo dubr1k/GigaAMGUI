@@ -679,6 +679,7 @@ def _codex_commands(monkeypatch) -> list:
         return subprocess.CompletedProcess(command, 0, event + "\n", "")
 
     monkeypatch.setattr(llm_service, "_run_command", run_command)
+    monkeypatch.setattr(llm_service, "_allow_tools", lambda settings: True)
     return commands
 
 

@@ -38,14 +38,13 @@
         <header class="toolbar" aria-label="Панель инструментов">
           <label class="search-field" for="global-search">
             <span aria-hidden="true">⌕</span>
-            <input id="global-search" type="search" placeholder="Поиск файлов, транскрипций, заметок..." autocomplete="off" />
+            <input id="global-search" type="search" placeholder="Поиск разделов..." autocomplete="off" />
             <kbd>Ctrl K</kbd>
           </label>
           <div class="toolbar-actions">
             <button class="icon-button" id="search-focus" type="button" aria-label="Открыть поиск">⌕</button>
             <button class="icon-button" id="appearance-button" type="button" aria-label="Изменить вид">◌</button>
             <span class="language-pill" aria-label="Язык интерфейса">RU</span>
-            <span class="greeting">Приятной работы!</span>
           </div>
         </header>
 
@@ -62,27 +61,26 @@
                   <div class="card-title-row"><h2>Загрузка файлов</h2></div>
                   <div class="drop-zone">
                     <span class="drop-icon" aria-hidden="true">⇪</span>
-                    <strong>Перетащите сюда аудио или видео</strong>
+                    <strong>Выберите аудио или видео</strong>
                     <span>.wav, .mp3, .m4a, .mp4, .mov, .mkv</span>
                     <div class="action-row centered">
-                      <label class="button button-dark" for="media-files">Выбрать файлы</label>
-                      <button class="button" id="media-link-button" type="button">Ссылка на медиа</button>
+                      <button class="button button-dark" id="choose-media" type="button">Выбрать файлы</button>
+                      <button class="button" id="open-media-link" type="button" aria-expanded="false" aria-controls="media-link-form">Ссылка на медиа</button>
                     </div>
-                    <input id="media-files" type="file" multiple accept="audio/*,video/*,.m4a,.mkv" hidden />
                   </div>
-                  <label class="field media-link-field" hidden>
-                    <span>Ссылка на медиа</span>
-                    <input type="url" placeholder="https://…" inputmode="url" />
-                  </label>
+                  <form id="media-link-form" class="media-link-form" hidden>
+                    <label class="field media-link-field" for="media-link"><span>Ссылка на аудио или видео</span><input id="media-link" type="url" placeholder="https://…" required autocomplete="off" /></label>
+                    <p class="muted">Прямая ссылка на файл. Также можно попробовать публичные записи YouTube, Reddit, TikTok, Instagram и X, но загрузка с этих площадок не гарантируется. Плейлисты и эфиры не поддерживаются. До 2 ГиБ на файл.</p>
+                    <div class="action-row"><button class="button button-dark" id="import-media-link" type="submit">Загрузить</button><button class="button" id="cancel-media-link" type="button" hidden disabled>Отменить загрузку</button></div>
+                    <p id="media-link-status" class="media-link-status muted" role="status" aria-live="polite"></p>
+                  </form>
                 </article>
 
                 <article class="card settings-card">
                   <h2>Настройки обработки</h2>
-                  <label class="field"><span>Режим</span><select><option>Авто (рекомендуется)</option><option>Точная расшифровка</option></select></label>
-                  <label class="field"><span>Движок</span><select><option>GigaAM-v3</option></select></label>
-                  <label class="field"><span>Язык</span><select><option>Русский</option></select></label>
-                  <label class="field"><span>Кол-во спикеров</span><select><option>Авто</option><option>2</option><option>3</option></select></label>
-                  <label class="switch-row"><input type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Диаризация спикеров</span></label>
+                  <label class="field"><span>Модель</span><select id="asr-model"><option value="v3_e2e_rnnt">GigaAM v3 E2E RNNT</option><option value="multilingual_ctc">GigaAM Multilingual CTC</option><option value="multilingual_large_ctc">GigaAM Multilingual Large CTC</option></select></label>
+                  <label class="switch-row"><input id="asr-diarization" type="checkbox" /><span class="switch" aria-hidden="true"></span><span>Разделять говорящих</span></label>
+                  <p class="muted">WeSpeaker / polyvoice: дополнительная модель, записи до 30 минут.</p>
                 </article>
               </div>
 
@@ -94,25 +92,21 @@
                 <article class="card output-card">
                   <h2>Форматы вывода</h2>
                   <div class="checkbox-grid">
-                    <label><input type="checkbox" checked />Текст (.txt)</label>
-                    <label><input type="checkbox" checked />Таймкоды (.txt)</label>
-                    <label><input type="checkbox" />Markdown (.md)</label>
-                    <label><input type="checkbox" />SRT (.srt)</label>
-                    <label><input type="checkbox" />VTT (.vtt)</label>
+                    <label><input type="checkbox" value="txt" checked />Текст (.txt)</label>
+                    <label><input type="checkbox" value="md" />Markdown (.md)</label>
+                    <label><input type="checkbox" value="srt" />SRT (.srt)</label>
+                    <label><input type="checkbox" value="vtt" />VTT (.vtt)</label>
+                    <label><input type="checkbox" value="json" />JSON (.json)</label>
                   </div>
-                  <div class="section-divider"></div>
-                  <h3>Настройки субтитров</h3>
-                  <div class="inline-fields"><label class="field"><span>Строк в блоке</span><select><option>2</option><option>1</option><option>3</option></select></label><label class="field"><span>Символов</span><select><option>64</option><option>48</option><option>80</option></select></label></div>
-                  <label class="switch-row"><input type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Разбивать по предложениям</span></label>
                 </article>
               </div>
 
               <article class="card save-location-card">
                 <h2>Папка сохранения результатов</h2>
-                <div class="action-row"><input aria-label="Папка сохранения результатов" value="Выберите папку после подключения worker" readonly /><button class="button" type="button" data-notice="Выбор папки будет доступен после подключения локального worker.">Изменить</button></div>
+                <div class="action-row"><input id="output-directory" aria-label="Папка сохранения результатов" placeholder="Выберите папку" readonly /><button class="button" id="choose-output" type="button">Изменить</button></div>
               </article>
-              <button class="button button-dark button-primary" type="button" data-notice="Обработка станет доступна после подключения локального worker.">Запустить обработку</button>
-              <div class="progress-row"><strong>Общий прогресс</strong><div class="progress-track" aria-label="Общий прогресс: 0%"><span></span></div><span>0%</span><span class="muted">Готов к работе</span></div>
+              <div class="action-row"><button class="button button-dark button-primary" id="start-processing" type="button">Запустить обработку</button><button class="button" id="cancel-processing" type="button" disabled>Отменить</button></div>
+              <div class="progress-row" aria-live="polite"><strong>Общий прогресс</strong><div class="progress-track" id="progress-track" aria-label="Общий прогресс: 0%"><span></span></div><span id="progress-percent">0%</span><span class="muted" id="progress-status">Готов к работе</span></div>
             </div>
           </section>
 
@@ -120,13 +114,13 @@
             <div class="page-heading"><h1 id="result-title">Результат обработки</h1><p>Файл обработан. Прослушайте запись и работайте с транскрипцией.</p></div>
             <div class="result-grid">
               <article class="card result-main-card">
-                <div class="card-title-row"><div><h2>Результат</h2><p class="muted">Текущая сессия не содержит готовых транскрипций.</p></div></div>
-                <div class="empty-state result-empty"><span class="empty-icon" aria-hidden="true">▤</span><strong>Нет готового результата</strong><p>После завершения обработки здесь появятся плеер, транскрипция и экспорт.</p><button class="button" type="button" data-page-target="processing">Перейти к обработке</button></div>
+                <div class="card-title-row"><div><h2>Результат</h2><p class="muted" id="result-status">Текущая сессия не содержит готовых транскрипций.</p></div></div>
+                <div id="result-content" class="empty-state result-empty"><span class="empty-icon" aria-hidden="true">▤</span><strong>Нет готового результата</strong><p>После завершения обработки здесь появится транскрипция.</p><button class="button" type="button" data-page-target="processing">Перейти к обработке</button></div>
               </article>
               <aside class="card result-side-card">
                 <h2>Полезное</h2>
                 <h3>Действия</h3>
-                <div class="button-stack"><button class="button" type="button" disabled>Скачать все</button><button class="button" type="button" disabled>Копировать текст</button><button class="button" type="button" disabled>Скачать SRT</button><button class="button" type="button" disabled>Скачать Markdown</button><button class="button" type="button" disabled>Скачать JSON</button></div>
+                <div class="button-stack"><button class="button" id="copy-result" type="button" disabled>Копировать текст</button><button class="button" id="result-to-llm" type="button" disabled>Открыть в LLM</button></div>
                 <div class="section-divider"></div>
                 <h3>Ключевые темы</h3>
                 <p class="muted">Появятся вместе с готовым результатом.</p>
@@ -135,21 +129,34 @@
           </section>
 
           <section class="page" data-page="live" aria-labelledby="live-title" hidden>
-            <div class="page-heading"><h1 id="live-title">Live</h1><p>Захват в реальном времени и мгновенная транскрипция.</p></div>
+            <div class="page-heading"><h1 id="live-title">Live</h1><p>Локальный захват и распознавание речи по фрагментам.</p></div>
             <div class="live-top-grid">
-              <article class="card"><h2>Источник аудио</h2><label class="field"><span>Микрофон</span><select><option>Не подключен</option></select></label><label class="field"><span>Системный звук</span><select><option>Выкл.</option></select></label><label class="switch-row"><input type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Записывать дорожку микрофона</span></label><label class="switch-row"><input type="checkbox" /><span class="switch" aria-hidden="true"></span><span>Записывать системный звук</span></label><label class="field"><span>Диаризация</span><select><option>Включено</option><option>Выключено</option></select></label></article>
-              <article class="card live-recorder-card"><h2>Запись</h2><div class="recorder-status"><strong>00:00:00</strong><span>Захват не запущен</span></div><div class="wave-placeholder" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="action-row centered"><button class="icon-button" type="button" data-notice="Локальный захват будет доступен после подключения worker." aria-label="Начать запись">●</button><button class="icon-button icon-primary" type="button" data-notice="Локальный захват будет доступен после подключения worker." aria-label="Остановить запись">■</button><button class="icon-button" type="button" data-notice="Локальный захват будет доступен после подключения worker." aria-label="Пауза">❚❚</button></div></article>
-              <article class="card"><h2>Параметры</h2><label class="field"><span>Язык аудио</span><select><option>Русский</option></select></label><label class="field"><span>Движок</span><select><option>Pyannote 3.1</option></select></label><label class="field"><span>Кол-во спикеров</span><select><option>Авто</option></select></label><div class="checkbox-grid single"><label><input type="checkbox" checked />TXT (.txt)</label><label><input type="checkbox" checked />SRT (.srt)</label><label><input type="checkbox" checked />Разбивать по предложениям</label></div></article>
+              <article class="card"><h2>Источник аудио</h2><label class="field"><span>Источник</span><select id="live-source"><option value="microphone">Микрофон по умолчанию</option><option value="system">Системный звук (Windows / Linux)</option></select></label><label class="field"><span>Модель</span><select id="live-model"><option value="v3_e2e_rnnt">GigaAM v3 E2E RNNT</option><option value="multilingual_ctc">GigaAM Multilingual CTC</option><option value="multilingual_large_ctc">GigaAM Multilingual Large CTC</option></select></label><p class="muted">При первом запуске модель загружается из интернета. На Linux системный звук требует PulseAudio или PipeWire-Pulse.</p></article>
+              <article class="card live-recorder-card"><h2>Запись</h2><p id="live-status" class="muted" role="status">Захват не запущен</p><div class="action-row"><button class="button button-dark" id="live-start" type="button">Начать</button><button class="button" id="live-stop" type="button" disabled>Остановить</button><button class="button" id="live-cancel" type="button" disabled>Отменить</button></div></article>
+              <article class="card"><h2>Запись в файл</h2><p class="muted">Необязательно: моно WAV сохраняется под новым именем без перезаписи.</p><input id="live-output" aria-label="Папка для записи" readonly placeholder="Не сохранять запись" /><button class="button" id="live-choose-output" type="button">Выбрать папку</button><button class="text-button" id="live-clear-output" type="button">Не сохранять</button><p id="live-recording-path" class="muted"></p></article>
             </div>
-            <article class="card live-transcript-card"><div class="card-title-row"><div><h2>Live transcript</h2><p class="muted">Сегменты появятся, когда начнется реальный захват.</p></div><div class="action-row"><button class="button" type="button" disabled>Сохранить запись</button><button class="button button-dark" type="button" disabled>Готово</button></div></div><div class="empty-state compact"><span class="empty-icon" aria-hidden="true">◌</span><strong>Транскрипт пока пуст</strong><p>Подключите источник аудио и запустите запись.</p></div></article>
+            <article class="card live-transcript-card"><h2>Live transcript</h2><pre id="live-text" class="transcript-text" aria-live="polite"></pre><p id="live-partial" class="muted"></p><div class="action-row"><button class="button" id="live-copy" type="button" disabled>Копировать</button><button class="button" id="live-llm" type="button" disabled>Открыть в LLM</button></div></article>
           </section>
 
           <section class="page" data-page="llm" aria-labelledby="llm-title" hidden>
             <div class="page-heading"><h1 id="llm-title">LLM</h1><p>Постобработка транскрипций и работа с пользовательскими промптами.</p></div>
             <div class="llm-grid">
-              <article class="card llm-source-card"><h2>Исходный текст</h2><label class="button button-file" for="transcript-file">Выбрать файл с транскриптом</label><input id="transcript-file" type="file" accept=".txt,.md,.srt,.vtt" hidden /><label class="field text-area-field"><span>или вставьте текст</span><textarea id="llm-source" rows="12" placeholder="Вставьте сюда транскрипт или используйте файл из предыдущей обработки."></textarea></label><label class="field"><span>Провайдер</span><select data-setting="llmProvider"><option>OpenAI-compatible</option><option>Anthropic</option><option>Локальный CLI</option></select></label><label class="field"><span>Модель</span><input data-setting="llmModel" value="gpt-4.1-mini" /></label></article>
-              <article class="card llm-templates-card"><h2>Шаблоны</h2><div class="template-stack"><button class="template active" type="button" data-template="summary"><strong>Краткое содержание</strong><span>Сжать текст в тезисы</span></button><button class="template" type="button" data-template="tasks"><strong>Извлечение задач</strong><span>Выделить action items</span></button><button class="template" type="button" data-template="custom"><strong>Свой промпт</strong><span>Использовать инструкцию</span></button></div><label class="field text-area-field"><span>Пользовательский промпт</span><textarea id="llm-prompt" rows="6" placeholder="Например: сделай краткое содержание и выдели основные решения по встрече."></textarea></label><button class="button button-dark" id="llm-run" type="button">Запустить обработку</button></article>
-              <article class="card llm-result-card"><h2>Результат</h2><div class="empty-state"><span class="empty-icon" aria-hidden="true">✦</span><strong>Нет результата LLM</strong><p>Добавьте исходный текст и подключите совместимый провайдер, чтобы получить результат.</p></div><div class="action-row"><button class="button" type="button" disabled>Копировать</button><button class="button" type="button" disabled>Скачать (.md)</button></div></article>
+              <article class="card llm-source-card">
+                <h2>Исходный текст</h2>
+                <label class="button button-file" for="transcript-file">Выбрать файл с транскриптом</label><input id="transcript-file" type="file" accept=".txt,.md,.srt,.vtt" hidden />
+                <label class="field text-area-field"><span>или вставьте текст</span><textarea id="llm-source" rows="12" placeholder="Вставьте сюда транскрипт или используйте файл из предыдущей обработки."></textarea></label>
+                <label class="field"><span>Провайдер</span><select id="llm-provider"><option value="API">API</option><option>Claude Code</option><option>Codex</option><option>OpenCode</option><option>Pi</option><option>oh-my-pi</option><option>Other</option></select></label>
+                <label class="field"><span>Модель</span><input id="llm-model" placeholder="По умолчанию провайдера" /></label>
+                <label class="field"><span>API URL</span><input id="llm-url" type="url" placeholder="https://api.openai.com/v1" /></label>
+                <label class="field"><span>API-ключ (не сохраняется)</span><input id="llm-key" type="password" autocomplete="off" /></label>
+                <label class="field"><span>Путь к CLI</span><input id="llm-cli-path" placeholder="Автопоиск" /></label>
+                <label class="field"><span>Аргументы CLI (JSON-массив)</span><input id="llm-cli-args" placeholder='["--profile", "work"]' /></label>
+                <p class="muted">Аргументы CLI сохраняются на устройстве: не указывайте в них ключи и пароли.</p>
+                <label class="field"><span>Поставщик модели Pi / oh-my-pi</span><input id="llm-cli-provider" /></label>
+                <label class="switch-row"><input id="llm-allow-tools" type="checkbox" /><span class="switch" aria-hidden="true"></span><span>Разрешить CLI-инструменты и историю: агент может выполнять действия на этом компьютере.</span></label>
+              </article>
+              <article class="card llm-templates-card"><h2>Шаблоны</h2><div class="template-stack"><button class="template active" type="button" data-template="summary"><strong>Краткое содержание</strong><span>Сжать текст в тезисы</span></button><button class="template" type="button" data-template="tasks"><strong>Извлечение задач</strong><span>Выделить задачи</span></button><button class="template" type="button" data-template="terms"><strong>Термины</strong><span>Выделить понятия</span></button><button class="template" type="button" data-template="custom"><strong>Свой промпт</strong><span>Использовать инструкцию</span></button></div><label class="field text-area-field"><span>Пользовательский промпт</span><textarea id="llm-prompt" rows="6"></textarea></label><div class="action-row"><button class="button button-dark" id="llm-run" type="button">Запустить обработку</button><button class="button" id="llm-cancel" type="button" disabled>Отменить</button></div><p id="llm-status" class="muted" role="status"></p></article>
+              <article class="card llm-result-card"><h2>Результат</h2><textarea id="llm-result" rows="14" readonly aria-label="Результат LLM"></textarea><div class="action-row"><button class="button" id="copy-llm" type="button" disabled>Копировать</button></div></article>
             </div>
           </section>
 
@@ -179,12 +186,9 @@ print(result.text)</code></pre><button class="button" id="copy-api-code" type="b
                 <div class="settings-tabs" role="tablist"><button class="active" type="button" data-settings-section="general">Общие</button><button type="button" data-settings-section="models">Модели</button><button type="button" data-settings-section="audio">Аудио</button><button type="button" data-settings-section="interface">Интерфейс</button><button type="button" data-settings-section="paths">Пути</button></div>
                 <p id="settings-status" class="save-status" aria-live="polite">Изменения сохраняются на этом устройстве.</p>
                 <div class="settings-cards">
-                  <article class="card"><h2>Общие</h2><label class="field"><span>Язык интерфейса</span><select data-setting="language"><option value="ru">Русский</option><option value="en">English</option></select></label><label class="field"><span>Тема</span><select data-setting="theme"><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Темная</option></select></label><label class="switch-row"><input data-setting="autoUpdates" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Автообновления</span></label></article>
-                  <article class="card"><h2>Модели и backend</h2><label class="field"><span>ASR backend</span><select data-setting="asrBackend"><option>GigaAM-v3</option></select></label><label class="field"><span>Устройство</span><select data-setting="device"><option>Auto / GPU</option><option>CPU</option></select></label><label class="switch-row"><input data-setting="cpuFallback" type="checkbox" /><span class="switch" aria-hidden="true"></span><span>Fallback на CPU</span></label></article>
-                  <article class="card"><h2>Обработка и субтитры</h2><label class="switch-row"><input data-setting="splitSentences" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Разбивать по предложениям</span></label><div class="inline-fields"><label class="field"><span>Строк в блоке</span><select data-setting="captionLines"><option>2</option><option>1</option><option>3</option></select></label><label class="field"><span>Символов</span><select data-setting="captionChars"><option>64</option><option>48</option><option>80</option></select></label></div><label class="switch-row"><input data-setting="showSpeaker" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Показывать спикера</span></label></article>
-                  <article class="card"><h2>Диаризация и аудио</h2><label class="field"><span>Движок диаризации</span><select data-setting="diarizationEngine"><option>Pyannote 3.1</option></select></label><label class="field"><span>Sample rate</span><select data-setting="sampleRate"><option>16000 Hz</option><option>44100 Hz</option></select></label><label class="field"><span>HF Token</span><input data-setting="hfToken" type="password" placeholder="Не сохранен" autocomplete="off" /></label></article>
-                  <article class="card"><h2>LLM</h2><label class="field"><span>Provider</span><select data-setting="llmProvider"><option>OpenAI-compatible</option><option>Anthropic</option><option>Локальный CLI</option></select></label><label class="field"><span>Модель</span><input data-setting="llmModel" value="gpt-4.1-mini" /></label></article>
-                  <article class="card"><h2>Пути и интерфейс</h2><label class="field"><span>Папка результатов</span><input data-setting="outputPath" value="Выберите после подключения worker" /></label><label class="switch-row"><input data-setting="liquidGlass" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Liquid Glass</span></label><label class="switch-row"><input data-setting="animations" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Анимации</span></label></article>
+                  <article class="card"><h2>Оформление</h2><label class="field"><span>Тема</span><select data-setting="theme"><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label><label class="switch-row"><input data-setting="liquidGlass" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Liquid Glass</span></label><label class="switch-row"><input data-setting="animations" type="checkbox" checked /><span class="switch" aria-hidden="true"></span><span>Анимации</span></label></article>
+                  <article class="card"><h2>Распознавание</h2><p class="muted">Модель и диаризация выбираются на странице обработки. Вычисления выполняются на CPU.</p><button class="button" type="button" data-page-target="processing">Открыть обработку</button></article>
+                  <article class="card"><h2>LLM</h2><p class="muted">Провайдер, модель и параметры агентов настраиваются на странице LLM.</p><button class="button" type="button" data-page-target="llm">Открыть LLM</button></article>
                 </div>
               </div>
             </div>
