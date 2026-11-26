@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_RANGE, CONTENT_TYPE, COOKIE, PROXY_AUTHORIZATION};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_RANGE, CONTENT_TYPE, COOKIE, PROXY_AUTHORIZATION, USER_AGENT};
 use reqwest::{Client, StatusCode, Url};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -17,6 +17,7 @@ const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const CANCELLED: &str = "Загрузка отменена";
 const TOO_LARGE: &str = "Файл превышает ограничение загрузки (2 ГиБ)";
 const UNSUPPORTED: &str = "Ссылка не поддерживается: нужна прямая ссылка на аудио/видео или поддерживаемая публичная запись";
+const TIKTOK_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 #[derive(Default)]
 pub struct MediaImportState {
@@ -114,6 +115,70 @@ fn validate_url(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+// ytdown 0.8.1 recognizes watch/shorts/embed, but not the /live/ share URL
+// used for both broadcasts and their replays. Keep live rejection downstream.
+fn youtube_live_url(url: &Url) -> Option<Url> {
+    if !matches!(url.host_str()?, "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com") {
+        return None;
+    }
+    let mut segments = url.path_segments()?;
+    if segments.next()? != "live" {
+        return None;
+    }
+    let id = segments.next()?;
+    if id.len() != 11
+        || !id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        || segments.any(|segment| !segment.is_empty())
+    {
+        return None;
+    }
+    let mut normalized = url.clone();
+    normalized.set_path("/watch");
+    normalized.set_query(None);
+    normalized.set_fragment(None);
+    normalized.query_pairs_mut().append_pair("v", id);
+    Some(normalized)
+}
+
+// ytdown rewrites vm/vt shortlinks to www.tiktok.com/t/{code}. Follow the
+// supplied mobile URL instead; those hosts may route the same code differently.
+async fn tiktok_mobile_redirect(client: &Client, url: &Url) -> Option<Url> {
+    if !matches!(url.host_str()?, "vm.tiktok.com" | "vt.tiktok.com") {
+        return None;
+    }
+    let mut segments = url.path_segments()?.filter(|segment| !segment.is_empty());
+    segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+    let response = tokio::time::timeout(
+        Duration::from_secs(120),
+        client.get(url.clone())
+            .header(USER_AGENT, TIKTOK_USER_AGENT)
+            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+            .send(),
+    ).await.ok()?.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let target = response.url();
+    let host = target.host_str()?;
+    if host != "tiktok.com" && !host.ends_with(".tiktok.com") {
+        return None;
+    }
+    let mut path = target.path_segments()?.filter(|segment| !segment.is_empty());
+    let user = path.next()?;
+    let kind = path.next()?;
+    let id = path.next()?;
+    if user.len() <= 1 || !user.starts_with('@')
+        || !matches!(kind, "video" | "photo")
+        || id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(target.clone())
+}
+
 fn safe_redirect(previous: &Url, next: &Url) -> bool {
     next.as_str().len() <= 16 * 1024
         && matches!(next.scheme(), "http" | "https")
@@ -206,10 +271,23 @@ fn extraction_error(error: ytdown::Error) -> String {
         ytdown::Error::Unavailable { reason, .. } => match reason {
             UnavailableReason::Gone => "Площадка не предоставила запись: она может быть недоступна либо загрузчик не смог её извлечь",
             UnavailableReason::AgeRestricted => "Запись ограничена по возрасту; авторизация не поддерживается",
-            UnavailableReason::BotCheck => "Площадка запросила проверку или авторизацию; повторите позже",
+            UnavailableReason::BotCheck => "Площадка запросила проверку или авторизацию; вход и проверка в приложении не поддерживаются",
             UnavailableReason::GeoBlocked => "Запись недоступна в вашем регионе",
             UnavailableReason::Live => "Прямые эфиры не поддерживаются",
             _ => "Площадка сообщает, что запись недоступна",
+        }.into(),
+        ytdown::Error::Extraction { stage, message } => match (stage, message.as_str()) {
+            ("tiktok", "photo/slideshow posts are not supported") =>
+                "Фотографии и слайд-шоу TikTok не поддерживаются; нужна видеозапись",
+            ("tiktok", "webpage request failed with HTTP 403") =>
+                "TikTok запретил доступ к странице; вход и проверка в приложении не поддерживаются",
+            ("tiktok", "webpage request failed with HTTP 429") =>
+                "TikTok ограничил число запросов; повторите позже",
+            ("twitter", "syndication request failed with HTTP 403") =>
+                "X запретил доступ к записи; авторизация в приложении не поддерживается",
+            ("twitter", "syndication request failed with HTTP 429") =>
+                "X ограничил число запросов; повторите позже",
+            _ => "Не удалось извлечь медиа с этой страницы; площадка могла изменить формат или ограничить доступ",
         }.into(),
         ytdown::Error::Network { .. } => "Не удалось связаться с площадкой; проверьте подключение".into(),
         ytdown::Error::Cipher(_) => "Не удалось обработать формат ссылки площадки".into(),
@@ -248,8 +326,18 @@ async fn media_response(client: &Client, url: &Url, headers: HeaderMap) -> Resul
     let response = client.get(url.clone()).headers(headers).send().await.map_err(|error| {
         if error.is_timeout() { "Истекло время ожидания загрузки" } else { "Не удалось загрузить медиа; проверьте подключение" }
     })?;
-    if response.status() != StatusCode::OK || response.headers().contains_key(CONTENT_RANGE) {
-        return Err(format!("Сервер отклонил загрузку (HTTP {}); частичные ответы не поддерживаются", response.status().as_u16()));
+    if response.status() == StatusCode::PARTIAL_CONTENT || response.headers().contains_key(CONTENT_RANGE) {
+        return Err("Сервер вернул частичный файл; загрузка не поддерживается".into());
+    }
+    if response.status() != StatusCode::OK {
+        let message = match response.status() {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "Сервер запретил доступ к медиа",
+            StatusCode::NOT_FOUND | StatusCode::GONE => "Медиа не найдено или больше недоступно",
+            StatusCode::TOO_MANY_REQUESTS => "Сервер ограничил число запросов; повторите позже",
+            status if status.is_server_error() => "Ошибка сервера при загрузке медиа",
+            _ => "Сервер отклонил загрузку медиа",
+        };
+        return Err(format!("{message} (HTTP {})", response.status().as_u16()));
     }
     Ok(response)
 }
@@ -337,6 +425,8 @@ where
 }
 
 async fn resolve_media(extractor: &Ytdown, url: &Url) -> Result<Result<MediaInfo, ytdown::Error>, String> {
+    let normalized = youtube_live_url(url);
+    let url = normalized.as_ref().unwrap_or(url);
     tokio::time::timeout(Duration::from_secs(120), extractor.resolve(url.as_str())).await
         .map_err(|_| "Истекло время ожидания ответа площадки".into())
 }
@@ -352,6 +442,7 @@ async fn import_url<F>(
 where
     F: FnMut(u64, Option<u64>),
 {
+    let url = tiktok_mobile_redirect(client, &url).await.unwrap_or(url);
     let resolved = resolve_media(extractor, &url).await?;
     tokio::time::timeout(Duration::from_secs(60 * 60), async {
         let mut direct_response = None;
@@ -653,6 +744,220 @@ mod tests {
         worker.join().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), WAV);
         drop(directory);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn normalizes_only_well_formed_youtube_live_video_links() {
+        for host in ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"] {
+            let url = Url::parse(&format!("https://{host}/live/dQw4w9WgXcQ?si=secret&list=other#private")).unwrap();
+            let normalized = youtube_live_url(&url).unwrap();
+            assert_eq!(normalized.path(), "/watch");
+            assert_eq!(normalized.query(), Some("v=dQw4w9WgXcQ"));
+            assert!(normalized.fragment().is_none());
+        }
+        for url in [
+            "https://youtube.com.evil.test/live/dQw4w9WgXcQ",
+            "https://www.youtube.com/live/not-an-id",
+            "https://www.youtube.com/live/dQw4w9WgXcQ/extra",
+            "https://www.youtube.com/@user/live",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        ] {
+            assert!(youtube_live_url(&Url::parse(url).unwrap()).is_none(), "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn imports_youtube_live_replays_but_still_rejects_live_broadcasts() {
+        const WAV: &[u8] = b"RIFF\x26\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x7d\x00\x00\x02\x00\x10\x00data\x02\x00\x00\x00\x00\x00";
+        for is_live in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let worker = thread::spawn(move || {
+                for step in 0..if is_live { 3 } else { 4 } {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = [0; 4096];
+                    let n = socket.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..n]);
+                    match step {
+                        0 => {
+                            assert!(request.starts_with("GET /iframe_api "));
+                            socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                        }
+                        1 => {
+                            assert!(request.starts_with("POST /youtubei/v1/visitor_id?"));
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+                        }
+                        2 => {
+                            assert!(request.starts_with("POST /youtubei/v1/player?"));
+                            let body = serde_json::json!({
+                                "playabilityStatus": {"status": "OK"},
+                                "videoDetails": {"videoId": "dQw4w9WgXcQ", "title": "recording", "isLive": is_live},
+                                "streamingData": {"adaptiveFormats": [{
+                                    "itag": 140, "url": format!("http://{address}/audio.wav"), "mimeType": "audio/mp4"
+                                }]}
+                            }).to_string();
+                            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                        }
+                        _ => {
+                            assert!(request.starts_with("GET /audio.wav "));
+                            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", WAV.len()).unwrap();
+                            socket.write_all(WAV).unwrap();
+                        }
+                    }
+                }
+            });
+            let client = Client::builder().no_proxy().redirect(redirect_policy()).build().unwrap();
+            let extractor = Ytdown::builder().client(client.clone()).clear_extractors()
+                .extractor(Box::new(ytdown::extractor::youtube::YoutubeExtractor::with_base_url(format!("http://{address}"))))
+                .build().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let url = Url::parse("https://www.youtube.com/live/dQw4w9WgXcQ?si=secret").unwrap();
+            let result = import_url(&client, &extractor, url, 100, root.path(), |_, _| {}).await;
+            worker.join().unwrap();
+            if is_live {
+                assert_eq!(result.err().unwrap(), "Прямые эфиры не поддерживаются");
+            } else {
+                let (path, directory) = result.unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), WAV);
+                drop(directory);
+            }
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn imports_tiktok_mobile_shortlinks_from_the_original_host_and_path() {
+        const WAV: &[u8] = b"RIFF\x26\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x7d\x00\x00\x02\x00\x10\x00data\x02\x00\x00\x00\x00\x00";
+        for host in ["vm.tiktok.com", "vt.tiktok.com"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let worker = thread::spawn(move || {
+                for step in 0..4 {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = [0; 4096];
+                    let n = socket.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..n]);
+                    match step {
+                        0 => {
+                            assert!(request.starts_with("GET /Zabc123?token=secret "));
+                            assert!(request.to_ascii_lowercase().contains(&format!("host: {host}:{}", address.port())));
+                            assert!(request.to_ascii_lowercase().contains("user-agent: mozilla/"));
+                            write!(socket, "HTTP/1.1 302 Found\r\nLocation: http://www.tiktok.com:{}/@user/video/123\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", address.port()).unwrap();
+                        }
+                        1 => {
+                            assert!(request.starts_with("GET /@user/video/123 "));
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                        }
+                        2 => {
+                            assert!(request.starts_with("GET /@user/video/123 "));
+                            let body = format!(r#"<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">{{"__DEFAULT_SCOPE__":{{"webapp.video-detail":{{"statusCode":0,"itemInfo":{{"itemStruct":{{"id":"123","author":{{}},"video":{{"playAddr":"http://{address}/audio.wav"}}}}}}}}}}}}</script>"#);
+                            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                        }
+                        _ => {
+                            assert!(request.starts_with("GET /audio.wav "));
+                            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", WAV.len()).unwrap();
+                            socket.write_all(WAV).unwrap();
+                        }
+                    }
+                }
+            });
+            let client = Client::builder().no_proxy().redirect(redirect_policy())
+                .resolve(host, address).resolve("www.tiktok.com", address).build().unwrap();
+            let extractor = Ytdown::builder().client(client.clone()).clear_extractors()
+                .extractor(Box::new(ytdown::extractor::tiktok::TiktokExtractor::with_base_url(format!("http://{address}"))))
+                .build().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let url = Url::parse(&format!("http://{host}:{}/Zabc123?token=secret", address.port())).unwrap();
+            let result = import_url(&client, &extractor, url, 100, root.path(), |_, _| {}).await;
+            worker.join().unwrap();
+            let (path, directory) = result.unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), WAV);
+            drop(directory);
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_http_failures_without_leaking_the_url() {
+        for (response, expected) in [
+            (&b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "доступ"),
+            (&b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "не найдено"),
+            (&b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "ограничил"),
+            (&b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "Ошибка сервера"),
+            (&b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..], "частичный"),
+        ] {
+            let (mut url, worker) = serve(response);
+            url.set_query(Some("token=secret"));
+            let error = media_response(&Client::new(), &url, HeaderMap::new()).await.err().unwrap();
+            worker.join().unwrap();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("secret"));
+        }
+    }
+
+    #[test]
+    fn reports_tiktok_slideshows_without_exposing_extractor_messages() {
+        let error = extraction_error(ytdown::Error::Extraction {
+            stage: "tiktok",
+            message: "photo/slideshow posts are not supported".into(),
+        });
+        assert!(error.contains("слайд-шоу"));
+        let error = extraction_error(ytdown::Error::Extraction {
+            stage: "tiktok",
+            message: "token=secret".into(),
+        });
+        assert!(!error.contains("secret"));
+    }
+
+    #[test]
+    fn reports_known_platform_restrictions_without_exposing_response_text() {
+        for (stage, message, expected) in [
+            ("tiktok", "webpage request failed with HTTP 403", "TikTok запретил"),
+            ("tiktok", "webpage request failed with HTTP 429", "TikTok ограничил"),
+            ("twitter", "syndication request failed with HTTP 403", "X запретил"),
+            ("twitter", "syndication request failed with HTTP 429", "X ограничил"),
+        ] {
+            let error = extraction_error(ytdown::Error::Extraction { stage, message: message.into() });
+            assert!(error.contains(expected));
+        }
+        let error = extraction_error(ytdown::Error::Extraction {
+            stage: "twitter",
+            message: "syndication request failed with HTTP 403; token=secret".into(),
+        });
+        assert!(!error.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn cancelling_during_a_tiktok_shortlink_request_leaves_no_files() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (seen, seen_rx) = tokio::sync::oneshot::channel();
+        let (release, wait) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 2048];
+            let _ = socket.read(&mut request);
+            let _ = seen.send(());
+            let _ = wait.recv();
+        });
+        let client = Client::builder().no_proxy().redirect(redirect_policy())
+            .resolve("vm.tiktok.com", address).build().unwrap();
+        let extractor = Ytdown::builder().client(client.clone()).build().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let url = Url::parse(&format!("http://vm.tiktok.com:{}/Zabc123", address.port())).unwrap();
+        let mut import = Box::pin(import_url(&client, &extractor, url, 100, root.path(), |_, _| {}));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                _ = seen_rx => {},
+                result = &mut import => panic!("import unexpectedly finished: {:?}", result.err()),
+            }
+        }).await.expect("shortlink request did not start");
+        drop(import);
+        release.send(()).unwrap();
+        worker.join().unwrap();
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
