@@ -144,7 +144,7 @@ jobs:
         env:
           ASSET: ${{ matrix.asset }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           shopt -s nullglob
           images=(src-tauri/target/"$TARGET"/release/bundle/appimage/*.AppImage)
           if [ "${#images[@]}" -ne 1 ]; then echo 'Expected exactly one AppImage' >&2; exit 1; fi
@@ -184,6 +184,14 @@ jobs:
           if grep -q 'not found' "$RUNNER_TEMP/rust-liquid-ldd.txt"; then exit 1; fi
           mkdir -p ../artifacts
           cp "$image" "../artifacts/$ASSET"
+      - name: Upload failed Linux bundle for diagnosis
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-linux-diagnostic
+          path: desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Inspect the Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
