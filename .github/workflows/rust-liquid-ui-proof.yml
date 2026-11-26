@@ -100,7 +100,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends \
             webkit2gtk-driver xvfb xauth xdotool x11-utils openbox \
-            libpulse0 libegl1 libgles2
+            python3-pyatspi dbus-x11 scrot libpulse0 libegl1 libgles2
       - name: Install Windows native dialog automation
         if: runner.os == 'Windows'
         shell: pwsh
@@ -185,9 +185,9 @@ jobs:
           LC_ALL: C.UTF-8
         run: |
           set -euo pipefail
-          xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
             openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
-            exec python packaging/rust-liquid/ui-proof.py \
+            exec /usr/bin/python3 packaging/rust-liquid/ui-proof.py \
               --app "$PROOF_APP" \
               --fixture "$GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" \
               --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800

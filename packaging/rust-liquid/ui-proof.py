@@ -94,6 +94,12 @@ def check_display():
     else:
         raise RuntimeError(f"Unsupported proof platform: {sys.platform}")
 
+class WebDriverError(RuntimeError):
+    def __init__(self, method, path, value):
+        self.code = value["error"]
+        super().__init__(f"WebDriver {method} {path}: {json.dumps(value, ensure_ascii=False)}")
+
+
 
 class WebDriver:
     def __init__(self, app, native_driver, data_dir, log_file):
@@ -131,10 +137,17 @@ class WebDriver:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as error:
-            raise RuntimeError(f"WebDriver {method} {path}: {error.read().decode(errors='replace')}") from error
+            body = error.read().decode(errors="replace")
+            try:
+                value = json.loads(body).get("value")
+            except ValueError:
+                raise RuntimeError(f"WebDriver {method} {path}: {body}") from error
+            if isinstance(value, dict) and value.get("error"):
+                raise WebDriverError(method, path, value) from error
+            raise RuntimeError(f"WebDriver {method} {path}: {body}") from error
         value = result.get("value")
         if isinstance(value, dict) and value.get("error"):
-            raise RuntimeError(f"WebDriver {method} {path}: {value}")
+            raise WebDriverError(method, path, value)
         return value
 
     def start(self):
@@ -198,6 +211,8 @@ def xdotool(*args, check=True):
 
 
 def linux_dialog(title, path, folder):
+    import pyatspi  # type: ignore[import-not-found]
+
     def find_window():
         result = xdotool("search", "--onlyvisible", "--name", f"^{title}$", check=False)
         windows = result.stdout.split()
@@ -208,8 +223,46 @@ def linux_dialog(title, path, folder):
     window = wait_for(f"native GTK dialog {title!r}", find_window, 30)
     xdotool("windowfocus", "--sync", window)
     xdotool("key", "--clearmodifiers", "ctrl+l")
-    xdotool("key", "--clearmodifiers", "ctrl+a")
-    xdotool("type", "--clearmodifiers", "--delay", "1", "--", str(path))
+    pid = int(xdotool("getwindowpid", window).stdout.strip())
+
+    def descendants(root):
+        pending = [root]
+        while pending:
+            node = pending.pop()
+            yield node
+            pending.extend(node)
+
+    def focused_entry():
+        for application in pyatspi.Registry.getDesktop(0):
+            if application.get_process_id() != pid:
+                continue
+            dialogs = [
+                node for node in descendants(application)
+                if node.name == title
+                and node.getRole() in (pyatspi.ROLE_DIALOG, pyatspi.ROLE_FILE_CHOOSER,
+                                       pyatspi.ROLE_FRAME, pyatspi.ROLE_WINDOW)
+                and node.getState().contains(pyatspi.STATE_SHOWING)
+            ]
+            if len(dialogs) > 1:
+                raise RuntimeError(f"More than one accessible GTK dialog titled {title!r}")
+            if not dialogs:
+                return None
+            for node in descendants(dialogs[0]):
+                state = node.getState()
+                if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_SHOWING):
+                    try:
+                        node.queryEditableText()
+                    except NotImplementedError:
+                        pass
+                    else:
+                        return node
+        return None
+
+    entry = wait_for("the native GTK location field to receive focus", focused_entry, 15)
+    if not entry.queryEditableText().setTextContents(str(path)):
+        raise RuntimeError("Could not enter the path into the native GTK location field")
+    wait_for("the native GTK location field to contain the requested path",
+             lambda: entry.queryText().getText(0, -1) == str(path), 15)
     xdotool("key", "--clearmodifiers", "Return")
     if folder:
         # GTK first navigates to the entered directory; its default Open button confirms it.
@@ -322,7 +375,15 @@ def run_proof(app, fixture, diagnostics, timeout):
         driver = WebDriver(app, native_driver, root / "app-data", diagnostics / "driver.log")
         try:
             driver.start()
-            wait_for("processing page", lambda: driver.state("#choose-media", "displayed"), 30)
+            def processing_ready():
+                try:
+                    return driver.state("#choose-media", "displayed")
+                except WebDriverError as error:
+                    if error.code == "no such element":
+                        return False
+                    raise
+
+            wait_for("processing page", processing_ready, 30)
             if driver.property("#asr-model", "value") != "v3_e2e_rnnt":
                 raise RuntimeError("Expected the GigaAM v3 E2E RNNT model to be selected")
             if driver.state("#asr-diarization", "selected"):
@@ -369,6 +430,12 @@ def run_proof(app, fixture, diagnostics, timeout):
                 raise RuntimeError("The application did not list the saved file on the result page")
             print(f"PASS: real UI saved a nonempty {result.name} ({result.stat().st_size} bytes)", flush=True)
         except Exception:
+            if sys.platform.startswith("linux"):
+                try:
+                    subprocess.run(["scrot", str(diagnostics / "native-desktop.png")],
+                                   check=True, timeout=10)
+                except (OSError, subprocess.SubprocessError) as error:
+                    print(f"Could not capture native X desktop: {error}", file=sys.stderr)
             driver.screenshot(diagnostics / "failure.png")
             raise
         finally:
