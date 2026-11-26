@@ -1,0 +1,216 @@
+name: Rust Liquid packaged UI proof
+
+# workflow_run is active only once this workflow exists on the default branch.
+# Manual dispatch accepts a successful, trusted candidate-build run ID. Never
+# execute a PR/fork artifact in this privileged workflow_run context.
+on:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths: [.github/workflows/rust-liquid-ui-proof.yml]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Rust Liquid candidate build run ID
+        type: string
+        required: true
+  workflow_run:
+    workflows: ["Rust Liquid candidate builds"]
+    types: [completed]
+    branches: [main, feat/rust-liquid-windows-linux]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  packaged-ui:
+    if: >-
+      github.event_name == 'workflow_dispatch' || github.event_name == 'push' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event))
+    name: Installed candidate UI (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+            asset: GigaAMGUI-Rust-Liquid-linux-x64.AppImage
+          - os: windows-2022
+            platform: windows-x64
+            asset: GigaAMGUI-Rust-Liquid-windows-x64-setup.exe
+    steps:
+      - name: Validate the source run before downloading executable artifacts
+        id: source
+        uses: actions/github-script@v8
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id || '45833159438' }}
+        with:
+          script: |
+            const id = process.env.SOURCE_RUN_ID;
+            if (!/^[1-9][0-9]*$/.test(id || '')) throw new Error('source_run_id must be a numeric workflow run ID');
+            const {data: run} = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: Number(id),
+            });
+            const branches = ['main', 'feat/rust-liquid-windows-linux'];
+            if (run.path !== '.github/workflows/rust-liquid.yml' ||
+                run.repository.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
+                run.head_repository?.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
+                !branches.includes(run.head_branch) ||
+                !['push', 'workflow_dispatch'].includes(run.event) ||
+                run.status !== 'completed' || run.conclusion !== 'success' ||
+                !/^[0-9a-f]{40}$/.test(run.head_sha)) {
+              throw new Error(`Untrusted or unsuccessful candidate build run ${id}`);
+            }
+            core.setOutput('run_id', id);
+            core.setOutput('sha', run.head_sha);
+            core.info(`Using candidate run ${id}, source ${run.head_sha}, event ${run.event}`);
+      - name: Check out the trusted proof harness
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Check out the fixture at the candidate's source revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: candidate-source
+          persist-credentials: false
+      - name: Download the actual candidate package
+        uses: actions/download-artifact@v7
+        with:
+          name: rust-liquid-${{ matrix.platform }}-candidate
+          path: candidate-package
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check Windows input desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python packaging/rust-liquid/ui-proof.py --check-display
+      - name: Install Linux GUI and packaged-app runtime dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            webkit2gtk-driver xvfb xauth xdotool x11-utils openbox \
+            libpulse0 libegl1 libgles2
+      - name: Install Windows native dialog automation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -m pip install 'pywinauto==0.6.9'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri's WebDriver intermediary
+        shell: bash
+        run: cargo install tauri-driver --version 2.1.0 --locked
+      - name: Extract the Linux AppImage without FUSE
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          image="$GITHUB_WORKSPACE/candidate-package/$ASSET"
+          test -s "$image"
+          chmod +x "$image"
+          mkdir "$RUNNER_TEMP/rust-liquid-package"
+          (cd "$RUNNER_TEMP/rust-liquid-package" && "$image" --appimage-extract > /dev/null)
+          root="$RUNNER_TEMP/rust-liquid-package/squashfs-root"
+          test -x "$root/AppRun"
+          if find "$root" -type f \( -iname 'python' -o -iname 'python[0-9]*' -o -iname 'libpython*.so*' \) -print -quit | grep -q .; then
+            echo 'Unexpected Python runtime in candidate AppImage' >&2
+            exit 1
+          fi
+          echo "PROOF_APP=$root/AppRun" >> "$GITHUB_ENV"
+      - name: Install the Windows NSIS candidate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:GITHUB_WORKSPACE "candidate-package/$env:ASSET"
+          $install = Join-Path $env:RUNNER_TEMP 'rust-liquid-install'
+          if (!(Test-Path -PathType Leaf $installer)) { throw 'Candidate NSIS installer is missing' }
+          if ($install -match '\s') { throw 'NSIS /D requires a temporary installation path without spaces' }
+          $process = Start-Process -FilePath $installer -ArgumentList "/S /D=$install" -PassThru
+          if (!$process.WaitForExit(300000)) { $process.Kill(); throw 'NSIS installation timed out after 300 seconds' }
+          if ($process.ExitCode -ne 0) { throw "NSIS installer exited with $($process.ExitCode)" }
+          $apps = @(Get-ChildItem $install -Recurse -File -Filter 'gigaam-desktop.exe')
+          if ($apps.Count -ne 1) { throw 'Expected exactly one installed gigaam-desktop.exe' }
+          $python = @(Get-ChildItem $install -Recurse -File | Where-Object {
+            $_.Name -match '^(pythonw?(\d+)?\.(exe|dll)|pyvenv\.cfg)$'
+          })
+          if ($python.Count) { throw 'Unexpected Python runtime in installed candidate' }
+          "PROOF_APP=$($apps[0].FullName)" >> $env:GITHUB_ENV
+      - name: Install the WebDriver matching the installed WebView2 runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $key = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $locations = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$key",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$key"
+          )
+          $versions = @($locations | ForEach-Object {
+            if (Test-Path $_) { (Get-ItemProperty $_ -Name pv -ErrorAction SilentlyContinue).pv }
+          } | Where-Object { $_ -and $_ -ne '0.0.0.0' } | Sort-Object -Unique)
+          if ($versions.Count -ne 1 -or $versions[0] -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+            throw "Cannot determine one installed WebView2 runtime version: $($versions -join ', ')"
+          }
+          $version = $versions[0]
+          $archive = Join-Path $env:RUNNER_TEMP 'edgedriver.zip'
+          $driverDir = Join-Path $env:RUNNER_TEMP 'edgedriver'
+          Invoke-WebRequest -UseBasicParsing "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $driverDir
+          $drivers = @(Get-ChildItem $driverDir -Recurse -File -Filter 'msedgedriver.exe')
+          if ($drivers.Count -ne 1) { throw 'Expected one downloaded msedgedriver.exe' }
+          $signature = Get-AuthenticodeSignature $drivers[0].FullName
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+            throw 'Microsoft Edge WebDriver signature is not valid'
+          }
+          $drivers[0].DirectoryName >> $env:GITHUB_PATH
+          Write-Host "WebView2 and downloaded Edge WebDriver version: $version"
+      - name: Exercise Linux UI and save a real transcript
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+            openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+            exec python packaging/rust-liquid/ui-proof.py \
+              --app "$PROOF_APP" \
+              --fixture "$GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" \
+              --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800
+          '
+      - name: Exercise Windows UI and save a real transcript
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python packaging/rust-liquid/ui-proof.py `
+            --app "$env:PROOF_APP" `
+            --fixture "$env:GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" `
+            --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload diagnostics if UI proof failed
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-ui-proof-${{ matrix.platform }}-diagnostics
+          path: ui-proof-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Describe the evidence
+        shell: bash
+        run: |
+          echo 'The packaged application selected the repository WAV and a fresh output directory through native dialogs, ran GigaAM and saved a nonempty transcript matching the visible result.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The Python controller is external to the application. This proves one CPU/file/TXT path only, not GPU, live audio, diarization or other formats.' >> "$GITHUB_STEP_SUMMARY"
