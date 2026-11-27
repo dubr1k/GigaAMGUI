@@ -140,3 +140,94 @@ Windows packaging additionally stages the DirectML DLL from the compiled ort
 output and the VC redistributable from Visual Studio, as specified in the
 workflow. Run the Windows job for the matching extraction and import-table
 checks; merely compiling the executable does not validate its installer.
+
+## Packaged long-diarization proof
+
+`long-ui-proof.py` is a separate proof. It drives the **installed** Windows
+executable or the extracted Linux AppImage through the real UI and native file
+dialogs. Python is only an external controller and fixture builder; it is not
+an application backend. `rust-liquid-ui-proof.yml` keeps its existing short
+proof, then prepares a dedicated model cache and runs this additional proof on
+both native targets. Provisioning downloads models; a successful workflow run is
+required before claiming a result.
+
+The controller creates a 30-minute-plus 16 kHz WAV from the offline excerpts
+in `tests/fixtures/rust_liquid_long_sources.json`. They are `clean/validation`
+(`dev-clean`) utterances 2035-147960-0005/0006, 7976-110124-0023/0024 and
+1673-143397-0002/0003 from
+[OpenSLR LibriSpeech](https://huggingface.co/datasets/openslr/librispeech_asr),
+revision `71cacbfb7e2354c4226d01e70d77d5fca3d04ba1`. LibriSpeech is
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/): Vassil Panayotov,
+Guoguo Chen, Daniel Povey and Sanjeev Khudanpur, *LibriSpeech: An ASR Corpus
+Based on Public Domain Audio Books*, ICASSP 2015,
+https://www.danielpovey.com/files/2015_icassp_librispeech.pdf.
+The JSON records the original FLAC hashes and the hashes of decoded excerpts;
+the controller independently checks the latter. Each excerpt is at most four
+seconds, decoded to mono signed 16-bit PCM at 16 kHz and padded to a 20 ms
+boundary. The resulting fixture attenuates the solo clips to three-quarters,
+adds silence, halves and mixes two excerpts with a 300 ms offset, and repeats
+one excerpt after 30 minutes. It is a derivative; retain attribution.
+
+Before running, prepare a **dedicated, proof-owned** application-data root on
+the target, with the app's `multilingual_ctc` ASR and WeSpeaker model installed.
+The selected model directory is
+`<root>/data/ru.gigaam.gui.rustliquid/models/multilingual_ctc` on Linux and
+`<root>\roaming\ru.gigaam.gui.rustliquid\models\multilingual_ctc` on Windows.
+Also provision the exact
+[`powerset_fp32_tract.onnx`](https://github.com/ekhodzitsky/polyvoice/releases/download/models-tract-v1/powerset_fp32_tract.onnx)
+there; SHA-256 is
+`d5335de334a24470b1f0326f72e513c59e156308a78ba3e1626851f570696ce4`.
+The controller checks this hash and the bundled pipeline's pinned WeSpeaker
+hash, and asks the application read-only whether its ASR model is installed.
+It refuses a pre-existing `gigaam-private-*` scratch directory. It does not
+copy or remove models or the supplied app-data root. Provisioning may need
+network access; the proof itself needs no fixture download. For an offline
+claim, block application outbound access externally while retaining loopback
+WebDriver access; preflight checks alone do not enforce network isolation.
+
+On Linux use the same GUI dependencies, `tauri-driver`, extracted `AppRun`, Xvfb
+and Openbox as `rust-liquid-ui-proof.yml`. With `PROOF_APP` and
+`PROOF_APP_DATA` set to absolute paths:
+
+```sh
+dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+  openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+  exec /usr/bin/python3 packaging/rust-liquid/long-ui-proof.py \
+    --app "$PROOF_APP" --app-data "$PROOF_APP_DATA" \
+    --diagnostics "$GITHUB_WORKSPACE/long-proof-diagnostics" --timeout 3600
+'
+```
+
+On Windows use the installed NSIS executable, matching Edge WebDriver,
+`tauri-driver`, `pywinauto` and an accessible input desktop:
+
+```powershell
+python packaging/rust-liquid/long-ui-proof.py `
+  --app "$env:PROOF_APP" --app-data "$env:PROOF_APP_DATA" `
+  --diagnostics "$env:GITHUB_WORKSPACE/long-proof-diagnostics" --timeout 3600
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+```
+
+`--sources` may point to the same fixture at the candidate's checked-out source
+revision. The controller cancels one real long-path job after seeing private
+scratch, checks cancellation and cleanup, then reruns it to completion. It
+checks TXT against the visible UI and its listed paths, JSON word chronology
+and statuses, two distinct source speakers, the same-speaker return including
+after 30 minutes, and SRT late timestamps and ambiguous labels. At least one
+recognized word must be marked overlap where both independently sourced signals
+are energetic for at least 80% of its duration; such words must not be forced
+to one speaker. The energy reference uses 20 ms source frames with RMS at least
+600 in unattenuated PCM: it is a proxy, not human speech annotation or DER.
+The excerpt and model windows were previously used in development and are not
+an independent holdout. Most of the recording is silence: success would not
+prove general diarization quality, continuous-hour memory/runtime behavior,
+GPU operation, or every cancellation/error cleanup path. A failure is evidence
+to investigate, not permission to relax the checks. If forced termination leaves
+scratch, inspect it in the dedicated app-data root; the controller does not
+silently delete it.
+
+The small oracle-regression checks, which do **not** execute a packaged app, are:
+
+```sh
+python -m pytest -q tests/test_rust_liquid_long_proof.py
+```
