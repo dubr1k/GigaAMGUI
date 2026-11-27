@@ -4,6 +4,9 @@ name: Rust Liquid packaged UI proof
 # Manual dispatch accepts a successful, trusted candidate-build run ID. Never
 # execute a PR/fork artifact in this privileged workflow_run context.
 on:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths: [.github/workflows/rust-liquid-ui-proof.yml, packaging/rust-liquid/long-ui-proof.py, packaging/rust-liquid/ui-proof.py, tests/fixtures/rust_liquid_long_sources.json]
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -22,13 +25,15 @@ permissions:
 jobs:
   packaged-ui:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
        contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event))
     name: Installed candidate UI (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 70
+    # Includes the unchanged short proof, one real model-warming run, and
+    # one >30-minute-input long-path proof; each long step is bounded below.
+    timeout-minutes: 210
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +49,7 @@ jobs:
         id: source
         uses: actions/github-script@v8
         env:
-          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id || '45970863537' }}
         with:
           script: |
             const id = process.env.SOURCE_RUN_ID;
@@ -200,6 +205,111 @@ jobs:
             --fixture "$env:GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" `
             --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare Linux long-proof models through the installed UI
+        if: runner.os == 'Linux'
+        timeout-minutes: 40
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          export PROOF_APP_DATA="$RUNNER_TEMP/rust-liquid-long-app-data"
+          test ! -e "$PROOF_APP_DATA"
+          mkdir "$PROOF_APP_DATA"
+          echo "PROOF_APP_DATA=$PROOF_APP_DATA" >> "$GITHUB_ENV"
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+            openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+            exec /usr/bin/python3 packaging/rust-liquid/ui-proof.py \
+              --app "$PROOF_APP" \
+              --fixture "$GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" \
+              --app-data "$PROOF_APP_DATA" --model multilingual_ctc --diarization \
+              --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics/model-prepare" --timeout 1800
+          '
+      - name: Prepare Windows long-proof models through the installed UI
+        if: runner.os == 'Windows'
+        timeout-minutes: 40
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'rust-liquid-long-app-data'
+          if (Test-Path $root) { throw 'Long proof app-data root already exists' }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          "PROOF_APP_DATA=$root" >> $env:GITHUB_ENV
+          python packaging/rust-liquid/ui-proof.py `
+            --app "$env:PROOF_APP" `
+            --fixture "$env:GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" `
+            --app-data "$root" --model multilingual_ctc --diarization `
+            --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics/model-prepare" --timeout 1800
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Provision pinned Linux segmentation model
+        if: runner.os == 'Linux'
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$PROOF_APP_DATA/data/ru.gigaam.gui.rustliquid/models/multilingual_ctc"
+          test -d "$dir"
+          test ! -e "$dir/powerset_fp32_tract.onnx"
+          temporary="$(mktemp "$dir/.long-proof-segmentation.XXXXXX")"
+          trap 'rm -f "$temporary"' EXIT
+          curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+            --connect-timeout 20 --max-time 600 \
+            'https://github.com/ekhodzitsky/polyvoice/releases/download/models-tract-v1/powerset_fp32_tract.onnx' \
+            -o "$temporary"
+          echo "d5335de334a24470b1f0326f72e513c59e156308a78ba3e1626851f570696ce4  $temporary" | sha256sum -c -
+          mv "$temporary" "$dir/powerset_fp32_tract.onnx"
+          trap - EXIT
+      - name: Provision pinned Windows segmentation model
+        if: runner.os == 'Windows'
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:PROOF_APP_DATA 'roaming/ru.gigaam.gui.rustliquid/models/multilingual_ctc'
+          if (!(Test-Path -PathType Container $dir)) { throw 'Prepared model directory is missing' }
+          $target = Join-Path $dir 'powerset_fp32_tract.onnx'
+          $temporary = Join-Path $dir '.long-proof-segmentation.download'
+          if ((Test-Path $target) -or (Test-Path $temporary)) { throw 'Segmentation model or temporary file already exists' }
+          try {
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 600 `
+              'https://github.com/ekhodzitsky/polyvoice/releases/download/models-tract-v1/powerset_fp32_tract.onnx' `
+              -OutFile $temporary
+            if ((Get-FileHash -Algorithm SHA256 $temporary).Hash -ne 'd5335de334a24470b1f0326f72e513c59e156308a78ba3e1626851f570696ce4') {
+              throw 'Segmentation model SHA-256 mismatch'
+            }
+            Move-Item -LiteralPath $temporary -Destination $target
+          } finally {
+            if (Test-Path $temporary) { Remove-Item -LiteralPath $temporary -Force }
+          }
+      - name: Exercise Linux packaged long diarization
+        if: runner.os == 'Linux'
+        timeout-minutes: 80
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+            openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+            exec /usr/bin/python3 packaging/rust-liquid/long-ui-proof.py \
+              --app "$PROOF_APP" --app-data "$PROOF_APP_DATA" \
+              --sources "$GITHUB_WORKSPACE/tests/fixtures/rust_liquid_long_sources.json" \
+              --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 3600
+          '
+      - name: Exercise Windows packaged long diarization
+        if: runner.os == 'Windows'
+        timeout-minutes: 80
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python packaging/rust-liquid/long-ui-proof.py `
+            --app "$env:PROOF_APP" --app-data "$env:PROOF_APP_DATA" `
+            --sources "$env:GITHUB_WORKSPACE/tests/fixtures/rust_liquid_long_sources.json" `
+            --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 3600
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload diagnostics if UI proof failed
         if: failure()
         uses: actions/upload-artifact@v7
@@ -212,4 +322,5 @@ jobs:
         shell: bash
         run: |
           echo 'The packaged application selected the repository WAV and a fresh output directory through native dialogs, ran GigaAM and saved a nonempty transcript matching the visible result.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'The Python controller is external to the application. This proves one CPU/file/TXT path only, not GPU, live audio, diarization or other formats.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A second UI run prepared real multilingual and speaker models. A long UI run cancelled and cleaned real scratch, then checked a >30-minute synthetic-silence fixture, returning speakers, ambiguous/overlap labels and absolute TXT/JSON/SRT output.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The external Python controller is not an app backend. The long sample is short attributed read-speech clips with a long silent gap, not a quality benchmark, continuous-hour performance proof, GPU or live-audio coverage.' >> "$GITHUB_STEP_SUMMARY"

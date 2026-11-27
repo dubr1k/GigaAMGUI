@@ -4,7 +4,7 @@
 The Python process is only the CI test controller: it does not provide an ASR
 backend to the application. tauri-driver launches the packaged application;
 WebDriver clicks its controls, and the OS file chooser is driven separately.
-The fresh app-data directory forces the application to download its own model.
+By default a fresh app-data directory forces the app to download its own model.
 Requires tauri-driver, the platform WebDriver, and an interactive desktop. On
 Linux also requires Xvfb, xdotool and a window manager; on Windows pywinauto.
 """
@@ -130,12 +130,12 @@ class WebDriver:
         if sys.platform == "win32":
             env["APPDATA"] = str(data_dir / "roaming")
             env["LOCALAPPDATA"] = str(data_dir / "local")
-            Path(env["APPDATA"]).mkdir(parents=True)
-            Path(env["LOCALAPPDATA"]).mkdir(parents=True)
+            Path(env["APPDATA"]).mkdir(parents=True, exist_ok=True)
+            Path(env["LOCALAPPDATA"]).mkdir(parents=True, exist_ok=True)
         else:
             for name, suffix in (("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"), ("XDG_CACHE_HOME", "cache")):
                 env[name] = str(data_dir / suffix)
-                Path(env[name]).mkdir(parents=True)
+                Path(env[name]).mkdir(parents=True, exist_ok=True)
             env["GDK_BACKEND"] = "x11"
             env["WEBKIT_DISABLE_DMABUF_RENDERER"] = "1"
             env["LIBGL_ALWAYS_SOFTWARE"] = "1"
@@ -542,7 +542,7 @@ def same_path(first, second):
     return os.path.normcase(os.path.normpath(str(first))) == os.path.normcase(os.path.normpath(str(second)))
 
 
-def run_proof(app, fixture, diagnostics, timeout):
+def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_rnnt", diarization=False):
     check_display()
     if not app.is_file() or not fixture.is_file() or fixture.stat().st_size == 0:
         raise RuntimeError(f"Application or nonempty fixture is missing: {app}, {fixture}")
@@ -555,7 +555,7 @@ def run_proof(app, fixture, diagnostics, timeout):
         root = Path(temporary)
         output = root / "output"
         output.mkdir()
-        driver = WebDriver(app, native_driver, root / "app-data", diagnostics / "driver.log")
+        driver = WebDriver(app, native_driver, app_data or root / "app-data", diagnostics / "driver.log")
         try:
             driver.start()
             def processing_ready():
@@ -567,10 +567,15 @@ def run_proof(app, fixture, diagnostics, timeout):
                     raise
 
             wait_for("processing page", processing_ready, 30)
-            if driver.property("#asr-model", "value") != "v3_e2e_rnnt":
-                raise RuntimeError("Expected the GigaAM v3 E2E RNNT model to be selected")
-            if driver.state("#asr-diarization", "selected"):
-                raise RuntimeError("Diarization unexpectedly enabled for this non-diarized proof")
+            if model != "v3_e2e_rnnt":
+                driver.click("#asr-model")
+                driver.click(f'#asr-model option[value="{model}"]')
+            if driver.property("#asr-model", "value") != model:
+                raise RuntimeError(f"Expected model {model} to be selected")
+            if diarization and not driver.state("#asr-diarization", "selected"):
+                driver.click("label.switch-row")
+            if driver.state("#asr-diarization", "selected") != diarization:
+                raise RuntimeError(f"Diarization selection did not match {diarization}")
             if not driver.state('.output-card input[value="txt"]', "selected"):
                 raise RuntimeError("TXT output is not selected")
 
@@ -672,13 +677,17 @@ def main():
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--diagnostics", type=Path)
     parser.add_argument("--timeout", type=int, default=1800, help="seconds for model download and inference")
+    parser.add_argument("--app-data", type=Path, help="dedicated app-data root to retain model downloads")
+    parser.add_argument("--model", choices=("v3_e2e_rnnt", "multilingual_ctc"), default="v3_e2e_rnnt")
+    parser.add_argument("--diarization", action="store_true")
     args = parser.parse_args()
     if args.check_display:
         check_display()
         return
     if not args.app or not args.fixture or not args.diagnostics or args.timeout <= 0:
         parser.error("--app, --fixture, --diagnostics and a positive --timeout are required")
-    run_proof(args.app.resolve(), args.fixture.resolve(), args.diagnostics.resolve(), args.timeout)
+    run_proof(args.app.resolve(), args.fixture.resolve(), args.diagnostics.resolve(), args.timeout,
+              args.app_data.resolve() if args.app_data else None, args.model, args.diarization)
 
 
 if __name__ == "__main__":
