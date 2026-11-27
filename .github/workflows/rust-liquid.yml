@@ -85,6 +85,22 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Pin published model metadata for the candidate
+        run: |
+          set -euo pipefail
+          directory="$RUNNER_TEMP/rust-liquid-model-metadata"
+          mkdir -p "$directory"
+          base=https://github.com/dubr1k/GigaAMGUI/releases/download/rust-models-v1
+          for model in v4_rnnt multilingual_v2_rnnt; do
+            curl --fail --location --silent --show-error --max-filesize 2000000 \
+              "$base/$model-metadata.json" -o "$directory/$model.json"
+          done
+          echo "929f39721e93a2f61db16c2da2c4c3e4a0a019b9581734e4deb43f52b0979322  $directory/v4_rnnt.json" | sha256sum -c -
+          echo "ff8d7d1335258ce33bda406a90b27618481db74421d89fdd794a712c55b33ad3  $directory/multilingual_v2_rnnt.json" | sha256sum -c -
+          if [ "$RUNNER_OS" = Windows ]; then directory="$(cygpath -m "$directory")"; fi
+          echo "GIGAAM_V4_ASSETS=$directory/v4_rnnt.json" >> "$GITHUB_ENV"
+          echo "GIGAAM_MULTILINGUAL_V2_ASSETS=$directory/multilingual_v2_rnnt.json" >> "$GITHUB_ENV"
+          echo 'GIGAAM_REQUIRE_RUST_MODELS=1' >> "$GITHUB_ENV"
       - name: Download the matching FFmpeg build and source
         uses: actions/download-artifact@v6
         with:
