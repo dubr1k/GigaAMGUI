@@ -9,7 +9,6 @@ import argparse
 import array
 import base64
 import hashlib
-import http.client
 import importlib.util
 import json
 import math
@@ -378,27 +377,16 @@ def run_proof(app, sources, app_data, diagnostics, timeout):
             start()
             seen_scratch = False
             last_status = None
-            disconnected_polls = 0
             def complete():
-                nonlocal seen_scratch, last_status, disconnected_polls
+                nonlocal seen_scratch, last_status
                 seen_scratch = seen_scratch or bool(scratch_dirs(cache))
-                try:
-                    displayed = driver.state('[data-page="result"]', "displayed")
-                    status = None if displayed else driver.text("#progress-status")
-                    enabled = False if displayed else driver.state("#start-processing", "enabled")
-                except http.client.RemoteDisconnected:
-                    disconnected_polls += 1
-                    print(f"Read-only WebDriver poll disconnected ({disconnected_polls}/3)", flush=True)
-                    if disconnected_polls >= 3:
-                        raise
-                    return False
-                disconnected_polls = 0
-                if displayed:
+                if driver.state('[data-page="result"]', "displayed"):
                     return True
+                status = driver.text("#progress-status")
                 if status != last_status:
                     print(f"Application status: {status}", flush=True)
                     last_status = status
-                if enabled:
+                if driver.state("#start-processing", "enabled"):
                     raise RuntimeError(f"Processing ended without a result: {status}")
                 return False
             UI.wait_for("long diarization result", complete, timeout, interval=1)
