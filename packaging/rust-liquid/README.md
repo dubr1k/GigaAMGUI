@@ -2,13 +2,58 @@
 
 ## Experimental Community-1 export
 
-Community-1 is experimental and requires a locally prepared, authorized model
-bundle; the Rust application does not download it. Install the pinned build-only
-requirements in a separate Python 3.11 environment without replacing the
-application's existing pyannote dependencies:
+Community-1 is experimental. The Rust application requires a locally prepared,
+authorized model bundle and does not download or export it. The following
+build-time preparation requires this repository, Python 3.11, internet access,
+and a Hugging Face account approved for
+[Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1).
+Accept the model terms on that page first. Use only trusted model checkpoints:
+exporting them executes Python checkpoint-loading code.
+
+On Linux, from the repository root:
 
 ```sh
-python packaging/rust-liquid/community-export/export.py --snapshot SNAPSHOT --output NEW_EXPORT_DIR
+python3.11 -m venv .community-export
+.community-export/bin/python -m pip install -r packaging/rust-liquid/community-export/requirements.txt
+.community-export/bin/hf auth login
+.community-export/bin/hf download pyannote/speaker-diarization-community-1 \
+  README.md config.yaml segmentation/pytorch_model.bin embedding/pytorch_model.bin \
+  plda/plda.npz plda/xvec_transform.npz \
+  --revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee --local-dir community-snapshot
+root="${XDG_DATA_HOME:-$HOME/.local/share}/ru.gigaam.gui.rustliquid/models"
+mkdir -p "$root"
+.community-export/bin/python packaging/rust-liquid/community-export/export.py \
+  --snapshot "$PWD/community-snapshot" --output "$root/pyannote-community"
+```
+
+On Windows PowerShell, from the repository root:
+
+```powershell
+py -3.11 -m venv .community-export
+$python = ".\.community-export\Scripts\python.exe"
+$hf = ".\.community-export\Scripts\hf.exe"
+& $python -m pip install -r packaging/rust-liquid/community-export/requirements.txt
+& $hf auth login
+& $hf download pyannote/speaker-diarization-community-1 `
+  README.md config.yaml segmentation/pytorch_model.bin embedding/pytorch_model.bin `
+  plda/plda.npz plda/xvec_transform.npz `
+  --revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee --local-dir community-snapshot
+$root = Join-Path $env:APPDATA "ru.gigaam.gui.rustliquid\models"
+New-Item -ItemType Directory -Force -Path $root | Out-Null
+& $python packaging/rust-liquid/community-export/export.py `
+  --snapshot "$PWD\community-snapshot" --output (Join-Path $root "pyannote-community")
+```
+
+The login is interactive; do not paste a token into the command line. The export
+creates its destination exclusively and refuses to overwrite an existing bundle.
+The app checks file integrity and the source hashes recorded in the manifest.
+Those source hashes are self-reported and do not prove the origin of transformed
+graphs; obtain the snapshot through the authorized
+Hugging Face account. This manual preparation is not automatic model delivery.
+
+For experimental INT8, use a new output directory:
+
+```sh
 python packaging/rust-liquid/community-export/quantize.py --model-dir NEW_EXPORT_DIR --calibration-dir CALIBRATION --output-dir NEW_INT8_DIR
 ```
 
