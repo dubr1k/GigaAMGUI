@@ -31,8 +31,8 @@ jobs:
        contains(fromJSON('["push","workflow_dispatch"]'), github.event.workflow_run.event))
     name: Installed candidate UI (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    # Includes the long-path proof and two clean model-download/UI runs.
-    timeout-minutes: 330
+    # Includes the long-path proof, clean model downloads and the Community-1 UI proof.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -267,6 +267,56 @@ jobs:
             "$($link.Name)=$($link.Path)" >> $env:GITHUB_ENV
             Write-Host "Tauri known-folder path $($link.Path) -> $($link.Target)"
           }
+      - name: Verify automatic Community-1 delivery through the installed Linux UI
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          export PROOF_AUTO_APP_DATA="$(mktemp -d "$RUNNER_TEMP/rust-liquid-community-auto.XXXXXX")"
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+            openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+            exec /usr/bin/python3 packaging/rust-liquid/ui-proof.py \
+              --app "$PROOF_APP" --app-data "$PROOF_AUTO_APP_DATA" --community-download \
+              --fixture "$GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" \
+              --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics/community-download" --timeout 600
+          '
+      - name: Verify automatic Community-1 delivery through the installed Windows UI
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python packaging/rust-liquid/ui-proof.py `
+            --app "$env:PROOF_APP" --app-data "$env:PROOF_APP_DATA" --community-download `
+            --fixture "$env:GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" `
+            --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics/community-download" --timeout 600
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Retain the proof-owned data and restore empty targets for the existing proofs.
+          $expectedRoot = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'rust-liquid-long-app-data'))
+          if ([IO.Path]::GetFullPath($env:PROOF_APP_DATA) -ne $expectedRoot) { throw 'Unexpected proof app-data root' }
+          $holding = Join-Path $env:RUNNER_TEMP 'rust-liquid-community-auto-app-data'
+          if (Test-Path -LiteralPath $holding) { throw 'Community-1 proof holding directory already exists' }
+          $targets = @(
+            @{ Name = 'roaming'; Link = $env:PROOF_ROAMING_LINK; Target = (Join-Path $expectedRoot 'roaming/ru.gigaam.gui.rustliquid') },
+            @{ Name = 'local'; Link = $env:PROOF_LOCAL_LINK; Target = (Join-Path $expectedRoot 'local/ru.gigaam.gui.rustliquid') }
+          )
+          foreach ($target in $targets) {
+            $link = Get-Item -LiteralPath $target.Link -Force
+            if ($link.LinkType -ne 'Junction' -or $link.Target -ne $target.Target -or
+                !(Test-Path -LiteralPath $target.Target -PathType Container)) {
+              throw "Unexpected proof junction or target: $($target.Link)"
+            }
+          }
+          New-Item -ItemType Directory -Path $holding | Out-Null
+          foreach ($target in $targets) {
+            Move-Item -LiteralPath $target.Target -Destination (Join-Path $holding $target.Name)
+            New-Item -ItemType Directory -Path $target.Target | Out-Null
+          }
       - name: Exercise Windows UI and save a real transcript
         if: runner.os == 'Windows'
         shell: pwsh
@@ -279,7 +329,7 @@ jobs:
             --app-data "$env:PROOF_APP_DATA" `
             --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify missing Community-1 bundle through the installed Linux UI
+      - name: Verify incomplete Community-1 bundle through the installed Linux UI
         if: runner.os == 'Linux'
         shell: bash
         env:
@@ -293,7 +343,7 @@ jobs:
               --fixture "$GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" \
               --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics/community-missing" --timeout 1800
           '
-      - name: Verify missing Community-1 bundle through the installed Windows UI
+      - name: Verify incomplete Community-1 bundle through the installed Windows UI
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -442,6 +492,116 @@ jobs:
               --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics/$model" --timeout 2400
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Prepare pinned Community-1 bundle and attributed short fixture
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import array
+          import hashlib
+          import importlib.util
+          import os
+          import tempfile
+          import urllib.parse
+          import urllib.request
+          import wave
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          spec = importlib.util.spec_from_file_location(
+              "rust_liquid_long_ui_proof", workspace / "packaging/rust-liquid/long-ui-proof.py"
+          )
+          if spec is None or spec.loader is None:
+              raise ImportError("Cannot load the long UI proof fixture helpers")
+          proof = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(proof)
+          root = Path(tempfile.mkdtemp(prefix="rust-liquid-community-", dir=os.environ["RUNNER_TEMP"]))
+          bundle = root / "bundle"
+          (bundle / "tract").mkdir(parents=True)
+
+          class HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, msg, headers, newurl):
+                  if urllib.parse.urlsplit(newurl).scheme != "https":
+                      raise ValueError("Community-1 asset redirect is not HTTPS")
+                  return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+          opener = urllib.request.build_opener(HttpsOnlyRedirect())
+          base = "https://github.com/dubr1k/GigaAMGUI/releases/download/community-1-fp32-v1/"
+          assets = proof.UI.COMMUNITY_ASSETS
+          for asset, relative, expected_size, expected_hash in assets:
+              count = 0
+              digest = hashlib.sha256()
+              with opener.open(base + asset, timeout=60) as response, (bundle / relative).open("xb") as output:
+                  while True:
+                      block = response.read(min(1024 * 1024, expected_size - count + 1))
+                      if not block:
+                          break
+                      count += len(block)
+                      if count > expected_size:
+                          raise ValueError(f"Community-1 asset exceeds expected size: {asset}")
+                      digest.update(block)
+                      output.write(block)
+              if count != expected_size or digest.hexdigest() != expected_hash:
+                  raise ValueError(f"Community-1 asset size or SHA-256 mismatch: {asset}")
+              print(f"Verified Community-1 asset {asset}: {count} bytes, SHA-256 {digest.hexdigest()}")
+
+          # The checked-in LibriSpeech excerpts and their attribution are described in
+          # packaging/rust-liquid/README.md. Reuse the long proof's pinned PCM checks.
+          clips = proof.load_sources(workspace / "tests/fixtures/rust_liquid_long_sources.json")
+          order = (
+              "2035-147960-0005", "2035-147960-0006",
+              "7976-110124-0023", "7976-110124-0024",
+              "1673-143397-0002", "1673-143397-0003",
+          )
+          fixture = root / "community-two-speakers.wav"
+          with wave.open(str(fixture), "wb") as output:
+              output.setnchannels(1)
+              output.setsampwidth(2)
+              output.setframerate(proof.RATE)
+              output.writeframesraw(bytes(proof.RATE * 2 * 2 // 5))
+              previous_speaker = None
+              for ident in order:
+                  speaker = ident.split("-")[0]
+                  if previous_speaker is not None:
+                      gap = proof.RATE if speaker != previous_speaker else proof.RATE * 2 // 5
+                      output.writeframesraw(bytes(gap * 2))
+                  samples = array.array("h", (int(sample) * 3 // 4 for sample in clips[ident]))
+                  output.writeframesraw(proof.pcm_bytes(samples))
+                  previous_speaker = speaker
+              output.writeframesraw(bytes(proof.RATE * 2 * 2 // 5))
+
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
+              env.write(f"COMMUNITY_PROOF_BUNDLE={bundle}\n")
+              env.write(f"COMMUNITY_PROOF_FIXTURE={fixture}\n")
+          PY
+      - name: Exercise Community-1 through the installed Linux UI
+        if: runner.os == 'Linux'
+        timeout-minutes: 35
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+            openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+            exec /usr/bin/python3 packaging/rust-liquid/ui-proof.py \
+              --app "$PROOF_APP" --app-data "$PROOF_APP_DATA" --model multilingual_ctc \
+              --community-bundle "$COMMUNITY_PROOF_BUNDLE" --fixture "$COMMUNITY_PROOF_FIXTURE" \
+              --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics/community-bundle" --timeout 1800
+          '
+      - name: Exercise Community-1 through the installed Windows UI
+        if: runner.os == 'Windows'
+        timeout-minutes: 35
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python packaging/rust-liquid/ui-proof.py `
+            --app "$env:PROOF_APP" --app-data "$env:PROOF_APP_DATA" --model multilingual_ctc `
+            --community-bundle "$env:COMMUNITY_PROOF_BUNDLE" --fixture "$env:COMMUNITY_PROOF_FIXTURE" `
+            --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics/community-bundle" --timeout 1800
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Remove Windows proof junctions
         if: always() && runner.os == 'Windows'
         shell: pwsh
@@ -471,8 +631,11 @@ jobs:
         shell: bash
         run: |
           echo 'The packaged application selected the repository WAV and a fresh output directory through native dialogs, ran GigaAM and saved a nonempty transcript matching the visible result.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'An existing incomplete Community-1 bundle was rejected without output and its proof-owned file was verified unchanged.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'From a separate empty model root the installed app automatically downloaded all four Community-1 assets; sizes and SHA-256 hashes were checked independently, and ASR preparation was cancelled before inference.' >> "$GITHUB_STEP_SUMMARY"
           echo 'A second UI run prepared real multilingual and speaker models. A long UI run cancelled and cleaned real scratch, then checked a >30-minute synthetic-silence fixture, returning speakers, ambiguous/overlap labels and absolute TXT/JSON/SRT output.' >> "$GITHUB_STEP_SUMMARY"
           echo 'Both new models were downloaded to initially empty model directories and transcribed the short fixture through the packaged UI. This does not prove streaming or long-recording quality.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A separate Community-1 UI run used size- and SHA-256-verified public FP32 files and attributed LibriSpeech clips from three separated speakers; it required two distinct numbered labels, not diarization accuracy or the app download flow.' >> "$GITHUB_STEP_SUMMARY"
           echo 'The external Python controller is not an app backend. The long sample is short attributed read-speech clips with a long silent gap, not a quality benchmark, continuous-hour performance proof, GPU or live-audio coverage.' >> "$GITHUB_STEP_SUMMARY"
       - name: Record the successful installed-UI attestation
         if: ${{ success() }}

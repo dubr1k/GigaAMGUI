@@ -2,6 +2,10 @@
   "productName": "GigaAMGUI Rust Liquid",
   "identifier": "ru.gigaam.gui.rustliquid",
   "bundle": {
+    "resources": {
+      "../../licenses/Apache-2.0.txt": "licenses/Apache-2.0.txt",
+      "../../licenses/pyannote-community-NOTICES.txt": "licenses/pyannote-community-NOTICES.txt"
+    },
     "icon": [
       "../../packaging/rust-liquid/generated/icons/32x32.png",
       "../../packaging/rust-liquid/generated/icons/128x128.png",

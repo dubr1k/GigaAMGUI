@@ -1,6 +1,7 @@
 """Regression tests for the long UI proof's oracle, not a packaged-app proof."""
 
 import copy
+import hashlib
 import importlib.util
 from pathlib import Path
 
@@ -39,6 +40,115 @@ def test_community_bundle_proof_rejects_incomplete_source(tmp_path):
     source.mkdir()
     with pytest.raises(RuntimeError, match="incomplete"):
         proof.UI.prepare_community_bundle(tmp_path / "app-data", source)
+
+
+def test_community_download_proof_requires_empty_model_root(tmp_path):
+    root = tmp_path / "app-data"
+    models = proof.UI._require_empty_model_root(root)
+    models.mkdir(parents=True)
+    assert proof.UI._require_empty_model_root(root) == models
+    existing = models / "user-file"
+    existing.write_bytes(b"user data")
+    with pytest.raises(RuntimeError, match="empty model root"):
+        proof.UI._require_empty_model_root(root)
+    assert existing.read_bytes() == b"user data"
+
+
+def community_test_assets(root):
+    assets = []
+    for relative, content in (
+        ("export.json", b"manifest"),
+        ("plda.json", b"plda"),
+        ("tract/segmentation.onnx", b"segmentation"),
+        ("tract/embedding.onnx", b"embedding"),
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        assets.append((path.name, relative, len(content), hashlib.sha256(content).hexdigest()))
+    return tuple(assets)
+
+
+def test_community_download_proof_verifies_all_files(tmp_path):
+    root = tmp_path / "bundle"
+    assets = community_test_assets(root)
+    proof.UI.verify_community_assets(root, assets)
+
+
+@pytest.mark.parametrize("damage", ["size", "hash", "extra", "missing"])
+def test_community_download_proof_rejects_changed_files(tmp_path, damage):
+    root = tmp_path / "bundle"
+    assets = community_test_assets(root)
+    manifest = root / "export.json"
+    if damage == "size":
+        manifest.write_bytes(b"short")
+    elif damage == "hash":
+        manifest.write_bytes(b"Manifest")
+    elif damage == "extra":
+        (root / "extra").write_bytes(b"unexpected")
+    else:
+        manifest.unlink()
+    with pytest.raises(RuntimeError):
+        proof.UI.verify_community_assets(root, assets)
+
+
+def test_incomplete_community_proof_removes_only_its_unchanged_bundle(tmp_path):
+    root = tmp_path / "app-data"
+    with proof.UI.incomplete_community_bundle(root) as target:
+        sentinel = target / "export.json"
+        assert sentinel.read_bytes() == b"Rust Liquid incomplete Community-1 proof bundle\n"
+        assert set(target.iterdir()) == {sentinel}
+    assert not target.exists()
+
+
+def test_incomplete_community_proof_refuses_an_existing_bundle(tmp_path):
+    root = tmp_path / "app-data"
+    base = "roaming" if proof.UI.sys.platform == "win32" else "data"
+    target = root / base / "ru.gigaam.gui.rustliquid/models/pyannote-community"
+    target.mkdir(parents=True)
+    existing = target / "user-file"
+    existing.write_bytes(b"user data")
+    with pytest.raises(RuntimeError, match="already exists"):
+        with proof.UI.incomplete_community_bundle(root):
+            pytest.fail("Existing bundle must not be entered")
+    assert existing.read_bytes() == b"user data"
+
+
+@pytest.mark.parametrize("drift", ["sentinel", "extra"])
+def test_incomplete_community_proof_preserves_changed_bundle(tmp_path, drift):
+    root = tmp_path / "app-data"
+    with pytest.raises(RuntimeError, match="bundle changed"):
+        with proof.UI.incomplete_community_bundle(root) as target:
+            sentinel = target / "export.json"
+            if drift == "sentinel":
+                sentinel.write_bytes(b"changed")
+            else:
+                (target / "extra").write_bytes(b"do not delete")
+    assert target.is_dir()
+    assert sentinel.read_bytes() == (b"changed" if drift == "sentinel"
+                                     else b"Rust Liquid incomplete Community-1 proof bundle\n")
+    if drift == "extra":
+        assert (target / "extra").read_bytes() == b"do not delete"
+
+
+def test_incomplete_community_proof_preserves_replaced_directory(tmp_path):
+    root = tmp_path / "app-data"
+    with pytest.raises(RuntimeError, match="bundle changed"):
+        with proof.UI.incomplete_community_bundle(root) as target:
+            original = target.with_name("original-bundle")
+            target.rename(original)
+            target.mkdir()
+            (target / "export.json").write_bytes(b"Rust Liquid incomplete Community-1 proof bundle\n")
+    assert (original / "export.json").is_file()
+    assert (target / "export.json").is_file()
+
+
+def test_incomplete_community_proof_preserves_bundle_if_proof_fails(tmp_path):
+    root = tmp_path / "app-data"
+    with pytest.raises(ValueError, match="proof failed"):
+        with proof.UI.incomplete_community_bundle(root) as target:
+            raise ValueError("proof failed")
+    assert (target / "export.json").is_file()
 
 
 @pytest.mark.parametrize("transcript", [

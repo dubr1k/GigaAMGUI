@@ -19,6 +19,10 @@ use crate::asr_zapformer::ZapformerModel;
 use crate::{asr_zapformer_assets, asr_zapformer_stream::ZapformerStream};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
+#[path = "asr_community_assets.rs"]
+mod community_assets;
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 #[path = "asr_long.rs"]
 mod long_diarization;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -401,12 +405,14 @@ pub async fn transcribe(app: AppHandle, state: State<'_, AsrState>, request: Job
     let community_dir = model_root.join("pyannote-community");
     let model_dir = model_root.join(request.model_id);
     let model_dir = model_dir.to_str().ok_or_else(|| "Путь к каталогу модели не поддерживается".to_string())?.to_owned();
+    emit_progress(&app, &request.job_id, "preparing", None, None, Some("Подготовка распознавания"));
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if request.diarization && request.diarization_model.is_community() {
-        long_diarization::check_community_bundle(&community_dir)?;
+        emit_progress(&app, &request.job_id, "downloading_speaker_model", None, None, Some("Подготовка Community-1; при первой установке требуется интернет"));
+        community_assets::ensure(&community_dir, &cancelled).await?;
+        check_cancelled(&cancelled)?;
     }
 
-    emit_progress(&app, &request.job_id, "preparing", None, None, Some("Подготовка распознавания"));
     let bundle: Option<PathBuf> = match request.variant {
         SelectedModel::Core(variant) => {
             if !model::is_usable_present(variant, Path::new(&model_dir)) {

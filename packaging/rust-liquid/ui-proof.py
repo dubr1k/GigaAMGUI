@@ -11,6 +11,7 @@ Linux also requires Xvfb, xdotool and a window manager; on Windows pywinauto.
 
 import argparse
 import base64
+import hashlib
 import ctypes
 import json
 import os
@@ -26,11 +27,18 @@ import traceback
 import urllib.error
 import urllib.request
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
+COMMUNITY_ASSETS = (
+    ("export.json", "export.json", 2882, "99cf740b8093e4a4c7491fcfdd389887941a470ac651887694384940a2dea7ad"),
+    ("plda.json", "plda.json", 983502, "8cadc0a017fce6e9fc9f1802b40b7a2a367889ec6f6e01b31f7b5b5adeead17a"),
+    ("segmentation.onnx", "tract/segmentation.onnx", 5984909, "8e8ddc4b066e14bf6fdc0e97a93206326de6346f7b99df9f06a5f9903d3ae2b5"),
+    ("embedding.onnx", "tract/embedding.onnx", 26553403, "26ce0859c0afd8084e60b3ccd9d9f0a1999785ac18b13e1abf51cca50caea5af"),
+)
+
 
 def require_community_speakers(transcript):
     speakers = {int(value) for value in re.findall(r"\[SPEAKER_([0-9]+)\]", transcript)}
@@ -598,10 +606,53 @@ def choose(driver, selector, path, folder=False):
 def same_path(first, second):
     return os.path.normcase(os.path.normpath(str(first))) == os.path.normcase(os.path.normpath(str(second)))
 
+def _community_bundle_directory(data_dir):
+    base = data_dir / ("roaming" if sys.platform == "win32" else "data")
+    return base / "ru.gigaam.gui.rustliquid" / "models" / "pyannote-community"
+
+
+def _require_empty_model_root(data_dir):
+    root = _community_bundle_directory(data_dir).parent
+    if root.is_symlink() or (root.exists() and (not root.is_dir() or any(root.iterdir()))):
+        raise RuntimeError(f"Community-1 download proof requires an empty model root: {root}")
+    return root
+
+
+def verify_community_assets(directory, assets):
+    """Check the independently pinned files and reject extra or linked entries."""
+    tract = directory / "tract"
+    if (directory.is_symlink() or not directory.is_dir()
+            or set(directory.iterdir()) != {directory / "export.json", directory / "plda.json", tract}
+            or tract.is_symlink() or not tract.is_dir()
+            or set(tract.iterdir()) != {tract / "segmentation.onnx", tract / "embedding.onnx"}):
+        raise RuntimeError(f"Unexpected Community-1 download layout: {directory}")
+    for _, relative, expected_size, expected_hash in assets:
+        path = directory / relative
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != expected_size:
+            raise RuntimeError(f"Community-1 downloaded file missing or wrong size: {relative}")
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() != expected_hash:
+            raise RuntimeError(f"Community-1 downloaded file SHA-256 mismatch: {relative}")
+        print(f"Verified app-downloaded Community-1 file {relative}: {expected_size} bytes, SHA-256 {expected_hash}")
+
+
+def require_uninstalled_model(driver, model):
+    models = driver.command("POST", "/execute/async", {"script": """
+        const done = arguments[arguments.length - 1];
+        window.__TAURI__.core.invoke('list_models').then(done, e => done({error: String(e)}));
+    """, "args": []}, timeout=30)
+    if not isinstance(models, list) or not any(
+        item.get("id") == model and item.get("installed") is False for item in models
+    ):
+        raise RuntimeError(f"Download proof requires an uninstalled ASR model {model}: {models!r}")
+
+
 def prepare_community_bundle(data_dir, source=None):
     """Stage only an explicitly supplied local bundle in the proof-owned data root."""
-    base = data_dir / ("roaming" if sys.platform == "win32" else "data")
-    destination = base / "ru.gigaam.gui.rustliquid" / "models" / "pyannote-community"
+    destination = _community_bundle_directory(data_dir)
     if destination.exists() or destination.is_symlink():
         raise RuntimeError(f"Community-1 proof destination already exists: {destination}")
     if source is None:
@@ -618,8 +669,47 @@ def prepare_community_bundle(data_dir, source=None):
 
 
 
+@contextmanager
+def incomplete_community_bundle(data_dir):
+    """Create a proof-owned incomplete bundle and remove it only if unchanged."""
+    destination = _community_bundle_directory(data_dir)
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError(f"Community-1 proof destination already exists: {destination}")
+    destination.mkdir(parents=True)
+    sentinel = destination / "export.json"
+    contents = b"Rust Liquid incomplete Community-1 proof bundle\n"
+    with sentinel.open("xb") as output:
+        output.write(contents)
+
+    def identity(path):
+        stat = path.lstat()
+        return stat.st_dev, stat.st_ino, stat.st_mode, stat.st_size, stat.st_mtime_ns
+
+    directory_identity = identity(destination)
+    sentinel_identity = identity(sentinel)
+    yield destination
+
+    try:
+        unchanged = (
+            not destination.is_symlink()
+            and destination.is_dir()
+            and identity(destination) == directory_identity
+            and set(destination.iterdir()) == {sentinel}
+            and not sentinel.is_symlink()
+            and sentinel.is_file()
+            and identity(sentinel) == sentinel_identity
+            and sentinel.read_bytes() == contents
+        )
+    except OSError as error:
+        raise RuntimeError(f"Incomplete Community-1 proof bundle changed: {destination}") from error
+    if not unchanged:
+        raise RuntimeError(f"Incomplete Community-1 proof bundle changed: {destination}")
+    sentinel.unlink()
+    destination.rmdir()
+
+
 def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_rnnt",
-              diarization=False, community_missing=False, community_bundle=None):
+              diarization=False, community_missing=False, community_bundle=None, community_download=False):
     check_display()
     if not app.is_file() or not fixture.is_file() or fixture.stat().st_size == 0:
         raise RuntimeError(f"Application or nonempty fixture is missing: {app}, {fixture}")
@@ -628,12 +718,19 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
     if not native_driver:
         raise RuntimeError(f"Required native WebDriver is missing from PATH: {native_name}")
     diagnostics.mkdir(parents=True, exist_ok=True)
-    with proof_temporary_directory() as temporary:
+    with proof_temporary_directory() as temporary, ExitStack() as proof_cleanup:
         root = Path(temporary)
         output = root / "output"
         output.mkdir()
         data_dir = app_data or root / "app-data"
-        if community_missing or community_bundle is not None:
+        if community_download:
+            if app_data is None:
+                raise RuntimeError("Community-1 download proof requires dedicated app-data")
+            model_root = _require_empty_model_root(data_dir)
+            downloaded_bundle = _community_bundle_directory(data_dir)
+        if community_missing:
+            proof_cleanup.enter_context(incomplete_community_bundle(data_dir))
+        elif community_bundle is not None:
             prepare_community_bundle(data_dir, community_bundle)
         driver = WebDriver(app, native_driver, data_dir, diagnostics / "driver.log")
         try:
@@ -665,7 +762,7 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
                 driver.click("label.switch-row")
             if driver.state("#asr-diarization", "selected") != diarization:
                 raise RuntimeError(f"Diarization selection did not match {diarization}")
-            if community_missing or community_bundle is not None:
+            if community_missing or community_bundle is not None or community_download:
                 driver.click("#asr-diarization-model")
                 driver.click('#asr-diarization-model option[value="pyannote-community"]')
                 if driver.property("#asr-diarization-model", "value") != "pyannote-community":
@@ -717,6 +814,10 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
                 driver.property("#output-directory", "value"), output), 30)
             if list(output.iterdir()):
                 raise RuntimeError("Proof output directory was not empty before starting")
+            if community_download:
+                require_uninstalled_model(driver, model)
+                if downloaded_bundle.exists() or downloaded_bundle.is_symlink():
+                    raise RuntimeError("Community-1 download destination was populated before the UI start")
 
             driver.click("#start-processing")
             if community_missing:
@@ -727,11 +828,38 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
                     if not driver.state("#start-processing", "enabled"):
                         return False
                     if list(output.iterdir()):
-                        raise RuntimeError("Missing Community-1 bundle produced output")
+                        raise RuntimeError("Incomplete Community-1 bundle produced output")
                     return True
 
-                wait_for("missing Community-1 bundle error", missing_bundle_reported, 30)
-                print("PASS: selected Community-1 reports a missing local bundle", flush=True)
+                wait_for("incomplete Community-1 bundle error", missing_bundle_reported, 30)
+                print("Community-1 rejected an incomplete local bundle; checking preservation", flush=True)
+                return
+            if community_download:
+                def ready_to_cancel():
+                    status = driver.text("#progress-status")
+                    if driver.state("#start-processing", "enabled"):
+                        raise RuntimeError(f"Download proof ended before cancellation: {status}")
+                    if status == "Загрузка модели; требуется подключение к интернету":
+                        if not downloaded_bundle.is_dir() or downloaded_bundle.is_symlink():
+                            raise RuntimeError("ASR download started without a published Community-1 bundle")
+                        return driver.state("#cancel-processing", "enabled")
+                    if status == "Загрузка модели в память" or "распознавание" in status.lower():
+                        raise RuntimeError(f"Download proof advanced toward inference before cancellation: {status}")
+                    return False
+
+                wait_for("published Community-1 bundle and ASR download", ready_to_cancel, timeout, interval=0.1)
+                driver.click("#cancel-processing")
+                wait_for("download proof cancellation", lambda: driver.state("#start-processing", "enabled"), 120)
+                status = driver.text("#progress-status")
+                if ("отмен" not in status.lower() or driver.state('[data-page="result"]', "displayed")
+                        or list(output.iterdir())):
+                    raise RuntimeError(f"Download proof cancellation was not clean: {status}")
+                require_uninstalled_model(driver, model)
+                if list(model_root.glob(".community-1-install-*")):
+                    raise RuntimeError("Community-1 installer left staging files after publication")
+                verify_community_assets(downloaded_bundle, COMMUNITY_ASSETS)
+                print("PASS: installed UI downloaded Community-1 from an empty model root; "
+                      "ASR download was cancelled before inference", flush=True)
                 return
             last_status = None
 
@@ -809,9 +937,11 @@ def main():
     parser.add_argument("--diarization", action="store_true")
     community = parser.add_mutually_exclusive_group()
     community.add_argument("--community-missing", action="store_true",
-                           help="check the missing-bundle error through the installed UI")
+                           help="check that an incomplete local bundle is rejected without replacement")
     community.add_argument("--community-bundle", type=Path,
                            help="local authorized export; never downloaded or uploaded")
+    community.add_argument("--community-download", action="store_true",
+                           help="verify automatic Community-1 delivery, then cancel before inference")
     args = parser.parse_args()
     if args.check_display:
         check_display()
@@ -820,8 +950,9 @@ def main():
         parser.error("--app, --fixture, --diagnostics and a positive --timeout are required")
     run_proof(args.app.resolve(), args.fixture.resolve(), args.diagnostics.resolve(), args.timeout,
               args.app_data.resolve() if args.app_data else None, args.model,
-              args.diarization or args.community_missing or args.community_bundle is not None,
-              args.community_missing, args.community_bundle.resolve() if args.community_bundle else None)
+              args.diarization or args.community_missing or args.community_bundle is not None or args.community_download,
+              args.community_missing, args.community_bundle.resolve() if args.community_bundle else None,
+              args.community_download)
 
 
 if __name__ == "__main__":

@@ -128,6 +128,8 @@ checkpoints/
 
 # Output files
 *.txt
+!licenses/Apache-2.0.txt
+!licenses/pyannote-community-NOTICES.txt
 !requirements.txt
 !requirements-community.txt
 !requirements-tui.txt

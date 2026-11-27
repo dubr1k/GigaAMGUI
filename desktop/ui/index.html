@@ -90,13 +90,13 @@
                   <p id="asr-diarization-wespeaker-help" class="muted">WeSpeaker: дополнительная модель загружается при необходимости.</p>
                   <div id="asr-diarization-community-help" hidden>
                     <div class="field">
-                      <p class="muted">Экспериментально, только Windows и Linux. Нужен локальный экспорт авторизованного Community-1; приложение его не загружает.</p>
+                      <p class="muted">Экспериментально, только Windows и Linux; качество разделения говорящих может быть нестабильным. При первой обработке с выбранной Community-1 закреплённая версия модели FP32 загружается автоматически — требуется интернет.</p>
                       <p class="muted">Возможное наложение помечается [SPEAKER_OVERLAP]: участники не перечисляются, отдельные голоса и тексты не восстанавливаются.</p>
                       <details class="muted">
-                        <summary>Подготовка и расположение пакета</summary>
+                        <summary>Расположение и ручная подготовка пакета</summary>
                         <div class="field">
-                          <p>Экспорт закреплённого снимка <code>3533c8cf<wbr>8e369892<wbr>e6b79ff1<wbr>bf80f7b0<wbr>286a54ee</code> готовится отдельно скриптом <code>packaging/<wbr>rust-liquid/<wbr>community-export/<wbr>export.py</code> из исходного репозитория.</p>
-                          <p>Поместите <code>export.json</code>, <code>plda.json</code>, <code>tract/<wbr>segmentation.onnx</code> и <code>tract/<wbr>embedding.onnx</code> в <code>models/<wbr>pyannote-community</code> внутри папки данных приложения.</p>
+                          <p>Вместо автоматической загрузки можно использовать локально подготовленный экспорт закреплённого снимка <code>3533c8cf<wbr>8e369892<wbr>e6b79ff1<wbr>bf80f7b0<wbr>286a54ee</code>, созданный скриптом <code>packaging/<wbr>rust-liquid/<wbr>community-export/<wbr>export.py</code> из исходного репозитория.</p>
+                          <p>Для ручной установки поместите <code>export.json</code>, <code>plda.json</code>, <code>tract/<wbr>segmentation.onnx</code> и <code>tract/<wbr>embedding.onnx</code> в <code>models/<wbr>pyannote-community</code> внутри папки данных приложения.</p>
                           <p>Для Rust Liquid папка данных: Windows — <code>%APPDATA%\<wbr>ru.gigaam.gui.rustliquid</code>; Linux — <code>$XDG_DATA_HOME/<wbr>ru.gigaam.gui.rustliquid</code> (обычно <code>~/.local/share/<wbr>ru.gigaam.gui.rustliquid</code>).</p>
                         </div>
                       </details>

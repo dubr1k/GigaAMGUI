@@ -1,6 +1,6 @@
 //! Offline Community-1 inference on the shared canonical 16 kHz timeline.
-//! The model bundle must be exported by the user from the authorized snapshot;
-//! this module never downloads or redistributes model weights.
+//! The model bundle is provisioned separately by the application or supplied
+//! locally; this module only loads and verifies it.
 //!
 //! Segmentation aggregation and reconstruction are adapted from pyannote.audio
 //! 4.0.7 `core/inference.py`, `pipelines/speaker_diarization.py` and

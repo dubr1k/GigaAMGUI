@@ -2,10 +2,14 @@
 
 ## Experimental Community-1 export
 
-Community-1 is experimental. The Rust application requires a locally prepared,
-authorized model bundle and does not download or export it. The following
-build-time preparation requires this repository, Python 3.11, internet access,
-and a Hugging Face account approved for
+Community-1 is experimental. On Windows and Linux, the Rust application
+downloads a pinned FP32 model bundle on first use when no bundle is installed;
+internet access is required for that download. It verifies asset sizes and
+SHA-256 hashes before publishing the bundle. An existing incomplete bundle is
+not overwritten and must be corrected or moved by the user.
+
+Alternatively, prepare an authorized model bundle locally using this repository,
+Python 3.11, internet access and a Hugging Face account approved for
 [Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1).
 Accept the model terms on that page first. The exporter checks four model and
 PLDA hashes against the pinned snapshot before loading checkpoints, but this
@@ -51,7 +55,7 @@ creates its destination exclusively and refuses to overwrite an existing bundle.
 The app checks file integrity and the source hashes recorded in the manifest.
 Those source hashes are self-reported and do not prove the origin of transformed
 graphs; obtain the snapshot through the authorized
-Hugging Face account. This manual preparation is not automatic model delivery.
+Hugging Face account. This manual preparation is an alternative to automatic delivery.
 
 For experimental INT8, use a new output directory:
 
@@ -68,8 +72,8 @@ calibration check uses ONNX Runtime, not the application's Tract runtime; it
 does not establish diarization quality, pipeline parity, speed, or Windows/Linux
 compatibility. Checkpoints are executable trusted inputs.
 
-The installed-app UI proof accepts `--community-missing` to verify the error
-without weights, or `--community-bundle PATH` to copy an authorized local export
+The installed-app UI proof accepts `--community-missing` to verify rejection of
+an incomplete existing bundle, or `--community-bundle PATH` to copy a local export
 into a dedicated proof app-data directory. The latter requires a fixture with two
 separated speakers and at least two distinct numbered labels in the output; this
 is a smoke check, not an assertion of speaker accuracy.
