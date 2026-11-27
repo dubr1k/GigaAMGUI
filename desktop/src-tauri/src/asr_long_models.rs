@@ -34,6 +34,8 @@ const OFFICIAL_MODEL: ModelSpec<'static> = ModelSpec {
         0x13, 0xc5, 0x9e, 0x15, 0x63, 0x08, 0xa7, 0x8b, 0xa3, 0xe1, 0x62, 0x68, 0x51, 0xf5,
         0x70, 0x69, 0x6c, 0xe4,
     ],
+    #[cfg(test)]
+    partial_written: None,
 };
 
 #[derive(Clone, Copy)]
@@ -41,6 +43,9 @@ struct ModelSpec<'a> {
     url: &'a str,
     size: u64,
     sha256: [u8; 32],
+    // Signal only after bytes reach the open file, without relying on directory metadata.
+    #[cfg(test)]
+    partial_written: Option<&'a tokio::sync::Notify>,
 }
 
 #[derive(Debug)]
@@ -279,6 +284,10 @@ async fn receive_and_verify(
                 InstallError::Failed(format!("Не удалось записать модель сегментации: {error}"))
             })?;
             size += block.len() as u64;
+            #[cfg(test)]
+            if let Some(partial_written) = spec.partial_written {
+                partial_written.notify_one();
+            }
         }
     }
     if size != spec.size {
@@ -309,7 +318,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::{mpsc, Arc};
+    use std::sync::mpsc;
     use std::thread::{self, JoinHandle};
     use std::time::Instant;
 
@@ -322,7 +331,12 @@ mod tests {
     ];
 
     fn fixture_spec(url: &str) -> ModelSpec<'_> {
-        ModelSpec { url, size: FIXTURE.len() as u64, sha256: FIXTURE_SHA256 }
+        ModelSpec {
+            url,
+            size: FIXTURE.len() as u64,
+            sha256: FIXTURE_SHA256,
+            partial_written: None,
+        }
     }
 
     fn test_client() -> Result<Client, InstallError> {
@@ -367,9 +381,35 @@ mod tests {
         (url, thread)
     }
 
+    fn stalled_server() -> (String, mpsc::Sender<()>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/model", listener.local_addr().unwrap());
+        let (release, wait_for_release) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = [0u8; 4096];
+            stream.read(&mut request).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\na").unwrap();
+            wait_for_release.recv().expect("test did not release stalled response");
+            drop(stream);
+        });
+        (url, release, worker)
+    }
+
     fn assert_only_model(dir: &Path) {
         let entries: Vec<_> = fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
         assert_eq!(entries, vec![std::ffi::OsString::from(MODEL_NAME)]);
+    }
+
+    fn assert_partial_file(dir: &Path) {
+        let mut entries = fs::read_dir(dir).unwrap();
+        let entry = entries.next().expect("partial file was not created").unwrap();
+        assert!(entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX));
+        // Read through a file handle: Windows may keep directory-entry sizes stale
+        // until the writer closes its handle.
+        assert_eq!(fs::read(entry.path()).unwrap(), b"a");
+        assert!(entries.next().is_none(), "unexpected extra file");
     }
 
     #[tokio::test]
@@ -472,74 +512,43 @@ mod tests {
     #[tokio::test]
     async fn cancellation_during_a_stalled_download_removes_its_partial_file() {
         let dir = tempfile::tempdir().unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/model", listener.local_addr().unwrap());
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let flag = cancelled.clone();
-        let dir_path = dir.path().to_owned();
-        let (tx, rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            let mut request = [0u8; 4096];
-            stream.read(&mut request).unwrap();
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\na").unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let partial_exists = loop {
-                let exists = fs::read_dir(&dir_path).unwrap().any(|entry| {
-                    let entry = entry.unwrap();
-                    entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX)
-                        && entry.metadata().map(|metadata| metadata.len() > 0).unwrap_or(false)
-                });
-                if exists || Instant::now() >= deadline { break exists; }
-                thread::sleep(Duration::from_millis(5));
-            };
-            flag.store(true, Ordering::Relaxed);
-            tx.send(partial_exists).unwrap();
-            // Keep the body incomplete long enough to exercise cancellation of a
-            // pending read rather than treating a server disconnect as cancellation.
-            thread::sleep(Duration::from_millis(300));
-        });
-        let result = ensure_model(dir.path(), &cancelled, fixture_spec(&url), test_client).await;
-        assert!(matches!(result, Err(InstallError::Cancelled)));
-        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
-        worker.join().unwrap();
+        let (url, release, worker) = stalled_server();
+        let cancelled = AtomicBool::new(false);
+        let partial_written = tokio::sync::Notify::new();
+        let spec = ModelSpec { partial_written: Some(&partial_written), ..fixture_spec(&url) };
+        let mut install = Box::pin(ensure_model(dir.path(), &cancelled, spec, test_client));
+        tokio::time::timeout(Duration::from_secs(4), async {
+            tokio::select! {
+                biased;
+                result = &mut install => panic!("download ended before cancellation: {result:?}"),
+                _ = partial_written.notified() => {}
+            }
+        }).await.expect("partial download did not start");
+        assert_partial_file(dir.path());
+        cancelled.store(true, Ordering::Relaxed);
+        let result = tokio::time::timeout(Duration::from_secs(3), &mut install)
+            .await.expect("installer did not respond to cancellation");
+        assert!(matches!(&result, Err(InstallError::Cancelled)), "unexpected installer result: {result:?}");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        release.send(()).unwrap();
+        worker.join().unwrap();
     }
     #[tokio::test]
     async fn dropping_a_pending_installer_removes_its_partial_file() {
         let dir = tempfile::tempdir().unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/model", listener.local_addr().unwrap());
-        let (release, wait_for_release) = mpsc::channel::<()>();
-        let worker = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            let mut request = [0u8; 4096];
-            stream.read(&mut request).unwrap();
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\na").unwrap();
-            let _ = wait_for_release.recv_timeout(Duration::from_secs(5));
-        });
+        let (url, release, worker) = stalled_server();
         let cancelled = AtomicBool::new(false);
-        let mut install = Box::pin(ensure_model(dir.path(), &cancelled, fixture_spec(&url), test_client));
-        let partial_written = async {
-            loop {
-                if fs::read_dir(dir.path()).unwrap().any(|entry| {
-                    let entry = entry.unwrap();
-                    entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX)
-                        && entry.metadata().map(|metadata| metadata.len() > 0).unwrap_or(false)
-                }) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(3), async {
+        let partial_written = tokio::sync::Notify::new();
+        let spec = ModelSpec { partial_written: Some(&partial_written), ..fixture_spec(&url) };
+        let mut install = Box::pin(ensure_model(dir.path(), &cancelled, spec, test_client));
+        tokio::time::timeout(Duration::from_secs(4), async {
             tokio::select! {
+                biased;
                 result = &mut install => panic!("download completed before it could be dropped: {result:?}"),
-                _ = partial_written => {}
+                _ = partial_written.notified() => {}
             }
         }).await.expect("partial download did not start");
+        assert_partial_file(dir.path());
         drop(install);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         release.send(()).unwrap();

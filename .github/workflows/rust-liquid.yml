@@ -225,7 +225,9 @@ jobs:
           root="$extracted/squashfs-root"
           binary="$root/usr/bin/gigaam-desktop"
           test -x "$binary"
-          media="$root/usr/lib/gigaam-desktop/ffmpeg"
+          # Tauri's Linux resource_dir uses the compiled productName, not the Cargo binary name.
+          product_name="$(node -p 'require("../packaging/rust-liquid/tauri.conf.json").productName')"
+          media="$root/usr/lib/$product_name/ffmpeg"
           test -x "$media/ffmpeg"
           cmp "$media/ffmpeg" ../packaging/rust-liquid/generated/ffmpeg/ffmpeg
           cmp "$media/SHA256SUMS" ../packaging/rust-liquid/generated/ffmpeg/SHA256SUMS
