@@ -376,23 +376,20 @@ def run_proof(app, sources, app_data, diagnostics, timeout):
 
             start()
             seen_scratch = False
-            last_status = None
+            paths = {fmt: output / f"{fixture.stem}.gigaam.{fmt}" for fmt in ("txt", "json", "srt")}
             def complete():
-                nonlocal seen_scratch, last_status
+                nonlocal seen_scratch
                 seen_scratch = seen_scratch or bool(scratch_dirs(cache))
-                if driver.state('[data-page="result"]', "displayed"):
-                    return True
-                status = driver.text("#progress-status")
-                if status != last_status:
-                    print(f"Application status: {status}", flush=True)
-                    last_status = status
-                if driver.state("#start-processing", "enabled"):
-                    raise RuntimeError(f"Processing ended without a result: {status}")
-                return False
+                # Do not continuously query WebKitWebDriver while CPU inference
+                # is running: its proxy repeatedly resets those connections.
+                # Real UI visibility and exported contents are still required.
+                if not all(path.is_file() for path in paths.values()):
+                    return False
+                return driver.state('[data-page="result"]', "displayed")
             UI.wait_for("long diarization result", complete, timeout, interval=1)
             if not seen_scratch or scratch_dirs(cache):
                 raise RuntimeError("Success did not create and clean private long-path scratch")
-            paths = {fmt: output / f"{fixture.stem}.gigaam.{fmt}" for fmt in ("txt", "json", "srt")}
+            # Verify the actual files and their visible transcript below.
             if any(not path.is_file() for path in paths.values()):
                 raise RuntimeError(f"Application did not save every requested export: {paths}")
             shown = driver.text("#result-content pre").strip()
