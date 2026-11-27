@@ -194,6 +194,31 @@ jobs:
               --fixture "$GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" \
               --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800
           '
+      - name: Isolate Windows Tauri known folders
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'rust-liquid-long-app-data'
+          if (Test-Path -LiteralPath $root) { throw 'Long proof app-data root already exists' }
+          $roaming = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+          $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+          if (!$roaming -or !$local) { throw 'Windows app-data known folders are unavailable' }
+          $links = @(
+            @{ Name = 'PROOF_ROAMING_LINK'; Path = (Join-Path $roaming 'ru.gigaam.gui.rustliquid'); Target = (Join-Path $root 'roaming/ru.gigaam.gui.rustliquid') },
+            @{ Name = 'PROOF_LOCAL_LINK'; Path = (Join-Path $local 'ru.gigaam.gui.rustliquid'); Target = (Join-Path $root 'local/ru.gigaam.gui.rustliquid') }
+          )
+          foreach ($link in $links) {
+            if (Test-Path -LiteralPath $link.Path) { throw "Tauri app-data path already exists: $($link.Path)" }
+          }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          "PROOF_APP_DATA=$root" >> $env:GITHUB_ENV
+          foreach ($link in $links) {
+            New-Item -ItemType Directory -Path $link.Target -Force | Out-Null
+            New-Item -ItemType Junction -Path $link.Path -Target $link.Target | Out-Null
+            "$($link.Name)=$($link.Path)" >> $env:GITHUB_ENV
+            Write-Host "Tauri known-folder path $($link.Path) -> $($link.Target)"
+          }
       - name: Exercise Windows UI and save a real transcript
         if: runner.os == 'Windows'
         shell: pwsh
@@ -203,6 +228,7 @@ jobs:
           python packaging/rust-liquid/ui-proof.py `
             --app "$env:PROOF_APP" `
             --fixture "$env:GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" `
+            --app-data "$env:PROOF_APP_DATA" `
             --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare Linux long-proof models through the installed UI
@@ -233,10 +259,8 @@ jobs:
           PYTHONUTF8: '1'
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'rust-liquid-long-app-data'
-          if (Test-Path $root) { throw 'Long proof app-data root already exists' }
-          New-Item -ItemType Directory -Path $root | Out-Null
-          "PROOF_APP_DATA=$root" >> $env:GITHUB_ENV
+          $root = $env:PROOF_APP_DATA
+          if (!(Test-Path -PathType Container $root)) { throw 'Long proof app-data root is missing' }
           python packaging/rust-liquid/ui-proof.py `
             --app "$env:PROOF_APP" `
             --fixture "$env:GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" `
@@ -310,6 +334,23 @@ jobs:
             --sources "$env:GITHUB_WORKSPACE/tests/fixtures/rust_liquid_long_sources.json" `
             --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 3600
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Remove Windows proof junctions
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $links = @(
+            @{ Path = $env:PROOF_ROAMING_LINK; Target = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'rust-liquid-long-app-data/roaming/ru.gigaam.gui.rustliquid')) },
+            @{ Path = $env:PROOF_LOCAL_LINK; Target = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'rust-liquid-long-app-data/local/ru.gigaam.gui.rustliquid')) }
+          )
+          foreach ($link in $links) {
+            if (!$link.Path) { continue }
+            $item = Get-Item -LiteralPath $link.Path -Force
+            if ($item.LinkType -ne 'Junction' -or $item.Target -ne $link.Target) {
+              throw "Refusing to remove changed proof junction: $($link.Path)"
+            }
+            $item.Delete()
+          }
       - name: Upload diagnostics if UI proof failed
         if: failure()
         uses: actions/upload-artifact@v7
