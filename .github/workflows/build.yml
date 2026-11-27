@@ -34,7 +34,7 @@ jobs:
             built: dist/GigaAMTranscriber_portable.exe
             torch_index: "--index-url https://download.pytorch.org/whl/cpu"
 
-          - os: macos-14
+          - os: macos-15
             label: macOS arm64
             asset: GigaAMTranscriber-macos-arm64
             offline_asset: GigaAMTranscriber-macos-arm64-offline.zip
@@ -360,7 +360,7 @@ jobs:
 
   build-macos-full:
     name: macOS arm64 full app bundle
-    runs-on: macos-14
+    runs-on: macos-15
     needs: test-tui
     timeout-minutes: 120
     env:
