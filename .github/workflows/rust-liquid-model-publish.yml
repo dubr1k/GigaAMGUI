@@ -1,0 +1,363 @@
+name: Publish pinned Rust Liquid models
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths: [.github/workflows/rust-liquid-model-publish.yml]
+
+# Only this job can read Actions artifacts or write release contents.
+permissions: {}
+
+concurrency:
+  group: rust-liquid-model-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Gate on the exact export and short streaming parity runs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = 'dubr1k';
+            const repo = 'GigaAMGUI';
+            const repositoryId = 1105897559;
+            const branch = 'feat/rust-liquid-windows-linux';
+            const exportSha = 'e08a6c87cd4d4e93fe29b600510136b9b23cc82e';
+            const paritySha = 'f499ed77bd6ccc5453fad70255ed8e401074003b';
+            if (!['workflow_dispatch', 'push'].includes(context.eventName) ||
+                context.ref !== `refs/heads/${branch}` ||
+                context.repo.owner !== owner || context.repo.repo !== repo) {
+              throw new Error('Run this workflow only on the trusted feature branch');
+            }
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            if (repository.id !== repositoryId || repository.full_name !== `${owner}/${repo}` || repository.private) {
+              throw new Error('The repository identity or visibility does not match the model URLs');
+            }
+            for (const expected of [
+              {id: 45984577630, sha: exportSha, path: '.github/workflows/rust-liquid-model-export.yml'},
+              {id: 45987383439, sha: paritySha, path: '.github/workflows/rust-liquid-model-parity.yml'},
+            ]) {
+              const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id: expected.id});
+              if (run.id !== expected.id || run.run_attempt !== 1 || run.path !== expected.path ||
+                  run.repository?.id !== repositoryId || run.repository?.full_name !== `${owner}/${repo}` ||
+                  run.head_repository?.id !== repositoryId || run.head_repository?.full_name !== `${owner}/${repo}` ||
+                  run.head_branch !== branch || run.head_sha !== expected.sha || run.event !== 'push' ||
+                  run.status !== 'completed' || run.conclusion !== 'success') {
+                throw new Error(`Run ${expected.id} is not the pinned successful run`);
+              }
+            }
+            const {data: parity} = await github.rest.actions.listJobsForWorkflowRun({
+              owner, repo, run_id: 45987383439, per_page: 100,
+            });
+            const expectedJobs = ['Short streaming parity (v4)', 'Short streaming parity (multilingual)'];
+            const requiredSteps = [
+              'Validate the exact export run and artifact before download',
+              'Verify and unpack the model without path traversal',
+              'Compare Rust transcript and word timestamps exactly',
+            ];
+            if (parity.total_count !== expectedJobs.length || parity.jobs.length !== expectedJobs.length) {
+              throw new Error('The parity run does not have exactly the two expected model jobs');
+            }
+            for (const name of expectedJobs) {
+              const jobs = parity.jobs.filter(job => job.name === name);
+              if (jobs.length !== 1 || jobs[0].head_sha !== paritySha || jobs[0].status !== 'completed' ||
+                  jobs[0].conclusion !== 'success' || requiredSteps.some(step =>
+                    jobs[0].steps?.filter(item => item.name === step && item.conclusion === 'success').length !== 1)) {
+                throw new Error(`The pinned parity job did not complete all required steps: ${name}`);
+              }
+            }
+            const {data} = await github.rest.actions.listWorkflowRunArtifacts({
+              owner, repo, run_id: 45984577630, per_page: 100,
+            });
+            const artifacts = [
+              {name: 'rust-liquid-model-v4', id: 15191186425, size: 1909907577,
+               digest: 'sha256:a24d5ad26e56f6e31187ecd4b5f69ef3b5934bba3fee5343e9451bd6119b604a'},
+              {name: 'rust-liquid-model-multilingual', id: 15191630922, size: 6202257899,
+               digest: 'sha256:2a3c966af8fa5adfd51d6f3dc2b046d21cc7047fbf81f6cc2b0e617168b805e6'},
+            ];
+            if (data.total_count !== artifacts.length || data.artifacts.length !== artifacts.length) {
+              throw new Error('The export run does not have exactly the pinned artifacts');
+            }
+            for (const expected of artifacts) {
+              const matches = data.artifacts.filter(artifact => artifact.name === expected.name);
+              const artifact = matches[0];
+              if (matches.length !== 1 || artifact.id !== expected.id || artifact.expired !== false ||
+                  artifact.size_in_bytes !== expected.size || artifact.digest !== expected.digest ||
+                  artifact.workflow_run?.id !== 45984577630 || artifact.workflow_run?.repository_id !== repositoryId ||
+                  artifact.workflow_run?.head_repository_id !== repositoryId ||
+                  artifact.workflow_run?.head_branch !== branch || artifact.workflow_run?.head_sha !== exportSha) {
+                throw new Error(`Export artifact does not match its pinned provenance: ${expected.name}`);
+              }
+            }
+            let ref;
+            try {
+              ({data: ref} = await github.rest.git.getRef({owner, repo, ref: 'tags/rust-models-v1'}));
+            } catch (error) {
+              if (error.status === 404) {
+                throw new Error('An authorized operator must first create rust-models-v1 at the pinned export commit; this workflow never creates or moves tags');
+              }
+              throw error;
+            }
+            let object = ref.object;
+            for (let depth = 0; object.type === 'tag' && depth < 5; depth++) {
+              ({data: {object}} = await github.rest.git.getTag({owner, repo, tag_sha: object.sha}));
+            }
+            if (object.type !== 'commit' || object.sha !== exportSha) {
+              throw new Error('Existing rust-models-v1 tag does not point to the export commit');
+            }
+
+      - name: Check out the parity-tested unpacker
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: f499ed77bd6ccc5453fad70255ed8e401074003b
+          persist-credentials: false
+
+      - name: Reserve space for archives, inspected models and release parts
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, shutil
+          free = shutil.disk_usage(os.environ['RUNNER_TEMP']).free
+          required = 27_000_000_000
+          print(f'Available: {free}; required: {required}')
+          if free < required:
+              raise SystemExit('Insufficient free space to inspect both pinned exports')
+          PY
+
+      - name: Download the exact v4 artifact without extracting
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: 15191186425
+          path: ${{ runner.temp }}/v4-archive
+          run-id: 45984577630
+          repository: dubr1k/GigaAMGUI
+          github-token: ${{ github.token }}
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Download the exact multilingual artifact without extracting
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: 15191630922
+          path: ${{ runner.temp }}/multilingual-archive
+          run-id: 45984577630
+          repository: dubr1k/GigaAMGUI
+          github-token: ${{ github.token }}
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Inspect manifests, model files, provenance and release parts
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import importlib.util
+          import json
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location('model_unpack', 'packaging/rust-liquid/model-export/unpack.py')
+          unpack = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(unpack)
+          temp = Path(os.environ['RUNNER_TEMP'])
+          stage = temp / 'model-release'
+          stage.mkdir(mode=0o700)
+          assets = []
+          models = []
+          sources = [
+              ('v4', 15191186425, 1909907577, 'a24d5ad26e56f6e31187ecd4b5f69ef3b5934bba3fee5343e9451bd6119b604a'),
+              ('multilingual', 15191630922, 6202257899, '2a3c966af8fa5adfd51d6f3dc2b046d21cc7047fbf81f6cc2b0e617168b805e6'),
+          ]
+          for model, artifact_id, size, digest in sources:
+              archive_dir = temp / f'{model}-archive'
+              expanded = temp / f'{model}-inspected'
+              # This also checks the pinned archive digest, every file and part hash,
+              # safe archive members, required files and the pinned model provenance.
+              unpack.unpack(model, archive_dir, expanded, size, digest)
+              archive_path, = archive_dir.iterdir()
+              with zipfile.ZipFile(archive_path) as archive:
+                  members = unpack.archive_members(archive)
+                  metadata_bytes = archive.read(members['metadata.json'])
+                  metadata = unpack.decode_json(metadata_bytes)
+                  parts, _ = unpack.validate_metadata(metadata, model)
+                  model_id, repo, revision = unpack.MODELS[model]
+                  metadata_name = f'{model_id}-metadata.json'
+                  (stage / metadata_name).write_bytes(metadata_bytes)
+                  metadata_hash = hashlib.sha256(metadata_bytes).hexdigest()
+                  assets.append({'name': metadata_name, 'size': len(metadata_bytes), 'sha256': metadata_hash})
+                  for name, expected_size, expected_hash, _ in parts:
+                      part_hash = hashlib.sha256()
+                      copied = 0
+                      with archive.open(members[name]) as source, (stage / name).open('xb') as destination:
+                          while block := source.read(unpack.BLOCK):
+                              copied += len(block)
+                              if copied > expected_size:
+                                  raise ValueError(f'Part exceeds its manifest size: {name}')
+                              part_hash.update(block)
+                              destination.write(block)
+                      if copied != expected_size or part_hash.hexdigest() != expected_hash:
+                          raise ValueError(f'Part does not match its manifest: {name}')
+                      assets.append({'name': name, 'size': copied, 'sha256': expected_hash})
+                  models.append({'id': model_id, 'source': repo, 'revision': revision,
+                                 'metadata': metadata_name, 'metadata_sha256': metadata_hash,
+                                 'artifact_id': artifact_id, 'artifact_sha256': digest})
+              shutil.rmtree(expanded)
+          provenance = {
+              'version': 1,
+              'repository': 'dubr1k/GigaAMGUI',
+              'export_run': 45984577630,
+              'export_commit': 'e08a6c87cd4d4e93fe29b600510136b9b23cc82e',
+              'parity_run': 45987383439,
+              'parity_commit': 'f499ed77bd6ccc5453fad70255ed8e401074003b',
+              'parity_scope': 'Short Linux streaming fixture only; not Windows, packaged-app, long-audio, quality or live-capture proof.',
+              'models': models,
+          }
+          provenance_bytes = (json.dumps(provenance, sort_keys=True, separators=(',', ':')) + '\n').encode()
+          provenance_name = 'rust-liquid-model-provenance.json'
+          (stage / provenance_name).write_bytes(provenance_bytes)
+          assets.append({'name': provenance_name, 'size': len(provenance_bytes),
+                         'sha256': hashlib.sha256(provenance_bytes).hexdigest()})
+          (stage / 'publication-index.json').write_text(json.dumps(assets, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+
+      - name: Publish verified model assets without replacing existing assets
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const crypto = require('crypto');
+            const https = require('https');
+            const owner = 'dubr1k';
+            const repo = 'GigaAMGUI';
+            const tag = 'rust-models-v1';
+            const exportSha = 'e08a6c87cd4d4e93fe29b600510136b9b23cc82e';
+            const stage = path.join(process.env.RUNNER_TEMP, 'model-release');
+            const assets = JSON.parse(fs.readFileSync(path.join(stage, 'publication-index.json'), 'utf8'));
+            if (!Array.isArray(assets) || !assets.length) throw new Error('Empty publication index');
+            const byName = new Map();
+            for (const asset of assets) {
+              if (!asset || typeof asset.name !== 'string' ||
+                  !/^(?:(?:v4_rnnt|multilingual_v2_rnnt)-(?:metadata\.json|part-[0-9]{3}\.bin)|rust-liquid-model-provenance\.json)$/.test(asset.name) ||
+                  !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > 1900000000 ||
+                  !/^[0-9a-f]{64}$/.test(asset.sha256) || byName.has(asset.name)) {
+                throw new Error('Invalid or duplicate publication index entry');
+              }
+              const file = path.join(stage, asset.name);
+              if (!fs.lstatSync(file).isFile() || fs.statSync(file).size !== asset.size) {
+                throw new Error(`Staged asset size or type mismatch: ${asset.name}`);
+              }
+              const hash = crypto.createHash('sha256');
+              for await (const block of fs.createReadStream(file)) hash.update(block);
+              if (hash.digest('hex') !== asset.sha256) throw new Error(`Staged asset hash mismatch: ${asset.name}`);
+              byName.set(asset.name, asset);
+            }
+            for (const model of ['v4_rnnt', 'multilingual_v2_rnnt']) {
+              if (!byName.has(`${model}-metadata.json`) || !byName.has(`${model}-part-001.bin`)) {
+                throw new Error(`Missing model metadata or first part: ${model}`);
+              }
+            }
+            if (!byName.has('rust-liquid-model-provenance.json') ||
+                fs.readdirSync(stage).sort().join('\n') !== [...byName.keys(), 'publication-index.json'].sort().join('\n')) {
+              throw new Error('Unexpected or missing staged files');
+            }
+            async function assertTag() {
+              const {data: ref} = await github.rest.git.getRef({owner, repo, ref: `tags/${tag}`});
+              let object = ref.object;
+              for (let depth = 0; object.type === 'tag' && depth < 5; depth++) {
+                ({data: {object}} = await github.rest.git.getTag({owner, repo, tag_sha: object.sha}));
+              }
+              if (object.type !== 'commit' || object.sha !== exportSha) throw new Error('The model tag changed');
+            }
+            async function existingAssets(releaseId) {
+              const list = await github.paginate(github.rest.repos.listReleaseAssets, {
+                owner, repo, release_id: releaseId, per_page: 100,
+              });
+              const seen = new Set();
+              for (const item of list) {
+                const expected = byName.get(item.name);
+                if (!expected || seen.has(item.name) || item.state !== 'uploaded' ||
+                    item.size !== expected.size || item.digest !== `sha256:${expected.sha256}`) {
+                  throw new Error(`Existing release asset is unexpected or mismatched: ${item.name}`);
+                }
+                seen.add(item.name);
+              }
+              return seen;
+            }
+            async function upload(releaseId, asset) {
+              await new Promise((resolve, reject) => {
+                const request = https.request({
+                  hostname: 'uploads.github.com',
+                  path: `/repos/${owner}/${repo}/releases/${releaseId}/assets?name=${encodeURIComponent(asset.name)}`,
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${process.env.GH_TOKEN}`,
+                    Accept: 'application/vnd.github+json',
+                    'X-GitHub-Api-Version': '2022-11-28',
+                    'User-Agent': 'rust-liquid-model-publisher',
+                    'Content-Type': 'application/octet-stream',
+                    'Content-Length': asset.size,
+                  },
+                }, response => {
+                  response.resume();
+                  response.on('end', () => response.statusCode === 201
+                    ? resolve() : reject(new Error(`Upload failed for ${asset.name}: HTTP ${response.statusCode}`)));
+                });
+                request.on('error', error => reject(new Error(`Upload failed for ${asset.name}: ${error.code || 'stream error'}`)));
+                const input = fs.createReadStream(path.join(stage, asset.name));
+                input.on('error', error => request.destroy(error));
+                input.pipe(request);
+              });
+            }
+            await assertTag();
+            const releases = await github.paginate(github.rest.repos.listReleases, {owner, repo, per_page: 100});
+            const matches = releases.filter(release => release.tag_name === tag);
+            if (matches.length > 1) throw new Error('More than one release has the model tag');
+            let release = matches[0];
+            if (!release) {
+              // The existing tag is required above; the API must not create or move it.
+              ({data: release} = await github.rest.repos.createRelease({
+                owner, repo, tag_name: tag, name: 'Rust Liquid model assets', draft: true, prerelease: true,
+                make_latest: 'false',
+                body: 'Model assets only. Export: https://github.com/dubr1k/GigaAMGUI/actions/runs/45984577630 at e08a6c87cd4d4e93fe29b600510136b9b23cc82e. Short Linux streaming parity: https://github.com/dubr1k/GigaAMGUI/actions/runs/45987383439 at f499ed77bd6ccc5453fad70255ed8e401074003b. This is not a Windows, packaged-app, long-audio, quality or live-capture proof. Build metadata and provenance are attached separately.',
+              }));
+            }
+            if (release.tag_name !== tag || !release.prerelease) throw new Error('Existing release is not the expected prerelease');
+            let seen = await existingAssets(release.id);
+            if (!release.draft && seen.size !== byName.size) {
+              throw new Error('Published prerelease is incomplete; it will not be modified');
+            }
+            if (release.draft) {
+              for (const asset of assets) {
+                await assertTag();
+                const {data: current} = await github.rest.repos.getRelease({owner, repo, release_id: release.id});
+                if (!current.draft || !current.prerelease || current.tag_name !== tag) {
+                  throw new Error('Release changed while preparing model assets');
+                }
+                seen = await existingAssets(release.id);
+                if (!seen.has(asset.name)) await upload(release.id, asset);
+              }
+              await assertTag();
+              seen = await existingAssets(release.id);
+              if (seen.size !== byName.size) throw new Error('The draft is missing verified model assets');
+              ({data: release} = await github.rest.repos.updateRelease({
+                owner, repo, release_id: release.id, draft: false, prerelease: true, make_latest: 'false',
+              }));
+            }
+            await assertTag();
+            seen = await existingAssets(release.id);
+            if (release.draft || !release.prerelease || release.tag_name !== tag || seen.size !== byName.size) {
+              throw new Error('Published prerelease did not retain the expected model assets');
+            }
+            await core.summary.addRaw(`Published or verified model-only prerelease ${release.html_url}. Export e08a6c87; short Linux parity f499ed77.`, true).write();

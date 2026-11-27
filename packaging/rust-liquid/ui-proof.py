@@ -504,7 +504,55 @@ def windows_dialog(app, path, folder):
                        os.path.normcase(item.window_text()).rstrip("\\/").endswith(address)
                        for item in uia.wrapper_object().descendants())
 
-        wait_for("Windows folder picker to navigate to the requested directory", navigated, 15)
+        try:
+            wait_for("Windows folder picker to navigate to the requested directory", navigated, 15)
+        except Exception:
+            # The WebDriver screenshot contains the webview, not the native
+            # picker. Record what Windows exposed before the dialog is closed.
+            try:
+                foreground = win32gui.GetForegroundWindow()
+                root = win32gui.GetAncestor(foreground, win32con.GA_ROOT) if foreground else 0
+                print(f"Windows folder navigation: requested={str(path)!r}, "
+                      f"directory_exists={os.path.isdir(path)}, dialog={handle}, "
+                      f"dialog_open={bool(dialog_open())}, foreground={foreground}, "
+                      f"foreground_root={root}", file=sys.stderr, flush=True)
+            except Exception as error:
+                print(f"Could not inspect Windows dialog state: {error}", file=sys.stderr, flush=True)
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    clipboard_matches = (win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT)
+                                         and win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT) == str(path))
+                finally:
+                    win32clipboard.CloseClipboard()
+                print(f"Windows folder navigation: clipboard_matches={bool(clipboard_matches)}",
+                      file=sys.stderr, flush=True)
+            except Exception as error:
+                print(f"Could not inspect Windows clipboard: {error}", file=sys.stderr, flush=True)
+            try:
+                controls = []
+                for item in uia.wrapper_object().descendants():
+                    try:
+                        info = item.element_info
+                        focused = item.has_keyboard_focus()
+                        if (info.automation_id != "1001" and
+                                info.control_type not in ("Edit", "ComboBox", "ToolBar") and not focused):
+                            continue
+                        control = {"id": info.automation_id, "type": info.control_type,
+                                   "text": item.window_text(), "focused": focused}
+                        if info.control_type == "Edit":
+                            try:
+                                control["value"] = item.get_value()
+                            except Exception as error:
+                                control["value_error"] = str(error)
+                        controls.append(control)
+                    except Exception as error:
+                        controls.append({"inspection_error": str(error)})
+                print("Windows folder navigation controls: " + json.dumps(controls, ensure_ascii=False),
+                      file=sys.stderr, flush=True)
+            except Exception as error:
+                print(f"Could not inspect Windows picker controls: {error}", file=sys.stderr, flush=True)
+            raise
     else:
         edit = uia.child_window(auto_id="1148", control_type="Edit")
         edit.wait("ready", timeout=15)
@@ -513,6 +561,8 @@ def windows_dialog(app, path, folder):
         raise RuntimeError("Windows file/folder picker closed before confirmation")
     uia.child_window(auto_id="1", control_type="Button").invoke()
     wait_for("native Windows file/folder dialog to close", lambda: not dialog_open(), 15)
+
+
 
 
 def choose(driver, selector, path, folder=False):
