@@ -23,7 +23,9 @@ compatibility. Checkpoints are executable trusted inputs.
 
 The installed-app UI proof accepts `--community-missing` to verify the error
 without weights, or `--community-bundle PATH` to copy an authorized local export
-into a dedicated proof app-data directory and require speaker-labelled output.
+into a dedicated proof app-data directory. The latter requires a fixture with two
+separated speakers and at least two distinct numbered labels in the output; this
+is a smoke check, not an assertion of speaker accuracy.
 The latter does not download or upload model files. On Windows the dedicated
 root must also be connected to the application's real known folders, as in the
 existing CI Windows isolation step; merely setting `APPDATA` is insufficient.

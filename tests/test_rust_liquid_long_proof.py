@@ -41,6 +41,19 @@ def test_community_bundle_proof_rejects_incomplete_source(tmp_path):
         proof.UI.prepare_community_bundle(tmp_path / "app-data", source)
 
 
+@pytest.mark.parametrize("transcript", [
+    "[SPEAKER_UNKNOWN] words [SPEAKER_OVERLAP] words",
+    "[SPEAKER_1] words [SPEAKER_01] words",
+])
+def test_community_proof_rejects_missing_distinct_speakers(transcript):
+    with pytest.raises(RuntimeError, match="two distinct numbered speakers"):
+        proof.UI.require_community_speakers(transcript)
+
+
+def test_community_proof_accepts_two_numbered_speakers():
+    proof.UI.require_community_speakers("[SPEAKER_0] first\n[SPEAKER_1] second")
+
+
 def word(start, end, status, speaker=None):
     result = {"start": start, "end": end, "speaker_status": status}
     if speaker is not None:

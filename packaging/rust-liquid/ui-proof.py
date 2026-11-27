@@ -14,6 +14,7 @@ import base64
 import ctypes
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -30,6 +31,12 @@ from pathlib import Path
 
 
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
+
+def require_community_speakers(transcript):
+    speakers = {int(value) for value in re.findall(r"\[SPEAKER_([0-9]+)\]", transcript)}
+    if len(speakers) < 2:
+        raise RuntimeError("Community-1 proof requires two distinct numbered speakers")
+
 
 
 def wait_for(description, predicate, seconds, interval=0.25):
@@ -760,8 +767,8 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
                 raise RuntimeError("Saved transcript or visible transcript is empty")
             if saved != shown:
                 raise RuntimeError("Saved transcript does not match the application's visible transcript")
-            if community_bundle is not None and "[SPEAKER_" not in saved:
-                raise RuntimeError("Community-1 produced no speaker-labelled transcript")
+            if community_bundle is not None:
+                require_community_speakers(saved)
             paths = driver.text("#result-content ul")
             if not any(same_path(line, result) for line in paths.splitlines()):
                 raise RuntimeError("The application did not list the saved file on the result page")
