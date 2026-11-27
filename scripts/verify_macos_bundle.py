@@ -71,7 +71,7 @@ def default_profile() -> str:
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="backslashreplace")
     out = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode, out
 

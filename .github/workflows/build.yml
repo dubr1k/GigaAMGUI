@@ -63,10 +63,35 @@ jobs:
       # ffmpeg нужен приложению в рантайме; EGL/GL — для offscreen PyQt GUI-тестов.
       # libportaudio2 нужен не только раннеру: спек вшивает его в бинарник,
       # потому что Linux-колесо sounddevice не содержит PortAudio (issue #47).
-      - name: Install ffmpeg, Qt and PortAudio runtime libraries (Linux)
+      - name: Install ffmpeg, Qt, PortAudio and PulseAudio (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg libegl1 libgl1 libportaudio2
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libegl1 libgl1 libportaudio2 libasound2-plugins pulseaudio pulseaudio-utils
 
+      # Use a private server and a virtual monitor so PortAudio can initialize
+      # both in pytest and in the frozen binary on a headless runner.
+      - name: Start isolated PulseAudio (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          pulse_dir="$RUNNER_TEMP/gigaam-pulse"
+          mkdir -m 700 "$pulse_dir"
+          export PULSE_SERVER="unix:$pulse_dir/native"
+          export ALSA_CONFIG_PATH="$pulse_dir/alsa.conf"
+          printf '%s\n' \
+            '</usr/share/alsa/alsa.conf>' \
+            'pcm.!default { type pulse }' \
+            'ctl.!default { type pulse }' > "$ALSA_CONFIG_PATH"
+          pulseaudio --daemonize=yes --exit-idle-time=-1 --use-pid-file=no \
+            --file=/dev/null \
+            --load="module-native-protocol-unix socket=$pulse_dir/native" \
+            --load="module-null-sink sink_name=ci_null"
+          pactl info
+          pactl set-default-sink ci_null
+          pactl set-default-source ci_null.monitor
+          pactl list short sinks | grep -w ci_null
+          pactl list short sources | grep -w ci_null.monitor
+          echo "PULSE_SERVER=$PULSE_SERVER" >> "$GITHUB_ENV"
+          echo "ALSA_CONFIG_PATH=$ALSA_CONFIG_PATH" >> "$GITHUB_ENV"
       # --- Вкладываем ПРАВИЛЬНЫЙ по ОС/арх. ffmpeg в bin/, чтобы он вшился в
       # портативный бинарник (спек забирает bin/ffmpeg.exe на Windows и
       # bin/ffmpeg на других ОС). Так у пользователя всё работает без ручной

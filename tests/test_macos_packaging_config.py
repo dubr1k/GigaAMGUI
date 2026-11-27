@@ -107,3 +107,49 @@ def test_bundle_verifier_rejects_raw_project_source_tree(tmp_path):
     bundle = tmp_path / "GigaAMTranscriber.app"
     (bundle / "Contents" / "Resources" / "src").mkdir(parents=True)
     assert verify_bundle(str(bundle), "arm64-mlx") == 1
+
+
+def test_verifier_run_preserves_output_and_failure_with_non_utf8_bytes():
+    import sys
+
+    from scripts.verify_macos_bundle import _run
+
+    code = (
+        "import sys; "
+        "sys.stdout.buffer.write(b'Mach-O arm64 \\xff'); "
+        "sys.stderr.buffer.write(b'error \\xfe'); "
+        "sys.exit(7)"
+    )
+    status, output = _run([sys.executable, "-c", code])
+
+    assert status == 7
+    assert output == r"Mach-O arm64 \xfferror \xfe"
+
+
+def test_bundle_architecture_check_handles_non_utf8_file_output(tmp_path, monkeypatch, capsys):
+    import sys
+
+    from scripts import verify_macos_bundle as verifier
+
+    bundle = tmp_path / "GigaAMTranscriber.app"
+    executable = bundle / "Contents" / "MacOS" / "GigaAMTranscriber"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("")
+    executable.chmod(0o755)
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    file_command = tools / "file"
+    monkeypatch.setenv("PATH", str(tools))
+    monkeypatch.setattr(verifier.sys, "platform", "darwin")
+
+    for arch, expected in (("x86_64", "Non-arm64 Mach-O detected"), ("arm64", "Info.plist not found")):
+        file_command.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            f"sys.stdout.buffer.write(b'Mach-O {arch} \\xff')\n"
+        )
+        file_command.chmod(0o755)
+
+        assert verifier.verify_bundle(str(bundle), "arm64-mlx") == 1
+        assert expected in capsys.readouterr().out
