@@ -618,6 +618,15 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
 
             wait_for("processing page", processing_ready, 30)
             if model != "v3_e2e_rnnt":
+                def model_available():
+                    try:
+                        driver.element(f'#asr-model option[value="{model}"]')
+                        return True
+                    except WebDriverError as error:
+                        if error.code == "no such element":
+                            return False
+                        raise
+                wait_for(f"model {model} to appear", model_available, 30)
                 driver.click("#asr-model")
                 driver.click(f'#asr-model option[value="{model}"]')
             if driver.property("#asr-model", "value") != model:
@@ -728,7 +737,7 @@ def main():
     parser.add_argument("--diagnostics", type=Path)
     parser.add_argument("--timeout", type=int, default=1800, help="seconds for model download and inference")
     parser.add_argument("--app-data", type=Path, help="dedicated app-data root to retain model downloads")
-    parser.add_argument("--model", choices=("v3_e2e_rnnt", "multilingual_ctc"), default="v3_e2e_rnnt")
+    parser.add_argument("--model", choices=("v3_e2e_rnnt", "multilingual_ctc", "v4_rnnt", "multilingual_v2_rnnt"), default="v3_e2e_rnnt")
     parser.add_argument("--diarization", action="store_true")
     args = parser.parse_args()
     if args.check_display:
