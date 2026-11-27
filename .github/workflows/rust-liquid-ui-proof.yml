@@ -48,12 +48,28 @@ jobs:
         id: source
         uses: actions/github-script@v8
         env:
-          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id || vars.RUST_RELEASE_BUILD_RUN_ID }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}
         with:
           script: |
-            const id = process.env.SOURCE_RUN_ID;
+            let id = process.env.SOURCE_RUN_ID;
+            if (!id && context.eventName === 'push') {
+              const deadline = Date.now() + 50 * 60 * 1000;
+              while (Date.now() < deadline) {
+                const {data} = await github.rest.actions.listWorkflowRuns({
+                  ...context.repo, workflow_id: 'rust-liquid.yml',
+                  branch: context.ref.replace(/^refs\/heads\//, ''), event: 'push', per_page: 100,
+                });
+                const matches = data.workflow_runs.filter(item => item.head_sha === context.sha);
+                const success = matches.find(item => item.status === 'completed' && item.conclusion === 'success');
+                if (success) { id = String(success.id); break; }
+                if (matches.length && matches.every(item => item.status === 'completed')) {
+                  throw new Error('Candidate build failed for this proof revision');
+                }
+                await new Promise(resolve => setTimeout(resolve, 30000));
+              }
+            }
             if (!/^[1-9][0-9]*$/.test(id || '') || !Number.isSafeInteger(Number(id))) {
-              throw new Error('source_run_id must be a numeric workflow run ID');
+              throw new Error('No successful candidate run ID for this proof revision');
             }
             const {data: run} = await github.rest.actions.getWorkflowRun({
               ...context.repo, run_id: Number(id),

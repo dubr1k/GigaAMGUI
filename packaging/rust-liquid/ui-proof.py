@@ -681,13 +681,23 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
 
             def complete():
                 nonlocal last_status
-                if driver.state('[data-page="result"]', "displayed"):
+                state = driver.command("POST", "/execute/sync", {
+                    "script": """
+                        const result = document.querySelector('[data-page="result"]');
+                        const start = document.querySelector('#start-processing');
+                        const status = document.querySelector('#progress-status');
+                        return {shown: !result.hidden && result.classList.contains('active'),
+                                enabled: !start.disabled, status: status.textContent};
+                    """,
+                    "args": [],
+                })
+                if state["shown"]:
                     return True
-                status = driver.text("#progress-status")
+                status = state["status"]
                 if status != last_status:
                     print(f"Application status: {status}", flush=True)
                     last_status = status
-                if driver.state("#start-processing", "enabled"):
+                if state["enabled"]:
                     raise RuntimeError(f"Processing ended without a result: {status}")
                 return False
 
