@@ -77,7 +77,15 @@ an incomplete existing bundle, or `--community-bundle PATH` to copy a local expo
 into a dedicated proof app-data directory. The latter requires a fixture with two
 separated speakers and at least two distinct numbered labels in the output; this
 is a smoke check, not an assertion of speaker accuracy.
-The latter does not download or upload model files. On Windows the dedicated
+The CI Community-1 fixture is a 15-second crop of attenuated, concatenated
+LibriSpeech dev-clean recordings from OpenSLR, revision
+`71cacbfb7e2354c4226d01e70d77d5fca3d04ba1` (CC BY 4.0). Sources and
+the PCM checksum are recorded in `tests/fixtures/rust_liquid_community_smoke.json`.
+Attribution: Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur,
+*LibriSpeech: An ASR Corpus Based on Public Domain Audio Books*, ICASSP 2015,
+https://www.danielpovey.com/files/2015_icassp_librispeech.pdf. The crop is a
+smoke fixture selected for this check, not an independent quality benchmark.
+The `--community-bundle` proof does not download or upload model files. On Windows the dedicated
 root must also be connected to the application's real known folders, as in the
 existing CI Windows isolation step; merely setting `APPDATA` is insufficient.
 

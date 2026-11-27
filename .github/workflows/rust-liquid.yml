@@ -18,6 +18,7 @@ on:
       - ".github/workflows/rust-liquid-ui-proof.yml"
       - ".github/workflows/build.yml"
       - "tests/fixtures/rust_liquid_long_sources.json"
+      - "tests/fixtures/rust_liquid_community_smoke.json"
 
 permissions:
   contents: read

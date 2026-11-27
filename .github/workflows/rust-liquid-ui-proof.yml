@@ -6,7 +6,7 @@ name: Rust Liquid packaged UI proof
 on:
   push:
     branches: [feat/rust-liquid-windows-linux]
-    paths: [".github/workflows/rust-liquid-ui-proof.yml", ".github/workflows/rust-liquid.yml", ".github/workflows/build.yml", "desktop/**", "packaging/rust-liquid/**", "tests/fixtures/rust_liquid_long_sources.json"]
+    paths: [".github/workflows/rust-liquid-ui-proof.yml", ".github/workflows/rust-liquid.yml", ".github/workflows/build.yml", "desktop/**", "packaging/rust-liquid/**", "tests/fixtures/rust_liquid_long_sources.json", "tests/fixtures/rust_liquid_community_smoke.json"]
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -498,14 +498,16 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import array
+          import base64
           import hashlib
           import importlib.util
+          import json
           import os
           import tempfile
           import urllib.parse
           import urllib.request
           import wave
+          import zlib
           from pathlib import Path
 
           workspace = Path(os.environ["GITHUB_WORKSPACE"])
@@ -546,30 +548,18 @@ jobs:
                   raise ValueError(f"Community-1 asset size or SHA-256 mismatch: {asset}")
               print(f"Verified Community-1 asset {asset}: {count} bytes, SHA-256 {digest.hexdigest()}")
 
-          # The checked-in LibriSpeech excerpts and their attribution are described in
-          # packaging/rust-liquid/README.md. Reuse the long proof's pinned PCM checks.
-          clips = proof.load_sources(workspace / "tests/fixtures/rust_liquid_long_sources.json")
-          order = (
-              "2035-147960-0005", "2035-147960-0006",
-              "7976-110124-0023", "7976-110124-0024",
-              "1673-143397-0002", "1673-143397-0003",
-          )
+          # This attributed crop is a functional smoke fixture, not a quality benchmark.
+          source = json.loads((workspace / "tests/fixtures/rust_liquid_community_smoke.json").read_text(encoding="utf-8"))
+          samples = zlib.decompress(base64.b64decode(source["pcm_zlib_base64"], validate=True))
+          if (len(samples) != 15 * 16000 * 2 or
+              hashlib.sha256(samples).hexdigest() != "d601d90b332f042550f1682214c164c8ea161bb153e01f0ca0af11bc6fce9ff1"):
+              raise ValueError("Community-1 smoke fixture integrity check failed")
           fixture = root / "community-two-speakers.wav"
           with wave.open(str(fixture), "wb") as output:
               output.setnchannels(1)
               output.setsampwidth(2)
-              output.setframerate(proof.RATE)
-              output.writeframesraw(bytes(proof.RATE * 2 * 2 // 5))
-              previous_speaker = None
-              for ident in order:
-                  speaker = ident.split("-")[0]
-                  if previous_speaker is not None:
-                      gap = proof.RATE if speaker != previous_speaker else proof.RATE * 2 // 5
-                      output.writeframesraw(bytes(gap * 2))
-                  samples = array.array("h", (int(sample) * 3 // 4 for sample in clips[ident]))
-                  output.writeframesraw(proof.pcm_bytes(samples))
-                  previous_speaker = speaker
-              output.writeframesraw(bytes(proof.RATE * 2 * 2 // 5))
+              output.setframerate(16000)
+              output.writeframes(samples)
 
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
               env.write(f"COMMUNITY_PROOF_BUNDLE={bundle}\n")
