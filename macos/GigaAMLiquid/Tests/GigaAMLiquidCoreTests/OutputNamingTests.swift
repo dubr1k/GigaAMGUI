@@ -22,6 +22,21 @@ import Testing
         #expect(OutputNaming.format(ofOutputNamed: "other.txt", stem: "talk") == nil)
     }
 
+    @Test func numberedExportsMapBackToTheirFormat() {
+        let stem = "Политех, план работ"
+        #expect(OutputNaming.format(ofOutputNamed: "\(stem)_1.txt", stem: stem) == "txt")
+        #expect(OutputNaming.format(ofOutputNamed: "\(stem)_1_timecodes.txt", stem: stem) == "txt_timecodes")
+        #expect(OutputNaming.format(ofOutputNamed: "\(stem)_1_diarize.txt", stem: stem) == "txt_diarize")
+        #expect(OutputNaming.format(ofOutputNamed: "\(stem)_1_diarize_timecodes.txt", stem: stem) == "txt_diarize_timecodes")
+        #expect(OutputNaming.format(ofOutputNamed: "talk_1_12.vtt", stem: "talk_1") == "vtt")
+    }
+
+    @Test(arguments: ["talk_.txt", "talk_0.txt", "talk_01.txt", "talk_١.txt", "talk_1_extra.txt",
+                      "talk_diarize_1.txt", "other_1.txt", "talk_1.pdf"])
+    func namesOutsideTheWorkerConventionAreRejected(_ name: String) {
+        #expect(OutputNaming.format(ofOutputNamed: name, stem: "talk") == nil)
+    }
+
     @Test func stemsMatchAcrossCaseAndUnicodeVariants() {
         #expect(OutputNaming.normalizedStem(url("/a/Café.wav")) == OutputNaming.normalizedStem(url("/b/CAFE\u{301}.mp3")))
         #expect(OutputNaming.normalizedStem(url("/a/Привет.wav")) == OutputNaming.normalizedStem(url("/b/ПРИВЕТ.mp3")))

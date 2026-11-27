@@ -301,7 +301,7 @@ final class NativeTranscriptionJob {
             } catch { errors.append(error.localizedDescription) }
         }
         if !result.success && errors.isEmpty { errors.append(failureDetails(L10n.text("Python-обработчик не смог распознать этот файл."))) }
-        if result.success && outputFiles.isEmpty { errors.append(L10n.text("Python-обработчик не создал ни одного читаемого файла результата.")) }
+        if result.success && outputFiles.isEmpty { errors.append(L10n.text("Нет доступных файлов результата.")) }
         let error = errors.isEmpty ? nil : safeText(errors.joined(separator: "\n"))
         hadFileError = hadFileError || !result.success || error != nil
         completedIndices.insert(index)
