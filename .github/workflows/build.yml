@@ -974,13 +974,13 @@ jobs:
           codesign --verify --deep --strict "$SWIFT_APP"
           for model in v4_rnnt multilingual_v2_rnnt multilingual_ctc multilingual_large_ctc; do
             for mode in batch live; do
-              args=()
-              if [ "$mode" = live ]; then args+=(--live); fi
+              args=(--model "$model")
+              if [ "$mode" = live ]; then args=(--live "${args[@]}"); fi
               CACHE="${RUNNER_TEMP}/liquid-full-${model}-${mode}-hf"
               test ! -e "$CACHE"
               env -u HF_HUB_CACHE -u HUGGINGFACE_HUB_CACHE HF_HOME="$CACHE" HF_MODULES_CACHE="$CACHE/modules" \
                 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-                python scripts/native_worker_smoke.py "${args[@]}" --model "$model" \
+                python scripts/native_worker_smoke.py "${args[@]}" \
                 "$COMPANION" tests/fixtures/liquid_smoke.wav "${RUNNER_TEMP}/liquid-full-${model}-${mode}-out"
             done
           done
