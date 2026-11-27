@@ -53,7 +53,7 @@ dpkg-query -W -f='${binary:Package}\t${Version}\n' | LC_ALL=C sort > /out/source
 if [[ "$binary" == ffmpeg.exe ]]; then
   cp /opt/mingw-source/* /out/source/
   shopt -s nullglob
-  sources=(/opt/mingw-source/mingw-w64_*orig.tar.*)
+  sources=(/opt/mingw-source/mingw-w64_*orig.tar.bz2)
   if [[ ${#sources[@]} -ne 1 ]]; then echo 'Expected the exact MinGW source archive' >&2; exit 1; fi
   tar --wildcards --no-anchored -xOf "${sources[0]}" 'COPYING.MinGW-w64-runtime.txt' > /out/source/COPYING.MinGW-w64-runtime.txt
   test -s /out/source/COPYING.MinGW-w64-runtime.txt
