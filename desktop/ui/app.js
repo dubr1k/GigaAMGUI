@@ -58,6 +58,26 @@ function desktop() {
   return window.__TAURI__;
 }
 
+async function setupModels() {
+  if (!window.__TAURI__) return;
+  try {
+    const models = await desktop().core.invoke("list_models");
+    for (const selector of ["#asr-model", "#live-model"]) {
+      const select = document.querySelector(selector);
+      const selected = select.value;
+      select.replaceChildren(...models.map(({ id, label }) => {
+        const option = document.createElement("option");
+        option.value = id;
+        option.textContent = label;
+        return option;
+      }));
+      if (models.some(({ id }) => id === selected)) select.value = selected;
+    }
+  } catch (error) {
+    showToast(`Не удалось получить список моделей: ${error}`);
+  }
+}
+
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey));
@@ -503,6 +523,9 @@ function setupLive() {
         if (payload.kind === "transcript") {
           text.textContent += (text.textContent ? "\n" : "") + (payload.text || "");
           partial.textContent = "";
+        } else if (payload.kind === "transcript_delta") {
+          text.textContent += payload.text || "";
+          partial.textContent = "";
         } else if (payload.kind === "partial") {
           partial.textContent = payload.text || "";
         } else if (["stopped", "cancelled", "failed"].includes(payload.kind)) {
@@ -701,6 +724,7 @@ function setupNotices() {
 }
 
 applySettings();
+setupModels();
 setupNavigation();
 setupProcessing();
 setupLive();

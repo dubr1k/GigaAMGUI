@@ -282,6 +282,49 @@ impl StreamingResampler {
     }
 }
 
+/// Stateful live resampling on the same delay-compensated sample clock as the
+/// file decoder. `finish` emits exactly the remaining real-duration samples.
+pub(crate) struct LiveResampler {
+    inner: StreamingResampler,
+}
+
+impl LiveResampler {
+    pub(crate) fn new(input_rate: u32) -> Result<Self, String> {
+        if !(MIN_INPUT_RATE..=MAX_INPUT_RATE).contains(&input_rate) {
+            return Err("Неподдерживаемая частота аудиоустройства".into());
+        }
+        StreamingResampler::new(input_rate).map(|inner| Self { inner }).map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn push(&mut self, samples: &[f32], cancelled: &AtomicBool) -> Result<Vec<f32>, String> {
+        self.convert(Some(samples), cancelled)
+    }
+
+    pub(crate) fn finish(&mut self, cancelled: &AtomicBool) -> Result<Vec<f32>, String> {
+        self.convert(None, cancelled)
+    }
+
+    fn convert(&mut self, samples: Option<&[f32]>, cancelled: &AtomicBool) -> Result<Vec<f32>, String> {
+        let mut output = Vec::new();
+        let mut collect = |_: u64, chunk: &[f32]| { output.extend_from_slice(chunk); Ok(()) };
+        let mut sink = WindowSink {
+            cancelled,
+            callback: &mut collect,
+            window: Vec::with_capacity(4096),
+            window_samples: 4096,
+            next_start: 0,
+        };
+        let result = match samples {
+            Some(samples) => self.inner.append(samples, &mut sink),
+            None => self.inner.finish(&mut sink),
+        };
+        result.and_then(|_| sink.flush()).map_err(|error| error.to_string())?;
+        drop(sink);
+        drop(collect);
+        Ok(output)
+    }
+}
+
 fn map_wav_error(error: WavError, cancelled: &AtomicBool) -> DecodeError {
     if cancelled.load(Ordering::Acquire) {
         return DecodeError::Cancelled;

@@ -7,6 +7,8 @@ edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json = "1"
+url = "2"
 
 [dependencies]
 gigastt-core = { version = "=2.22.0", default-features = false, features = ["net", "file-decode", "diarization"] }
@@ -32,6 +34,7 @@ polyvoice = { version = "=1.0.0", default-features = false, features = ["backend
 kaldi-fbank = "=0.3.0"
 sha2 = { version = "=0.11.0", default-features = false }
 fs2 = "0.4.3"
+sentencepiece-rs = "=0.2.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading"] }

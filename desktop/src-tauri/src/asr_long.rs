@@ -6,6 +6,7 @@
 
 #[path = "asr_long_audio.rs"]
 mod audio;
+pub(crate) use audio::LiveResampler;
 #[path = "asr_long_embedder.rs"]
 mod embedder;
 #[path = "asr_long_ffmpeg.rs"]
@@ -225,6 +226,79 @@ pub(super) fn try_transcribe(
     }
 }
 
+/// The same canonical PCM is used for recognition and speaker alignment.
+pub(super) fn transcribe_zapformer(
+    app: &AppHandle,
+    job_id: &str,
+    input: &str,
+    model_dir: &str,
+    bundle: &Path,
+    model: crate::asr_zapformer::ZapformerModel,
+    diarization: bool,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<super::ProcessedFile, String> {
+    super::emit_progress(app, job_id, "preparing", None, Some(input), Some("Подготовка записи"));
+    let canonical = CanonicalAudio::create(app, Path::new(input), cancelled)?;
+    let result = (|| {
+        super::emit_progress(app, job_id, "loading_model", None, Some(input), Some("Загрузка модели"));
+        let threads = std::thread::available_parallelism().map(|n| n.get().min(4)).unwrap_or(1);
+        let transcription = if canonical.samples <= 30 * RATE {
+            let mut samples = Vec::with_capacity(canonical.samples as usize);
+            audio::for_each_window(&canonical.path, 30 * RATE as usize, cancelled, |start, chunk| {
+                if start != samples.len() as u64 { return Err("Непоследовательная шкала аудио".into()); }
+                samples.extend_from_slice(chunk);
+                Ok(())
+            }).map_err(|error| format!("Не удалось прочитать аудио: {error}"))?;
+            if samples.len() as u64 != canonical.samples { return Err("Неполное временное аудио".into()); }
+            let mut recognizer = crate::asr_zapformer::Zapformer::load(bundle, model, threads, cancelled)?;
+            let result = recognizer.transcribe(&samples, cancelled)?;
+            TranscribeResult {
+                text: result.text,
+                words: result.words,
+                duration_s: canonical.samples as f64 / RATE as f64,
+                confidence: None,
+            }
+        } else {
+            let mut recognizer = crate::asr_zapformer_stream::ZapformerStream::load(bundle, bundle, model, threads, cancelled)?;
+            let mut text = String::new();
+            let mut words = Vec::new();
+            let mut received = 0u64;
+            audio::for_each_window(&canonical.path, RATE as usize, cancelled, |start, chunk| {
+                if start != received { return Err("Непоследовательная шкала аудио".into()); }
+                received = received.checked_add(chunk.len() as u64).ok_or("Слишком длинное аудио")?;
+                let update = recognizer.push(chunk, cancelled)?;
+                text.push_str(&update.text);
+                words.extend(update.words);
+                Ok(())
+            }).map_err(|error| format!("Не удалось распознать аудио: {error}"))?;
+            if received != canonical.samples { return Err("Неполное временное аудио".into()); }
+            let update = recognizer.finish(cancelled)?;
+            text.push_str(&update.text);
+            words.extend(update.words);
+            TranscribeResult {
+                text,
+                words,
+                duration_s: canonical.samples as f64 / RATE as f64,
+                confidence: None,
+            }
+        };
+        super::check_cancelled(cancelled)?;
+        if diarization {
+            diarize(app, job_id, input, model_dir, cancelled, &canonical, transcription)
+                .map(super::ProcessedFile::Long)
+        } else {
+            Ok(super::ProcessedFile::Regular { transcription, segments: None, diarized_text: None })
+        }
+    })();
+    let cleanup = canonical.close();
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+    }
+}
+
 fn process(
     app: &AppHandle,
     job_id: &str,
@@ -234,9 +308,6 @@ fn process(
     cancelled: &Arc<AtomicBool>,
     canonical: &CanonicalAudio,
 ) -> Result<LongResult, String> {
-    super::check_cancelled(cancelled)?;
-    super::emit_progress(app, job_id, "downloading_speaker_model", None, Some(input), Some("Подготовка модели сегментации"));
-    let segmentation = tauri::async_runtime::block_on(models::ensure_segmentation_model(Path::new(model_dir), cancelled))?;
     super::check_cancelled(cancelled)?;
     let path = canonical.path.to_str().ok_or_else(|| "Путь к временному аудио не поддерживается".to_string())?;
     super::emit_progress(app, job_id, "transcribing", None, Some(input), Some("Распознавание длинной записи"));
@@ -248,8 +319,23 @@ fn process(
         &mut session,
     );
     drop(session);
-    let mut transcription = transcription.map_err(|error| super::check_cancelled(cancelled).err()
+    let transcription = transcription.map_err(|error| super::check_cancelled(cancelled).err()
         .unwrap_or_else(|| format!("Не удалось распознать {input}: {error}")))?;
+    diarize(app, job_id, input, model_dir, cancelled, canonical, transcription)
+}
+
+fn diarize(
+    app: &AppHandle,
+    job_id: &str,
+    input: &str,
+    model_dir: &str,
+    cancelled: &Arc<AtomicBool>,
+    canonical: &CanonicalAudio,
+    mut transcription: TranscribeResult,
+) -> Result<LongResult, String> {
+    super::check_cancelled(cancelled)?;
+    super::emit_progress(app, job_id, "downloading_speaker_model", None, Some(input), Some("Подготовка модели сегментации"));
+    let segmentation = tauri::async_runtime::block_on(models::ensure_segmentation_model(Path::new(model_dir), cancelled))?;
     super::check_cancelled(cancelled)?;
     let expected_duration = canonical.samples as f64 / RATE as f64;
     if !transcription.duration_s.is_finite() || (transcription.duration_s - expected_duration).abs() > 1.0 / RATE as f64 {

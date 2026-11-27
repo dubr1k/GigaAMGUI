@@ -1,4 +1,10 @@
 mod asr;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod asr_zapformer;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod asr_zapformer_assets;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod asr_zapformer_stream;
 mod llm;
 mod live;
 mod media_import;

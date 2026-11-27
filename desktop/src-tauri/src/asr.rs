@@ -14,14 +14,28 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
+use crate::asr_zapformer::ZapformerModel;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use crate::{asr_zapformer_assets, asr_zapformer_stream::ZapformerStream};
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 #[path = "asr_long.rs"]
 mod long_diarization;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) use long_diarization::LiveResampler;
 
 const MODELS: [(&str, &str, ModelVariant); 3] = [
     ("v3_e2e_rnnt", "GigaAM v3 e2e RNNT", ModelVariant::E2eRnnt),
     ("multilingual_ctc", "GigaAM Multilingual CTC (220M)", ModelVariant::MlCtc),
     ("multilingual_large_ctc", "GigaAM Multilingual Large CTC (600M)", ModelVariant::MlCtcLarge),
 ];
+
+#[derive(Clone, Copy)]
+enum SelectedModel {
+    Core(ModelVariant),
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    Zapformer(ZapformerModel),
+}
 
 #[derive(Default)]
 pub struct AsrState {
@@ -48,6 +62,8 @@ pub(crate) struct LiveAsrJob {
     guard: JobGuard,
     job_id: String,
     cache: Arc<Mutex<Option<CachedEngine>>>,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    zapformer_bundle: Mutex<Option<(ZapformerModel, PathBuf)>>,
 }
 
 impl LiveAsrJob {
@@ -56,8 +72,18 @@ impl LiveAsrJob {
     }
 
     pub(crate) async fn prepare(&self, app: &AppHandle, model_name: &str) -> Result<(), String> {
-        let (model_id, variant) = find_model(model_name)?;
+        let (model_id, model) = find_model(model_name)?;
         let model_dir = models_dir(app)?.join(model_id);
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let SelectedModel::Zapformer(model) = model {
+            let bundle = asr_zapformer_assets::ensure(&model_dir, model, &self.guard.cancelled).await?;
+            check_cancelled(&self.guard.cancelled)?;
+            *self.zapformer_bundle.lock().map_err(|_| "Не удалось сохранить путь модели".to_string())? = Some((model, bundle));
+            return Ok(());
+        }
+        let SelectedModel::Core(variant) = model else {
+            return Err("Неподдерживаемая модель Live".into());
+        };
         let model_dir = model_dir.to_str().ok_or_else(|| "Путь к каталогу модели не поддерживается".to_string())?;
         check_cancelled(&self.guard.cancelled)?;
         let download = model::ensure_model_variant(Some(variant), model_dir);
@@ -75,9 +101,12 @@ impl LiveAsrJob {
         }
     }
 
-    pub(crate) fn engine(&self, app: &AppHandle, model: &str) -> Result<Arc<Engine>, String> {
+    pub(crate) fn engine(&self, app: &AppHandle, name: &str) -> Result<Arc<Engine>, String> {
         check_cancelled(&self.guard.cancelled)?;
-        let (model_id, variant) = find_model(model)?;
+        let (model_id, selected) = find_model(name)?;
+        let SelectedModel::Core(variant) = selected else {
+            return Err("Этой модели нужна потоковая сессия Zapformer".into());
+        };
         let model_dir = models_dir(app)?.join(model_id);
         if !model::is_usable_present(variant, &model_dir) {
             return Err("Модель для Live не установлена; сначала подготовьте её в пакетном режиме".into());
@@ -87,6 +116,18 @@ impl LiveAsrJob {
         let engine = get_engine(app, &self.job_id, variant, has_speaker_file, model_dir, &self.cache, &self.guard.cancelled)?;
         check_cancelled(&self.guard.cancelled)?;
         Ok(engine)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub(crate) fn zapformer_stream(&self, _app: &AppHandle, name: &str) -> Result<Option<ZapformerStream>, String> {
+        let (_, model) = find_model(name)?;
+        let SelectedModel::Zapformer(model) = model else { return Ok(None) };
+        let directory = self.zapformer_bundle.lock().map_err(|_| "Не удалось открыть путь модели".to_string())?
+            .as_ref().filter(|(prepared, _)| *prepared == model).map(|(_, directory)| directory.clone())
+            .ok_or_else(|| "Модель не подготовлена для Live".to_string())?;
+        drop(self.cache.lock().map_err(|_| "Не удалось открыть кэш модели".to_string())?.take());
+        let threads = thread::available_parallelism().map(|n| n.get().min(4)).unwrap_or(1);
+        Ok(Some(ZapformerStream::load(&directory, &directory, model, threads, &self.guard.cancelled)?))
     }
 }
 
@@ -122,7 +163,7 @@ pub struct JobRequest {
 struct ValidatedRequest {
     job_id: String,
     inputs: Vec<String>,
-    variant: ModelVariant,
+    variant: SelectedModel,
     model_id: &'static str,
     output_dir: PathBuf,
     formats: Vec<ExportFormat>,
@@ -196,11 +237,21 @@ fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 pub fn list_models(app: AppHandle) -> Result<Vec<ModelInfo>, String> {
     let dir = models_dir(&app)?;
-    Ok(MODELS.iter().map(|(id, label, variant)| ModelInfo {
+    let mut result: Vec<_> = MODELS.iter().map(|(id, label, variant)| ModelInfo {
         id: *id,
         label: *label,
         installed: model::is_usable_present(*variant, &dir.join(*id)),
-    }).collect())
+    }).collect();
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    for (id, label, model) in [
+        ("v4_rnnt", "GigaAM v4 RNNT", ZapformerModel::V4Rnnt),
+        ("multilingual_v2_rnnt", "GigaAM Multilingual v2 RNNT", ZapformerModel::MultilingualV2Rnnt),
+    ] {
+        if let Some(installed) = asr_zapformer_assets::installed_hint(&dir.join(id), model) {
+            result.push(ModelInfo { id, label, installed });
+        }
+    }
+    Ok(result)
 }
 
 fn validate_job_id(id: &str) -> Result<(), String> {
@@ -210,11 +261,17 @@ fn validate_job_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn find_model(id: &str) -> Result<(&'static str, ModelVariant), String> {
-    MODELS.iter()
-        .find(|(model_id, _, _)| *model_id == id)
-        .map(|(model_id, _, variant)| (*model_id, *variant))
-        .ok_or_else(|| format!("Неизвестная модель: {id}"))
+fn find_model(id: &str) -> Result<(&'static str, SelectedModel), String> {
+    if let Some((model_id, _, variant)) = MODELS.iter().find(|(model_id, _, _)| *model_id == id) {
+        return Ok((*model_id, SelectedModel::Core(*variant)));
+    }
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    match id {
+        "v4_rnnt" => return Ok(("v4_rnnt", SelectedModel::Zapformer(ZapformerModel::V4Rnnt))),
+        "multilingual_v2_rnnt" => return Ok(("multilingual_v2_rnnt", SelectedModel::Zapformer(ZapformerModel::MultilingualV2Rnnt))),
+        _ => {}
+    }
+    Err(format!("Неизвестная модель: {id}"))
 }
 
 fn validate_request(request: JobRequest) -> Result<ValidatedRequest, String> {
@@ -290,6 +347,8 @@ pub(crate) fn begin_live_job(state: &AsrState, id: &str) -> Result<LiveAsrJob, S
         guard: begin_job(state, id)?,
         job_id: id.to_owned(),
         cache: state.engine.clone(),
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        zapformer_bundle: Mutex::new(None),
     })
 }
 
@@ -322,24 +381,30 @@ pub async fn transcribe(app: AppHandle, state: State<'_, AsrState>, request: Job
     let model_dir = model_dir.to_str().ok_or_else(|| "Путь к каталогу модели не поддерживается".to_string())?.to_owned();
 
     emit_progress(&app, &request.job_id, "preparing", None, None, Some("Подготовка распознавания"));
-    if !model::is_usable_present(request.variant, Path::new(&model_dir)) {
-        emit_progress(&app, &request.job_id, "downloading_model", None, None, Some("Загрузка модели; требуется подключение к интернету"));
-    }
-    {
-        let download = model::ensure_model_variant(Some(request.variant), &model_dir);
-        tokio::pin!(download);
-        loop {
-            tokio::select! {
-                result = &mut download => {
-                    result.map_err(|err| format!("Не удалось подготовить модель: {err:#}"))?;
-                    break;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(250)) => {
-                    check_cancelled(&cancelled)?;
+    let bundle: Option<PathBuf> = match request.variant {
+        SelectedModel::Core(variant) => {
+            if !model::is_usable_present(variant, Path::new(&model_dir)) {
+                emit_progress(&app, &request.job_id, "downloading_model", None, None, Some("Загрузка модели; требуется подключение к интернету"));
+            }
+            let download = model::ensure_model_variant(Some(variant), &model_dir);
+            tokio::pin!(download);
+            loop {
+                tokio::select! {
+                    result = &mut download => {
+                        result.map_err(|err| format!("Не удалось подготовить модель: {err:#}"))?;
+                        break;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => check_cancelled(&cancelled)?,
                 }
             }
+            None
         }
-    }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        SelectedModel::Zapformer(model) => {
+            emit_progress(&app, &request.job_id, "downloading_model", None, None, Some("Подготовка проверенной модели"));
+            Some(asr_zapformer_assets::ensure(Path::new(&model_dir), model, &cancelled).await?)
+        }
+    };
     if request.diarization {
         check_cancelled(&cancelled)?;
         if !Path::new(&model_dir).join(model::SPEAKER_MODEL_FILE).is_file() {
@@ -353,21 +418,17 @@ pub async fn transcribe(app: AppHandle, state: State<'_, AsrState>, request: Job
                     result.map_err(|err| format!("Не удалось подготовить модель говорящих: {err:#}"))?;
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(250)) => {
-                    check_cancelled(&cancelled)?;
-                }
+                _ = tokio::time::sleep(Duration::from_millis(250)) => check_cancelled(&cancelled)?,
             }
         }
     }
     check_cancelled(&cancelled)?;
-
     let saved_paths = Arc::new(Mutex::new(Vec::<String>::new()));
     let saved_in_worker = saved_paths.clone();
     let job = tauri::async_runtime::spawn_blocking(move || {
-        // Keep the job registered until the blocking worker actually exits, even
-        // if the invoking webview goes away while native inference is running.
+        // Keep the job registered until the blocking worker actually exits.
         let _guard = guard;
-        run_job(&app, request, &model_dir, &engine_cache, &cancelled, &saved_in_worker)
+        run_job(&app, request, &model_dir, bundle.as_deref(), &engine_cache, &cancelled, &saved_in_worker)
     });
     let result = match job.await {
         Ok(result) => result,
@@ -407,22 +468,36 @@ fn get_engine(app: &AppHandle, job_id: &str, variant: ModelVariant, needs_speake
     Ok(engine)
 }
 
-fn run_job(app: &AppHandle, request: ValidatedRequest, model_dir: &str, cache: &Mutex<Option<CachedEngine>>, cancelled: &Arc<AtomicBool>, saved_paths: &Mutex<Vec<String>>) -> Result<JobResult, String> {
-    let engine = get_engine(app, &request.job_id, request.variant, request.diarization, model_dir, cache, cancelled)?;
+fn run_job(app: &AppHandle, request: ValidatedRequest, model_dir: &str, bundle: Option<&Path>, cache: &Mutex<Option<CachedEngine>>, cancelled: &Arc<AtomicBool>, saved_paths: &Mutex<Vec<String>>) -> Result<JobResult, String> {
+    let engine = match request.variant {
+        SelectedModel::Core(variant) => Some(get_engine(app, &request.job_id, variant, request.diarization, model_dir, cache, cancelled)?),
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        SelectedModel::Zapformer(_) => {
+            drop(cache.lock().map_err(|_| "Не удалось открыть кэш модели".to_string())?.take());
+            None
+        }
+    };
     check_cancelled(cancelled)?;
     let mut files = Vec::with_capacity(request.inputs.len());
     for (index, input) in request.inputs.iter().enumerate() {
         check_cancelled(cancelled)?;
         let duration = audio::probe_duration_file(input).ok().flatten().filter(|d| d.is_finite() && *d > 0.0);
         let mut processed = None;
-
         #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if request.diarization && duration.is_some_and(|seconds| seconds > 1_800.0) {
-            processed = long_diarization::try_transcribe(app, &request.job_id, input, model_dir, &engine, cancelled)?
+        if let SelectedModel::Zapformer(model) = request.variant {
+            let directory = bundle.ok_or_else(|| "Не подготовлен каталог модели".to_string())?;
+            processed = Some(long_diarization::transcribe_zapformer(
+                app, &request.job_id, input, model_dir, directory, model, request.diarization, cancelled,
+            )?);
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if processed.is_none() && request.diarization && duration.is_some_and(|seconds| seconds > 1_800.0) {
+            let engine = engine.as_ref().ok_or("Модель не загружена")?;
+            processed = long_diarization::try_transcribe(app, &request.job_id, input, model_dir, engine, cancelled)?
                 .map(ProcessedFile::Long);
         }
-
         if processed.is_none() {
+            let engine = engine.as_ref().ok_or("Модель не загружена")?;
             let counter = Arc::new(AtomicU64::new(0));
             let message = if request.diarization { "Распознавание и диаризация файла" } else { "Распознавание файла" };
             let initial_percent = if cfg!(any(target_os = "linux", target_os = "windows")) && request.diarization && duration.is_none() {

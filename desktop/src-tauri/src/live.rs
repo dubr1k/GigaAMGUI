@@ -135,11 +135,13 @@ struct LiveEvent {
     recording_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recording_complete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    words: Option<Vec<gigastt_core::inference::WordInfo>>,
 }
 
 fn emit(app: &AppHandle, id: &str, kind: &'static str, text: Option<String>, message: Option<String>) {
     let _ = app.emit("live-event", LiveEvent {
-        session_id: id.into(), kind, text, message, recording_path: None, recording_complete: None,
+        session_id: id.into(), kind, text, message, recording_path: None, recording_complete: None, words: None,
     });
 }
 
@@ -210,7 +212,7 @@ pub fn live_start(
             };
             let _ = worker_app.emit("live-event", LiveEvent {
                 session_id: id, kind, text: Some(transcript), message,
-                recording_path, recording_complete,
+                recording_path, recording_complete, words: None,
             });
         }
     });
@@ -380,14 +382,22 @@ fn run_session(
     }
     // Loading can be a long native call; stopping during it prevents capture
     // from starting, but the lease stays held until the call has returned.
-    let engine = job.engine(app, &request.model)?;
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let mut zapformer = job.zapformer_stream(app, &request.model)?;
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let engine = if zapformer.is_none() { Some(job.engine(app, &request.model)?) } else { None };
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let engine = Some(job.engine(app, &request.model)?);
     if control.stopping() {
         return Ok(());
     }
-    let mut triplet = engine.pool.checkout_blocking()
-        .map_err(|error| format!("Не удалось занять модель: {error}"))?;
-    let mut stream_state = engine.create_state(false);
-    stream_state.abort = Some(control.cancelled.clone());
+    let mut triplet = engine.as_ref().map(|engine| engine.pool.checkout_blocking())
+        .transpose().map_err(|error| format!("Не удалось занять модель: {error}"))?;
+    let mut stream_state = engine.as_ref().map(|engine| {
+        let mut state = engine.create_state(false);
+        state.abort = Some(control.cancelled.clone());
+        state
+    });
 
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let capture_control = control.clone();
@@ -446,6 +456,12 @@ fn run_session(
     }
     let mut consumer = ready.consumer;
     let chunk_frames = (ready.sample_rate as usize / 10).max(1);
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let mut zap_resampler = if zapformer.is_some() && ready.sample_rate != TARGET_RATE {
+        Some(asr::LiveResampler::new(ready.sample_rate)?)
+    } else {
+        None
+    };
     let mut last_partial = String::new();
     let mut received_audio = false;
     let mut failure: Option<String> = None;
@@ -476,9 +492,29 @@ fn run_session(
                     }
                 }
                 if !control.cancelled() && !asr_failed {
-                    if let Err(error) = feed_audio(app, &request.session_id, &engine, &mut stream_state,
-                        &mut triplet, ready.sample_rate, samples, transcript, &mut last_partial)
-                    {
+                    #[cfg(any(target_os = "linux", target_os = "windows"))]
+                    let zap_result = if let Some(stream) = zapformer.as_mut() {
+                        let update = match zap_resampler.as_mut() {
+                            Some(resampler) => resampler.push(&samples, &control.cancelled)
+                                .and_then(|audio| stream.push(&audio, &control.cancelled)),
+                            None => stream.push(&samples, &control.cancelled),
+                        };
+                        Some(update.map(|update| publish_zap_update(app, &request.session_id, update, transcript, &mut last_partial)))
+                    } else {
+                        None
+                    };
+                    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+                    let zap_result: Option<Result<(), String>> = None;
+                    let result = match zap_result {
+                        Some(result) => result,
+                        None => match (engine.as_ref(), stream_state.as_mut(), triplet.as_deref_mut()) {
+                            (Some(engine), Some(state), Some(triplet)) =>
+                                feed_audio(app, &request.session_id, engine, state, triplet,
+                                    ready.sample_rate, samples, transcript, &mut last_partial),
+                            _ => Err("Модель Live не загружена".into()),
+                        },
+                    };
+                    if let Err(error) = result {
                         asr_failed = true;
                         if !control.cancelled() {
                             failure.get_or_insert(error);
@@ -500,27 +536,52 @@ fn run_session(
             failure.get_or_insert(error);
         }
     }
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let is_zapformer = zapformer.is_some();
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let is_zapformer = false;
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     if !control.cancelled() && !asr_failed {
-        if received_audio && ready.sample_rate != TARGET_RATE {
-            // Flush the 256-tap resampler's retained tail with silence.
-            if let Err(error) = feed_audio(app, &request.session_id, &engine, &mut stream_state,
-                &mut triplet, ready.sample_rate, vec![0.0; 256], transcript, &mut last_partial)
-            {
-                if !control.cancelled() {
-                    failure.get_or_insert(error);
+        if let Some(stream) = zapformer.as_mut() {
+            let result = (|| {
+                if let Some(resampler) = zap_resampler.as_mut() {
+                    let tail = resampler.finish(&control.cancelled)?;
+                    let update = stream.push(&tail, &control.cancelled)?;
+                    publish_zap_update(app, &request.session_id, update, transcript, &mut last_partial);
                 }
-                asr_failed = true;
+                let update = stream.finish(&control.cancelled)?;
+                publish_zap_update(app, &request.session_id, update, transcript, &mut last_partial);
+                Ok::<(), String>(())
+            })();
+            if let Err(error) = result {
+                if !control.cancelled() { failure.get_or_insert(error); }
             }
         }
-        if !asr_failed && !control.cancelled() {
-            match engine.try_finish_stream(&mut stream_state, &mut triplet) {
-                Ok(Some(segment)) => publish_segment(app, &request.session_id, segment, transcript, &mut last_partial),
-                Ok(None) => {}
-                Err(error) if !control.cancelled() => {
-                    failure.get_or_insert(format!("Не удалось завершить распознавание: {error}"));
+    }
+    if !is_zapformer && !control.cancelled() && !asr_failed {
+        if let (Some(engine), Some(state), Some(triplet)) =
+            (engine.as_ref(), stream_state.as_mut(), triplet.as_deref_mut())
+        {
+            if received_audio && ready.sample_rate != TARGET_RATE {
+                if let Err(error) = feed_audio(app, &request.session_id, engine, state, triplet,
+                    ready.sample_rate, vec![0.0; 256], transcript, &mut last_partial)
+                {
+                    if !control.cancelled() { failure.get_or_insert(error); }
+                    asr_failed = true;
                 }
-                Err(_) => {}
             }
+            if !asr_failed && !control.cancelled() {
+                match engine.try_finish_stream(state, triplet) {
+                    Ok(Some(segment)) => publish_segment(app, &request.session_id, segment, transcript, &mut last_partial),
+                    Ok(None) => {}
+                    Err(error) if !control.cancelled() => {
+                        failure.get_or_insert(format!("Не удалось завершить распознавание: {error}"));
+                    }
+                    Err(_) => {}
+                }
+            }
+        } else {
+            failure.get_or_insert_with(|| "Модель Live не загружена".into());
         }
     }
     if let Some(error) = failure.or(capture_error) {
@@ -557,6 +618,31 @@ fn feed_audio(
         publish_segment(app, id, segment, transcript, last_partial);
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn publish_zap_update(
+    app: &AppHandle,
+    id: &str,
+    update: crate::asr_zapformer_stream::StreamUpdate,
+    transcript: &mut String,
+    last_partial: &mut String,
+) {
+    if !update.text.is_empty() || !update.words.is_empty() {
+        transcript.push_str(&update.text);
+        last_partial.clear();
+        let _ = app.emit("live-event", LiveEvent {
+            session_id: id.into(), kind: "transcript_delta", text: Some(update.text), message: None,
+            recording_path: None, recording_complete: None,
+            words: (!update.words.is_empty()).then_some(update.words),
+        });
+    }
+    if let Some(partial) = update.partial {
+        if partial != *last_partial {
+            *last_partial = partial.clone();
+            emit(app, id, "partial", Some(partial), None);
+        }
+    }
 }
 
 fn publish_segment(
