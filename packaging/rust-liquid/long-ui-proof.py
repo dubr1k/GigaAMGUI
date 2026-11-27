@@ -396,9 +396,19 @@ def run_proof(app, sources, app_data, diagnostics, timeout):
             transcript = paths["txt"].read_text(encoding="utf-8").strip()
             if not shown or shown != transcript:
                 raise RuntimeError("Saved TXT does not match the visible transcript")
-            listed = driver.text("#result-content ul").splitlines()
+            listed = []
+            for index in range(1, len(paths) + 1):
+                selector = f"#result-content ul li:nth-child({index})"
+                driver.command("POST", "/execute/sync", {
+                    "script": "arguments[0].scrollIntoView({block: 'center'});",
+                    "args": [{UI.ELEMENT: driver.element(selector)}],
+                })
+                visible = driver.visible_text(selector)
+                if not visible["visible"]:
+                    raise RuntimeError(f"Saved export row {index} is not visible")
+                listed.append(visible["text"])
             if any(not any(UI.same_path(line, path) for line in listed) for path in paths.values()):
-                raise RuntimeError("The result page did not list all saved exports")
+                raise RuntimeError(f"The result page did not list all saved exports: {listed}")
             ids = validate_export(json.loads(paths["json"].read_text(encoding="utf-8")), transcript,
                                   paths["srt"].read_text(encoding="utf-8"), reference)
         except Exception:
