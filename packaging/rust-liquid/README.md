@@ -7,41 +7,43 @@ authorized model bundle and does not download or export it. The following
 build-time preparation requires this repository, Python 3.11, internet access,
 and a Hugging Face account approved for
 [Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1).
-Accept the model terms on that page first. Use only trusted model checkpoints:
-exporting them executes Python checkpoint-loading code.
+Accept the model terms on that page first. The exporter checks four model and
+PLDA hashes against the pinned snapshot before loading checkpoints, but this
+is not a sandbox or protection against concurrent modification. Use only trusted
+snapshots that cannot be changed by another process while exporting.
 
 On Linux, from the repository root:
 
 ```sh
-python3.11 -m venv .community-export
-.community-export/bin/python -m pip install -r packaging/rust-liquid/community-export/requirements.txt
-.community-export/bin/hf auth login
-.community-export/bin/hf download pyannote/speaker-diarization-community-1 \
+python3.11 -m venv temp/community-export-venv
+temp/community-export-venv/bin/python -m pip install -r packaging/rust-liquid/community-export/requirements.txt
+temp/community-export-venv/bin/hf auth login
+temp/community-export-venv/bin/hf download pyannote/speaker-diarization-community-1 \
   README.md config.yaml segmentation/pytorch_model.bin embedding/pytorch_model.bin \
   plda/plda.npz plda/xvec_transform.npz \
-  --revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee --local-dir community-snapshot
+  --revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee --local-dir temp/community-snapshot
 root="${XDG_DATA_HOME:-$HOME/.local/share}/ru.gigaam.gui.rustliquid/models"
 mkdir -p "$root"
-.community-export/bin/python packaging/rust-liquid/community-export/export.py \
-  --snapshot "$PWD/community-snapshot" --output "$root/pyannote-community"
+temp/community-export-venv/bin/python packaging/rust-liquid/community-export/export.py \
+  --snapshot "$PWD/temp/community-snapshot" --output "$root/pyannote-community"
 ```
 
 On Windows PowerShell, from the repository root:
 
 ```powershell
-py -3.11 -m venv .community-export
-$python = ".\.community-export\Scripts\python.exe"
-$hf = ".\.community-export\Scripts\hf.exe"
+py -3.11 -m venv temp/community-export-venv
+$python = ".\temp\community-export-venv\Scripts\python.exe"
+$hf = ".\temp\community-export-venv\Scripts\hf.exe"
 & $python -m pip install -r packaging/rust-liquid/community-export/requirements.txt
 & $hf auth login
 & $hf download pyannote/speaker-diarization-community-1 `
   README.md config.yaml segmentation/pytorch_model.bin embedding/pytorch_model.bin `
   plda/plda.npz plda/xvec_transform.npz `
-  --revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee --local-dir community-snapshot
+  --revision 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee --local-dir temp/community-snapshot
 $root = Join-Path $env:APPDATA "ru.gigaam.gui.rustliquid\models"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 & $python packaging/rust-liquid/community-export/export.py `
-  --snapshot "$PWD\community-snapshot" --output (Join-Path $root "pyannote-community")
+  --snapshot "$PWD\temp\community-snapshot" --output (Join-Path $root "pyannote-community")
 ```
 
 The login is interactive; do not paste a token into the command line. The export

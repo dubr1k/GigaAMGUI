@@ -54,6 +54,12 @@ SOURCE_FILES = (
     "plda/plda.npz",
     "plda/xvec_transform.npz",
 )
+SOURCE_HASHES = {
+    "segmentation/pytorch_model.bin": "7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e",
+    "embedding/pytorch_model.bin": "6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929",
+    "plda/plda.npz": "9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255",
+    "plda/xvec_transform.npz": "325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f",
+}
 LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 SAMPLES = 160_000
 SEGMENTATION_FRAMES = 589
@@ -342,10 +348,13 @@ def _hash(path: Path) -> str:
 def export(snapshot: Path, output: Path) -> None:
     files = _source_files(snapshot)
     destination = _destination(output, Path(snapshot))
+    source_hashes = {name: _hash(path) for name, path in files.items()}
+    for name, expected in SOURCE_HASHES.items():
+        if source_hashes[name] != expected:
+            raise ValueError(f"snapshot does not match the pinned Community-1 source: {name}")
     _offline_environment()
     packages = _versions()
     _validate_plda(files)
-    source_hashes = {name: _hash(path) for name, path in files.items()}
 
     # Exclusive creation prevents replacing a pre-existing user directory.
     destination.mkdir()

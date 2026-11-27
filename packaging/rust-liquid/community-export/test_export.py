@@ -44,6 +44,20 @@ class ExportTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(("synthetic " + name).encode())
         self.output = self.root / "output"
+        pins = mock.patch.object(exporter, "SOURCE_HASHES", {})
+        pins.start()
+        self.addCleanup(pins.stop)
+
+    def test_substituted_checkpoint_is_rejected_before_loading(self):
+        checkpoint = "segmentation/pytorch_model.bin"
+        expected = exporter._hash(self.snapshot / checkpoint)
+        (self.snapshot / checkpoint).write_bytes(b"substituted checkpoint")
+        with mock.patch.object(exporter, "SOURCE_HASHES", {checkpoint: expected}), \
+             mock.patch.object(exporter, "_load_models") as load:
+            with self.assertRaisesRegex(ValueError, "pinned Community-1 source"):
+                exporter.export(self.snapshot, self.output)
+            load.assert_not_called()
+        self.assertFalse(self.output.exists())
 
     def valid_plda(self):
         np.savez(self.snapshot / "plda/plda.npz", mu=[0.0], tr=[[1.0]], psi=[1.0])
