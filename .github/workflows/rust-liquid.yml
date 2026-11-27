@@ -209,6 +209,28 @@ jobs:
           npx --no-install tauri bundle --target "$TARGET" --bundles "${{ matrix.bundle }}"
           --config ../packaging/rust-liquid/tauri.conf.json
           --config ../packaging/rust-liquid/tauri.${{ matrix.config }}.conf.json
+      - name: Restore verified FFmpeg after Linux bundling
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          shopt -s nullglob
+          product_name="$(node -p 'require("../packaging/rust-liquid/tauri.conf.json").productName')"
+          bundle_dir="$PWD/src-tauri/target/$TARGET/release/bundle/appimage"
+          appdir="$bundle_dir/$product_name.AppDir"
+          images=("$bundle_dir"/*.AppImage)
+          test "${#images[@]}" -eq 1
+          test -d "$appdir"
+          media="$appdir/usr/lib/$product_name/ffmpeg"
+          test -f "$media/ffmpeg"
+          cp ../packaging/rust-liquid/generated/ffmpeg/ffmpeg "$media/ffmpeg"
+          chmod +x "$media/ffmpeg"
+          (cd "$media" && sha256sum -c SHA256SUMS)
+          plugin="$HOME/.cache/tauri/linuxdeploy-plugin-appimage.AppImage"
+          test -x "$plugin"
+          OUTPUT="$bundle_dir/repacked.AppImage" ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
+            "$plugin" --appdir "$appdir"
+          test -s "$bundle_dir/repacked.AppImage"
+          mv "$bundle_dir/repacked.AppImage" "${images[0]}"
       - name: Inspect the Linux AppImage
         if: runner.os == 'Linux'
         env:
