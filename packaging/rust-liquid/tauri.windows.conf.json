@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "../../packaging/rust-liquid/generated/windows/": ""
+      "../../packaging/rust-liquid/generated/windows/": "",
+      "../../packaging/rust-liquid/generated/ffmpeg/": "ffmpeg/"
     },
     "windows": {
       "webviewInstallMode": {

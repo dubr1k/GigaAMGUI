@@ -106,7 +106,7 @@
                 <div class="action-row"><input id="output-directory" aria-label="Папка сохранения результатов" placeholder="Выберите папку" readonly /><button class="button" id="choose-output" type="button">Изменить</button></div>
               </article>
               <div class="action-row"><button class="button button-dark button-primary" id="start-processing" type="button">Запустить обработку</button><button class="button" id="cancel-processing" type="button" disabled>Отменить</button></div>
-              <div class="progress-row" aria-live="polite"><strong>Общий прогресс</strong><div class="progress-track" id="progress-track" aria-label="Общий прогресс: 0%"><span></span></div><span id="progress-percent">0%</span><span class="muted" id="progress-status">Готов к работе</span></div>
+              <div class="progress-row" aria-live="polite"><strong>Общий прогресс</strong><div class="progress-track" id="progress-track" role="progressbar" aria-label="Общий прогресс" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div><span id="progress-percent">0%</span><span class="muted" id="progress-status">Готов к работе</span></div>
             </div>
           </section>
 
@@ -115,6 +115,7 @@
             <div class="result-grid">
               <article class="card result-main-card">
                 <div class="card-title-row"><div><h2>Результат</h2><p class="muted" id="result-status">Текущая сессия не содержит готовых транскрипций.</p></div></div>
+                <p id="result-speaker-legend" class="muted" hidden></p>
                 <div id="result-content" class="empty-state result-empty"><span class="empty-icon" aria-hidden="true">▤</span><strong>Нет готового результата</strong><p>После завершения обработки здесь появится транскрипция.</p><button class="button" type="button" data-page-target="processing">Перейти к обработке</button></div>
               </article>
               <aside class="card result-side-card">

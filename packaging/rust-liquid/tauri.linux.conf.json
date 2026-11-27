@@ -1,5 +1,8 @@
 {
   "bundle": {
+    "resources": {
+      "../../packaging/rust-liquid/generated/ffmpeg/": "ffmpeg/"
+    },
     "linux": {
       "appimage": {
         "bundleMediaFramework": true,

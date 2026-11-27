@@ -1,0 +1,22 @@
+# Fixed amd64 image and dated, signed Debian snapshot keep the compiler,
+# assembler and cross-toolchain inputs independent of the Actions runner.
+FROM --platform=linux/amd64 debian@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
+
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+ && printf '%s\n' 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261125T000000Z bookworm main' > /etc/apt/sources.list \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
+ && printf '%s\n' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261125T000000Z bookworm main' \
+    'deb-src [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261125T000000Z bookworm main' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20261125T000000Z bookworm-security main' \
+    'deb-src [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20261125T000000Z bookworm-security main' \
+    > /etc/apt/sources.list \
+ && apt-get -o Acquire::Check-Valid-Until=false update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential ca-certificates xz-utils nasm pkg-config \
+      binutils-mingw-w64-x86-64 gcc-mingw-w64-x86-64-win32 \
+ && mkdir -p /opt/mingw-source \
+ && cd /opt/mingw-source \
+ && apt-get source --download-only mingw-w64 \
+ && rm -rf /var/lib/apt/lists/*

@@ -8,10 +8,14 @@ use std::time::Duration;
 
 use gigastt_core::error::GigasttError;
 use gigastt_core::export::{self, ExportFormat, RenderOpts, Segment};
-use gigastt_core::inference::{audio, DiarizationOutcome, Engine, TranscribeRequest, TranscribeSource, WordInfo};
+use gigastt_core::inference::{audio, DiarizationOutcome, Engine, TranscribeRequest, TranscribeResult, TranscribeSource, WordInfo};
 use gigastt_core::model::{self, ModelVariant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[path = "asr_long.rs"]
+mod long_diarization;
 
 const MODELS: [(&str, &str, ModelVariant); 3] = [
     ("v3_e2e_rnnt", "GigaAM v3 e2e RNNT", ModelVariant::E2eRnnt),
@@ -136,7 +140,25 @@ struct FileResult {
     transcript: String,
     outputs: Vec<OutputFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    segments: Option<Vec<Segment>>,
+    segments: Option<ResultSegments>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ResultSegments {
+    Regular(Vec<Segment>),
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    Long(Vec<long_diarization::TaggedSegment>),
+}
+
+enum ProcessedFile {
+    Regular {
+        transcription: TranscribeResult,
+        segments: Option<Vec<Segment>>,
+        diarized_text: Option<String>,
+    },
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    Long(long_diarization::LongResult),
 }
 
 #[derive(Serialize)]
@@ -392,50 +414,108 @@ fn run_job(app: &AppHandle, request: ValidatedRequest, model_dir: &str, cache: &
     for (index, input) in request.inputs.iter().enumerate() {
         check_cancelled(cancelled)?;
         let duration = audio::probe_duration_file(input).ok().flatten().filter(|d| d.is_finite() && *d > 0.0);
-        let counter = Arc::new(AtomicU64::new(0));
-        let message = if request.diarization { "Распознавание и диаризация файла" } else { "Распознавание файла" };
-        emit_progress(app, &request.job_id, "transcribing", Some(index as f64 / request.inputs.len() as f64 * 100.0), Some(input), Some(message));
-        let watcher = ProgressWatcher::start(app.clone(), request.job_id.clone(), input.clone(), index, request.inputs.len(), duration, counter.clone());
-        let mut session = engine.pool.checkout_blocking().map_err(|err| format!("Не удалось занять сессию модели: {err}"))?;
-        let outcome = request.diarization.then(|| Arc::new(OnceLock::new()));
-        let transcription = engine.transcribe_request(
-            TranscribeRequest::new(TranscribeSource::Path(input))
-                .with_abort(Some(cancelled.clone()))
-                .with_progress(Some(counter))
-                .with_diarization(request.diarization)
-                .with_diarization_outcome(outcome.clone()),
-            &mut session,
-        );
-        drop(session);
-        drop(watcher);
-        let transcription = transcription.map_err(|err| format_transcription_error(input, request.diarization, err))?;
-        check_cancelled(cancelled)?;
-        let segments = if request.diarization {
-            let outcome = outcome.as_ref().and_then(|sink| sink.get()).copied();
-            if matches!(outcome, Some(DiarizationOutcome::NoSpeakerModel)) {
-                let mut cached = cache.lock().map_err(|_| "Не удалось открыть кэш модели".to_string())?;
-                if cached.as_ref().is_some_and(|entry| Arc::ptr_eq(&entry.engine, &engine)) {
-                    *cached = None;
+        let mut processed = None;
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if request.diarization && duration.is_some_and(|seconds| seconds > 1_800.0) {
+            processed = long_diarization::try_transcribe(app, &request.job_id, input, model_dir, &engine, cancelled)?
+                .map(ProcessedFile::Long);
+        }
+
+        if processed.is_none() {
+            let counter = Arc::new(AtomicU64::new(0));
+            let message = if request.diarization { "Распознавание и диаризация файла" } else { "Распознавание файла" };
+            let initial_percent = if cfg!(any(target_os = "linux", target_os = "windows")) && request.diarization && duration.is_none() {
+                None
+            } else {
+                Some(index as f64 / request.inputs.len() as f64 * 100.0)
+            };
+            emit_progress(app, &request.job_id, "transcribing", initial_percent, Some(input), Some(message));
+            let watcher = ProgressWatcher::start(app.clone(), request.job_id.clone(), input.clone(), index, request.inputs.len(), duration, counter.clone());
+            let mut session = engine.pool.checkout_blocking().map_err(|err| format!("Не удалось занять сессию модели: {err}"))?;
+            let outcome = request.diarization.then(|| Arc::new(OnceLock::new()));
+            let transcription = engine.transcribe_request(
+                TranscribeRequest::new(TranscribeSource::Path(input))
+                    .with_abort(Some(cancelled.clone()))
+                    .with_progress(Some(counter))
+                    .with_diarization(request.diarization)
+                    .with_diarization_outcome(outcome.clone()),
+                &mut session,
+            );
+            drop(session);
+            drop(watcher);
+            let transcription = match transcription {
+                Ok(transcription) => Some(transcription),
+                Err(error) => {
+                    #[cfg(any(target_os = "linux", target_os = "windows"))]
+                    {
+                        let may_be_long = request.diarization
+                            && matches!(&error, GigasttError::AudioTooLong { .. } | GigasttError::InvalidAudio { .. });
+                        let original = match &error {
+                            GigasttError::AudioTooLong { limit_secs, .. } if request.diarization =>
+                                format!("Стандартная диаризация файла {input} ограничена {limit_secs:.0} с"),
+                            _ => format!("Не удалось распознать {input}: {error}"),
+                        };
+                        if may_be_long {
+                            match long_diarization::try_transcribe(app, &request.job_id, input, model_dir, &engine, cancelled) {
+                                Ok(Some(long)) => { processed = Some(ProcessedFile::Long(long)); None }
+                                Ok(None) => return Err(original),
+                                Err(error) => return Err(format!("{original}\nПодготовка длинной записи: {error}")),
+                            }
+                        } else {
+                            return Err(original);
+                        }
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+                    return Err(format_transcription_error(input, request.diarization, error));
+                }
+            };
+            check_cancelled(cancelled)?;
+            if let Some(transcription) = transcription {
+                let diarization_outcome = outcome.as_ref().and_then(|sink| sink.get()).copied();
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
+                if request.diarization && matches!(diarization_outcome, Some(DiarizationOutcome::DurationCeiling { .. })) {
+                    processed = long_diarization::try_transcribe(app, &request.job_id, input, model_dir, &engine, cancelled)?
+                        .map(ProcessedFile::Long);
+                }
+                if processed.is_none() {
+                    let segments = if request.diarization {
+                        if matches!(diarization_outcome, Some(DiarizationOutcome::NoSpeakerModel)) {
+                            let mut cached = cache.lock().map_err(|_| "Не удалось открыть кэш модели".to_string())?;
+                            if cached.as_ref().is_some_and(|entry| Arc::ptr_eq(&entry.engine, &engine)) {
+                                *cached = None;
+                            }
+                        }
+                        validate_diarization_outcome(diarization_outcome, &transcription.words)
+                            .map_err(|err| format!("Не удалось выполнить диаризацию {input}: {err}"))?;
+                        Some(export::to_transcript_segments(&transcription.words))
+                    } else {
+                        None
+                    };
+                    let diarized_text = segments.as_ref().map(|segments| render_speaker_text(segments));
+                    processed = Some(ProcessedFile::Regular { transcription, segments, diarized_text });
                 }
             }
-            validate_diarization_outcome(outcome, &transcription.words)
-                .map_err(|err| format!("Не удалось выполнить диаризацию {input}: {err}"))?;
-            Some(export::to_transcript_segments(&transcription.words))
-        } else {
-            None
+        }
+        let processed = processed.ok_or_else(|| "Не получен результат распознавания".to_string())?;
+        let saving_percent = match &processed {
+            ProcessedFile::Regular { .. } => Some((index + 1) as f64 / request.inputs.len() as f64 * 100.0),
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            ProcessedFile::Long(_) => None,
         };
-        let diarized_text = segments.as_ref().map(|segments| render_speaker_text(segments));
-        emit_progress(app, &request.job_id, "saving", Some((index + 1) as f64 / request.inputs.len() as f64 * 100.0), Some(input), Some("Сохранение результата"));
+        emit_progress(app, &request.job_id, "saving", saving_percent, Some(input), Some("Сохранение результата"));
         let mut outputs = Vec::with_capacity(request.formats.len());
         for format in &request.formats {
             check_cancelled(cancelled)?;
-            // Upstream Markdown claims every recording is Russian, including
-            // multilingual models. Do not write an unsupported language claim.
-            let content = match (format, &diarized_text) {
-                (ExportFormat::Txt, Some(text)) => text.clone(),
-                (ExportFormat::Md, Some(text)) => format!("# Transcript\n\n{text}\n"),
-                (ExportFormat::Md, None) => format!("# Transcript\n\n{}\n", transcription.text),
-                _ => format.render(&transcription, &RenderOpts::default()),
+            let content = match &processed {
+                ProcessedFile::Regular { transcription, diarized_text, .. } => match (format, diarized_text) {
+                    (ExportFormat::Txt, Some(text)) => text.clone(),
+                    (ExportFormat::Md, Some(text)) => format!("# Transcript\n\n{text}\n"),
+                    (ExportFormat::Md, None) => format!("# Transcript\n\n{}\n", transcription.text),
+                    _ => format.render(transcription, &RenderOpts::default()),
+                },
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
+                ProcessedFile::Long(result) => long_diarization::render(*format, result)?,
             };
             let path = save_output(&request.output_dir, Path::new(input), *format, content.as_bytes())
                 .map_err(|err| format!("Не удалось сохранить результат для {input}: {err}"))?;
@@ -443,12 +523,13 @@ fn run_job(app: &AppHandle, request: ValidatedRequest, model_dir: &str, cache: &
             saved_paths.lock().map_err(|_| "Не удалось записать список сохранённых файлов".to_string())?.push(path.clone());
             outputs.push(OutputFile { format: format.to_string(), path });
         }
-        files.push(FileResult {
-            input_path: input.clone(),
-            transcript: diarized_text.unwrap_or(transcription.text),
-            outputs,
-            segments,
-        });
+        let (transcript, segments) = match processed {
+            ProcessedFile::Regular { transcription, segments, diarized_text } =>
+                (diarized_text.unwrap_or(transcription.text), segments.map(ResultSegments::Regular)),
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            ProcessedFile::Long(result) => (result.transcript, Some(ResultSegments::Long(result.segments))),
+        };
+        files.push(FileResult { input_path: input.clone(), transcript, outputs, segments });
     }
     emit_progress(app, &request.job_id, "completed", Some(100.0), None, Some("Распознавание завершено"));
     Ok(JobResult { files })

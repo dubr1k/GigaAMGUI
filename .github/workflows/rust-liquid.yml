@@ -20,8 +20,43 @@ permissions:
   contents: read
 
 jobs:
+  ffmpeg:
+    name: Build and compare pinned FFmpeg binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build twice from signed source in the pinned toolchain
+        run: bash packaging/rust-liquid/build-ffmpeg.sh
+      - name: Generate short codec fixtures with the runner's FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          bash packaging/rust-liquid/make-ffmpeg-fixtures.sh "$RUNNER_TEMP/ffmpeg-fixtures"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-ffmpeg-linux-x64
+          path: packaging/rust-liquid/generated/ffmpeg-linux-x64/
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-ffmpeg-windows-x64
+          path: packaging/rust-liquid/generated/ffmpeg-windows-x64/
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-ffmpeg-fixtures
+          path: ${{ runner.temp }}/ffmpeg-fixtures/
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Rust Liquid ${{ matrix.platform }} candidate
+    needs: ffmpeg
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -50,6 +85,24 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Download the matching FFmpeg build and source
+        uses: actions/download-artifact@v6
+        with:
+          name: rust-liquid-ffmpeg-${{ matrix.platform }}
+          path: packaging/rust-liquid/generated/ffmpeg
+      - name: Download codec fixtures
+        uses: actions/download-artifact@v6
+        with:
+          name: rust-liquid-ffmpeg-fixtures
+          path: packaging/rust-liquid/generated/ffmpeg-fixtures
+      - name: Check FFmpeg and decode the advertised codec fixtures
+        run: |
+          set -euo pipefail
+          media=../packaging/rust-liquid/generated/ffmpeg
+          if [ "$RUNNER_OS" = Windows ]; then executable=ffmpeg.exe; else executable=ffmpeg; fi
+          chmod +x "$media/$executable"
+          (cd "$media" && sha256sum -c SHA256SUMS)
+          python ../packaging/rust-liquid/verify-ffmpeg.py "$media/$executable" ../packaging/rust-liquid/generated/ffmpeg-fixtures
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -172,6 +225,15 @@ jobs:
           root="$extracted/squashfs-root"
           binary="$root/usr/bin/gigaam-desktop"
           test -x "$binary"
+          media="$root/usr/lib/gigaam-desktop/ffmpeg"
+          test -x "$media/ffmpeg"
+          cmp "$media/ffmpeg" ../packaging/rust-liquid/generated/ffmpeg/ffmpeg
+          cmp "$media/SHA256SUMS" ../packaging/rust-liquid/generated/ffmpeg/SHA256SUMS
+          (cd "$media" && sha256sum -c SHA256SUMS)
+          test -s "$media/source/ffmpeg-9.0.2.tar.xz"
+          test -s "$media/source/COPYING.LGPLv2.1"
+          test -s "$media/source/dependency-copyrights.tar.xz"
+          diff -r "$media/source" ../packaging/rust-liquid/generated/ffmpeg/source
           LC_ALL=C readelf -h "$binary" | grep -q 'Advanced Micro Devices X86-64'
           test -s "$root/usr/lib/libstdc++.so.6"
           # linuxdeploy may strip or patch the library; compare its ELF build ID.
@@ -255,6 +317,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Could not inspect executable imports' }
           if ($imports -notmatch '(?i)\bDirectML\.dll\b') { throw 'Expected statically linked ONNX Runtime with DirectML' }
           if ($imports -match '(?i)\b(onnxruntime|python\d*)\.dll\b') { throw 'Unexpected ONNX Runtime or Python DLL dependency' }
+          $media = Join-Path $app.DirectoryName 'ffmpeg'
+          $ffmpeg = Join-Path $media 'ffmpeg.exe'
+          $stagedFfmpeg = Join-Path $env:GITHUB_WORKSPACE 'packaging/rust-liquid/generated/ffmpeg'
+          foreach ($name in @('ffmpeg.exe', 'SHA256SUMS', 'source/ffmpeg-9.0.2.tar.xz', 'source/COPYING.LGPLv2.1', 'source/COPYING.MinGW-w64-runtime.txt', 'source/dependency-copyrights.tar.xz')) {
+            if (!(Test-Path -PathType Leaf (Join-Path $media $name))) { throw "Missing FFmpeg resource: $name" }
+          }
+          foreach ($name in @('ffmpeg.exe', 'SHA256SUMS')) {
+            if ((Get-FileHash (Join-Path $media $name)).Hash -ne (Get-FileHash (Join-Path $stagedFfmpeg $name)).Hash) {
+              throw "FFmpeg resource changed during bundling: $name"
+            }
+          }
+          Get-ChildItem (Join-Path $stagedFfmpeg 'source') -Recurse -File | ForEach-Object {
+            $relative = $_.FullName.Substring($stagedFfmpeg.Length + 1)
+            $bundled = Join-Path $media $relative
+            if (!(Test-Path -PathType Leaf $bundled) -or (Get-FileHash $bundled).Hash -ne (Get-FileHash $_.FullName).Hash) {
+              throw "FFmpeg source or notice changed during bundling: $relative"
+            }
+          }
+          $ffHeaders = & $dumpbin.FullName /headers $ffmpeg | Out-String
+          if ($LASTEXITCODE -ne 0 -or $ffHeaders -notmatch '(?i)8664 machine') { throw 'FFmpeg is not an x64 PE executable' }
+          $ffImports = & $dumpbin.FullName /dependents $ffmpeg | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect FFmpeg imports' }
+          $systemDlls = @('advapi32.dll', 'bcrypt.dll', 'gdi32.dll', 'kernel32.dll', 'msvcrt.dll', 'ntdll.dll', 'ole32.dll', 'psapi.dll', 'shell32.dll', 'user32.dll', 'ws2_32.dll')
+          $dependencies = @([regex]::Matches($ffImports, '(?im)^\s+([a-z0-9_.-]+\.dll)\s*$') | ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() })
+          if (!$dependencies.Count) { throw 'No FFmpeg imports were found' }
+          foreach ($dependency in $dependencies) {
+            if ($dependency -notin $systemDlls -or !(Test-Path -PathType Leaf (Join-Path "$env:windir/System32" $dependency))) {
+              throw "Unexpected or unavailable Windows FFmpeg dependency: $dependency"
+            }
+          }
           $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
           New-Item -ItemType Directory -Force -Path $output | Out-Null
           Copy-Item $installers[0].FullName (Join-Path $output $env:ASSET)

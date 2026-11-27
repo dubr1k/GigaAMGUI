@@ -227,6 +227,22 @@ function setupProcessing() {
   const linkStatus = document.querySelector("#media-link-status");
   const linkCancel = document.querySelector("#cancel-media-link");
 
+  function renderProgress(value) {
+    if (Number.isFinite(value)) {
+      const percent = Math.max(0, Math.min(100, value));
+      const rounded = percent < 100 ? Math.min(Math.round(percent), 99) : 100;
+      percentage.textContent = `${rounded}%`;
+      track.setAttribute("aria-label", "Общий прогресс");
+      track.setAttribute("aria-valuenow", String(rounded));
+      track.firstElementChild.style.width = `${percent}%`;
+    } else {
+      percentage.textContent = "—";
+      track.setAttribute("aria-label", "Общий прогресс: не определён");
+      track.removeAttribute("aria-valuenow");
+      track.firstElementChild.style.width = "0%";
+    }
+  }
+
   async function releaseImported(paths) {
     const errors = [];
     for (const path of paths) {
@@ -365,6 +381,8 @@ function setupProcessing() {
     renderSelectedFiles();
     start.disabled = true;
     cancel.disabled = true;
+    status.textContent = "Подготовка…";
+    renderProgress(null);
     let unlisten;
     let completed = false;
     try {
@@ -373,12 +391,8 @@ function setupProcessing() {
         if (payload.job_id !== jobId) return;
         if (!activeJobCancelRequested) cancel.disabled = false;
         status.textContent = payload.message || payload.stage;
-        if (Number.isFinite(payload.percent)) {
-          const percent = Math.max(0, Math.min(100, payload.percent));
-          percentage.textContent = `${Math.round(percent)}%`;
-          track.setAttribute("aria-label", `Общий прогресс: ${Math.round(percent)}%`);
-          track.firstElementChild.style.width = `${percent}%`;
-        }
+        const pendingCompletion = payload.stage !== "completed" && Number.isFinite(payload.percent) && payload.percent >= 100;
+        renderProgress(pendingCompletion ? null : payload.percent);
       });
       const result = await tauri.core.invoke("transcribe", { request: {
         job_id: jobId, inputs: selectedFiles, model: document.querySelector("#asr-model").value,
@@ -397,13 +411,28 @@ function setupProcessing() {
         files.append(row);
       }
       content.replaceChildren(text, files);
+      const speakerKinds = new Set();
+      for (const file of result.files) for (const segment of file.segments ?? []) {
+        if (["known", "unknown", "overlap"].includes(segment.speaker_status)) {
+          speakerKinds.add(segment.speaker_status);
+        }
+      }
+      const speakerExplanations = [];
+      if (speakerKinds.has("known")) speakerExplanations.push("[SPEAKER_n] — предполагаемый говорящий");
+      if (speakerKinds.has("unknown")) speakerExplanations.push("[SPEAKER_UNKNOWN] — говорящий не определён");
+      if (speakerKinds.has("overlap")) speakerExplanations.push("[SPEAKER_OVERLAP] — возможное наложение речи");
+      const speakerLegend = document.querySelector("#result-speaker-legend");
+      speakerLegend.textContent = speakerExplanations.length ? `Метки приблизительны: ${speakerExplanations.join("; ")}.${speakerKinds.has("known") ? " Номера говорящих относятся к одному файлу." : ""}` : "";
+      speakerLegend.hidden = !speakerExplanations.length;
       document.querySelector("#result-status").textContent = `Обработано файлов: ${result.files.length}`;
       document.querySelector("#copy-result").disabled = !currentTranscript;
       document.querySelector("#result-to-llm").disabled = !currentTranscript;
+      renderProgress(100);
       status.textContent = "Готово";
       showPage("result");
       completed = true;
     } catch (error) {
+      renderProgress(null);
       let message = String(error);
       for (const path of selectedFiles) if (importedFiles.has(path)) message = message.split(path).join("временный импорт");
       status.textContent = message;

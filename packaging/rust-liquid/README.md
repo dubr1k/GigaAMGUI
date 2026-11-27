@@ -15,6 +15,53 @@ modified. The Windows overlay embeds the offline WebView2 installer and puts
 DirectML and the x64 Visual C++ CRT beside the application. The Linux overlay
 adds GNU libstdc++ and ALSA to the AppImage and enables the GStreamer bundle.
 
+## Bundled FFmpeg
+
+The candidate packages include an audio-only FFmpeg 9.0.2 executable and its
+corresponding source and notices. The source archive is pinned to SHA-256
+`8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`;
+the build also verifies the official detached signature against the release
+key fingerprint `FCF986EA15E6E293A5644F10B4322F04D67658D8`.
+No GPL, nonfree, network protocol or external codec library is enabled.
+The enabled native decoders include Opus, Vorbis, MP3, AAC, WMA, FLAC,
+ALAC, common PCM/ADPCM, AC-3, E-AC-3 and DTS; the demuxers include
+WAV, MP3, MP4/MOV, Matroska/WebM, Ogg, FLAC, AAC, AVI and ASF.
+This is not a claim that every codec in those containers is supported.
+
+`build-ffmpeg.sh` builds Linux and Windows x64 on an amd64 Linux Docker host
+using a digest-pinned Debian image and a dated, signed Debian package snapshot.
+It builds each binary twice in isolated, network-disabled containers and fails
+unless the two files match byte for byte. This verifies repeatability in that
+pinned environment, not independent reproducibility on every host. The
+packages include the unmodified FFmpeg source, signature, signing key,
+build scripts, toolchain package versions, LGPL text and dependency notices.
+The Windows package also includes the exact MinGW source and runtime notice.
+FFmpeg is a separate process, statically linked with its own libraries; Linux
+uses the host glibc (the build baseline is Debian 12 / glibc 2.36), while the
+Windows executable imports only checked Windows system DLLs. Patent and
+redistribution obligations still require review before publication.
+
+Resolve `ffmpeg/ffmpeg` or `ffmpeg/ffmpeg.exe` relative to Tauri's
+`resource_dir()`, never from `PATH`. `generated/ffmpeg/SHA256SUMS` is created
+before Cargo builds and contains one line, `<lowercase SHA-256>  <filename>`.
+The same file is bundled, but the application must use its compile-time copy as
+the authority and verify the executable before launch. A hash cannot stop
+replacement after verification or an attacker who can replace the application
+itself. The executable directory must not be writable by other users. On
+Windows, the child loader still searches the executable directory and may
+search the current directory unless the parent establishes an appropriate
+inherited DLL search policy (for example `SetDllDirectoryW(L"")`); changing
+that process-wide policy must be coordinated with other threads. On Linux,
+the child must not inherit untrusted loader variables such as `LD_PRELOAD`
+or `LD_LIBRARY_PATH`. System loaders and libraries remain part of the trust
+boundary; this does not sandbox hostile media.
+
+CI additionally generates small WAV, MP3, AAC, MP4/MOV/3GP, AVI, Matroska,
+WebM/Opus, Ogg/Vorbis, Opus, ASF/WMA and FLAC fixtures and runs the actual
+decoder command on both target operating systems before packaging. It compares
+the installed executable with the checked build and checks the Windows import
+table. These checks do not replace clean-machine and longer real-media tests.
+
 ## Prerequisites and limitations
 
 - Rust stable must satisfy the inference crate's minimum Rust 1.94. Both Cargo
@@ -68,6 +115,8 @@ uses the same engine dependency as the app, not the installed application UI.
 For a focused local Linux build on a machine with the packages in the workflow:
 
 ```sh
+bash packaging/rust-liquid/build-ffmpeg.sh
+cp -R packaging/rust-liquid/generated/ffmpeg-linux-x64 packaging/rust-liquid/generated/ffmpeg
 cd desktop
 npm ci
 npx --no-install tauri icon ../assets/icon-liquid.png --output ../packaging/rust-liquid/generated/icons
