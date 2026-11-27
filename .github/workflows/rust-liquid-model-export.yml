@@ -1,0 +1,66 @@
+name: Rust Liquid model export proof
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths:
+      - .github/workflows/rust-liquid-model-export.yml
+      - packaging/rust-liquid/model-export/**
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: Pinned model export (${{ matrix.model }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [v4, multilingual]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Inventory disk before downloading dependencies and models
+        shell: bash
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          python - <<'PY'
+          import ast, os, pathlib, shutil
+          path = pathlib.Path('packaging/rust-liquid/model-export/export.py')
+          tree = ast.parse(path.read_text())
+          models = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'MODELS' for t in n.targets))
+          required = models[os.environ['MODEL']][2] + 5_000_000_000
+          available = shutil.disk_usage(os.environ['RUNNER_TEMP']).free
+          print(f"Available: {available}; required including dependencies: {required}")
+          if available < required:
+              raise SystemExit('Insufficient runner disk for a safe export')
+          PY
+      - name: Install pinned export dependencies
+        run: python -m pip install -r packaging/rust-liquid/model-export/requirements.txt
+      - name: Export pinned source and streaming graphs
+        env:
+          MODEL: ${{ matrix.model }}
+          HF_HOME: ${{ runner.temp }}/gigaam-hf
+        run: python packaging/rust-liquid/model-export/export.py "$MODEL" "$RUNNER_TEMP/export"
+      - name: Package verified file inventory
+        env:
+          MODEL: ${{ matrix.model }}
+        run: python packaging/rust-liquid/model-export/package.py "$MODEL" "$RUNNER_TEMP/export/model" "$RUNNER_TEMP/packaged" --tag rust-models-v1
+      - name: Upload export proof, not a public release
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-model-${{ matrix.model }}
+          path: ${{ runner.temp }}/packaged/release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3

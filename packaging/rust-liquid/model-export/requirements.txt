@@ -1,0 +1,11 @@
+torch==2.6.0
+torchaudio==2.6.0
+transformers==4.57.6
+huggingface-hub==0.36.2
+onnx==1.19.1
+protobuf==7.36.2
+sentencepiece==0.2.3
+omegaconf==2.3.1
+numpy==2.4.6
+safetensors==0.8.0
+tokenizers==0.22.2
