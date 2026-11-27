@@ -48,11 +48,13 @@ jobs:
         id: source
         uses: actions/github-script@v8
         env:
-          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id || '45992687622' }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id || vars.RUST_RELEASE_BUILD_RUN_ID }}
         with:
           script: |
             const id = process.env.SOURCE_RUN_ID;
-            if (!/^[1-9][0-9]*$/.test(id || '')) throw new Error('source_run_id must be a numeric workflow run ID');
+            if (!/^[1-9][0-9]*$/.test(id || '') || !Number.isSafeInteger(Number(id))) {
+              throw new Error('source_run_id must be a numeric workflow run ID');
+            }
             const {data: run} = await github.rest.actions.getWorkflowRun({
               ...context.repo, run_id: Number(id),
             });
@@ -66,13 +68,28 @@ jobs:
                 !/^[0-9a-f]{40}$/.test(run.head_sha)) {
               throw new Error(`Untrusted or unsuccessful candidate build run ${id}`);
             }
+            if (context.sha !== run.head_sha) {
+              throw new Error(`Proof workflow revision ${context.sha} does not match candidate ${run.head_sha}`);
+            }
             core.setOutput('run_id', id);
             core.setOutput('sha', run.head_sha);
             core.info(`Using candidate run ${id}, source ${run.head_sha}, event ${run.event}`);
       - name: Check out the trusted proof harness
         uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify the checked-out proof harness revision
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          harness_sha="$(git rev-parse HEAD)"
+          if [ "$harness_sha" != "$CANDIDATE_SHA" ]; then
+            echo "Proof harness revision $harness_sha does not match candidate $CANDIDATE_SHA" >&2
+            exit 1
+          fi
       - name: Check out the fixture at the candidate's source revision
         uses: actions/checkout@v5
         with:
@@ -86,6 +103,22 @@ jobs:
           path: candidate-package
           run-id: ${{ steps.source.outputs.run_id }}
           github-token: ${{ github.token }}
+      - name: Hash the downloaded candidate package before installation
+        id: package_hash
+        uses: actions/github-script@v8
+        env:
+          ASSET: ${{ matrix.asset }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const crypto = require('crypto');
+            const assetPath = path.join(process.env.GITHUB_WORKSPACE, 'candidate-package', process.env.ASSET);
+            const stat = await fs.promises.lstat(assetPath);
+            if (!stat.isFile() || stat.size === 0) throw new Error('Candidate package is missing or empty');
+            const hash = crypto.createHash('sha256');
+            for await (const chunk of fs.createReadStream(assetPath)) hash.update(chunk);
+            core.setOutput('sha256', hash.digest('hex'));
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -400,3 +433,44 @@ jobs:
           echo 'A second UI run prepared real multilingual and speaker models. A long UI run cancelled and cleaned real scratch, then checked a >30-minute synthetic-silence fixture, returning speakers, ambiguous/overlap labels and absolute TXT/JSON/SRT output.' >> "$GITHUB_STEP_SUMMARY"
           echo 'Both new models were downloaded to initially empty model directories and transcribed the short fixture through the packaged UI. This does not prove streaming or long-recording quality.' >> "$GITHUB_STEP_SUMMARY"
           echo 'The external Python controller is not an app backend. The long sample is short attributed read-speech clips with a long silent gap, not a quality benchmark, continuous-hour performance proof, GPU or live-audio coverage.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Record the successful installed-UI attestation
+        if: ${{ success() }}
+        uses: actions/github-script@v8
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          CANDIDATE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          CANDIDATE_SHA: ${{ steps.source.outputs.sha }}
+          ASSET_NAME: ${{ matrix.asset }}
+          ASSET_SHA256: ${{ steps.package_hash.outputs.sha256 }}
+        with:
+          script: |
+            const fs = require('fs').promises;
+            const path = require('path');
+            const {PLATFORM: platform, CANDIDATE_RUN_ID: runId, CANDIDATE_SHA: sha,
+              ASSET_NAME: assetName, ASSET_SHA256: assetSha256} = process.env;
+            if (!['linux-x64', 'windows-x64'].includes(platform) ||
+                !/^[1-9][0-9]*$/.test(runId || '') || !Number.isSafeInteger(Number(runId)) ||
+                !/^[0-9a-f]{40}$/.test(sha || '') ||
+                !assetName || path.basename(assetName) !== assetName ||
+                !/^[0-9a-f]{64}$/.test(assetSha256 || '')) {
+              throw new Error('Invalid candidate attestation metadata');
+            }
+            const directory = path.join(process.env.RUNNER_TEMP, 'rust-liquid-ui-attestation');
+            await fs.mkdir(directory);
+            const attestation = {
+              version: 1,
+              platform,
+              candidate_run_id: Number(runId),
+              candidate_sha: sha,
+              asset_name: assetName,
+              asset_sha256: assetSha256,
+            };
+            await fs.writeFile(path.join(directory, `${platform}.json`),
+              `${JSON.stringify(attestation)}\n`, {flag: 'wx', mode: 0o600});
+      - name: Upload the successful installed-UI attestation
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-ui-attestation-${{ matrix.platform }}
+          path: ${{ runner.temp }}/rust-liquid-ui-attestation/${{ matrix.platform }}.json
+          if-no-files-found: error

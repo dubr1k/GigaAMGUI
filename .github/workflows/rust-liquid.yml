@@ -15,6 +15,7 @@ on:
       - "desktop/**"
       - "packaging/rust-liquid/**"
       - ".github/workflows/rust-liquid.yml"
+      - ".github/workflows/rust-liquid-ui-proof.yml"
 
 permissions:
   contents: read

@@ -22,6 +22,7 @@ scripts/*
 !scripts/gen_log_translation_swift.py
 !scripts/make_liquid_icon.py
 !scripts/publish_release_assets.sh
+!scripts/rust_liquid_release_gate.py
 !scripts/render_gui_screenshots.py
 # Output of scripts/render_gui_screenshots.py
 gui-screenshots/

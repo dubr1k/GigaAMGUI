@@ -22,12 +22,38 @@ jobs:
       contents: write
       actions: read
     steps:
-      # Checks out the dispatching branch (main), not the tag: the script and
-      # the release notes must be the current ones even for an older tag.
+      - name: Require a dispatch from the default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" || {
+            echo "Dispatch this fallback from the default branch" >&2
+            exit 1
+          }
+
+      # Use the dispatching default-branch commit for the gate and notes.
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Validate the tagged source build and require Rust proof run IDs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_BUILD_RUN_ID: ${{ inputs.run_id }}
+          CANDIDATE_RUN_ID: ${{ vars.RUST_RELEASE_BUILD_RUN_ID }}
+          UI_RUN_ID: ${{ vars.RUST_RELEASE_UI_RUN_ID }}
+        run: |
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ && "$UI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Set RUST_RELEASE_BUILD_RUN_ID and RUST_RELEASE_UI_RUN_ID to successful run IDs" >&2
+            exit 1
+          }
+          python3 scripts/rust_liquid_release_gate.py check-source \
+            --tag "$TAG" --source-build-run-id "$SOURCE_BUILD_RUN_ID"
 
       - name: Download release artifacts
         uses: actions/download-artifact@v8
@@ -38,12 +64,30 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
 
+      - name: Verify Rust installed UI attestations and stage packages
+        id: rust
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_BUILD_RUN_ID: ${{ inputs.run_id }}
+          CANDIDATE_RUN_ID: ${{ vars.RUST_RELEASE_BUILD_RUN_ID }}
+          UI_RUN_ID: ${{ vars.RUST_RELEASE_UI_RUN_ID }}
+        run: |
+          python3 scripts/rust_liquid_release_gate.py stage \
+            --tag "$TAG" --source-build-run-id "$SOURCE_BUILD_RUN_ID" \
+            --candidate-run-id "$CANDIDATE_RUN_ID" --ui-run-id "$UI_RUN_ID" \
+            --output-dir release-assets
+
       - name: Publish GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          VERIFIED_TAG_SHA: ${{ steps.rust.outputs.tag_sha }}
         run: |
+          python3 scripts/rust_liquid_release_gate.py check-tag \
+            --tag "$TAG" --expected-tag-sha "$VERIFIED_TAG_SHA"
           VERSION="${TAG#v}"
           bash scripts/publish_release_assets.sh "$TAG" release-assets "docs/RELEASE_NOTES_${VERSION}.md"
