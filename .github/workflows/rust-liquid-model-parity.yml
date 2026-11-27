@@ -1,0 +1,239 @@
+name: Rust Liquid streaming model parity proof
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths:
+      - .github/workflows/rust-liquid-model-parity.yml
+      - desktop/src-tauri/**
+      - packaging/rust-liquid/model-export/**
+      - tests/fixtures/liquid_smoke.wav
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: rust-liquid-model-parity-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  streaming:
+    name: Short streaming parity (${{ matrix.model }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model: v4
+            repo: ai-sage/GigaAM-v4
+            revision: 9fe3ebf50c9e0cce5eed60d546938632238b6a96
+          - model: multilingual
+            repo: ai-sage/GigaAM-Multilingual-v2
+            revision: c21483b5e185ff32f6fb2e2c801f92f4e7fbfee8
+    env:
+      MODEL: ${{ matrix.model }}
+      HF_REPO: ${{ matrix.repo }}
+      HF_REVISION: ${{ matrix.revision }}
+      HF_HOME: ${{ runner.temp }}/model-parity-hf
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      CARGO_TARGET_DIR: ${{ runner.temp }}/model-parity-target
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_DEV_INCREMENTAL: 'false'
+      CARGO_BUILD_JOBS: '2'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate the exact export run and artifact before download
+        id: source
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = 'dubr1k';
+            const repo = 'GigaAMGUI';
+            const run_id = 45984577630;
+            const sha = 'e08a6c87cd4d4e93fe29b600510136b9b23cc82e';
+            const repositoryId = 1105897559;
+            const expected = {
+              v4: {id: 15191186425, size: 1909907577, digest: 'sha256:a24d5ad26e56f6e31187ecd4b5f69ef3b5934bba3fee5343e9451bd6119b604a'},
+              multilingual: {id: 15191630922, size: 6202257899, digest: 'sha256:2a3c966af8fa5adfd51d6f3dc2b046d21cc7047fbf81f6cc2b0e617168b805e6'},
+            }[process.env.MODEL];
+            if (!expected || context.repo.owner !== owner || context.repo.repo !== repo) {
+              throw new Error('The proof must run in the trusted repository with a known model');
+            }
+            const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id});
+            if (run.id !== run_id || run.run_attempt !== 1 ||
+                run.path !== '.github/workflows/rust-liquid-model-export.yml' ||
+                run.repository?.id !== repositoryId || run.repository?.full_name !== `${owner}/${repo}` ||
+                run.head_repository?.id !== repositoryId || run.head_repository?.full_name !== `${owner}/${repo}` ||
+                run.head_sha !== sha || run.head_branch !== 'feat/rust-liquid-windows-linux' ||
+                run.event !== 'push' || run.status !== 'completed' || run.conclusion !== 'success') {
+              throw new Error('Export run metadata does not match the trusted successful run');
+            }
+            const {data} = await github.rest.actions.listWorkflowRunArtifacts({owner, repo, run_id, per_page: 100});
+            const artifacts = data.artifacts.filter(a => a.name === `rust-liquid-model-${process.env.MODEL}`);
+            if (artifacts.length !== 1) throw new Error('Expected exactly one matching export artifact');
+            const artifact = artifacts[0];
+            if (artifact.expired || artifact.id !== expected.id || artifact.size_in_bytes !== expected.size ||
+                artifact.digest !== expected.digest || artifact.workflow_run?.id !== run_id ||
+                artifact.workflow_run?.repository_id !== repositoryId ||
+                artifact.workflow_run?.head_repository_id !== repositoryId || artifact.workflow_run?.head_sha !== sha) {
+              throw new Error('Export artifact metadata does not match the pinned artifact');
+            }
+            core.setOutput('sha', sha);
+            core.setOutput('artifact-id', String(expected.id));
+            core.setOutput('artifact-size', String(expected.size));
+            core.setOutput('artifact-sha256', expected.digest.slice('sha256:'.length));
+      - name: Check out the code under proof
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Check out the reference and fixture at the export revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: export-source
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Check the bounded artifact unpacker
+        run: python -m unittest discover -s packaging/rust-liquid/model-export -p test_unpack.py
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Install Linux Tauri and multimedia dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl file wget patchelf \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libxdo-dev libasound2-dev libpulse-dev libegl1 \
+            gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-pulseaudio
+      - name: Compile only the Linux proof example
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/model-parity-cargo-home"
+          cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml \
+            --target x86_64-unknown-linux-gnu --example zapformer_proof
+          install -m 0755 "$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/debug/examples/zapformer_proof" \
+            "$RUNNER_TEMP/zapformer_proof"
+          if readelf -d "$RUNNER_TEMP/zapformer_proof" | grep -Eiq 'Shared library: \[(libonnxruntime|libpython)'; then
+            echo 'The proof unexpectedly needs a separately staged ONNX Runtime or Python library' >&2
+            exit 1
+          fi
+          rm -rf -- "$CARGO_TARGET_DIR" "$CARGO_HOME"
+          ldd "$RUNNER_TEMP/zapformer_proof" > "$RUNNER_TEMP/model-parity-ldd.txt"
+          if grep -q 'not found' "$RUNNER_TEMP/model-parity-ldd.txt"; then
+            cat "$RUNNER_TEMP/model-parity-ldd.txt" >&2
+            exit 1
+          fi
+      - name: Install pinned reference dependencies and model source
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/model-parity-venv"
+          py="$RUNNER_TEMP/model-parity-venv/bin/python"
+          "$py" -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.6.0' 'torchaudio==2.6.0'
+          "$py" -m pip install --no-cache-dir -r export-source/packaging/rust-liquid/model-export/requirements.txt
+          "$py" - <<'PY'
+          import os
+          from pathlib import Path
+          from huggingface_hub import snapshot_download
+
+          revision = os.environ['HF_REVISION']
+          snapshot = Path(snapshot_download(repo_id=os.environ['HF_REPO'], revision=revision))
+          if snapshot.name != revision or snapshot.parent.name != 'snapshots':
+              raise SystemExit('Hugging Face returned a different model revision')
+          PY
+      - name: Record the real-fixture PyTorch reference for every packet size
+        env:
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: |
+          set -euo pipefail
+          py="$RUNNER_TEMP/model-parity-venv/bin/python"
+          fixture="$GITHUB_WORKSPACE/export-source/tests/fixtures/liquid_smoke.wav"
+          for packet in 1600 159 8192; do
+            "$py" export-source/packaging/rust-liquid/model-export/reference_stream.py \
+              "$MODEL" "$fixture" "$packet" > "$RUNNER_TEMP/reference-$packet.txt"
+          done
+          # These are job-private caches, no longer needed once the references exist.
+          rm -rf -- "$HF_HOME" "$RUNNER_TEMP/model-parity-venv"
+      - name: Reserve space for the pinned archive and extracted model
+        env:
+          ARTIFACT_SIZE: ${{ steps.source.outputs.artifact-size }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import shutil
+
+          available = shutil.disk_usage(os.environ['RUNNER_TEMP']).free
+          required = 2 * int(os.environ['ARTIFACT_SIZE']) + 1_000_000_000
+          print(f'Available: {available}; required for archive, model and reserve: {required}')
+          if available < required:
+              raise SystemExit('Insufficient free space for the parity proof')
+          PY
+      - name: Download the pinned archive without extracting it
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.source.outputs.artifact-id }}
+          path: ${{ runner.temp }}/model-parity-artifact
+          run-id: 45984577630
+          repository: dubr1k/GigaAMGUI
+          github-token: ${{ github.token }}
+          skip-decompress: true
+          digest-mismatch: error
+      - name: Verify and unpack the model without path traversal
+        env:
+          ARTIFACT_SIZE: ${{ steps.source.outputs.artifact-size }}
+          ARTIFACT_SHA256: ${{ steps.source.outputs.artifact-sha256 }}
+        run: |
+          set -euo pipefail
+          python packaging/rust-liquid/model-export/unpack.py "$MODEL" \
+            "$RUNNER_TEMP/model-parity-artifact" "$RUNNER_TEMP/model-parity-model" \
+            "$ARTIFACT_SIZE" "$ARTIFACT_SHA256"
+          rm -rf -- "$RUNNER_TEMP/model-parity-artifact"
+      - name: Compare Rust transcript and word timestamps exactly
+        run: |
+          set -euo pipefail
+          fixture="$GITHUB_WORKSPACE/export-source/tests/fixtures/liquid_smoke.wav"
+          model_dir="$RUNNER_TEMP/model-parity-model"
+          for packet in 1600 159 8192; do
+            reference="$RUNNER_TEMP/reference-$packet.txt"
+            actual="$RUNNER_TEMP/rust-$packet.txt"
+            "$RUNNER_TEMP/zapformer_proof" --stream "$MODEL" "$model_dir" "$model_dir" \
+              "$fixture" "$packet" > "$actual"
+            python - "$reference" "$actual" <<'PY'
+          import math
+          import pathlib
+          import sys
+
+          for name in sys.argv[1:]:
+              lines = pathlib.Path(name).read_text(encoding='utf-8').splitlines()
+              if len(lines) < 2 or not lines[0].strip():
+                  raise SystemExit(f'{name}: missing transcript or word timestamps')
+              for line in lines[1:]:
+                  fields = line.rsplit(maxsplit=2)
+                  if len(fields) != 3 or not fields[0]:
+                      raise SystemExit(f'{name}: malformed timestamp line {line!r}')
+                  try:
+                      start, end = map(float, fields[1:])
+                  except ValueError:
+                      raise SystemExit(f'{name}: malformed timestamp line {line!r}')
+                  if not all(map(math.isfinite, (start, end))) or not 0 <= start <= end:
+                      raise SystemExit(f'{name}: invalid timestamp line {line!r}')
+          PY
+            diff -u "$reference" "$actual"
+          done
+          echo "Exact $MODEL streaming transcript and timestamp comparisons passed for 1600, 159 and 8192 samples on the pinned short fixture." >> "$GITHUB_STEP_SUMMARY"
+          echo 'This is not a full-model, long-audio, quality, packaged-app, Windows or live-capture parity proof.' >> "$GITHUB_STEP_SUMMARY"

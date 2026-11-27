@@ -184,6 +184,7 @@ test_*.py
 scripts/test_*.py
 !tests/
 !tests/test_*.py
+!packaging/rust-liquid/model-export/test_unpack.py
 
 # FFmpeg builds (Windows)
 ffmpeg/
