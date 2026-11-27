@@ -15,7 +15,7 @@ from ..config import (
 )
 from ..utils.model_cache import hf_repo_is_cached
 from .asr.factory import create_backend_from_config
-from .asr.models import onnx_model_repo, validate_asr_model
+from .asr.models import TRANSFORMERS_ASR_MODELS, onnx_model_repo, validate_asr_model
 from .asr.pytorch_backend import PyTorchBackend, gigaam_checkpoint_files
 from .asr.types import ProgressCallback
 from .devices import empty_accelerator_cache
@@ -206,6 +206,9 @@ class ModelLoader:
             return () if hf_repo_is_cached(repo_id) else (f"MLX ASR: {repo_id}",)
 
         if backend.name == "pytorch":
+            if backend.model_revision in TRANSFORMERS_ASR_MODELS:
+                repo_id, _revision = TRANSFORMERS_ASR_MODELS[backend.model_revision]
+                return () if backend._huggingface_snapshot() is not None else (f"GigaAM ASR: {repo_id}",)
             bundled = backend._bundled_download_root()  # noqa: SLF001
             configured = os.environ.get("GIGAAM_PYTORCH_MODEL_DIR")
             root_value = bundled or configured

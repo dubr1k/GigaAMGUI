@@ -35,7 +35,7 @@ extension AppController {
             body.addArrangedSubview(divider())
             body.spacing = 16
             body.addArrangedSubview(settingsField("ASR backend", control: popup(SettingsSchema.backends, key: "settings.backend")))
-            body.addArrangedSubview(settingsField("Модель", control: popup(SettingsSchema.models, key: "settings.model")))
+            body.addArrangedSubview(settingsField("Модель", control: popup(SettingsSchema.availableModels, key: "settings.model")))
             body.addArrangedSubview(settingsField("ONNX provider", control: popup(SettingsSchema.onnxProviders, key: "settings.onnxProvider")))
             body.addArrangedSubview(settingsField("Устройство", control: inactive(popup(["Auto / GPU", "CPU", "GPU"], key: "settings.device"))))
             body.addArrangedSubview(inactive(toggleRow("Fallback на CPU", key: "settings.cpuFallback", defaultValue: false)))

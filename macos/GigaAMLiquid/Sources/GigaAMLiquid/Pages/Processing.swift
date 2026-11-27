@@ -37,7 +37,7 @@ extension AppController {
         let settings = contentStack(processing)
         settings.spacing = 12
         settings.addArrangedSubview(compactField("Подготовка аудио", control: popup(SettingsSchema.audioPreprocessing, key: "processing.preprocessing")))
-        settings.addArrangedSubview(compactField("Модель", control: popup(SettingsSchema.models, key: "settings.model")))
+        settings.addArrangedSubview(compactField("Модель", control: popup(SettingsSchema.availableModels, key: "settings.model")))
         settings.addArrangedSubview(toggleRow("Диаризация", key: "settings.diarization", defaultValue: false))
         settings.addArrangedSubview(compactField("Кол-во спикеров", control: speakerCountPopup()))
         settings.bottomAnchor.constraint(equalTo: processing.bottomAnchor, constant: -16).isActive = true
@@ -196,7 +196,7 @@ extension AppController {
         var settings = NativeTranscriptionSettings()
         settings.formats = outputFormats
         settings.backend = option("settings.backend", values: SettingsSchema.backends)
-        settings.model = option("settings.model", values: SettingsSchema.models)
+        settings.model = option("settings.model", values: SettingsSchema.availableModels)
         settings.onnxProvider = option("settings.onnxProvider", values: SettingsSchema.onnxProviders)
         settings.diarization = enabledOption("settings.diarization", defaultValue: false)
         settings.diarizationBackend = option("settings.diarizationEngine", values: SettingsSchema.diarizationEngines)

@@ -23,3 +23,14 @@ def test_unknown_model_is_rejected():
 )
 def test_onnx_model_mapping_covers_public_models(application_name, onnx_name):
     assert onnx_model_name(application_name) == onnx_name
+
+
+@pytest.mark.parametrize("model", ["v4_rnnt", "multilingual_v2_rnnt"])
+def test_transformers_models_are_not_mapped_to_a_different_onnx_model(model):
+    from src.core.asr.models import onnx_model_repo
+
+    assert validate_asr_model(model) == model
+    with pytest.raises(ValueError, match="недоступна в ONNX"):
+        onnx_model_name(model)
+    with pytest.raises(ValueError, match="недоступна в ONNX"):
+        onnx_model_repo(model)

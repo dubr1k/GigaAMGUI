@@ -11,7 +11,7 @@
 
     python scripts/native_worker_smoke.py \\
         stage/.../GigaAMWorker.app/Contents/MacOS/GigaAMWorker \\
-        clip.wav out_dir [--backend auto] [--timeout 600]
+        clip.wav out_dir [--backend auto] [--model v3_e2e_rnnt] [--timeout 600]
 
 Код возврата 0 только при ``completed.success == true`` и непустом файле
 результата. Окружение (``HF_HOME``, ``HF_HUB_OFFLINE`` …) наследуется как есть,
@@ -44,6 +44,7 @@ def run_smoke(
     output_dir: Path,
     *,
     backend: str = "auto",
+    model: str = "v3_e2e_rnnt",
     timeout: float = 600.0,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +54,7 @@ def run_smoke(
         "output_dir": str(output_dir),
         "formats": ["txt"],
         "backend": backend,
-        "model": "v3_e2e_rnnt",
+        "model": model,
         "onnx_provider": "auto",
         "diarization": False,
     }
@@ -122,7 +123,7 @@ def run_smoke(
         print(f"native worker smoke: transcript is empty: {result}", flush=True)
         return 1
     elapsed = time.monotonic() - started
-    print(f"native worker smoke: OK in {elapsed:.1f}s, backend={backend}: {text!r}", flush=True)
+    print(f"native worker smoke: OK in {elapsed:.1f}s, backend={backend}, model={model}: {text!r}", flush=True)
     return 0
 
 
@@ -192,6 +193,7 @@ def run_live_smoke(
     session_root: Path,
     *,
     backend: str = "auto",
+    model: str = "v3_e2e_rnnt",
     timeout: float = 600.0,
     worker_args: tuple[str, ...] = ("--native-worker",),
 ) -> int:
@@ -218,7 +220,7 @@ def run_live_smoke(
     send({
         "type": "live_start", "session_root": str(session_root), "sources": ["mic"], "sample_rate": 16_000,
         "diarization_mode": "off", "exports": {"txt": True},
-        "backend": backend, "model": "v3_e2e_rnnt", "onnx_provider": "auto",
+        "backend": backend, "model": model, "onnx_provider": "auto",
     })
     sent = 0
     for chunk in pcm_chunks(samples, 16_000):
@@ -276,7 +278,7 @@ def run_live_smoke(
         print(f"live smoke: transcript.txt missing or empty: {stopped}", flush=True)
         return 1
     elapsed = time.monotonic() - started
-    print(f"live smoke: OK in {elapsed:.1f}s, backend={backend}, finals={finals!r}", flush=True)
+    print(f"live smoke: OK in {elapsed:.1f}s, backend={backend}, model={model}, finals={finals!r}", flush=True)
     return 0
 
 
@@ -286,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("clip", type=Path, help="аудиофайл для транскрибации")
     parser.add_argument("output_dir", type=Path, help="куда писать результат (для --live: корень сессий)")
     parser.add_argument("--backend", default="auto", help="ASR backend, как его передаёт GigaAMLiquid (по умолчанию auto)")
+    parser.add_argument("--model", default="v3_e2e_rnnt", help="ASR model, как его передаёт GigaAMLiquid")
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--live", action="store_true", help="прогнать клип через live_start/live_audio/live_stop")
     parser.add_argument(
@@ -304,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             args.clip.resolve(),
             args.output_dir.resolve(),
             backend=args.backend,
+            model=args.model,
             timeout=args.timeout,
             worker_args=worker_args,
         )
@@ -312,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         args.clip.resolve(),
         args.output_dir.resolve(),
         backend=args.backend,
+        model=args.model,
         timeout=args.timeout,
     )
 

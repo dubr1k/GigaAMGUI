@@ -222,3 +222,13 @@ def test_missing_pytorch_resources_name_the_absent_tokenizer(tmp_path, monkeypat
     loader = ModelLoader(requested_backend="pytorch", model_revision="v3_e2e_rnnt")
 
     assert loader.missing_asr_resources() == ("GigaAM tokenizer: v3_e2e_rnnt_tokenizer.model",)
+
+
+def test_new_model_preparation_reports_the_huggingface_repo(monkeypatch):
+    loader = ModelLoader(requested_backend="pytorch", model_revision="v4_rnnt")
+    backend = PyTorchBackend(revision="v4_rnnt")
+    loader._backend = backend
+    monkeypatch.setattr(backend, "_huggingface_snapshot", lambda: None)
+    assert loader.missing_asr_resources() == ("GigaAM ASR: ai-sage/GigaAM-v4",)
+    monkeypatch.setattr(backend, "_huggingface_snapshot", lambda: object())
+    assert loader.missing_asr_resources() == ()

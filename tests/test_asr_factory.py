@@ -178,6 +178,29 @@ def test_auto_offline_keeps_mlx_when_nothing_is_cached(monkeypatch):
     assert backend.name == "mlx"
     assert reason is None
 
+@pytest.mark.parametrize("model", ["multilingual_ctc", "multilingual_large_ctc"])
+def test_auto_offline_uses_cached_multilingual_onnx_on_apple_silicon(model):
+    from src.core.asr.models import ONNX_ASR_REPOS
+
+    backend, reason = _auto_arm64(
+        model_name=model,
+        model_revision=model,
+        offline=True,
+        repo_is_cached=lambda repo: repo == ONNX_ASR_REPOS[model],
+    )
+    assert isinstance(backend, OnnxBackend)
+    assert backend.model_revision == model
+    assert reason and "ONNX" in reason
+
+
+@pytest.mark.parametrize("model", ["multilingual_ctc", "multilingual_large_ctc"])
+def test_auto_offline_does_not_claim_uncached_multilingual_onnx(model):
+    backend, _reason = _auto_arm64(
+        model_name=model, model_revision=model, offline=True, repo_is_cached=lambda repo: False,
+    )
+    assert isinstance(backend, PyTorchBackend)
+
+
 
 def test_auto_online_ignores_cache_state(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
@@ -203,3 +226,24 @@ def test_auto_selects_onnx_on_macos_x86_64():
     assert isinstance(backend, OnnxBackend)
     assert backend.name == "onnx"
     assert reason is not None and "x86_64" in reason
+
+
+@pytest.mark.parametrize("model", ["v4_rnnt", "multilingual_v2_rnnt"])
+def test_new_models_auto_select_pytorch_on_apple_silicon(model):
+    backend, reason = _auto_arm64(model_name=model, model_revision=model)
+    assert isinstance(backend, PyTorchBackend)
+    assert backend.model_revision == model
+    assert reason and "PyTorch" in reason
+
+
+@pytest.mark.parametrize("model", ["v4_rnnt", "multilingual_v2_rnnt"])
+@pytest.mark.parametrize("requested", ["onnx", "mlx"])
+def test_new_models_reject_unsupported_explicit_backends(model, requested):
+    with pytest.raises(RuntimeError, match="PyTorch"):
+        _auto_arm64(requested_backend=requested, model_name=model, model_revision=model)
+
+
+@pytest.mark.parametrize("model", ["v4_rnnt", "multilingual_v2_rnnt"])
+def test_new_models_auto_reject_onnx_only_intel_macos(model):
+    with pytest.raises(RuntimeError, match="macOS Intel"):
+        _auto_arm64(machine_name="x86_64", model_name=model, model_revision=model)

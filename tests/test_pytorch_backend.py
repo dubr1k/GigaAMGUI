@@ -758,3 +758,170 @@ def test_transcribe_longform_progress_with_short_tail_does_still_complete(tmp_pa
     assert events[0][1] == 20.0
     assert events[0][2] == 20.0625
     assert events[-1] == (1.0, 20.0625, 20.0625)
+
+
+@pytest.mark.parametrize("model_id", ["v4_rnnt", "multilingual_v2_rnnt"])
+def test_new_models_load_pinned_transformers_checkpoint(monkeypatch, model_id):
+    from src.core.asr.models import TRANSFORMERS_ASR_MODELS
+
+    calls = []
+    core = object()
+
+    class AutoModel:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            calls.append((source, kwargs))
+            return SimpleNamespace(eval=lambda: SimpleNamespace(model=core))
+
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(AutoModel=AutoModel))
+    monkeypatch.setattr(pytorch_backend, "hf_hub_offline", lambda: False)
+    monkeypatch.setattr(PyTorchBackend, "_select_device", lambda self: "cpu")
+    monkeypatch.setattr(PyTorchBackend, "_huggingface_snapshot", lambda self: None)
+    backend = PyTorchBackend(revision=model_id)
+
+    assert backend.load()
+    repo_id, revision = TRANSFORMERS_ASR_MODELS[model_id]
+    assert calls == [(repo_id, {
+        "revision": revision,
+        "trust_remote_code": True,
+        "device": "cpu",
+        "fp16_encoder": False,
+        "language": "auto",
+    })]
+    assert backend.model is core
+
+
+@pytest.mark.parametrize("model_id", ["v4_rnnt", "multilingual_v2_rnnt"])
+def test_new_models_decode_formatted_head_with_absolute_word_timestamps(tmp_path, model_id):
+    wav_path = tmp_path / "timed.wav"
+    sf.write(wav_path, np.zeros(21 * 16000, dtype=np.float32), 16000)
+    dtypes = []
+    formatted_head, raw_head, formatted_decoding = object(), object(), object()
+
+    def forward(wav, length):
+        dtypes.append(wav.dtype)
+        return wav, length
+
+    def decode_head(head, decoding, encoded, encoded_len, wav_len, *, word_timestamps):
+        assert head is formatted_head and decoding is formatted_decoding
+        assert word_timestamps is True
+        return [("Привет, мир!", [
+            SimpleNamespace(text="Привет,", start=0.1, end=0.2),
+            SimpleNamespace(text="мир!", start=0.3, end=0.4),
+        ])]
+
+    def no_dual_decode(*args, **kwargs):
+        raise AssertionError("the raw head must not be decoded")
+
+    backend = PyTorchBackend(revision=model_id, segmentation_mode="fixed_chunks")
+    backend.model = SimpleNamespace(
+        _device="cpu", _dtype=torch.float16, forward=forward,
+        heads={"e2e": formatted_head, "raw": raw_head},
+        decodings={"e2e": formatted_decoding},
+        _decode=no_dual_decode, _decode_head=decode_head,
+    )
+    backend.device = "cpu"
+
+    segments = backend.transcribe_longform(str(wav_path))
+    assert [segment["transcription"] for segment in segments] == ["Привет, мир!", "Привет, мир!"]
+    assert segments[1]["words"][0]["start"] == pytest.approx(20.1)
+    assert segments[1]["words"][1]["end"] == pytest.approx(20.4)
+    live = backend.transcribe_window(np.zeros(16000, dtype=np.float32), 16000, 8000)
+    assert live[0]["boundaries"] == (0.5, 1.5)
+    assert live[0]["words"][0]["start"] == pytest.approx(0.6)
+    assert live[0]["words"][1]["end"] == pytest.approx(0.9)
+    assert dtypes == [torch.float32, torch.float32, torch.float32]
+
+
+def test_new_model_cache_requires_every_file_at_the_pinned_revision(tmp_path, monkeypatch):
+    from src.core.asr.models import TRANSFORMERS_ASR_FILES, TRANSFORMERS_ASR_MODELS
+    from src.utils.model_cache import hf_repo_cache_name
+
+    repo_id, revision = TRANSFORMERS_ASR_MODELS["v4_rnnt"]
+    hub = tmp_path / "hub"
+    snapshot = hub / hf_repo_cache_name(repo_id) / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    monkeypatch.setattr(pytorch_backend, "bundled_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(pytorch_backend, "hf_hub_cache_dir", lambda: hub)
+    backend = PyTorchBackend(revision="v4_rnnt")
+
+    for name in TRANSFORMERS_ASR_FILES[:-1]:
+        (snapshot / name).write_bytes(b"test")
+    assert backend._huggingface_snapshot() is None
+    (snapshot / TRANSFORMERS_ASR_FILES[-1]).touch()
+    assert backend._huggingface_snapshot() is None
+    (snapshot / TRANSFORMERS_ASR_FILES[-1]).write_bytes(b"test")
+    assert backend._huggingface_snapshot() == snapshot
+
+
+@pytest.mark.parametrize("model_id", ["v4_rnnt", "multilingual_v2_rnnt"])
+@pytest.mark.parametrize("cache_location", ["bundled", "user"])
+def test_cached_model_loads_custom_code_offline_into_an_empty_module_cache(
+    tmp_path, monkeypatch, model_id, cache_location,
+):
+    import json
+
+    import requests
+    from safetensors.torch import save_file
+    import transformers.dynamic_module_utils as dynamic_modules
+    from src.core.asr.models import TRANSFORMERS_ASR_FILES, TRANSFORMERS_ASR_MODELS
+    from src.utils.model_cache import hf_repo_cache_name
+
+    repo_id, revision = TRANSFORMERS_ASR_MODELS[model_id]
+    hub = tmp_path / cache_location / "hub"
+    snapshot = hub / hf_repo_cache_name(repo_id) / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    for name in TRANSFORMERS_ASR_FILES:
+        (snapshot / name).write_bytes(b"unused")
+    (snapshot / "config.json").write_text(json.dumps({
+        "model_type": "gigaam",
+        "auto_map": {
+            "AutoConfig": "modeling_gigaam.TinyConfig",
+            "AutoModel": "modeling_gigaam.TinyModel",
+        },
+    }), encoding="utf-8")
+    source = '''
+import torch
+from transformers import PretrainedConfig, PreTrainedModel
+
+class TinyConfig(PretrainedConfig):
+    model_type = "gigaam"
+
+class TinyModel(PreTrainedModel):
+    config_class = TinyConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = torch.nn.Linear(1, 1)
+
+    @classmethod
+    def from_pretrained(cls, source, *args, **kwargs):
+        device = kwargs.pop("device")
+        kwargs.pop("fp16_encoder")
+        kwargs.pop("language")
+        return super().from_pretrained(source, *args, **kwargs).to(device)
+'''
+    (snapshot / "modeling_gigaam.py").write_text(source, encoding="utf-8")
+    save_file(
+        {"model.weight": torch.ones(1, 1), "model.bias": torch.zeros(1)},
+        str(snapshot / "model.safetensors"),
+        metadata={"format": "pt"},
+    )
+    modules = tmp_path / "writable-modules"
+    monkeypatch.setattr(dynamic_modules, "HF_MODULES_CACHE", str(modules))
+    monkeypatch.setattr(pytorch_backend, "bundled_hf_cache_dir", lambda: hub.parent if cache_location == "bundled" else None)
+    monkeypatch.setattr(pytorch_backend, "hf_hub_cache_dir", lambda: hub if cache_location == "user" else tmp_path / "empty-user-hub")
+    monkeypatch.setattr(PyTorchBackend, "_select_device", lambda self: "cpu")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("offline loading must not request the network")
+
+    monkeypatch.setattr(requests.sessions.Session, "request", network_forbidden)
+    backend = PyTorchBackend(revision=model_id)
+    errors = []
+    assert backend.load(logger=errors.append), errors
+    assert isinstance(backend.model, torch.nn.Linear)
+    copied = list(modules.rglob("modeling_gigaam.py"))
+    assert len(copied) == 1
+    assert copied[0].read_text(encoding="utf-8") == source

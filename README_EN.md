@@ -414,6 +414,25 @@ python cli.py --audio-preprocessing auto -f noisy.wav
 
 On macOS Apple Silicon, `auto` uses [gigaam-mlx](https://github.com/aystream/gigaam-mlx) and falls back to PyTorch when necessary. On other platforms, `auto` currently keeps PyTorch as the validated default. The new `onnx` backend uses `onnx-asr==0.12.0`, does not import PyTorch, and supports CPU, CUDA, TensorRT, CoreML, and DirectML.
 
+`v4_rnnt` ([GigaAM-v4](https://huggingface.co/ai-sage/GigaAM-v4), Russian
+and English) and `multilingual_v2_rnnt`
+([GigaAM Multilingual v2](https://huggingface.co/ai-sage/GigaAM-Multilingual-v2),
+21 languages) use the original RNN-T weights and formatted `e2e` output. They
+require PyTorch: on Apple Silicon select `auto` or `pytorch`; explicit `mlx` and
+`onnx` do not support them. The Intel macOS bundle has no PyTorch and does not
+offer these models. The native Rust Windows/Linux interface uses a different
+engine and does not yet support them.
+
+The initial download includes 486,276,070 bytes of weights for v4 or
+1,574,765,402 bytes for multilingual v2, plus about 5.4 MB of supporting files.
+These repositories contain executable Transformers code; the application pins
+both code and weights to specific revisions. The offline archive does not
+include these models, so offline use requires a complete snapshot already in
+the cache. Dependencies include PyTorch, torchaudio, Transformers 4.x,
+sentencepiece, ONNX and ONNX Runtime; the ONNX package is not an ONNX backend
+for these models. Real-weight inference and the frozen macOS bundle still need
+verification.
+
 Portable 1.3.1 builds align ONNX acceleration with the selected device:
 
 - Windows/Linux ship one `onnxruntime-gpu` distribution. `auto` resolves

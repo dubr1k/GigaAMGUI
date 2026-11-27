@@ -6,7 +6,15 @@ import Foundation
 /// (src/config.py, src/tui_worker.py); pytest compares them.
 public enum SettingsSchema {
     public static let backends = ["auto", "mlx", "onnx", "pytorch"]
-    public static let models = ["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc"]
+    public static let models = ["v3_e2e_rnnt", "multilingual_ctc", "multilingual_large_ctc", "v4_rnnt", "multilingual_v2_rnnt"]
+    /// Intel's bundled worker has neither PyTorch nor MLX.
+    public static var availableModels: [String] {
+        #if arch(arm64)
+        return models
+        #else
+        return models.filter { $0 != "v4_rnnt" && $0 != "multilingual_v2_rnnt" }
+        #endif
+    }
     public static let onnxProviders = ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"]
     public static let diarizationEngines = ["pyannote", "onnx", "sortformer"]
     public static let audioPreprocessing = ["auto", "off", "light", "denoise"]

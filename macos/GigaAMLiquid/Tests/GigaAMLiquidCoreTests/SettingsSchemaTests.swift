@@ -31,4 +31,15 @@ import Testing
         #expect(SettingsSchema.subtitleCharacters.first == "64")
         #expect(SettingsSchema.onnxProviders.first == "auto")
     }
+
+    @Test func newModelsAreOfferedOnlyWhereTheBundledWorkerCanRunPyTorch() {
+        #if arch(arm64)
+        #expect(SettingsSchema.availableModels.contains("v4_rnnt"))
+        #expect(SettingsSchema.availableModels.contains("multilingual_v2_rnnt"))
+        #else
+        #expect(!SettingsSchema.availableModels.contains("v4_rnnt"))
+        #expect(!SettingsSchema.availableModels.contains("multilingual_v2_rnnt"))
+        #endif
+        #expect(SettingsSchema.availableModels.first == "v3_e2e_rnnt")
+    }
 }

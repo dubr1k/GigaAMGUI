@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -16,6 +17,8 @@ from ...config import (
     MODEL_NAME,
     MODEL_REVISION,
 )
+from ...utils.model_cache import hf_hub_cache_dir, hf_hub_offline, hf_repo_cache_name
+from ...utils.runtime_manager import bundled_hf_cache_dir
 from ..devices import best_torch_device, empty_accelerator_cache
 from .chunking import (
     AudioChunk,
@@ -29,8 +32,10 @@ from .longform import (
     call_logger,
     pyannote_vad_key,
 )
+from .models import TRANSFORMERS_ASR_FILES, TRANSFORMERS_ASR_MODELS, snapshot_missing_files
 from .types import BackendCapabilities, TranscriptionSegment, TranscriptionWord, normalize_window_audio
 from .vad import PyannoteVadSegmenter, VadSegmenter, VadUnavailableError, resolve_vad_device
+
 
 
 def gigaam_checkpoint_files(revision: object) -> tuple[str, ...]:
@@ -75,7 +80,24 @@ class PyTorchBackend:
         self.segmentation_fallback_reason: str | None = None
         self._logger: Callable[[str], None] | None = None
 
+    def _huggingface_snapshot(self) -> Path | None:
+        """Locate the complete pinned model, including a read-only bundle."""
+        selected = TRANSFORMERS_ASR_MODELS.get(self.model_revision)
+        if selected is None:
+            return None
+        repo_id, revision = selected
+        bundled = bundled_hf_cache_dir()
+        hubs = ([Path(bundled) / "hub"] if bundled is not None else []) + [hf_hub_cache_dir()]
+        for hub in hubs:
+            snapshot = Path(hub) / hf_repo_cache_name(repo_id) / "snapshots" / revision
+            if not snapshot_missing_files(snapshot, TRANSFORMERS_ASR_FILES):
+                return snapshot
+        return None
+
     def _bundled_download_root(self) -> str | None:
+        if self.model_revision in TRANSFORMERS_ASR_MODELS:
+            snapshot = self._huggingface_snapshot()
+            return str(snapshot) if snapshot is not None else None
         meipass_root = getattr(sys, "_MEIPASS", None)
         candidates = [
             *([meipass_root] if meipass_root else []),
@@ -151,12 +173,26 @@ class PyTorchBackend:
         """Decode one chunk and request official GigaAM word timestamps when available."""
         timed_decode = getattr(model, "_decode", None)
         if callable(timed_decode):
-            decoded = timed_decode(
-                encoded,
-                encoded_len,
-                wav_len,
-                word_timestamps=True,
-            )
+            if callable(getattr(model, "_decode_head", None)) and isinstance(
+                getattr(model, "decodings", None), dict
+            ):
+                # The new models have raw and formatted heads. Decode only the
+                # formatted head, as decoding both RNN-T heads doubles the work.
+                decoded = model._decode_head(
+                    model.heads["e2e"],
+                    model.decodings["e2e"],
+                    encoded,
+                    encoded_len,
+                    wav_len,
+                    word_timestamps=True,
+                )
+            else:
+                decoded = timed_decode(
+                    encoded,
+                    encoded_len,
+                    wav_len,
+                    word_timestamps=True,
+                )
             if decoded:
                 text, words = decoded[0]
                 normalized_words: list[TranscriptionWord] = [
@@ -179,28 +215,47 @@ class PyTorchBackend:
             return True
 
         try:
-
-            import gigaam
-
-            from ...utils.runtime_manager import get_selected_variant  # noqa: F401  pylint: disable=unused-import
-
-            self._gigaam = gigaam
-
+            selected = TRANSFORMERS_ASR_MODELS.get(self.model_revision)
             if logger:
-                logger("Подготавливаем модель распознавания речи (GigaAM-v3)…")
+                label = self.model_revision if selected else "GigaAM-v3"
+                logger(f"Подготавливаем модель распознавания речи ({label})…")
                 logger("При первом запуске модель скачивается — это может занять несколько минут.")
 
             self.device = self._select_device()
             if logger:
                 logger(f"Вычисления выполняются на устройстве: {self.device.upper()}")
 
-            use_fp16 = self.device != "cpu"
-            self.model = gigaam.load_model(
-                self.model_revision,
-                fp16_encoder=use_fp16,
-                device=self.device,
-                download_root=self._bundled_download_root(),
-            )
+            if selected:
+                from transformers import AutoModel
+
+                repo_id, revision = selected
+                snapshot = self._huggingface_snapshot()
+                if snapshot is None and hf_hub_offline():
+                    raise RuntimeError(
+                        f"Модель {repo_id} не найдена в кэше, а офлайн-режим запрещает скачивание"
+                    )
+                # Transformers copies the local modeling_gigaam.py into its
+                # writable HF_MODULES_CACHE; the bundled snapshot stays read-only.
+                model = AutoModel.from_pretrained(
+                    str(snapshot) if snapshot is not None else repo_id,
+                    revision=revision,
+                    trust_remote_code=True,
+                    device=self.device,
+                    fp16_encoder=self.device == "cuda",
+                    language="auto",
+                    **({"local_files_only": True} if snapshot is not None else {}),
+                ).eval()
+                self.model = model.model
+            else:
+                import gigaam
+
+                self._gigaam = gigaam
+                self.model = gigaam.load_model(
+                    self.model_revision,
+                    fp16_encoder=self.device != "cpu",
+                    device=self.device,
+                    download_root=self._bundled_download_root(),
+                )
 
             if logger:
                 logger("Модель готова.")
@@ -240,7 +295,8 @@ class PyTorchBackend:
         start = offset_samples / sample_rate
         with self._inference_lock, torch.inference_mode():
             model = cast(Any, self.model)
-            wav = torch.from_numpy(window).to(model._device).to(model._dtype).unsqueeze(0)
+            dtype = torch.float32 if self.model_revision in TRANSFORMERS_ASR_MODELS else model._dtype
+            wav = torch.from_numpy(window).to(device=model._device, dtype=dtype).unsqueeze(0)
             length = torch.full([1], wav.shape[-1], device=model._device)
             encoded, encoded_len = model.forward(wav, length)
             text, relative_words = self._decode_chunk(model, encoded, encoded_len, length)
@@ -374,7 +430,8 @@ class PyTorchBackend:
         def decode(chunk: AudioChunk) -> tuple[str, list[TranscriptionWord] | None]:
             start = chunk.decode_start_sample
             end = chunk.decode_end_sample
-            wav = audio[start:end].to(model._device).to(model._dtype).unsqueeze(0)
+            dtype = torch.float32 if self.model_revision in TRANSFORMERS_ASR_MODELS else model._dtype
+            wav = audio[start:end].to(device=model._device, dtype=dtype).unsqueeze(0)
             length = torch.full([1], wav.shape[-1], device=model._device)
             encoded, encoded_len = model.forward(wav, length)
             text, relative_words = self._decode_chunk(model, encoded, encoded_len, length)

@@ -54,8 +54,10 @@ packages = [
     "speechbrain",
     "librosa",
     "soundfile",
+    "onnx",
     "onnxruntime",
     "sentencepiece",
+    "tqdm",
     "yt_dlp",
     "docx",
     "dotenv",
@@ -139,6 +141,12 @@ hiddenimports = sorted(set(hiddenimports + [
     "torchaudio.transforms",
     "torchvision",
     "transformers",
+    # Imported dynamically by the pinned HF modeling_gigaam.py, which is not
+    # present when PyInstaller analyzes either the GUI or the headless worker.
+    "safetensors.torch",
+    "onnx",
+    "onnx.external_data_helper",
+    "tqdm.auto",
     "huggingface_hub",
     "soundfile",
     "librosa",

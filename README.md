@@ -522,6 +522,24 @@ python cli.py --audio-preprocessing off -f studio.wav
 | `onnx` | `onnx-asr`, без PyTorch. Провайдеры: CPU, CUDA, TensorRT, CoreML, DirectML. |
 | `pytorch` | Классический движок; CPU, CUDA, Intel XPU, MPS. |
 
+`v4_rnnt` ([GigaAM-v4](https://huggingface.co/ai-sage/GigaAM-v4), русский
+и английский) и `multilingual_v2_rnnt`
+([GigaAM Multilingual v2](https://huggingface.co/ai-sage/GigaAM-Multilingual-v2),
+21 язык) используют оригинальные RNN-T веса и форматированный выход `e2e`.
+Им требуется PyTorch: на Apple Silicon выбирайте `auto` или `pytorch`; явные
+`mlx` и `onnx` не поддерживают эти модели. Intel-сборка macOS не содержит
+PyTorch и не предлагает их. Нативный Rust-интерфейс Windows/Linux использует
+другой движок и эти модели пока не поддерживает.
+
+При первом запуске загружаются веса размером 486 276 070 байт для v4 или
+1 574 765 402 байта для multilingual v2, плюс около 5,4 МБ служебных файлов.
+Репозитории включают исполняемый код Transformers; приложение закрепляет
+конкретные версии кода и весов. Офлайн-архив эти модели не содержит: для
+офлайн-работы нужный snapshot должен быть заранее полностью скачан в кэш.
+Зависимости включают PyTorch, torchaudio, Transformers 4.x, sentencepiece,
+ONNX и ONNX Runtime; наличие пакета ONNX не означает поддержку ONNX backend.
+Работа с реальными весами и замороженной macOS-сборкой ещё требует проверки.
+
 ```bash
 python cli.py --backend auto -f audio.wav
 python cli.py --backend onnx --onnx-provider coreml -f audio.wav

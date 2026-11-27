@@ -7,7 +7,7 @@ from typing import Any
 
 from ...utils.model_cache import hf_hub_offline, hf_repo_is_cached
 from .mlx_backend import MLXBackend
-from .models import onnx_model_repo
+from .models import ONNX_ASR_REPOS, TRANSFORMERS_ASR_MODELS, onnx_model_repo
 from .onnx_backend import OnnxBackend
 from .pytorch_backend import PyTorchBackend
 from .types import validate_backend_name
@@ -58,6 +58,11 @@ def create_backend(
     if requested == "pytorch":
         return PyTorchBackend(model=model_name, revision=model_revision), None
 
+    if requested == "onnx" and model_revision in TRANSFORMERS_ASR_MODELS:
+        raise RuntimeError(
+            f"Модель {model_revision} недоступна в ONNX backend; выберите auto или PyTorch"
+        )
+
     if requested == "onnx":
         return OnnxBackend(
             model=model_revision,
@@ -83,6 +88,11 @@ def create_backend(
         return MLXBackend(model=model_name, repo=mlx_repo), None
 
     # requested == "auto"
+    if model_revision in TRANSFORMERS_ASR_MODELS and platform_name == "darwin" and machine_name != "arm64":
+        raise RuntimeError(
+            f"Модель {model_revision} требует PyTorch, недоступный в сборке macOS Intel"
+        )
+
     if platform_name == "darwin" and machine_name != "arm64":
         # Под macOS x86_64 нет ни колёс torch>=2.6, ни mlx, поэтому PyTorch-ветка
         # тут не «медленнее», а мертва: она падает с «No module named 'gigaam'»
@@ -100,6 +110,14 @@ def create_backend(
         return PyTorchBackend(model=model_name, revision=model_revision), None
 
     if not _mlx_supports_model(model_revision):
+        if offline and model_revision in ONNX_ASR_REPOS and repo_is_cached(ONNX_ASR_REPOS[model_revision]):
+            return OnnxBackend(
+                model=model_revision,
+                provider=onnx_provider,
+                quantization=onnx_quantization,
+                model_dir=onnx_model_dir,
+                vad_model=onnx_vad_model,
+            ), f"Офлайн-режим: использована локальная ONNX-модель {ONNX_ASR_REPOS[model_revision]}"
         return (
             PyTorchBackend(model=model_name, revision=model_revision),
             f"Модель {model_revision} поддерживается только PyTorch backend",

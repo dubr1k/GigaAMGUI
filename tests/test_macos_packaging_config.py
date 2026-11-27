@@ -30,6 +30,16 @@ def test_spec_bundles_local_models_only_when_explicitly_requested():
     assert "datas.append((bundled_gigaam_dir, \"models/gigaam\"))" in text
 
 
+def test_macos_spec_collects_pinned_hf_model_dynamic_dependencies():
+    text = SPEC_PATH.read_text(encoding="utf-8")
+    for package in (
+        "transformers", "huggingface_hub", "torch", "torchaudio", "omegaconf",
+        "numpy", "soundfile", "sentencepiece", "safetensors", "safetensors.torch",
+        "onnx", "onnx.external_data_helper", "onnxruntime", "tqdm.auto",
+    ):
+        assert f'"{package}"' in text
+
+
 def test_hook_exists_and_collects_gigaam_mlx():
     text = HOOK_PATH.read_text(encoding="utf-8")
     assert "collect_all(\"gigaam_mlx\")" in text

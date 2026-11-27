@@ -694,7 +694,7 @@ jobs:
     # a macOS 13 deployment target and guards the glass path with #available.
     runs-on: macos-26
     needs: [test-tui, build-macos-full]
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -806,6 +806,20 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" = "GigaAMLiquid.icns"
           test "$(/usr/libexec/PlistBuddy -c 'Print :GigaAMReleaseVersion' "$APP/Contents/Info.plist")" = "$VERSION"
           test "$(lipo -archs "$APP/Contents/MacOS/GigaAMLiquid")" = "arm64"
+          # Exercise the actual frozen worker on a cold cache for both new models.
+          for model in v4_rnnt multilingual_v2_rnnt; do
+            CACHE="${RUNNER_TEMP}/liquid-online-${model}-hf"
+            test ! -e "$CACHE"
+            for mode in batch live; do
+              args=()
+              if [ "$mode" = live ]; then args+=(--live); fi
+              env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE -u HF_HUB_CACHE -u HUGGINGFACE_HUB_CACHE \
+                HF_HOME="$CACHE" HF_MODULES_CACHE="$CACHE/modules" \
+                python3 scripts/native_worker_smoke.py "${args[@]}" --backend pytorch --model "$model" \
+                "$COMPANION" tests/fixtures/liquid_smoke.wav "${RUNNER_TEMP}/liquid-online-${model}-${mode}-out"
+            done
+            rm -rf "$CACHE"
+          done
 
           mkdir -p out
           ARCHIVE="out/$PRODUCT.zip"
@@ -902,6 +916,61 @@ jobs:
         with:
           name: ${{ steps.archive_offline.outputs.name }}
           path: ${{ steps.archive_offline.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Install model-download dependencies
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Prepare full offline Liquid archive
+        id: archive_full_offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'huggingface-hub==0.36.0'
+          SAFE_REF_NAME="${GITHUB_REF_NAME//\//-}"
+          OFFLINE_PRODUCT="GigaAMLiquid-macos-arm64-offline-${SAFE_REF_NAME}"
+          ROOT="stage/$OFFLINE_PRODUCT"
+          SWIFT_APP="$ROOT/GigaAMLiquid.app"
+          RESOURCES="$SWIFT_APP/Contents/Resources"
+          COMPANION="$RESOURCES/GigaAMWorker.app/Contents/MacOS/GigaAMWorker"
+          python scripts/build_offline_models.py \
+            --include-transformers-asr --direct-expanded-download \
+            --baseline-hub "$RESOURCES/models/hf/hub" \
+            --output "$RESOURCES/models/hf-expanded"
+          mv "$RESOURCES/models/hf" "$RESOURCES/models/hf-base"
+          mv "$RESOURCES/models/hf-expanded" "$RESOURCES/models/hf" || {
+            mv "$RESOURCES/models/hf-base" "$RESOURCES/models/hf"
+            exit 1
+          }
+          rm -rf "$RESOURCES/models/hf-base"
+          codesign --force --deep --sign - "$SWIFT_APP"
+          codesign --verify --deep --strict "$SWIFT_APP"
+          for model in v4_rnnt multilingual_v2_rnnt multilingual_ctc multilingual_large_ctc; do
+            for mode in batch live; do
+              args=()
+              if [ "$mode" = live ]; then args+=(--live); fi
+              CACHE="${RUNNER_TEMP}/liquid-full-${model}-${mode}-hf"
+              test ! -e "$CACHE"
+              env -u HF_HUB_CACHE -u HUGGINGFACE_HUB_CACHE HF_HOME="$CACHE" HF_MODULES_CACHE="$CACHE/modules" \
+                HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+                python scripts/native_worker_smoke.py "${args[@]}" --model "$model" \
+                "$COMPANION" tests/fixtures/liquid_smoke.wav "${RUNNER_TEMP}/liquid-full-${model}-${mode}-out"
+            done
+          done
+          PREFIX="GigaAMLiquid-macos-arm64-full-offline-${SAFE_REF_NAME}.tar.gz.part"
+          tar -C stage -czf - "$OFFLINE_PRODUCT" | split -b 1800000000 -d -a 3 - "out/$PREFIX"
+          parts=(out/"$PREFIX"*)
+          test "${#parts[@]}" -gt 0
+          cat "${parts[@]}" | tar -tzf - >/dev/null
+          (cd out && shasum -a 256 "$PREFIX"* > "${PREFIX}sha256")
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+      - name: Upload full offline native Swift archive parts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive_full_offline.outputs.prefix }}
+          path: out/${{ steps.archive_full_offline.outputs.prefix }}*
           if-no-files-found: error
           compression-level: 0
 

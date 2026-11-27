@@ -211,7 +211,7 @@ extension AppController {
         settings.recordSystem = enabledOption("live.recordSystem", defaultValue: false)
         settings.exports = liveExports
         settings.backend = option("settings.backend", values: SettingsSchema.backends)
-        settings.model = option("settings.model", values: SettingsSchema.models)
+        settings.model = option("settings.model", values: SettingsSchema.availableModels)
         settings.onnxProvider = option("settings.onnxProvider", values: SettingsSchema.onnxProviders)
         do { settings.hfToken = try storedHFToken() } catch {
             liveStatusLabel?.stringValue = L10n.text("Запись не начата")
