@@ -38,6 +38,16 @@ use self::private_temp::PrivateTempDir;
 
 const RATE: u64 = 16_000;
 const SHORT_LIMIT_SAMPLES: u64 = 1_800 * RATE;
+const SCRATCH_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+
+fn require_scratch_space(available: u64, samples: usize) -> Result<(), String> {
+    let needed = (samples as u64).checked_mul(4).and_then(|bytes| bytes.checked_add(SCRATCH_RESERVE_BYTES))
+        .ok_or_else(|| "Слишком длинное аудио".to_string())?;
+    if available < needed {
+        return Err("Недостаточно места для временного аудио; освободите место на диске".into());
+    }
+    Ok(())
+}
 const MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/gigaam_ffmpeg_sha256sums"));
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +160,9 @@ impl CanonicalAudio {
                         return Err("Непоследовательная временная шкала аудио".into());
                     }
                     let end = start.checked_add(samples.len() as u64).ok_or_else(|| "Слишком длинное аудио".to_string())?;
+                    let available = fs2::available_space(directory.path())
+                        .map_err(|error| format!("Не удалось проверить свободное место: {error}"))?;
+                    require_scratch_space(available, samples.len())?;
                     writer.write_f32_samples(samples).map_err(|error| format!("Не удалось записать временное аудио: {error}"))?;
                     next_sample = end;
                     super::check_cancelled(cancelled)
@@ -433,6 +446,12 @@ pub(super) fn render(format: ExportFormat, result: &LongResult) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scratch_reserves_space_for_system_and_next_window() {
+        assert!(require_scratch_space(SCRATCH_RESERVE_BYTES + 16, 4).is_ok());
+        assert!(require_scratch_space(SCRATCH_RESERVE_BYTES + 15, 4).is_err());
+    }
+
 
     #[test]
     fn manifest_requires_exactly_the_packaged_binary() {
