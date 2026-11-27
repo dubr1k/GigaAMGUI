@@ -37,12 +37,12 @@ jobs:
       MODEL: ${{ matrix.model }}
       HF_REPO: ${{ matrix.repo }}
       HF_REVISION: ${{ matrix.revision }}
-      HF_HOME: ${{ runner.temp }}/model-parity-hf
+      HF_HOME: ${{ github.workspace }}/.model-parity-hf
       HF_HUB_DISABLE_TELEMETRY: '1'
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
       OPENBLAS_NUM_THREADS: '2'
-      CARGO_TARGET_DIR: ${{ runner.temp }}/model-parity-target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.model-parity-target
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_DEV_INCREMENTAL: 'false'
       CARGO_BUILD_JOBS: '2'
