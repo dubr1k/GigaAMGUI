@@ -668,13 +668,20 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
 
             choose(driver, "#choose-media", fixture)
             last_fixture_diagnostic = None
+            scrolled_to_fixture = False
 
             def fixture_selected():
-                nonlocal last_fixture_diagnostic
+                nonlocal last_fixture_diagnostic, scrolled_to_fixture
                 path_selector = "#selected-files .selected-file span"
                 name_selector = "#selected-files .selected-file strong"
                 try:
                     observed = driver.property(path_selector, "textContent")
+                    if not scrolled_to_fixture:
+                        driver.command("POST", "/execute/sync", {
+                            "script": "arguments[0].scrollIntoView({block: 'center'});",
+                            "args": [{ELEMENT: driver.element(name_selector)}],
+                        })
+                        scrolled_to_fixture = True
                     label = driver.visible_text(name_selector)
                     if not isinstance(observed, str) or not isinstance(label.get("text"), str):
                         raise RuntimeError("The selected-file path or name is not a string")
