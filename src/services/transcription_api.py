@@ -122,7 +122,7 @@ def prepare_options(opts: TranscribeOptions, model_loader, *, hf_token: str | No
         diarization_backend = normalize_diarization_backend(opts.diarization_backend)
     except ValueError as exc:
         raise BackendError("unsupported_parameter",
-                           f"Unknown diarization_backend '{opts.diarization_backend}'. Use pyannote or sortformer.",
+                           f"Unknown diarization_backend '{opts.diarization_backend}'. Use pyannote, pyannote-community, sortformer or onnx.",
                            param="diarization_backend") from exc
     if opts.num_speakers is not None and (isinstance(opts.num_speakers, bool)
                                           or not isinstance(opts.num_speakers, int) or opts.num_speakers < 1):

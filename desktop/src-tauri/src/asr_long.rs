@@ -4,6 +4,8 @@
 //! and diarization both read that exact stream; errors never publish a partial
 //! transcript. Speaker IDs are recording-local statistical estimates.
 
+#[path = "asr_community.rs"]
+mod community;
 #[path = "asr_long_audio.rs"]
 mod audio;
 pub(crate) use audio::LiveResampler;
@@ -200,6 +202,10 @@ impl CanonicalAudio {
     }
 }
 
+pub(super) fn check_community_bundle(directory: &Path) -> Result<(), String> {
+    community::require_bundle(directory)
+}
+
 /// Decode first so a missing or inaccurate container duration never truncates a
 /// long input. A genuinely short input returns None for the original path.
 pub(super) fn try_transcribe(
@@ -215,8 +221,31 @@ pub(super) fn try_transcribe(
     let result = if canonical.samples <= SHORT_LIMIT_SAMPLES {
         Ok(None)
     } else {
-        process(app, job_id, input, model_dir, engine, cancelled, &canonical).map(Some)
+        process(app, job_id, input, model_dir, engine, cancelled, &canonical, None).map(Some)
     };
+    let cleanup = canonical.close();
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+    }
+}
+
+/// Community-1 uses the same decoded samples for recognition and diarization,
+/// regardless of recording length.
+pub(super) fn transcribe_community(
+    app: &AppHandle,
+    job_id: &str,
+    input: &str,
+    model_dir: &str,
+    community_dir: &Path,
+    engine: &Engine,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<LongResult, String> {
+    super::emit_progress(app, job_id, "preparing", None, Some(input), Some("Подготовка записи"));
+    let canonical = CanonicalAudio::create(app, Path::new(input), cancelled)?;
+    let result = process(app, job_id, input, model_dir, engine, cancelled, &canonical, Some(community_dir));
     let cleanup = canonical.close();
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
@@ -235,6 +264,7 @@ pub(super) fn transcribe_zapformer(
     bundle: &Path,
     model: crate::asr_zapformer::ZapformerModel,
     diarization: bool,
+    community_dir: Option<&Path>,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<super::ProcessedFile, String> {
     super::emit_progress(app, job_id, "preparing", None, Some(input), Some("Подготовка записи"));
@@ -284,7 +314,7 @@ pub(super) fn transcribe_zapformer(
         };
         super::check_cancelled(cancelled)?;
         if diarization {
-            diarize(app, job_id, input, model_dir, cancelled, &canonical, transcription)
+            diarize(app, job_id, input, model_dir, cancelled, &canonical, transcription, community_dir)
                 .map(super::ProcessedFile::Long)
         } else {
             Ok(super::ProcessedFile::Regular { transcription, segments: None, diarized_text: None })
@@ -307,6 +337,7 @@ fn process(
     engine: &Engine,
     cancelled: &Arc<AtomicBool>,
     canonical: &CanonicalAudio,
+    community_dir: Option<&Path>,
 ) -> Result<LongResult, String> {
     super::check_cancelled(cancelled)?;
     let path = canonical.path.to_str().ok_or_else(|| "Путь к временному аудио не поддерживается".to_string())?;
@@ -321,7 +352,7 @@ fn process(
     drop(session);
     let transcription = transcription.map_err(|error| super::check_cancelled(cancelled).err()
         .unwrap_or_else(|| format!("Не удалось распознать {input}: {error}")))?;
-    diarize(app, job_id, input, model_dir, cancelled, canonical, transcription)
+    diarize(app, job_id, input, model_dir, cancelled, canonical, transcription, community_dir)
 }
 
 fn diarize(
@@ -332,44 +363,60 @@ fn diarize(
     cancelled: &Arc<AtomicBool>,
     canonical: &CanonicalAudio,
     mut transcription: TranscribeResult,
+    community_dir: Option<&Path>,
 ) -> Result<LongResult, String> {
-    super::check_cancelled(cancelled)?;
-    super::emit_progress(app, job_id, "downloading_speaker_model", None, Some(input), Some("Подготовка модели сегментации"));
-    let segmentation = tauri::async_runtime::block_on(models::ensure_segmentation_model(Path::new(model_dir), cancelled))?;
     super::check_cancelled(cancelled)?;
     let expected_duration = canonical.samples as f64 / RATE as f64;
     if !transcription.duration_s.is_finite() || (transcription.duration_s - expected_duration).abs() > 1.0 / RATE as f64 {
         return Err("Временная шкала распознавания не совпадает с декодированным аудио".into());
     }
-    super::emit_progress(app, job_id, "diarizing", None, Some(input), Some("Определение говорящих в длинной записи"));
-    let speaker_model = Path::new(model_dir).join(model::SPEAKER_MODEL_FILE);
-    let pipeline = Pipeline::load(&segmentation, &speaker_model, cancelled)
-        .map_err(|error| super::check_cancelled(cancelled).err()
-            .unwrap_or_else(|| format!("Не удалось загрузить модели диаризации: {error}")))?;
-    let config = PipelineConfig {
-        tracker: TrackerConfig {
-            max_speakers: 256,
-            embedding_dim: 256,
-            match_threshold: 0.50,
-            new_speaker_threshold: 0.25,
-            ambiguity_margin: 0.05,
-        },
-        segment_confidence: 0.55,
-        vad_threshold: 0.5,
-        min_vad_fraction: 0.2,
-        min_speech_samples: 8_000,
-    };
     let mut alignment = Alignment::new(&transcription.words, canonical.samples)?;
     let mut last_end = 0u64;
-    pipeline.diarize(&canonical.path, config, cancelled, |region| {
+    let mut add_region = |region: Region| {
         if region.start_sample < last_end || region.end_sample <= region.start_sample || region.end_sample > canonical.samples {
             return Err("Некорректная временная шкала диаризации".into());
         }
         last_end = region.end_sample;
         alignment.add(region);
         Ok(())
-    }).map_err(|error| super::check_cancelled(cancelled).err()
-        .unwrap_or_else(|| format!("Не удалось выполнить диаризацию {input}: {error}")))?;
+    };
+    if let Some(directory) = community_dir {
+        super::emit_progress(app, job_id, "loading_model", None, Some(input), Some("Загрузка Community-1"));
+        let mut pipeline = community::Pipeline::load(directory, cancelled)
+            .map_err(|error| super::check_cancelled(cancelled).err()
+                .unwrap_or_else(|| format!("Не удалось загрузить Community-1: {error}")))?;
+        super::emit_progress(app, job_id, "diarizing", None, Some(input), Some("Определение говорящих: Community-1"));
+        pipeline.diarize(&canonical.path, canonical.samples, cancelled,
+            |fraction| super::emit_progress(app, job_id, "diarizing", Some(fraction * 90.0), Some(input), Some("Определение говорящих: Community-1")),
+            &mut add_region)
+            .map_err(|error| super::check_cancelled(cancelled).err()
+                .unwrap_or_else(|| format!("Не удалось выполнить диаризацию {input}: {error}")))?;
+    } else {
+        super::emit_progress(app, job_id, "downloading_speaker_model", None, Some(input), Some("Подготовка модели сегментации"));
+        let segmentation = tauri::async_runtime::block_on(models::ensure_segmentation_model(Path::new(model_dir), cancelled))?;
+        super::check_cancelled(cancelled)?;
+        super::emit_progress(app, job_id, "diarizing", None, Some(input), Some("Определение говорящих в длинной записи"));
+        let speaker_model = Path::new(model_dir).join(model::SPEAKER_MODEL_FILE);
+        let pipeline = Pipeline::load(&segmentation, &speaker_model, cancelled)
+            .map_err(|error| super::check_cancelled(cancelled).err()
+                .unwrap_or_else(|| format!("Не удалось загрузить модели диаризации: {error}")))?;
+        let config = PipelineConfig {
+            tracker: TrackerConfig {
+                max_speakers: 256,
+                embedding_dim: 256,
+                match_threshold: 0.50,
+                new_speaker_threshold: 0.25,
+                ambiguity_margin: 0.05,
+            },
+            segment_confidence: 0.55,
+            vad_threshold: 0.5,
+            min_vad_fraction: 0.2,
+            min_speech_samples: 8_000,
+        };
+        pipeline.diarize(&canonical.path, config, cancelled, &mut add_region)
+            .map_err(|error| super::check_cancelled(cancelled).err()
+                .unwrap_or_else(|| format!("Не удалось выполнить диаризацию {input}: {error}")))?;
+    }
     super::check_cancelled(cancelled)?;
     let statuses = alignment.finish();
     for (word, status) in transcription.words.iter_mut().zip(&statuses) {

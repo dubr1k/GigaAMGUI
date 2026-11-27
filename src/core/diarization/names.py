@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-DIARIZATION_BACKENDS = ("pyannote", "sortformer", "onnx")
+DIARIZATION_BACKENDS = ("pyannote", "pyannote-community", "sortformer", "onnx")
 _DIARIZATION_BACKEND_ALIASES = {
     "pyannote": "pyannote",
+    "pyannote-community": "pyannote-community",
     "sortformer": "sortformer",
     "nvidia": "sortformer",
     "onnx": "onnx",

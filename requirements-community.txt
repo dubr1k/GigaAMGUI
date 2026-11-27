@@ -1,0 +1,18 @@
+# Isolated Community-1 runtime only; do not install into the main 3.1 environment.
+# Install with src/core/diarization/install_community_runtime.py, using Python 3.10–3.13.
+# Models are not included: accept the Community-1 Hugging Face terms and use a
+# read token, or point GIGAAM_COMMUNITY_MODEL_DIR at a trusted offline snapshot.
+pyannote.audio==4.0.7
+pyannote-core==6.0.1
+pyannote-database==6.1.1
+pyannote-metrics==4.0.0
+pyannote-pipeline==4.0.0
+huggingface-hub==0.36.0
+lightning==2.5.6
+numpy==2.2.6
+setuptools==81.0.0
+soundfile==0.13.1
+torch==2.8.0
+torchaudio==2.8.0
+torchmetrics==1.8.2
+torchcodec==0.7.0

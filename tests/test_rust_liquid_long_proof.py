@@ -17,6 +17,30 @@ proof = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(proof)
 
 
+def test_community_bundle_proof_stages_only_local_assets(tmp_path):
+    source = tmp_path / "authorized"
+    names = ("export.json", "plda.json", "tract/segmentation.onnx", "tract/embedding.onnx")
+    for name in names:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name)
+    root = tmp_path / "app-data"
+    proof.UI.prepare_community_bundle(root)
+    proof.UI.prepare_community_bundle(root, source)
+    base = "roaming" if proof.UI.sys.platform == "win32" else "data"
+    target = root / base / "ru.gigaam.gui.rustliquid/models/pyannote-community"
+    assert all((target / name).read_text() == name for name in names)
+    with pytest.raises(RuntimeError, match="already exists"):
+        proof.UI.prepare_community_bundle(root, source)
+
+
+def test_community_bundle_proof_rejects_incomplete_source(tmp_path):
+    source = tmp_path / "incomplete"
+    source.mkdir()
+    with pytest.raises(RuntimeError, match="incomplete"):
+        proof.UI.prepare_community_bundle(tmp_path / "app-data", source)
+
+
 def word(start, end, status, speaker=None):
     result = {"start": start, "end": end, "speaker_status": status}
     if speaker is not None:

@@ -54,6 +54,7 @@ datas = list(
      (os.path.join(project_root, 'assets', 'icon.ico'), '.'),
      (os.path.join(project_root, 'licenses', 'parakeet-rs-MIT.md'), 'licenses')]
 )
+datas.append((os.path.join(project_root, "requirements-community.txt"), "src/core/diarization"))
 
 # Добавляем только ffmpeg/ffprobe, совместимые с текущей ОС сборки.
 _bin_dir = os.path.join(project_root, 'bin')

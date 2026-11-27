@@ -27,7 +27,8 @@ pub(crate) const ONNX_PROVIDERS: [&str; 6] =
 
 pub(crate) const AUDIO_MODES: [&str; 4] = ["auto", "off", "light", "denoise"];
 
-pub(crate) const DIARIZATION_BACKENDS: [&str; 3] = ["pyannote", "onnx", "sortformer"];
+pub(crate) const DIARIZATION_BACKENDS: [&str; 4] =
+    ["pyannote", "pyannote-community", "onnx", "sortformer"];
 
 /// The `/speakers` menu: automatic or a fixed count.
 pub(crate) const SPEAKER_CHOICES: [&str; 9] = ["auto", "1", "2", "3", "4", "5", "6", "7", "8"];

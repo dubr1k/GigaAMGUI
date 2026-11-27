@@ -34,7 +34,7 @@ logger = logging.getLogger("gigaam.mcp")
 T = TypeVar("T")
 
 Format = Literal["text", "json", "verbose", "diarized", "srt", "vtt"]
-DiarizationBackend = Literal["pyannote", "sortformer", "onnx"]
+DiarizationBackend = Literal["pyannote", "pyannote-community", "sortformer", "onnx"]
 Preprocessing = Literal["off", "auto", "light", "denoise"]
 SummaryMode = Literal["summary", "tasks", "terms", "custom"]
 
@@ -178,7 +178,7 @@ def build_server(backend, *, name: str = "GigaAM", version: str | None = None) -
         diarize: Annotated[bool, Field(description=(
             "Label speakers; enabled automatically for `format=\"diarized\"`."))] = False,
         diarization_backend: Annotated[DiarizationBackend, Field(description=(
-            "`pyannote` (needs an HF token on the server), `sortformer` or `onnx`."))] = "pyannote",
+            "`pyannote`, `pyannote-community`, `sortformer` or `onnx`; Community-1 requires its separate runtime and gated model access."))] = "pyannote",
         num_speakers: Annotated[int | None, Field(description=(
             "Expected number of speakers (>= 1). Not supported with `sortformer`."))] = None,
         audio_preprocessing: Annotated[Preprocessing | None, Field(description=(

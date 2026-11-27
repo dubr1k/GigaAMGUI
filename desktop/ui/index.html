@@ -80,7 +80,28 @@
                   <h2>Настройки обработки</h2>
                   <label class="field"><span>Модель</span><select id="asr-model"><option value="v3_e2e_rnnt">GigaAM v3 E2E RNNT</option><option value="multilingual_ctc">GigaAM Multilingual CTC</option><option value="multilingual_large_ctc">GigaAM Multilingual Large CTC</option></select></label>
                   <label class="switch-row"><input id="asr-diarization" type="checkbox" /><span class="switch" aria-hidden="true"></span><span>Разделять говорящих</span></label>
-                  <p class="muted">WeSpeaker / polyvoice: дополнительная модель, записи до 30 минут.</p>
+                  <label class="field" for="asr-diarization-model">
+                    <span>Модель диаризации</span>
+                    <select id="asr-diarization-model" aria-describedby="asr-diarization-wespeaker-help" disabled>
+                      <option value="wespeaker_resnet34">WeSpeaker</option>
+                      <option value="pyannote-community">pyannote Community-1</option>
+                    </select>
+                  </label>
+                  <p id="asr-diarization-wespeaker-help" class="muted">WeSpeaker: дополнительная модель загружается при необходимости.</p>
+                  <div id="asr-diarization-community-help" hidden>
+                    <div class="field">
+                      <p class="muted">Экспериментально, только Windows и Linux. Нужен локальный экспорт авторизованного Community-1; приложение его не загружает.</p>
+                      <p class="muted">Возможное наложение помечается [SPEAKER_OVERLAP]: участники не перечисляются, отдельные голоса и тексты не восстанавливаются.</p>
+                      <details class="muted">
+                        <summary>Подготовка и расположение пакета</summary>
+                        <div class="field">
+                          <p>Экспорт закреплённого снимка <code>3533c8cf<wbr>8e369892<wbr>e6b79ff1<wbr>bf80f7b0<wbr>286a54ee</code> готовится отдельно скриптом <code>packaging/<wbr>rust-liquid/<wbr>community-export/<wbr>export.py</code> из исходного репозитория.</p>
+                          <p>Поместите <code>export.json</code>, <code>plda.json</code>, <code>tract/<wbr>segmentation.onnx</code> и <code>tract/<wbr>embedding.onnx</code> в <code>models/<wbr>pyannote-community</code> внутри папки данных приложения.</p>
+                          <p>Для Rust Liquid папка данных: Windows — <code>%APPDATA%\<wbr>ru.gigaam.gui.rustliquid</code>; Linux — <code>$XDG_DATA_HOME/<wbr>ru.gigaam.gui.rustliquid</code> (обычно <code>~/.local/share/<wbr>ru.gigaam.gui.rustliquid</code>).</p>
+                        </div>
+                      </details>
+                    </div>
+                  </div>
                 </article>
               </div>
 

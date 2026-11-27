@@ -118,6 +118,15 @@ def test_cli_onnx_diarization_does_not_require_hf_token(tmp_path, monkeypatch):
     assert capture["process_kwargs"]["diarization_backend"] == "onnx"
 
 
+def test_cli_community_diarization_reaches_processor_without_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    result, capture, _ = _run_cli_with_fake_loader(
+        tmp_path, monkeypatch, ["--diarize", "--diarization-backend", "pyannote-community"]
+    )
+    assert result.exit_code == 0
+    assert capture["process_kwargs"]["diarization_backend"] == "pyannote-community"
+
+
 def test_cli_forwards_audio_preprocessing_mode(tmp_path, monkeypatch):
     result, capture, _ = _run_cli_with_fake_loader(
         tmp_path,

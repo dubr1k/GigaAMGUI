@@ -30,6 +30,20 @@ fn settings_preserve_the_selected_backend_and_model() {
 }
 
 #[test]
+fn community_diarization_survives_settings_roundtrip() {
+    let mut app = crate::test_support::ready_app();
+    let saved = TuiSettings {
+        diarization_backend: "pyannote-community".into(),
+        ..TuiSettings::default()
+    };
+    let encoded = serde_json::to_string(&saved).unwrap();
+    apply_settings(&mut app, serde_json::from_str(&encoded).unwrap(), None);
+    assert_eq!(app.diarization_backend, "pyannote-community");
+    let saved_again = TuiSettings::from(&app);
+    assert_eq!(saved_again.diarization_backend, "pyannote-community");
+}
+
+#[test]
 fn provider_extras_survive_settings_roundtrip() {
     let mut settings = TuiSettings::default();
     settings

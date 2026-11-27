@@ -16,7 +16,7 @@ public enum SettingsSchema {
         #endif
     }
     public static let onnxProviders = ["auto", "cpu", "cuda", "tensorrt", "coreml", "directml"]
-    public static let diarizationEngines = ["pyannote", "onnx", "sortformer"]
+    public static let diarizationEngines = ["pyannote", "onnx", "sortformer", "pyannote-community"]
     public static let audioPreprocessing = ["auto", "off", "light", "denoise"]
     /// Subtitle block lines and characters per line, as popup titles.
     public static let subtitleLines = ["2", "1", "3", "4"]

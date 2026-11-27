@@ -412,8 +412,8 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "cmd.diarization-backend",
-        "выбрать ONNX, pyannote или NVIDIA Sortformer",
-        "select ONNX, pyannote, or NVIDIA Sortformer",
+        "выбрать ONNX, pyannote, Community-1 или NVIDIA Sortformer",
+        "select ONNX, pyannote, Community-1, or NVIDIA Sortformer",
     ),
     (
         "cmd.speakers",
@@ -905,8 +905,8 @@ pub(crate) const STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "usage.diarization-backend",
-        "Использование: /diarization-backend pyannote|onnx|sortformer",
-        "Usage: /diarization-backend pyannote|onnx|sortformer",
+        "Использование: /diarization-backend pyannote|pyannote-community|onnx|sortformer",
+        "Usage: /diarization-backend pyannote|pyannote-community|onnx|sortformer",
     ),
     (
         "usage.speakers",

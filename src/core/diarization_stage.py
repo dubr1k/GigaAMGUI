@@ -46,8 +46,8 @@ class DiarizationStageMixin:
                 getattr(self._diarization_manager, "backend", "pyannote") != backend
                 or (backend == "onnx" and self._diarization_provider != provider)
                 or (
-                    backend == "pyannote"
-                    and getattr(self._diarization_manager, "hf_token", hf_token) != hf_token
+                    backend in ("pyannote", "pyannote-community")
+                    and (getattr(self._diarization_manager, "hf_token", None) or "") != hf_token
                 )
             )
         ):

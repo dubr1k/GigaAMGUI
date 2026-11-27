@@ -611,9 +611,13 @@ def fake_batch(monkeypatch):
     from src.services import transcription_service
     from src.utils import processing_stats
 
-    state = types.SimpleNamespace(calls=[], process=None, callback=None)
+    state = types.SimpleNamespace(calls=[], process=None, callback=None, manager=None)
 
     class Processor:
+        @property
+        def _diarization_manager(self):
+            return state.manager
+
         def process_file(self, **kwargs):
             state.calls.append(kwargs)
             return state.process(kwargs, state.callback)
@@ -635,6 +639,24 @@ def _ok(kwargs):
 
 def _run_fake_batch(worker, files):
     worker._run_batch(files, "", ["txt"], False, "pyannote", None, "auto", "v3_e2e_rnnt", "auto", "auto", True, 2, 64)
+
+
+def test_batch_closes_community_process_before_completed(fake_batch):
+    class Manager:
+        backend = "pyannote-community"
+
+        def unload(self):
+            assert '"type": "completed"' not in output.getvalue()
+            self.closed = True
+
+    manager = Manager()
+    manager.closed = False
+    fake_batch.manager = manager
+    fake_batch.process = lambda kwargs, _callback: _ok(kwargs)
+    output = io.StringIO()
+    _run_fake_batch(TuiWorker(output=output), ["/a.wav"])
+    assert manager.closed
+    assert '"type": "completed"' in output.getvalue()
 
 
 def test_batch_progress_line_keeps_its_wire_format(fake_batch):

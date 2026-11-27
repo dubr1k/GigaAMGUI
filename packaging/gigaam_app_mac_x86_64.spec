@@ -22,7 +22,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 sys.path.insert(0, os.path.abspath(SPECPATH))
-from _spec_common import APP_BUILD_VERSION, APP_MARKETING_VERSION, APP_VERSION, collect_live_capture_deps, collect_onnx_runtime_deps, collect_required
+from _spec_common import APP_BUILD_VERSION, APP_MARKETING_VERSION, APP_VERSION, collect_community_runtime_files, collect_live_capture_deps, collect_onnx_runtime_deps, collect_required
 
 # collect_pure_runtime_deps() сюда не подмешивается сознательно: PIL и
 # asteroid_filterbanks нужны рантайм-torchvision и pyannote, которых в этой
@@ -98,6 +98,7 @@ hiddenimports += live_h
 datas += onnx_d
 binaries += onnx_b
 hiddenimports += onnx_h
+datas += collect_community_runtime_files(project_root)
 
 datas += [
     (os.path.join(project_root, "assets", "icon.ico"), "."),

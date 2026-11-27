@@ -1,5 +1,33 @@
 # Rust Liquid build candidates
 
+## Experimental Community-1 export
+
+Community-1 is experimental and requires a locally prepared, authorized model
+bundle; the Rust application does not download it. Install the pinned build-only
+requirements in a separate Python 3.11 environment without replacing the
+application's existing pyannote dependencies:
+
+```sh
+python packaging/rust-liquid/community-export/export.py --snapshot SNAPSHOT --output NEW_EXPORT_DIR
+python packaging/rust-liquid/community-export/quantize.py --model-dir NEW_EXPORT_DIR --calibration-dir CALIBRATION --output-dir NEW_INT8_DIR
+```
+
+Calibration requires representative `.npz` batches in `segmentation/`
+(`waveforms`) and `embedding/` (`fbank`, `mask`); tensor shapes and frontend
+conventions are described in `quantize.py`. The output is a complete local
+runtime bundle with quantized graphs and an `fp32/` copy of the original files.
+Segmentation quantizes linear operators only for Tract compatibility. The
+calibration check uses ONNX Runtime, not the application's Tract runtime; it
+does not establish diarization quality, pipeline parity, speed, or Windows/Linux
+compatibility. Checkpoints are executable trusted inputs.
+
+The installed-app UI proof accepts `--community-missing` to verify the error
+without weights, or `--community-bundle PATH` to copy an authorized local export
+into a dedicated proof app-data directory and require speaker-labelled output.
+The latter does not download or upload model files. On Windows the dedicated
+root must also be connected to the application's real known folders, as in the
+existing CI Windows isolation step; merely setting `APPDATA` is insufficient.
+
 `.github/workflows/rust-liquid.yml` builds the Tauri client independently of
 `build.yml`. It uploads `rust-liquid-linux-x64-candidate` and
 `rust-liquid-windows-x64-candidate` workflow artifacts, not GitHub release

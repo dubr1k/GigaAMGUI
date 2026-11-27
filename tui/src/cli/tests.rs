@@ -59,6 +59,8 @@ fn headless_transcribe_args_override_settings() {
         "--diarize",
         "--speakers",
         "2",
+        "--diarization-backend",
+        "pyannote-community",
         "--backend",
         "onnx",
         "--audio-mode",
@@ -84,6 +86,7 @@ fn headless_transcribe_args_override_settings() {
     assert_eq!(payload["formats"], json!(["txt", "srt"]));
     assert_eq!(payload["diarization"], true);
     assert_eq!(payload["num_speakers"], 2);
+    assert_eq!(payload["diarization_backend"], "pyannote-community");
     assert_eq!(payload["backend"], "onnx", "flag overrides settings");
     assert_eq!(
         payload["model"], "multilingual_ctc",

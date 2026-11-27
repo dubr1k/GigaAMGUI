@@ -246,6 +246,22 @@ function setupProcessing() {
   const linkInput = document.querySelector("#media-link");
   const linkStatus = document.querySelector("#media-link-status");
   const linkCancel = document.querySelector("#cancel-media-link");
+  const diarization = document.querySelector("#asr-diarization");
+  const diarizationModel = document.querySelector("#asr-diarization-model");
+  const wespeakerHelp = document.querySelector("#asr-diarization-wespeaker-help");
+  const communityHelp = document.querySelector("#asr-diarization-community-help");
+
+  function updateDiarizationControls() {
+    const community = diarizationModel.value === "pyannote-community";
+    diarizationModel.disabled = !diarization.checked;
+    wespeakerHelp.hidden = community;
+    communityHelp.hidden = !community;
+    diarizationModel.setAttribute("aria-describedby", community ? communityHelp.id : wespeakerHelp.id);
+  }
+
+  diarization.addEventListener("change", updateDiarizationControls);
+  diarizationModel.addEventListener("change", updateDiarizationControls);
+  updateDiarizationControls();
 
   function renderProgress(value) {
     if (Number.isFinite(value)) {
@@ -396,6 +412,8 @@ function setupProcessing() {
       showToast("Выберите файлы, папку и хотя бы один формат.");
       return;
     }
+    const diarizationEnabled = diarization.checked;
+    const diarizationModelId = diarizationModel.value;
     const jobId = crypto.randomUUID();
     activeJob = jobId;
     renderSelectedFiles();
@@ -416,7 +434,8 @@ function setupProcessing() {
       });
       const result = await tauri.core.invoke("transcribe", { request: {
         job_id: jobId, inputs: selectedFiles, model: document.querySelector("#asr-model").value,
-        output_dir: output.value, formats, diarization: document.querySelector("#asr-diarization").checked,
+        output_dir: output.value, formats, diarization: diarizationEnabled,
+        ...(diarizationEnabled ? { diarization_model: diarizationModelId } : {}),
       } });
       currentTranscript = result.files.map((file) => file.transcript).join("\n\n");
       const content = document.querySelector("#result-content");

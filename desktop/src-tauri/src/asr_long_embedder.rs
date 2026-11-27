@@ -91,6 +91,15 @@ impl WespeakerFrontend {
     /// overshoot is allowed; NaNs, infinities and literal silence are rejected.
     /// Returns the frame count and a row-major, globally mean-centered matrix.
     pub fn extract(&mut self, samples: &[f32]) -> Result<(usize, Vec<f32>), EmbedderError> {
+        self.extract_impl(samples, false)
+    }
+
+    /// Community-1 processes zero-padded windows, including silent chunks.
+    pub(super) fn extract_community(&mut self, samples: &[f32]) -> Result<(usize, Vec<f32>), EmbedderError> {
+        self.extract_impl(samples, true)
+    }
+
+    fn extract_impl(&mut self, samples: &[f32], allow_silence: bool) -> Result<(usize, Vec<f32>), EmbedderError> {
         if samples.len() < MIN_SAMPLES {
             return Err(EmbedderError::AudioTooShort {
                 actual_secs: samples.len() as f32 / SAMPLE_RATE as f32,
@@ -103,7 +112,7 @@ impl WespeakerFrontend {
         if samples.iter().any(|sample| !sample.is_finite()) {
             return Err(failed("speaker audio contains non-finite samples"));
         }
-        if samples.iter().all(|sample| *sample == 0.0) {
+        if !allow_silence && samples.iter().all(|sample| *sample == 0.0) {
             return Err(failed("speaker audio is silent"));
         }
 

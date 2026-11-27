@@ -129,6 +129,7 @@ checkpoints/
 # Output files
 *.txt
 !requirements.txt
+!requirements-community.txt
 !requirements-tui.txt
 !requirements_macos.txt
 !requirements-dev.txt
@@ -188,6 +189,8 @@ scripts/test_*.py
 !tests/
 !tests/test_*.py
 !packaging/rust-liquid/model-export/test_unpack.py
+!packaging/rust-liquid/community-export/test_export.py
+!packaging/rust-liquid/community-export/test_quantize.py
 
 # FFmpeg builds (Windows)
 ffmpeg/

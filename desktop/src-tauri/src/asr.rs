@@ -160,6 +160,23 @@ pub struct JobRequest {
     diarization_model: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiarizationModel {
+    Wespeaker,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    Community,
+}
+
+impl DiarizationModel {
+    fn is_community(self) -> bool {
+        match self {
+            Self::Wespeaker => false,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            Self::Community => true,
+        }
+    }
+}
+
 struct ValidatedRequest {
     job_id: String,
     inputs: Vec<String>,
@@ -168,6 +185,7 @@ struct ValidatedRequest {
     output_dir: PathBuf,
     formats: Vec<ExportFormat>,
     diarization: bool,
+    diarization_model: DiarizationModel,
 }
 
 #[derive(Serialize)]
@@ -277,11 +295,12 @@ fn find_model(id: &str) -> Result<(&'static str, SelectedModel), String> {
 fn validate_request(request: JobRequest) -> Result<ValidatedRequest, String> {
     validate_job_id(&request.job_id)?;
     let (model_id, variant) = find_model(&request.model)?;
-    if let Some(model) = &request.diarization_model {
-        if model != "wespeaker_resnet34" {
-            return Err(format!("Неподдерживаемая модель диаризации: {model}. Доступна только wespeaker_resnet34"));
-        }
-    }
+    let diarization_model = match request.diarization_model.as_deref() {
+        None | Some("wespeaker_resnet34") => DiarizationModel::Wespeaker,
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        Some("pyannote-community") => DiarizationModel::Community,
+        Some(model) => return Err(format!("Неподдерживаемая модель диаризации: {model}")),
+    };
     if request.inputs.is_empty() {
         return Err("Выберите хотя бы один файл".into());
     }
@@ -328,6 +347,7 @@ fn validate_request(request: JobRequest) -> Result<ValidatedRequest, String> {
         output_dir,
         formats,
         diarization: request.diarization,
+        diarization_model,
     })
 }
 
@@ -377,8 +397,14 @@ pub async fn transcribe(app: AppHandle, state: State<'_, AsrState>, request: Job
     let guard = begin_job(&state, &request.job_id)?;
     let cancelled = guard.cancelled.clone();
     let engine_cache = state.engine.clone();
-    let model_dir = models_dir(&app)?.join(request.model_id);
+    let model_root = models_dir(&app)?;
+    let community_dir = model_root.join("pyannote-community");
+    let model_dir = model_root.join(request.model_id);
     let model_dir = model_dir.to_str().ok_or_else(|| "Путь к каталогу модели не поддерживается".to_string())?.to_owned();
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    if request.diarization && request.diarization_model.is_community() {
+        long_diarization::check_community_bundle(&community_dir)?;
+    }
 
     emit_progress(&app, &request.job_id, "preparing", None, None, Some("Подготовка распознавания"));
     let bundle: Option<PathBuf> = match request.variant {
@@ -405,7 +431,7 @@ pub async fn transcribe(app: AppHandle, state: State<'_, AsrState>, request: Job
             Some(asr_zapformer_assets::ensure(Path::new(&model_dir), model, &cancelled).await?)
         }
     };
-    if request.diarization {
+    if request.diarization && !request.diarization_model.is_community() {
         check_cancelled(&cancelled)?;
         if !Path::new(&model_dir).join(model::SPEAKER_MODEL_FILE).is_file() {
             emit_progress(&app, &request.job_id, "downloading_speaker_model", None, None, Some("Загрузка модели распознавания говорящих"));
@@ -428,7 +454,7 @@ pub async fn transcribe(app: AppHandle, state: State<'_, AsrState>, request: Job
     let job = tauri::async_runtime::spawn_blocking(move || {
         // Keep the job registered until the blocking worker actually exits.
         let _guard = guard;
-        run_job(&app, request, &model_dir, bundle.as_deref(), &engine_cache, &cancelled, &saved_in_worker)
+        run_job(&app, request, &model_dir, &community_dir, bundle.as_deref(), &engine_cache, &cancelled, &saved_in_worker)
     });
     let result = match job.await {
         Ok(result) => result,
@@ -468,9 +494,9 @@ fn get_engine(app: &AppHandle, job_id: &str, variant: ModelVariant, needs_speake
     Ok(engine)
 }
 
-fn run_job(app: &AppHandle, request: ValidatedRequest, model_dir: &str, bundle: Option<&Path>, cache: &Mutex<Option<CachedEngine>>, cancelled: &Arc<AtomicBool>, saved_paths: &Mutex<Vec<String>>) -> Result<JobResult, String> {
+fn run_job(app: &AppHandle, request: ValidatedRequest, model_dir: &str, community_dir: &Path, bundle: Option<&Path>, cache: &Mutex<Option<CachedEngine>>, cancelled: &Arc<AtomicBool>, saved_paths: &Mutex<Vec<String>>) -> Result<JobResult, String> {
     let engine = match request.variant {
-        SelectedModel::Core(variant) => Some(get_engine(app, &request.job_id, variant, request.diarization, model_dir, cache, cancelled)?),
+        SelectedModel::Core(variant) => Some(get_engine(app, &request.job_id, variant, request.diarization && !request.diarization_model.is_community(), model_dir, cache, cancelled)?),
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         SelectedModel::Zapformer(_) => {
             drop(cache.lock().map_err(|_| "Не удалось открыть кэш модели".to_string())?.take());
@@ -484,11 +510,22 @@ fn run_job(app: &AppHandle, request: ValidatedRequest, model_dir: &str, bundle: 
         let duration = audio::probe_duration_file(input).ok().flatten().filter(|d| d.is_finite() && *d > 0.0);
         let mut processed = None;
         #[cfg(any(target_os = "linux", target_os = "windows"))]
+        let community = (request.diarization && request.diarization_model.is_community()).then_some(community_dir);
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let SelectedModel::Zapformer(model) = request.variant {
             let directory = bundle.ok_or_else(|| "Не подготовлен каталог модели".to_string())?;
             processed = Some(long_diarization::transcribe_zapformer(
-                app, &request.job_id, input, model_dir, directory, model, request.diarization, cancelled,
+                app, &request.job_id, input, model_dir, directory, model, request.diarization, community, cancelled,
             )?);
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if processed.is_none() {
+            if let Some(directory) = community {
+                let engine = engine.as_ref().ok_or("Модель не загружена")?;
+                processed = Some(ProcessedFile::Long(long_diarization::transcribe_community(
+                    app, &request.job_id, input, model_dir, directory, engine, cancelled,
+                )?));
+            }
         }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if processed.is_none() && request.diarization && duration.is_some_and(|seconds| seconds > 1_800.0) {
@@ -762,9 +799,18 @@ mod tests {
         request["diarization_model"] = serde_json::json!("wespeaker_resnet34");
         let diarized: JobRequest = serde_json::from_value(request.clone()).unwrap();
         assert!(validate_request(diarized).unwrap().diarization);
-        request["diarization_model"] = serde_json::json!("pyannote");
-        let unsupported: JobRequest = serde_json::from_value(request).unwrap();
-        assert!(validate_request(unsupported).is_err());
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            request["diarization_model"] = serde_json::json!("pyannote-community");
+            let community: JobRequest = serde_json::from_value(request.clone()).unwrap();
+            assert_eq!(validate_request(community).unwrap().diarization_model, DiarizationModel::Community);
+        }
+        for model in ["pyannote", "community-1", "pyannote/speaker-diarization-community-1"] {
+            request["diarization_model"] = serde_json::json!(model);
+            let unsupported: JobRequest = serde_json::from_value(request.clone()).unwrap();
+            let error = validate_request(unsupported).err().unwrap();
+            assert!(error.contains(model), "unexpected error for {model}: {error}");
+        }
     }
 
     #[test]

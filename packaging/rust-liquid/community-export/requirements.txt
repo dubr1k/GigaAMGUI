@@ -1,0 +1,9 @@
+# Build/test environment only. Install these into a separate Python 3.11 venv.
+numpy==2.2.6
+onnx==1.19.1
+onnxruntime==1.23.2
+onnxsim==0.8.1
+pyannote-audio==4.0.7
+torch==2.8.0
+torchaudio==2.8.0
+torchcodec==0.7.0

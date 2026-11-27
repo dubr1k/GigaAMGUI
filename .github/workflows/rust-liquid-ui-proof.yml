@@ -279,6 +279,31 @@ jobs:
             --app-data "$env:PROOF_APP_DATA" `
             --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics" --timeout 1800
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify missing Community-1 bundle through the installed Linux UI
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+            openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+            exec /usr/bin/python3 packaging/rust-liquid/ui-proof.py \
+              --app "$PROOF_APP" --community-missing \
+              --fixture "$GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" \
+              --diagnostics "$GITHUB_WORKSPACE/ui-proof-diagnostics/community-missing" --timeout 1800
+          '
+      - name: Verify missing Community-1 bundle through the installed Windows UI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python packaging/rust-liquid/ui-proof.py `
+            --app "$env:PROOF_APP" --app-data "$env:PROOF_APP_DATA" --community-missing `
+            --fixture "$env:GITHUB_WORKSPACE/candidate-source/tests/fixtures/liquid_smoke.wav" `
+            --diagnostics "$env:GITHUB_WORKSPACE/ui-proof-diagnostics/community-missing" --timeout 1800
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare Linux long-proof models through the installed UI
         if: runner.os == 'Linux'
         timeout-minutes: 40

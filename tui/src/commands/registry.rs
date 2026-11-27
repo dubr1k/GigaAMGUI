@@ -34,7 +34,7 @@ pub(crate) const COMMANDS: [(&str, &str); 39] = [
     ),
     (
         "/diarization-backend",
-        "select ONNX, pyannote, or NVIDIA Sortformer",
+        "select ONNX, pyannote, Community-1, or NVIDIA Sortformer",
     ),
     ("/speakers", "auto or a fixed speaker count"),
     ("/remove", "remove a file from the queue by number"),

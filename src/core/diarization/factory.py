@@ -42,10 +42,10 @@ def create_diarization_backend(
 ):
     """Создать backend диаризации; тяжёлые зависимости импортируются лениво.
 
-    ``onnx`` и Sortformer-ONNX не тянут torch. pyannote и NeMo Sortformer
-    создаются только здесь (бывший ``utils.diarization.get_diarization_manager``
-    — теперь его тонкий псевдоним). ``pyannote_options`` (min_speakers,
-    max_speakers) уходят в ``DiarizationManager``.
+    ``onnx`` и Sortformer-ONNX не тянут torch. Community-1 работает в
+    отдельном Python-окружении, не заменяя pyannote 3.1 в основном процессе.
+    ``model_dir`` относится к ONNX; для Community-1 можно передать
+    ``community_model_dir`` в ``pyannote_options``.
     """
     selected = normalize_diarization_backend(backend)
     if selected == "onnx":
@@ -75,6 +75,16 @@ def create_diarization_backend(
 
     if legacy_factory is not None:
         return legacy_factory(backend=selected, hf_token=hf_token, device=device)
+    if selected == "pyannote-community":
+        from .community_backend import CommunityDiarizationManager
+
+        community_model_dir = pyannote_options.pop("community_model_dir", None)
+        return CommunityDiarizationManager(
+            hf_token=hf_token,
+            device=device,
+            model_dir=community_model_dir,
+            **pyannote_options,
+        )
     if selected == "sortformer":
         from .sortformer_nemo import SortformerDiarizationManager
 

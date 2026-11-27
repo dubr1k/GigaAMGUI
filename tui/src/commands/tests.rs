@@ -357,7 +357,7 @@ fn diarization_backend_command_offers_both_backends() {
     assert!(open_command_menu(&mut app, "/diarization-backend"));
     assert_eq!(
         command_menu_options(&app),
-        vec!["pyannote", "onnx", "sortformer", BACK_MENU_OPTION]
+        vec!["pyannote", "pyannote-community", "onnx", "sortformer", BACK_MENU_OPTION]
     );
 }
 

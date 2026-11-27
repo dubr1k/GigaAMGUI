@@ -97,7 +97,7 @@ transcribe options (defaults come from the saved settings):
   --formats LIST               comma-separated: txt,txt_timecodes,srt,vtt,md,txt_diarize,txt_diarize_timecodes
   --diarize                    enable speaker diarization
   --speakers N|auto            fixed speaker count or automatic detection
-  --diarization-backend NAME   pyannote|onnx|sortformer
+  --diarization-backend NAME   pyannote|pyannote-community|onnx|sortformer
   --backend NAME               auto|pytorch|mlx|onnx (mlx: macOS only)
   --model ID                   v3_e2e_rnnt|multilingual_ctc|multilingual_large_ctc
   --audio-mode MODE            auto|off|light|denoise

@@ -145,7 +145,7 @@ async def test_transcribe_schema_enumerates_formats_and_backends(session):
                           "diarize", "diarization_backend", "num_speakers", "audio_preprocessing", "asr_backend",
                           "onnx_provider"}
     assert props["format"]["enum"] == ["text", "json", "verbose", "diarized", "srt", "vtt"]
-    assert props["diarization_backend"]["enum"] == ["pyannote", "sortformer", "onnx"]
+    assert props["diarization_backend"]["enum"] == ["pyannote", "pyannote-community", "sortformer", "onnx"]
     assert props["format"]["default"] == "json"
     assert tools["summarize"].input_schema["properties"]["mode"]["enum"] == ["summary", "tasks", "terms", "custom"]
 

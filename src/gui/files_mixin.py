@@ -154,7 +154,7 @@ class FilesMixin:
 
     def _update_diarization_backend_controls(self):
         is_sortformer = self.diarization_backend == "sortformer"
-        is_pyannote = self.diarization_backend == "pyannote"
+        is_pyannote = self.diarization_backend in ("pyannote", "pyannote-community")
         is_onnx = self.diarization_backend == "onnx"
         self.btn_hf_token.setEnabled(is_pyannote and not self.is_processing)
         self.entry_num_speakers.setEnabled(
@@ -171,6 +171,11 @@ class FilesMixin:
                 "ONNX: no PyTorch or HF_TOKEN; supports a known speaker count",
             )
             if is_onnx
+            else self._t(
+                "Community-1: отдельный runtime; токен нужен для загрузки, локальная модель работает без него",
+                "Community-1: separate runtime; a token is required to download, not for a local model",
+            )
+            if self.diarization_backend == "pyannote-community"
             else self._t(
                 "Pyannote: автоопределение спикеров (требуется HF_TOKEN)",
                 "Pyannote: automatic speaker detection (HF_TOKEN required)",
@@ -444,21 +449,29 @@ class FilesMixin:
         dlg.setMinimumWidth(self._px(520))
         layout = QVBoxLayout(dlg)
         layout.setSpacing(self._px(10))
+        community = self.combo_diarization_backend.currentData() == "pyannote-community"
+        repos = (
+            ("pyannote/speaker-diarization-community-1",)
+            if community
+            else ("pyannote/speaker-diarization-3.1", "pyannote/segmentation-3.0")
+        )
+        links = "".join(
+            f"&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/{repo}'>{repo}</a><br>"
+            for repo in repos
+        )
         info = QLabel(
             self._t(
                 "<b>Диаризация спикеров требует HuggingFace токен</b><br><br>"
                 "1. Создайте аккаунт на <a href='https://huggingface.co'>huggingface.co</a><br>"
                 "2. Получите токен: <a href='https://huggingface.co/settings/tokens'>huggingface.co/settings/tokens</a><br>"
                 "3. Примите условия доступа к моделям:<br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/speaker-diarization-3.1'>pyannote/speaker-diarization-3.1</a><br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/segmentation-3.0'>pyannote/segmentation-3.0</a><br><br>"
+                f"{links}<br>"
                 "Вставьте ваш токен ниже (начинается с <b>hf_</b>):",
                 "<b>Speaker diarization requires a HuggingFace token</b><br><br>"
                 "1. Create an account at <a href='https://huggingface.co'>huggingface.co</a><br>"
                 "2. Get a token: <a href='https://huggingface.co/settings/tokens'>huggingface.co/settings/tokens</a><br>"
                 "3. Accept the access terms for the models:<br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/speaker-diarization-3.1'>pyannote/speaker-diarization-3.1</a><br>"
-                "&nbsp;&nbsp;&nbsp;<a href='https://huggingface.co/pyannote/segmentation-3.0'>pyannote/segmentation-3.0</a><br><br>"
+                f"{links}<br>"
                 "Paste your token below (it starts with <b>hf_</b>):"
             )
         )

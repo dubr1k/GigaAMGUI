@@ -591,8 +591,28 @@ def choose(driver, selector, path, folder=False):
 def same_path(first, second):
     return os.path.normcase(os.path.normpath(str(first))) == os.path.normcase(os.path.normpath(str(second)))
 
+def prepare_community_bundle(data_dir, source=None):
+    """Stage only an explicitly supplied local bundle in the proof-owned data root."""
+    base = data_dir / ("roaming" if sys.platform == "win32" else "data")
+    destination = base / "ru.gigaam.gui.rustliquid" / "models" / "pyannote-community"
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError(f"Community-1 proof destination already exists: {destination}")
+    if source is None:
+        return
+    names = ("export.json", "plda.json", "tract/segmentation.onnx", "tract/embedding.onnx")
+    for name in names:
+        path = source / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"Community-1 bundle is incomplete: {path}")
+    for name in names:
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / name, target)
 
-def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_rnnt", diarization=False):
+
+
+def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_rnnt",
+              diarization=False, community_missing=False, community_bundle=None):
     check_display()
     if not app.is_file() or not fixture.is_file() or fixture.stat().st_size == 0:
         raise RuntimeError(f"Application or nonempty fixture is missing: {app}, {fixture}")
@@ -605,7 +625,10 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
         root = Path(temporary)
         output = root / "output"
         output.mkdir()
-        driver = WebDriver(app, native_driver, app_data or root / "app-data", diagnostics / "driver.log")
+        data_dir = app_data or root / "app-data"
+        if community_missing or community_bundle is not None:
+            prepare_community_bundle(data_dir, community_bundle)
+        driver = WebDriver(app, native_driver, data_dir, diagnostics / "driver.log")
         try:
             driver.start()
             def processing_ready():
@@ -635,6 +658,11 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
                 driver.click("label.switch-row")
             if driver.state("#asr-diarization", "selected") != diarization:
                 raise RuntimeError(f"Diarization selection did not match {diarization}")
+            if community_missing or community_bundle is not None:
+                driver.click("#asr-diarization-model")
+                driver.click('#asr-diarization-model option[value="pyannote-community"]')
+                if driver.property("#asr-diarization-model", "value") != "pyannote-community":
+                    raise RuntimeError("Community-1 selection did not persist")
             if not driver.state('.output-card input[value="txt"]', "selected"):
                 raise RuntimeError("TXT output is not selected")
 
@@ -677,6 +705,20 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
                 raise RuntimeError("Proof output directory was not empty before starting")
 
             driver.click("#start-processing")
+            if community_missing:
+                def missing_bundle_reported():
+                    status = driver.text("#progress-status")
+                    if "Не найден подготовленный файл Community-1" not in status:
+                        return False
+                    if not driver.state("#start-processing", "enabled"):
+                        return False
+                    if list(output.iterdir()):
+                        raise RuntimeError("Missing Community-1 bundle produced output")
+                    return True
+
+                wait_for("missing Community-1 bundle error", missing_bundle_reported, 30)
+                print("PASS: selected Community-1 reports a missing local bundle", flush=True)
+                return
             last_status = None
 
             def complete():
@@ -711,6 +753,8 @@ def run_proof(app, fixture, diagnostics, timeout, app_data=None, model="v3_e2e_r
                 raise RuntimeError("Saved transcript or visible transcript is empty")
             if saved != shown:
                 raise RuntimeError("Saved transcript does not match the application's visible transcript")
+            if community_bundle is not None and "[SPEAKER_" not in saved:
+                raise RuntimeError("Community-1 produced no speaker-labelled transcript")
             paths = driver.text("#result-content ul")
             if not any(same_path(line, result) for line in paths.splitlines()):
                 raise RuntimeError("The application did not list the saved file on the result page")
@@ -749,6 +793,11 @@ def main():
     parser.add_argument("--app-data", type=Path, help="dedicated app-data root to retain model downloads")
     parser.add_argument("--model", choices=("v3_e2e_rnnt", "multilingual_ctc", "v4_rnnt", "multilingual_v2_rnnt"), default="v3_e2e_rnnt")
     parser.add_argument("--diarization", action="store_true")
+    community = parser.add_mutually_exclusive_group()
+    community.add_argument("--community-missing", action="store_true",
+                           help="check the missing-bundle error through the installed UI")
+    community.add_argument("--community-bundle", type=Path,
+                           help="local authorized export; never downloaded or uploaded")
     args = parser.parse_args()
     if args.check_display:
         check_display()
@@ -756,7 +805,9 @@ def main():
     if not args.app or not args.fixture or not args.diagnostics or args.timeout <= 0:
         parser.error("--app, --fixture, --diagnostics and a positive --timeout are required")
     run_proof(args.app.resolve(), args.fixture.resolve(), args.diagnostics.resolve(), args.timeout,
-              args.app_data.resolve() if args.app_data else None, args.model, args.diarization)
+              args.app_data.resolve() if args.app_data else None, args.model,
+              args.diarization or args.community_missing or args.community_bundle is not None,
+              args.community_missing, args.community_bundle.resolve() if args.community_bundle else None)
 
 
 if __name__ == "__main__":

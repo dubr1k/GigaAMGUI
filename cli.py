@@ -309,10 +309,10 @@ def _interrupt_exit_code(func):
 )
 @click.option(
     '--diarization-backend',
-    type=click.Choice(["pyannote", "sortformer", "onnx"]),
+    type=click.Choice(["pyannote", "pyannote-community", "sortformer", "onnx"]),
     default=DIARIZATION_BACKEND,
     show_default=True,
-    help='Движок диаризации: ONNX, pyannote или NVIDIA Sortformer v2.1',
+    help='Движок диаризации: ONNX, pyannote, Community-1 или NVIDIA Sortformer v2.1',
 )
 @click.option(
     '--speakers', '-s',

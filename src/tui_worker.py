@@ -326,6 +326,16 @@ class TuiWorker:
     ) -> None:
         started_at = time.monotonic()
         results: list[dict[str, Any]] = []
+        processor = None
+
+        def close_community():
+            manager = getattr(processor, "_diarization_manager", None)
+            if getattr(manager, "backend", None) == "pyannote-community":
+                try:
+                    manager.unload()
+                except Exception as exc:
+                    self._log(f"Не удалось завершить Community-1: {exc}")
+
         try:
             # Keep the protocol health check lightweight: ML dependencies load only
             # when a batch actually starts.
@@ -398,6 +408,7 @@ class TuiWorker:
                 self.emit("file_completed", file=filepath, file_index=index, result=result)
             cancelled = self._cancel_requested.is_set()
             success = bool(results) and all(result.get("success") for result in results) and not cancelled
+            close_community()
             self.emit("completed", success=success, cancelled=cancelled, results=results, elapsed_seconds=time.monotonic() - started_at)
         except ModuleNotFoundError as exc:
             dependency = exc.name or "a required package"
@@ -412,9 +423,11 @@ class TuiWorker:
                 # The batch thread answers the `start` that launched it.
                 command="start",
             )
+            close_community()
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
         except Exception as exc:  # Keep JSONL valid even for startup failures.
             self.emit("error", message=str(exc), traceback=traceback.format_exc(), command="start")
+            close_community()
             self.emit("completed", success=False, cancelled=False, results=results, elapsed_seconds=time.monotonic() - started_at)
 
 
