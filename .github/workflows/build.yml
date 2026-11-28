@@ -493,6 +493,7 @@ jobs:
           # ping/pong не импортирует модель: пустой namespace-пакет gigaam
           # проходил этот шаг, а PyTorch-бэкенд падал уже в Liquid.
           python scripts/verify_macos_bundle.py --modules-only --profile arm64-mlx "$WORKER"
+          python packaging/verify_macos_community.py "$WORKER"
           printf '{"type":"ping"}\n' | "$WORKER/Contents/MacOS/GigaAMWorker" --native-worker | grep -q '"type": "pong"'
           GIGAAM_WORKER_BINARY="$PWD/$WORKER/Contents/MacOS/GigaAMWorker" \
             python -m pytest tests/test_native_worker_entrypoint.py -q

@@ -2,9 +2,25 @@
 
 from pathlib import Path
 
+import pytest
+
 from src.core.processor import TranscriptionProcessor
 from src.core.progress import ProgressEvent
 from src.core.subtitles import SubtitleOptions
+
+
+_HF_TOKEN = "hf_test"
+
+
+@pytest.fixture(autouse=True)
+def _forbid_diarization_backend_creation(monkeypatch):
+    def unexpected_factory(*_args, **_kwargs):
+        pytest.fail("processor progress tests must not create real diarization backends")
+
+    monkeypatch.setattr(
+        "src.core.diarization.factory.create_diarization_backend",
+        unexpected_factory,
+    )
 
 
 class DummyStats:
@@ -44,6 +60,9 @@ class DummyLoaderEmpty:
 
 
 class DummyDiarizationManager:
+    backend = "pyannote"
+    hf_token = _HF_TOKEN
+
     def __init__(self):
         self.calls = []
 
@@ -62,7 +81,14 @@ class DummyDiarizationManager:
 
 
 class EmptyDiarizationManager:
+    backend = "pyannote"
+    hf_token = _HF_TOKEN
+
+    def __init__(self):
+        self.calls = []
+
     def diarize(self, audio_path, num_speakers=None, progress_callback=None):
+        self.calls.append(audio_path)
         return []
 
     def map_speakers_to_transcription(self, utterances, speaker_segments):
@@ -89,6 +115,9 @@ class DummyLoaderChunks:
 
 
 class FailingDiarizationManager:
+    backend = "pyannote"
+    hf_token = _HF_TOKEN
+
     def diarize(self, audio_path, num_speakers=None, progress_callback=None):
         raise RuntimeError("diarization failed")
 
@@ -122,6 +151,7 @@ def _run_process(processor, path, output_formats=None, enable_diarization=False,
         original_filename=path.name,
         output_formats=output_formats,
         enable_diarization=enable_diarization,
+        diarization_backend="pyannote",
     )
     return result, events
 
@@ -212,9 +242,14 @@ def test_processor_passes_subtitle_options_to_srt_export(monkeypatch, tmp_path):
 
 def test_processor_progress_with_diarization(monkeypatch, tmp_path):
     path = _prepare_inputs(tmp_path)
-    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
-    processor._diarization_manager = DummyDiarizationManager()
-    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    manager = DummyDiarizationManager()
+    processor = TranscriptionProcessor(
+        DummyLoaderWithValue(),
+        DummyStats(),
+        diarization_manager=manager,
+        diarization_backend="pyannote",
+    )
+    monkeypatch.setenv("HF_TOKEN", _HF_TOKEN)
 
     monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
     monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 10.0)
@@ -222,6 +257,8 @@ def test_processor_progress_with_diarization(monkeypatch, tmp_path):
     result, events = _run_process(processor, path, output_formats=["txt"], enable_diarization=True)
 
     assert result["success"]
+    assert result["diarization"]["applied"] is True
+    assert manager.calls == [str(path)]
     assert _collect_events(events, "diarization")
     assert _collect_stage_progress(events, "diarization")
     assert any(ev.stage_progress is None for ev in _collect_events(events, "diarization"))
@@ -341,9 +378,14 @@ def test_plain_txt_joins_decoder_chunks_without_artificial_newlines(monkeypatch,
 
 def test_enabled_diarization_always_exports_visible_diarized_txt(monkeypatch, tmp_path):
     path = _prepare_inputs(tmp_path)
-    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
-    processor._diarization_manager = DummyDiarizationManager()
-    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    manager = DummyDiarizationManager()
+    processor = TranscriptionProcessor(
+        DummyLoaderWithValue(),
+        DummyStats(),
+        diarization_manager=manager,
+        diarization_backend="pyannote",
+    )
+    monkeypatch.setenv("HF_TOKEN", _HF_TOKEN)
     monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
     monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
 
@@ -355,6 +397,8 @@ def test_enabled_diarization_always_exports_visible_diarized_txt(monkeypatch, tm
     )
 
     assert result["success"]
+    assert result["diarization"]["applied"] is True
+    assert manager.calls == [str(path)]
     diarized = tmp_path / "in_diarize.txt"
     assert diarized in [Path(item) for item in result["saved_files"]]
     assert diarized.read_text(encoding="utf-8") == "[Спикер №1]\nx"
@@ -362,9 +406,13 @@ def test_enabled_diarization_always_exports_visible_diarized_txt(monkeypatch, tm
 
 def test_failed_diarization_does_not_create_plain_file_with_diarized_name(monkeypatch, tmp_path):
     path = _prepare_inputs(tmp_path)
-    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
-    processor._diarization_manager = FailingDiarizationManager()
-    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    processor = TranscriptionProcessor(
+        DummyLoaderWithValue(),
+        DummyStats(),
+        diarization_manager=FailingDiarizationManager(),
+        diarization_backend="pyannote",
+    )
+    monkeypatch.setenv("HF_TOKEN", _HF_TOKEN)
     monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
     monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
 
@@ -376,6 +424,7 @@ def test_failed_diarization_does_not_create_plain_file_with_diarized_name(monkey
     )
 
     assert result["success"]
+    assert result["diarization"]["error"] == "diarization failed"
     assert not (tmp_path / "in_diarize.txt").exists()
 
 
@@ -411,9 +460,14 @@ def test_sortformer_failure_does_not_show_irrelevant_huggingface_hint(monkeypatc
 
 def test_empty_diarization_timeline_is_reported_as_failure(monkeypatch, tmp_path):
     path = _prepare_inputs(tmp_path)
-    processor = TranscriptionProcessor(DummyLoaderWithValue(), DummyStats())
-    processor._diarization_manager = EmptyDiarizationManager()
-    monkeypatch.setenv("HF_TOKEN", "hf_test")
+    manager = EmptyDiarizationManager()
+    processor = TranscriptionProcessor(
+        DummyLoaderWithValue(),
+        DummyStats(),
+        diarization_manager=manager,
+        diarization_backend="pyannote",
+    )
+    monkeypatch.setenv("HF_TOKEN", _HF_TOKEN)
     monkeypatch.setattr(processor.audio_converter, "convert_to_wav", lambda *args, **kwargs: str(path))
     monkeypatch.setattr("src.core.processor.AudioConverter.get_media_duration", lambda _path: 3.0)
 
@@ -425,9 +479,39 @@ def test_empty_diarization_timeline_is_reported_as_failure(monkeypatch, tmp_path
     )
 
     assert result["success"]
+    assert manager.calls == [str(path)]
     assert result["diarization"]["applied"] is False
     assert "не вернул ни одного" in result["diarization"]["error"]
     assert not (tmp_path / "in_diarize.txt").exists()
+
+
+def test_injected_pyannote_manager_is_replaced_after_token_change(monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", _HF_TOKEN)
+    initial_manager = DummyDiarizationManager()
+    replacement_manager = DummyDiarizationManager()
+    replacement_manager.hf_token = "hf_changed"
+    calls = []
+
+    def fake_factory(backend, **kwargs):
+        calls.append((backend, kwargs["hf_token"]))
+        return replacement_manager
+
+    monkeypatch.setattr(
+        "src.core.diarization.factory.create_diarization_backend",
+        fake_factory,
+    )
+    processor = TranscriptionProcessor(
+        DummyLoaderWithValue(),
+        DummyStats(),
+        diarization_manager=initial_manager,
+        diarization_backend="pyannote",
+    )
+
+    assert processor.diarization_manager is initial_manager
+    assert not calls
+    monkeypatch.setenv("HF_TOKEN", "hf_changed")
+    assert processor.diarization_manager is replacement_manager
+    assert calls == [("pyannote", "hf_changed")]
 
 
 def test_missing_hf_token_is_exposed_in_result_metadata(monkeypatch, tmp_path):

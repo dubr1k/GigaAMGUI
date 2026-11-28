@@ -98,7 +98,7 @@ hiddenimports += live_h
 datas += onnx_d
 binaries += onnx_b
 hiddenimports += onnx_h
-datas += collect_community_runtime_files(project_root)
+datas += collect_community_runtime_files(project_root, destination="_community_runtime")
 
 datas += [
     (os.path.join(project_root, "assets", "icon.ico"), "."),
@@ -144,7 +144,10 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[os.path.join(project_root, "pyinstaller_hooks")],
     hooksconfig={},
-    runtime_hooks=[os.path.join(project_root, "pyinstaller_hooks", "rthook_utf8.py")],
+    runtime_hooks=[
+        os.path.join(project_root, "pyinstaller_hooks", "rthook_utf8.py"),
+        os.path.join(project_root, "packaging", "rthook_community_macos.py"),
+    ],
     excludes=excluded_modules,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

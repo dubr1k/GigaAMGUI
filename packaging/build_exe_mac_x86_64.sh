@@ -106,6 +106,7 @@ $PYTHON -m PyInstaller packaging/gigaam_app_mac_x86_64.spec --noconfirm
 echo ""
 echo "[4/4] Проверка итогового .app..."
 $PYTHON scripts/verify_macos_bundle.py --profile x86_64-onnx dist/GigaAMTranscriber.app
+$PYTHON packaging/verify_macos_community.py dist/GigaAMTranscriber.app
 
 echo ""
 echo "============================================================"

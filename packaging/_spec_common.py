@@ -31,10 +31,9 @@ APP_VERSION = "2.8.0"
 APP_MARKETING_VERSION = APP_VERSION.split("-", 1)[0]
 APP_BUILD_VERSION = "2.8.0"
 
-def collect_community_runtime_files(project_root):
-    """Files used by the isolated Community-1 worker beside the frozen module."""
+def collect_community_runtime_files(project_root, destination="src/core/diarization"):
+    """Collect the standalone Community-1 worker, installer, and requirements."""
     root = Path(project_root)
-    destination = "src/core/diarization"
     return [
         (str(root / "src/core/diarization/community_worker.py"), destination),
         (str(root / "src/core/diarization/install_community_runtime.py"), destination),

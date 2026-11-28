@@ -113,7 +113,7 @@ hiddenimports += onnx_h
 if not worker_only:
     datas.append((os.path.join(project_root, "assets", "icon.ico"), "."))
 datas.append((os.path.join(project_root, "licenses", "parakeet-rs-MIT.md"), "licenses"))
-datas += collect_community_runtime_files(project_root)
+datas += collect_community_runtime_files(project_root, destination="_community_runtime")
 
 bundled_gigaam_dir = os.path.join(project_root, "models", "gigaam")
 bundle_models = os.environ.get("GIGAAM_BUNDLE_MODELS", "").strip().lower() in {
@@ -182,7 +182,10 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[os.path.join(project_root, "pyinstaller_hooks")],
     hooksconfig={},
-    runtime_hooks=[os.path.join(project_root, "pyinstaller_hooks", "rthook_utf8.py")],
+    runtime_hooks=[
+        os.path.join(project_root, "pyinstaller_hooks", "rthook_utf8.py"),
+        os.path.join(project_root, "packaging", "rthook_community_macos.py"),
+    ],
     excludes=excluded_modules,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
