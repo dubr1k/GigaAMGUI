@@ -1,0 +1,174 @@
+name: Rust Liquid Community-1 AMI INT8 producer pilot
+
+# This same-revision Linux pilot is proof only, not a release gate.
+on:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths:
+      - .github/workflows/rust-liquid-ami-proof.yml
+      - packaging/rust-liquid/ami_int8_ci_bundle.py
+      - packaging/rust-liquid/int8_ci_bundle.py
+      - packaging/rust-liquid/community-export/quantize.py
+
+permissions:
+  contents: read
+
+jobs:
+  ami-int8:
+    name: Produce the ES2004a-calibrated Linux x64 proof bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install pinned CPU conversion dependencies
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/ami-int8-venv"
+          py="$RUNNER_TEMP/ami-int8-venv/bin/python"
+          "$py" -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.8.0' 'torchaudio==2.8.0'
+          "$py" -m pip install --no-cache-dir \
+            'soundfile==0.13.1' 'numpy==2.2.6' 'onnx==1.19.1' 'onnxruntime==1.23.2'
+          echo "$RUNNER_TEMP/ami-int8-venv/bin" >> "$GITHUB_PATH"
+      - name: Download and verify pinned FP32 assets and public AMI audio
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          import hashlib
+          import os
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          # These independent pins must agree with the existing proof producer.
+          expected = {
+              'export.json': (2882, '99cf740b8093e4a4c7491fcfdd389887941a470ac651887694384940a2dea7ad'),
+              'plda.json': (983502, '8cadc0a017fce6e9fc9f1802b40b7a2a367889ec6f6e01b31f7b5b5adeead17a'),
+              'tract/segmentation.onnx': (5984909, '8e8ddc4b066e14bf6fdc0e97a93206326de6346f7b99df9f06a5f9903d3ae2b5'),
+              'tract/embedding.onnx': (26553403, '26ce0859c0afd8084e60b3ccd9d9f0a1999785ac18b13e1abf51cca50caea5af'),
+          }
+          producer = Path(os.environ['GITHUB_WORKSPACE']) / 'packaging/rust-liquid/int8_ci_bundle.py'
+          tree = ast.parse(producer.read_text(encoding='utf-8'), filename=str(producer))
+          assignments = [
+              node for node in tree.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == 'PINNED_ASSETS' for target in node.targets)
+          ]
+          if len(assignments) != 1 or ast.literal_eval(assignments[0].value) != expected:
+              raise ValueError('Existing Community-1 asset pins differ from this pilot')
+
+          temporary = Path(os.environ['RUNNER_TEMP'])
+          source = temporary / 'ami-int8-source'
+          (source / 'tract').mkdir(parents=True, exist_ok=False)
+
+          class HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, msg, headers, newurl):
+                  if urllib.parse.urlsplit(newurl).scheme != 'https':
+                      raise ValueError('Asset redirect is not HTTPS')
+                  return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+          opener = urllib.request.build_opener(HttpsOnlyRedirect())
+
+          def download(url, destination, expected_size, expected_hash):
+              if urllib.parse.urlsplit(url).scheme != 'https':
+                  raise ValueError('Asset URL is not HTTPS')
+              digest = hashlib.sha256()
+              count = 0
+              with opener.open(url, timeout=60) as response, destination.open('xb') as output:
+                  while True:
+                      block = response.read(min(1024 * 1024, expected_size - count + 1))
+                      if not block:
+                          break
+                      count += len(block)
+                      if count > expected_size:
+                          raise ValueError(f'Asset exceeds pinned size: {destination.name}')
+                      digest.update(block)
+                      output.write(block)
+              if count != expected_size or digest.hexdigest() != expected_hash:
+                  raise ValueError(f'Asset size or SHA-256 mismatch: {destination.name}')
+              print(f'Verified {destination.name}: {count} bytes, SHA-256 {digest.hexdigest()}')
+
+          base = 'https://github.com/dubr1k/GigaAMGUI/releases/download/community-1-fp32-v1/'
+          for relative, (size, sha256) in expected.items():
+              download(base + Path(relative).name, source / relative, size, sha256)
+
+          # AMI Meeting Corpus, ES2004a Mix-Headset, CC-BY-4.0.
+          download(
+              'https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Mix-Headset.wav',
+              temporary / 'ES2004a.Mix-Headset.wav',
+              33579394,
+              '3e2560b19bee6952c7c7ce041b0f1ea8a7ea9468044c4eea79d2a2c67e24ab0f',
+          )
+          PY
+      - name: Generate the proof and compare its embedding hash
+        timeout-minutes: 90
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/ami-int8-source"
+          audio="$RUNNER_TEMP/ES2004a.Mix-Headset.wav"
+          bundle="$RUNNER_TEMP/ami-int8-bundle"
+          artifact="$RUNNER_TEMP/ami-int8-proof-artifact"
+          mkdir "$artifact"
+
+          python packaging/rust-liquid/ami_int8_ci_bundle.py \
+            --source "$source" --audio "$audio" --output "$bundle" 2>&1 | tee "$artifact/producer.log"
+
+          mapfile -t reported < <(grep -E '^embedding_sha256=[0-9a-f]{64}$' "$artifact/producer.log")
+          if [[ ${#reported[@]} -ne 1 ]]; then
+            echo 'Producer must report exactly one embedding SHA-256' >&2
+            exit 1
+          fi
+          embedding_sha256="${reported[0]#embedding_sha256=}"
+          actual_sha256="$(sha256sum "$bundle/tract/embedding.onnx" | cut -d ' ' -f1)"
+          if [[ "$embedding_sha256" != "$actual_sha256" ]]; then
+            echo 'Producer-reported embedding SHA-256 does not match its output' >&2
+            exit 1
+          fi
+
+          historical_sha256=4eee8a8bc6a99781b3f3f414cbb0cd091b2b66b3c1da108a2e3246cd434980ee
+          if [[ "$embedding_sha256" == "$historical_sha256" ]]; then
+            comparison=match
+          else
+            comparison=mismatch
+          fi
+          printf '%s  tract/embedding.onnx\n' "$embedding_sha256" > "$artifact/embedding.sha256"
+          {
+            printf 'Source revision: %s\n' "$GITHUB_SHA"
+            printf 'Linux x64 embedding SHA-256: %s\n' "$embedding_sha256"
+            printf 'Historical local experimental embedding SHA-256: %s\n' "$historical_sha256"
+            printf 'Historical hash comparison: %s (informational only)\n' "$comparison"
+            printf 'Calibration source: AMI Meeting Corpus ES2004a Mix-Headset, CC-BY-4.0\n'
+            printf 'Source URL: https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Mix-Headset.wav\n'
+            printf 'A hash match or mismatch does not establish quality, parity, speed, Windows support, or release readiness.\n'
+          } | tee "$artifact/comparison.txt" >> "$GITHUB_STEP_SUMMARY"
+
+          # The whitelist excludes downloaded audio and temporary calibration data.
+          tar -cf "$artifact/community-1-ami-int8-proof.tar" -C "$bundle" \
+            export.json plda.json tract/segmentation.onnx tract/embedding.onnx \
+            fp32/export.json fp32/plda.json fp32/tract/segmentation.onnx fp32/tract/embedding.onnx \
+            proof-manifest.json
+          (cd "$artifact" && sha256sum community-1-ami-int8-proof.tar > archive.sha256)
+      - name: Upload proof only, not a release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-ami-int8-proof-linux-x64-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ami-int8-proof-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
