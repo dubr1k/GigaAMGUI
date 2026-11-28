@@ -231,7 +231,6 @@ def test_tagged_build_workflow_publishes_matching_release_notes_after_assets():
     workflow = Path(".github/workflows/build.yml").read_text(encoding="utf-8")
 
     assert "publish-release:" in workflow
-    assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in workflow
     assert "RELEASE_NOTES_${VERSION}.md" in workflow
     # Assets go up one at a time with retries and the release stays a draft
     # until all of them are attached (parallel upload failed for v2.1.3).

@@ -1018,7 +1018,7 @@ jobs:
   publish-release:
     name: Publish release after all artifacts complete
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, build-macos-full, build-macos-intel, build-macos-swift]
+    needs: [build, build-macos-full, build-macos-intel, build-macos-swift, test-tui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
