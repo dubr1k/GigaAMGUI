@@ -27,9 +27,9 @@ from PyInstaller.utils.hooks import (
 
 #: Тег релиза показывается в About; macOS требует числовой маркетинговый
 #: номер и не более трёх компонентов в CFBundleVersion.
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
 APP_MARKETING_VERSION = APP_VERSION.split("-", 1)[0]
-APP_BUILD_VERSION = "2.7.0"
+APP_BUILD_VERSION = "2.8.0"
 
 def collect_community_runtime_files(project_root):
     """Files used by the isolated Community-1 worker beside the frozen module."""

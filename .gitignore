@@ -93,6 +93,7 @@ deploy/
 docs/*
 !docs/RELEASE_NOTES_2.6.9.md
 !docs/RELEASE_NOTES_2.7.0.md
+!docs/RELEASE_NOTES_2.8.0.md
 
 # Rust build artifacts
 tui/target/
