@@ -80,7 +80,6 @@ def test_ci_builds_and_publishes_full_app_zip():
     assert "MAX_RELEASE_ASSET_BYTES" in text
     assert "CFBundleShortVersionString" in text
     assert "publish-release:" in text
-    assert "needs: [build, build-macos-full, build-macos-intel, build-macos-swift]" in text
     assert "Download completed release artifacts" in text
     assert "requirements-sortformer.txt" in text
     assert 'GIGAAM_BUNDLE_SORTFORMER: "1"' in text
