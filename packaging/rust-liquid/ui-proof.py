@@ -443,7 +443,6 @@ def linux_dialog(title, path, folder):
 
 def windows_dialog(app, path, folder):
     import win32api  # type: ignore[import-not-found]
-    import win32clipboard  # type: ignore[import-not-found]
     import win32con  # type: ignore[import-not-found]
     import win32gui  # type: ignore[import-not-found]
     import win32process  # type: ignore[import-not-found]
@@ -501,15 +500,20 @@ def windows_dialog(app, path, folder):
     if folder:
         # The folder picker selects its current directory. Navigate through its
         # real address bar, then wait for UI Automation to report that path.
-        win32clipboard.OpenClipboard()
-        try:
-            win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardText(str(path), win32clipboard.CF_UNICODETEXT)
-        finally:
-            win32clipboard.CloseClipboard()
         dialog.set_focus()
-        dialog.type_keys("^l")
-        keyboard.send_keys("^v{ENTER}", pause=0.05)
+        keyboard.send_keys("%d")
+
+        def address_entry():
+            if not dialog_open():
+                raise RuntimeError("Windows folder picker closed before address entry")
+            return next((item for item in uia.wrapper_object().descendants()
+                         if item.element_info.control_type == "Edit"
+                         and item.element_info.automation_id != "1152"
+                         and item.has_keyboard_focus()), None)
+
+        entry = wait_for("Windows folder picker address field to receive focus", address_entry, 15)
+        entry.set_edit_text(str(path))
+        keyboard.send_keys("{ENTER}")
 
         def navigated():
             if not dialog_open():
@@ -533,17 +537,6 @@ def windows_dialog(app, path, folder):
                       f"foreground_root={root}", file=sys.stderr, flush=True)
             except Exception as error:
                 print(f"Could not inspect Windows dialog state: {error}", file=sys.stderr, flush=True)
-            try:
-                win32clipboard.OpenClipboard()
-                try:
-                    clipboard_matches = (win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT)
-                                         and win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT) == str(path))
-                finally:
-                    win32clipboard.CloseClipboard()
-                print(f"Windows folder navigation: clipboard_matches={bool(clipboard_matches)}",
-                      file=sys.stderr, flush=True)
-            except Exception as error:
-                print(f"Could not inspect Windows clipboard: {error}", file=sys.stderr, flush=True)
             try:
                 controls = []
                 for item in uia.wrapper_object().descendants():
