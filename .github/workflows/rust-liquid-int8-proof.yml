@@ -1,6 +1,6 @@
 name: Rust Liquid Community-1 INT8 compatibility proof
 
-# This isolated synthetic-calibration proof is not a release gate.
+# This isolated AMI-calibrated compatibility proof is not a release gate.
 # A branch push starts it without requiring workflow_dispatch on the default branch.
 on:
   push:
@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/rust-liquid-int8-proof.yml
       - packaging/rust-liquid/int8_ci_bundle.py
+      - packaging/rust-liquid/ami_int8_ci_bundle.py
       - packaging/rust-liquid/community-export/**
       - packaging/rust-liquid/ui-proof.py
 
@@ -33,7 +34,9 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install the pinned conversion dependencies
-        run: python -m pip install 'numpy==2.2.6' 'onnx==1.19.1' 'onnxruntime==1.23.2'
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.8.0' 'torchaudio==2.8.0'
+          python -m pip install 'soundfile==0.13.1' 'numpy==2.2.6' 'onnx==1.19.1' 'onnxruntime==1.23.2'
       - name: Download and verify the four pinned public FP32 assets
         timeout-minutes: 15
         shell: bash
@@ -88,8 +91,25 @@ jobs:
               if count != expected_size or digest.hexdigest() != expected_hash:
                   raise ValueError(f'Community-1 asset size or SHA-256 mismatch: {asset}')
               print(f'Verified {asset}: {count} bytes, SHA-256 {digest.hexdigest()}')
+          audio = Path(os.environ['RUNNER_TEMP']) / 'ES2004a.Mix-Headset.wav'
+          expected_size = 33579394
+          digest = hashlib.sha256()
+          count = 0
+          with opener.open('https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Mix-Headset.wav', timeout=60) as response, audio.open('xb') as output:
+              while True:
+                  block = response.read(min(1024 * 1024, expected_size - count + 1))
+                  if not block:
+                      break
+                  count += len(block)
+                  if count > expected_size:
+                      raise ValueError('AMI audio exceeds its pinned size')
+                  digest.update(block)
+                  output.write(block)
+          if count != expected_size or digest.hexdigest() != '3e2560b19bee6952c7c7ce041b0f1ea8a7ea9468044c4eea79d2a2c67e24ab0f':
+              raise ValueError('AMI audio size or SHA-256 mismatch')
+          print('Verified pinned AMI calibration audio')
           PY
-      - name: Generate and hash the synthetic-calibrated bundle
+      - name: Generate and hash the AMI-calibrated bundle
         id: bundle
         timeout-minutes: 40
         shell: bash
@@ -99,17 +119,18 @@ jobs:
           bundle="$RUNNER_TEMP/int8-proof-bundle"
           artifact="$RUNNER_TEMP/int8-proof-artifact"
           mkdir "$artifact"
-          # Synthetic calibration checks compatibility only, not accuracy or speed.
-          python packaging/rust-liquid/int8_ci_bundle.py --source "$source" --output "$bundle"
+          # Real-audio calibration does not by itself establish quality or speed.
+          OMP_NUM_THREADS=2 python packaging/rust-liquid/ami_int8_ci_bundle.py --source "$source" --audio "$RUNNER_TEMP/ES2004a.Mix-Headset.wav" --output "$bundle"
           tar -cf "$artifact/community-int8-proof.tar" -C "$bundle" \
             export.json plda.json tract/segmentation.onnx tract/embedding.onnx proof-manifest.json
           archive_sha256="$(sha256sum "$artifact/community-int8-proof.tar" | cut -d ' ' -f1)"
           embedding_sha256="$(sha256sum "$bundle/tract/embedding.onnx" | cut -d ' ' -f1)"
+          test "$embedding_sha256" = '572dfb13d9d41dbc494303d410f41a68a9ea9f187675ded137cd7dadcc6c819f' || { echo 'AMI-calibrated graph differs from the evaluated Linux artifact' >&2; exit 1; }
           [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ && "$embedding_sha256" =~ ^[0-9a-f]{64}$ ]]
           printf '%s\n' "$archive_sha256" > "$artifact/archive.sha256"
           printf '%s\n' "$embedding_sha256" > "$artifact/embedding.sha256"
           printf 'archive_sha256=%s\nembedding_sha256=%s\n' "$archive_sha256" "$embedding_sha256" >> "$GITHUB_OUTPUT"
-          printf 'Proof archive SHA-256: `%s`\n\nINT8 embedding graph SHA-256: `%s`\n\nSynthetic calibration is a compatibility check, not evidence of diarization quality or speed.\n' \
+          printf 'Proof archive SHA-256: `%s`\n\nINT8 embedding graph SHA-256: `%s`\n\nAMI calibration and short UI smoke do not establish diarization quality or speed.\n' \
             "$archive_sha256" "$embedding_sha256" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the proof bundle, not a release asset
         id: upload
@@ -767,7 +788,7 @@ jobs:
               'bundle_archive_sha256': os.environ['ARCHIVE_SHA256'],
               'embedding_graph_sha256': os.environ['EMBEDDING_SHA256'],
               'fixture': {key: source[key] for key in ('dataset', 'revision', 'license', 'source_ids', 'pcm_sha256')},
-              'scope': 'Synthetic calibration and attributed short UI smoke only; not quality, speed, automatic model delivery, or release evidence.',
+              'scope': 'AMI calibration and attributed short UI smoke only; not quality, speed, automatic model delivery, or release evidence.',
           }
           evidence = Path(os.environ['RUNNER_TEMP']) / 'int8-proof-evidence.json'
           with evidence.open('x', encoding='utf-8') as output:
