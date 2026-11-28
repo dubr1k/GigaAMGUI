@@ -112,7 +112,9 @@ class QuantizeTests(unittest.TestCase):
         _segmentation(self.models / "tract" / "segmentation.onnx")
         _embedding(self.models / "tract" / "embedding.onnx")
         for kind in ("segmentation", "embedding"):
-            shutil.copyfile(self.models / "tract" / f"{kind}.onnx", self.models / f"{kind}.onnx")
+            graph = onnx.load(str(self.models / "tract" / f"{kind}.onnx"))
+            graph.graph.name = f"dynamic_{kind}"
+            onnx.save(graph, str(self.models / f"{kind}.onnx"))
         plda = {
             "mean1": [0.0] * 256, "mean2": [0.0] * 128,
             "lda": [[0.0] * 128 for _ in range(256)], "mu": [0.0] * 128,
@@ -186,6 +188,12 @@ class QuantizeTests(unittest.TestCase):
         np.savez(self.calibration / "embedding" / "ones.npz", fbank=self.fbank, mask=np.ones_like(self.mask))
         source_neighbor = self.models / "segmentation-inferred.onnx"
         source_neighbor.write_bytes(b"preserve")
+        manifest = json.loads((self.models / "export.json").read_text(encoding="utf-8"))
+        for kind in ("segmentation", "embedding"):
+            name = f"{kind}.onnx"
+            self.assertNotEqual(self._hash(self.models / name), self._hash(self.models / "tract" / name))
+            manifest["runtime_sha256"][name] = self._hash(self.models / name)
+        self._write_manifest(manifest)
         original_manifest = (self.models / "export.json").read_bytes()
         original_files = {
             name: self._hash(self.models / name)
@@ -282,6 +290,73 @@ class QuantizeTests(unittest.TestCase):
         self.assertEqual(masked.shape, (1, 256))
         self.assertTrue(np.isfinite(masked).all() and np.isfinite(unmasked).all())
         self.assertFalse(np.allclose(masked, unmasked))
+
+    def test_cli_accepts_four_file_source_without_dynamic_graphs(self):
+        for name in ("segmentation.onnx", "embedding.onnx", "SOURCE_MODEL_CARD.md", "SOURCE_CONFIG.yaml"):
+            (self.models / name).unlink()
+        source_files = {"export.json", *quantize.RUNTIME_FILES}
+        self.assertEqual(
+            {path.relative_to(self.models).as_posix() for path in self.models.rglob("*") if path.is_file()},
+            source_files,
+        )
+        source_hashes = {name: self._hash(self.models / name) for name in source_files}
+        result = subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "--model-dir", str(self.models),
+                "--calibration-dir", str(self.calibration), "--output-dir", str(self.output),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "export.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["quantization"]["source_export_files_sha256"], source_hashes)
+        self.assertEqual({name: self._hash(self.output / "fp32" / name) for name in source_files}, source_hashes)
+        for kind in ("segmentation", "embedding"):
+            self.assertFalse((self.output / "fp32" / f"{kind}.onnx").exists())
+        for name in quantize.RUNTIME_FILES:
+            self.assertEqual(manifest["runtime_sha256"][name], self._hash(self.output / name))
+
+    def test_rejects_either_missing_dynamic_graph(self):
+        for name in ("segmentation.onnx", "embedding.onnx"):
+            with self.subTest(name=name):
+                path = self.models / name
+                original = path.read_bytes()
+                path.unlink()
+                self._assert_fails_closed("both dynamic graphs or neither")
+                path.write_bytes(original)
+
+    def test_rejects_dynamic_graph_symlinks_even_when_dangling(self):
+        for name in ("segmentation.onnx", "embedding.onnx"):
+            for dangling in (False, True):
+                with self.subTest(name=name, dangling=dangling):
+                    path = self.models / name
+                    original = path.read_bytes()
+                    path.unlink()
+                    try:
+                        path.symlink_to(self.root / "missing.onnx" if dangling else self.models / "tract" / name)
+                    except OSError:
+                        self.skipTest("symbolic links are not available")
+                    self._assert_fails_closed("symbolic link")
+                    path.unlink()
+                    path.write_bytes(original)
+
+    def test_rejects_dynamic_graph_hash_mismatch(self):
+        manifest = json.loads((self.models / "export.json").read_text(encoding="utf-8"))
+        manifest["runtime_sha256"]["embedding.onnx"] = "0" * 64
+        self._write_manifest(manifest)
+        self._assert_fails_closed("hash mismatch")
+
+    def test_rejects_empty_or_malformed_dynamic_graphs(self):
+        for name in ("segmentation.onnx", "embedding.onnx"):
+            path = self.models / name
+            original = path.read_bytes()
+            for contents in (b"", b"not an ONNX model"):
+                with self.subTest(name=name, contents=contents):
+                    path.write_bytes(contents)
+                    with self.assertRaises(Exception):
+                        quantize.quantize(self.models, self.calibration, self.output)
+                    self.assertFalse(self.output.exists())
+            path.write_bytes(original)
 
     def test_rejects_missing_empty_nonfinite_or_invalid_arrays(self):
         bad_waveforms = self.waveforms.copy()

@@ -72,6 +72,21 @@ the embedding graph, the first Conv, pooling and projection remain FP32; the
 remaining Conv operators use QOperator with per-output-channel INT8 weights and
 UINT8 activations. Only the embedding batches calibrate those operators.
 
+The source may be the four-file public FP32 runtime export (`export.json`,
+`plda.json` and the two `tract/*.onnx` graphs). The root dynamic
+`segmentation.onnx` and `embedding.onnx` graphs are optional only as a pair;
+when present they are validated and preserved unchanged in `fp32/`, not
+substituted with the fixed-shape runtime graphs.
+
+The separate `packaging/rust-liquid/int8_ci_bundle.py --source DIR --output DIR`
+compatibility proof verifies the four independently pinned public FP32 files,
+generates deterministic synthetic calibration batches in a private temporary
+directory, and invokes the same `quantize.py` CLI. Its published local bundle
+retains that CLI's files unchanged and adds `proof-manifest.json` with source,
+calibration and runtime hashes. This synthetic data is not representative
+speech; the producer itself establishes neither diarization quality nor speed,
+Tract compatibility or release readiness. It does not publish a model release.
+
 The supplied-batch checks use ONNX Runtime CPU, not the application's Tract
 runtime, and impose no diarization-quality threshold. They do not establish
 diarization quality, pipeline parity, speed, or compatibility of this generated

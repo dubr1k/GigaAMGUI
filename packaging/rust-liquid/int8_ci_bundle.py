@@ -5,9 +5,10 @@ Usage: python packaging/rust-liquid/int8_ci_bundle.py --source DIR --output DIR
 
 The source must contain the four exact assets from the public
 community-1-fp32-v1 release. The output parent must exist, and the output
-itself must not exist. Nothing is downloaded. Calibration uses only one
-fixed, synthetic fbank/mask pair; it is not representative speech and does
-not establish diarization quality, speed, Tract support, or release readiness.
+itself must not exist. Nothing is downloaded. The public quantize.py CLI is
+invoked with deterministic synthetic waveform, fbank and mask arrays. These
+are not representative speech and do not establish diarization quality, speed,
+Tract support, or release readiness.
 
 CI dependencies: Python 3.11, numpy==2.2.6, onnx==1.19.1,
 onnxruntime==1.23.2. The versions actually used are recorded in the manifest.
@@ -18,13 +19,14 @@ import hashlib
 import importlib.util
 import json
 import platform
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 import onnx
 import onnxruntime as ort
-from onnxruntime.quantization import CalibrationDataReader
 
 
 # Independently pinned, not taken from the downloaded export.json.
@@ -34,31 +36,16 @@ PINNED_ASSETS = {
     "tract/segmentation.onnx": (5984909, "8e8ddc4b066e14bf6fdc0e97a93206326de6346f7b99df9f06a5f9903d3ae2b5"),
     "tract/embedding.onnx": (26553403, "26ce0859c0afd8084e60b3ccd9d9f0a1999785ac18b13e1abf51cca50caea5af"),
 }
-FIRST_CONV = "/resnet/conv1/Conv"
+QUANTIZE_SCRIPT = Path(__file__).resolve().parent / "community-export" / "quantize.py"
 
 # Reuse the exporter's existing bundle validation and atomic publication rules.
 _spec = importlib.util.spec_from_file_location(
-    "community_export_quantize", Path(__file__).parent / "community-export" / "quantize.py"
+    "community_export_quantize", QUANTIZE_SCRIPT
 )
 if _spec is None or _spec.loader is None:
     raise ImportError("Cannot load Community-1 export validation helpers")
 _support = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_support)
-
-
-class _SyntheticReader(CalibrationDataReader):
-    def __init__(self, batch):
-        self.batch = batch
-        self.used = False
-
-    def get_next(self):
-        if self.used:
-            return None
-        self.used = True
-        return self.batch
-
-    def rewind(self):
-        self.used = False
 
 
 def _synthetic_batch():
@@ -117,64 +104,88 @@ def build_bundle(source, output):
                 raise ValueError(f"source manifest runtime hash mismatch: {name}")
         _support._validate_plda(fp32 / "plda.json")
 
-        # The source and generated graph must both accept the native fixed shapes
-        # and produce finite float32 outputs. Segmentation remains byte-identical.
-        batch = _synthetic_batch()
-        embedding = _support._session(fp32 / "tract/embedding.onnx", "embedding")
-        _support._run_and_validate(embedding, "embedding", "FP32 embedding", batch)
-        segmentation = _support._session(fp32 / "tract/segmentation.onnx", "segmentation")
-        waveforms = {"waveforms": np.zeros((1, 1, 160000), dtype=np.float32)}
-        _support._run_and_validate(segmentation, "segmentation", "FP32 segmentation", waveforms)
+        # The CLI sees only the verified four-file snapshot and private synthetic
+        # batches, never the original source or a representative-data claim.
+        batches = {
+            "segmentation": {"waveforms": np.zeros((1, 1, 160000), dtype=np.float32)},
+            "embedding": _synthetic_batch(),
+        }
+        calibration = work / "calibration"
+        calibration_hashes = {}
+        for kind, inputs in batches.items():
+            path = calibration / kind / "batch.npz"
+            path.parent.mkdir(parents=True)
+            np.savez(path, **inputs)
+            calibration_hashes[f"{kind}/batch.npz"] = _support._sha256(path)
 
         staging = work / "bundle"
-        staging.mkdir()
-        for name in ("plda.json", "tract/segmentation.onnx"):
-            _support._copy_asset(fp32, staging, name, expected=source_records[name]["sha256"])
-        target = staging / "tract/embedding.onnx"
-        qconv_count = _support._quantize_embedding_mixed(
-            fp32 / "tract/embedding.onnx", target, _SyntheticReader(batch)
+        subprocess.run(
+            [
+                sys.executable, str(QUANTIZE_SCRIPT),
+                "--model-dir", str(fp32),
+                "--calibration-dir", str(calibration),
+                "--output-dir", str(staging),
+            ],
+            check=True,
         )
-        quantized = _support._session(target, "embedding")
-        _support._run_and_validate(quantized, "embedding", "INT8 embedding", batch)
 
-        runtime_hashes = {name: _support._sha256(staging / name) for name in _support.RUNTIME_FILES}
-        manifest["runtime_sha256"] = runtime_hashes
-        # Exporter's FP32 graph check cannot describe the altered embedding.
-        manifest.pop("graph_check", None)
-        manifest["segmentation"]["input"] = {"waveforms": [1, 1, 160000]}
-        manifest["segmentation"]["output"] = {"scores": [1, 589, 7]}
-        manifest["embedding"]["inputs"] = {"fbank": [1, 998, 80], "mask": [1, 589]}
-        manifest["embedding"]["output"] = {"embedding": [1, 256]}
-        manifest["quantization"] = {
-            "proof_only": True,
-            "format": "QOperator",
-            "operators": ["Conv"],
-            "per_channel": True,
-            "activation_type": "QUInt8",
-            "weight_type": "QInt8",
-            "excluded_nodes": [FIRST_CONV],
-            "calibration": "one deterministic synthetic fbank and mask; not representative speech",
+        _, output_manifest = _support._read_json(staging / "export.json")
+        quantization = output_manifest["quantization"]
+        source_hashes = {name: record["sha256"] for name, record in source_records.items()}
+        for name, expected in source_hashes.items():
+            if _support._sha256(staging / "fp32" / name) != expected:
+                raise ValueError(f"CLI source snapshot hash mismatch: {name}")
+        if quantization["source_export_files_sha256"] != source_hashes:
+            raise ValueError("CLI source provenance hash mismatch")
+        expected_calibration = {
+            kind: [{
+                "sha256": calibration_hashes[f"{kind}/batch.npz"],
+                "inputs": {name: list(value.shape) for name, value in inputs.items()},
+            }]
+            for kind, inputs in batches.items()
         }
-        manifest["limitations"] = (
-            "Proof only: synthetic calibration and ONNX Runtime CPU shape/finiteness checks. "
-            "Diarization quality, speed, Tract execution and release readiness are not established."
-        )
-        (staging / "export.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+        if quantization["calibration"] != expected_calibration:
+            raise ValueError("CLI calibration provenance mismatch")
+
+        qconv_count = _support._validate_quantized_graph(
+            fp32 / "tract/embedding.onnx", staging / "tract/embedding.onnx"
         )
         output_hashes = {name: _support._sha256(staging / name) for name in PINNED_ASSETS}
+        if output_manifest["runtime_sha256"] != {
+            name: output_hashes[name] for name in _support.RUNTIME_FILES
+        }:
+            raise ValueError("CLI runtime hash mismatch")
+        for name in ("plda.json", "tract/segmentation.onnx"):
+            if output_hashes[name] != source_hashes[name]:
+                raise ValueError(f"CLI changed an FP32 runtime asset: {name}")
         proof = {
             "schema_version": 1,
             "proof_only": True,
             "source_release": "community-1-fp32-v1",
             "source_files": source_records,
             "output_files_sha256": output_hashes,
-            "quantization": {**manifest["quantization"], "qlinearconv_count": qconv_count},
+            "quantization": {
+                "proof_only": True,
+                "format": quantization["format"],
+                "operators": quantization["embedding_operators"],
+                "per_channel": quantization["per_channel"],
+                "activation_type": quantization["activation_type"]["embedding"],
+                "weight_type": quantization["weight_type"],
+                "excluded_nodes": quantization["excluded_nodes"],
+                "calibration": "deterministic synthetic waveform, fbank and mask; not representative speech",
+                "qlinearconv_count": qconv_count,
+            },
             "calibration": {
                 "synthetic": True,
+                "waveforms_generator": "zeros",
                 "fbank_generator": "numpy default_rng(0).standard_normal(dtype=float32)",
                 "mask_generator": "ones with every third value zero starting at index 0",
-                "inputs": {name: _array_record(value) for name, value in batch.items()},
+                "files_sha256": calibration_hashes,
+                "inputs": {
+                    name: _array_record(value)
+                    for inputs in batches.values()
+                    for name, value in inputs.items()
+                },
             },
             "validation": {
                 "provider": "CPUExecutionProvider",

@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -149,20 +150,13 @@ def fixture_bundle(tmp_path, monkeypatch, producer):
     return producer, source, tmp_path / "output"
 
 
-def test_synthetic_reader_rewinds_the_fixed_calibration_batch(producer):
+def test_fixed_synthetic_embedding_batch(producer):
     batch = producer._synthetic_batch()
     expected_fbank = np.random.default_rng(0).standard_normal((1, 998, 80), dtype=np.float32)
     expected_mask = np.ones((1, 589), dtype=np.float32)
     expected_mask[:, ::3] = 0.0
     np.testing.assert_array_equal(batch["fbank"], expected_fbank)
     np.testing.assert_array_equal(batch["mask"], expected_mask)
-
-    reader = producer._SyntheticReader(batch)
-    assert reader.get_next() is batch
-    assert reader.get_next() is None
-    reader.rewind()
-    assert reader.get_next() is batch
-    assert reader.get_next() is None
 
 
 def test_cli_refuses_an_unpinned_source(tmp_path, monkeypatch, producer, capsys):
@@ -180,48 +174,64 @@ def test_cli_refuses_an_unpinned_source(tmp_path, monkeypatch, producer, capsys)
 def test_cli_converts_synthetic_graph_and_records_integrity(fixture_bundle, monkeypatch, capsys):
     producer, source, output = fixture_bundle
     source_hashes = {name: _hash(source / name) for name in producer.PINNED_ASSETS}
-    shared_quantize = producer._support._quantize_embedding_mixed
-    quantization_calls = []
+    run = subprocess.run
+    cli_calls = []
 
-    def record_quantization(source_path, output_path, reader):
-        assert isinstance(reader, producer._SyntheticReader)
-        assert not reader.used
-        assert source_path != source / "tract/embedding.onnx"
-        assert _hash(source_path) == source_hashes["tract/embedding.onnx"]
-        assert not output_path.exists()
-        inputs = {name: producer._array_record(value) for name, value in reader.batch.items()}
-        count = shared_quantize(source_path, output_path, reader)
-        quantization_calls.append((inputs, count))
-        return count
+    def record_cli(command, **kwargs):
+        assert command[:3] == [sys.executable, str(producer.QUANTIZE_SCRIPT), "--model-dir"]
+        assert command[4] == "--calibration-dir"
+        assert command[6] == "--output-dir"
+        assert kwargs == {"check": True}
+        snapshot, calibration, bundle = map(Path, (command[3], command[5], command[7]))
+        assert snapshot != source
+        assert snapshot.parent == calibration.parent == bundle.parent
+        assert {path.relative_to(snapshot).as_posix() for path in snapshot.rglob("*") if path.is_file()} == set(source_hashes)
+        assert {name: _hash(snapshot / name) for name in source_hashes} == source_hashes
+        assert not bundle.exists()
+        arrays = {}
+        calibration_hashes = {}
+        for kind in ("segmentation", "embedding"):
+            path = calibration / kind / "batch.npz"
+            calibration_hashes[f"{kind}/batch.npz"] = _hash(path)
+            with np.load(path, allow_pickle=False) as archive:
+                arrays.update({name: producer._array_record(archive[name]) for name in archive.files})
+        result = run(command, **kwargs)
+        files = {
+            path.relative_to(bundle).as_posix(): path.read_bytes()
+            for path in bundle.rglob("*") if path.is_file()
+        }
+        cli_calls.append((files, calibration_hashes, arrays))
+        return result
 
-    monkeypatch.setattr(producer._support, "_quantize_embedding_mixed", record_quantization)
+    monkeypatch.setattr(producer.subprocess, "run", record_cli)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--source", str(source), "--output", str(output)])
     producer.main()
 
     manifest = json.loads((output / "export.json").read_text(encoding="utf-8"))
     proof = json.loads((output / "proof-manifest.json").read_text(encoding="utf-8"))
     output_hashes = {name: _hash(output / name) for name in producer.PINNED_ASSETS}
+    assert len(cli_calls) == 1
+    cli_files, calibration_hashes, arrays = cli_calls[0]
+    assert set(cli_files) == set(source_hashes) | {f"fp32/{name}" for name in source_hashes}
+    assert {path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()} == (
+        set(cli_files) | {"proof-manifest.json"}
+    )
+    assert all((output / name).read_bytes() == data for name, data in cli_files.items())
     assert proof["proof_only"] is True
     assert proof["calibration"]["synthetic"] is True
-    assert proof["calibration"]["inputs"]["fbank"]["shape"] == [1, 998, 80]
-    assert proof["calibration"]["inputs"]["mask"]["shape"] == [1, 589]
-    assert {path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()} == (
-        set(producer.PINNED_ASSETS) | {"proof-manifest.json"}
-    )
+    assert proof["calibration"]["inputs"] == arrays
+    assert proof["calibration"]["files_sha256"] == calibration_hashes
+    assert arrays["waveforms"]["shape"] == [1, 1, 160000]
+    assert arrays["fbank"]["shape"] == [1, 998, 80]
+    assert arrays["mask"]["shape"] == [1, 589]
     assert proof["output_files_sha256"] == output_hashes
     assert {name: record["sha256"] for name, record in proof["source_files"].items()} == source_hashes
     assert {name: _hash(source / name) for name in producer.PINNED_ASSETS} == source_hashes
     assert manifest["runtime_sha256"] == {name: output_hashes[name] for name in producer._support.RUNTIME_FILES}
-    assert manifest["quantization"] == {
-        "proof_only": True,
-        "format": "QOperator",
-        "operators": ["Conv"],
-        "per_channel": True,
-        "activation_type": "QUInt8",
-        "weight_type": "QInt8",
-        "excluded_nodes": ["/resnet/conv1/Conv"],
-        "calibration": "one deterministic synthetic fbank and mask; not representative speech",
-    }
+    assert manifest["quantization"]["source_export_files_sha256"] == source_hashes
+    assert "proof_only" not in manifest["quantization"]
+    for kind in ("segmentation", "embedding"):
+        assert manifest["quantization"]["calibration"][kind][0]["sha256"] == calibration_hashes[f"{kind}/batch.npz"]
     assert "graph_check" not in manifest
     assert output_hashes["plda.json"] == source_hashes["plda.json"]
     assert output_hashes["tract/segmentation.onnx"] == source_hashes["tract/segmentation.onnx"]
@@ -231,13 +241,15 @@ def test_cli_converts_synthetic_graph_and_records_integrity(fixture_bundle, monk
     assert any(node.name == "/resnet/conv1/Conv" and node.op_type == "Conv" for node in graph.graph.node)
     assert sum(node.op_type == "QLinearConv" for node in graph.graph.node) == 1
     assert any(node.name == "/resnet/projection/Gemm" and node.op_type == "Gemm" for node in graph.graph.node)
-    assert proof["quantization"] == {**manifest["quantization"], "qlinearconv_count": 1}
-    assert quantization_calls == [(proof["calibration"]["inputs"], 1)]
+    assert proof["quantization"]["qlinearconv_count"] == 1
+    assert proof["quantization"]["format"] == manifest["quantization"]["format"]
+    assert "not representative speech" in proof["quantization"]["calibration"]
     second = output.parent / "second"
     producer.build_bundle(source, second)
     second_proof = json.loads((second / "proof-manifest.json").read_text(encoding="utf-8"))
+    assert len(cli_calls) == 2
     assert second_proof["calibration"] == proof["calibration"]
-    assert quantization_calls == [(proof["calibration"]["inputs"], 1)] * 2
+    assert cli_calls[1][1:] == cli_calls[0][1:]
 
 
 @pytest.mark.parametrize("kind", ["file", "empty-directory", "nonempty-directory", "dangling-symlink"])
@@ -310,7 +322,7 @@ def test_rejects_even_a_matching_symlink_source(fixture_bundle):
 
 
 @pytest.mark.parametrize("fault", ["input-shape", "output-shape", "nonfinite-output"])
-def test_rejects_wrong_embedding_contract(tmp_path, monkeypatch, producer, fault):
+def test_rejects_wrong_embedding_contract(tmp_path, monkeypatch, producer, fault, capfd):
     options = {
         "input_frames": 997 if fault == "input-shape" else 998,
         "output_features": 128 if fault == "output-shape" else 256,
@@ -319,8 +331,11 @@ def test_rejects_wrong_embedding_contract(tmp_path, monkeypatch, producer, fault
     source = _make_source(tmp_path, producer, **options)
     _pin_fixture(monkeypatch, producer, source)
     output = tmp_path / "output"
-    with pytest.raises(ValueError, match="(shape|finite)"):
+    with pytest.raises(subprocess.CalledProcessError) as error:
         producer.build_bundle(source, output)
+    assert error.value.returncode == 2
+    stderr = capfd.readouterr().err
+    assert any(word in stderr for word in ("shape", "finite"))
     assert not output.exists()
     assert not list(tmp_path.glob(".output-*"))
 
@@ -339,21 +354,55 @@ def test_rejects_embedding_missing_excluded_conv(fixture_bundle, monkeypatch):
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _pin_fixture(monkeypatch, producer, source)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        producer.build_bundle(source, output)
+    assert error.value.returncode == 2
+    assert not output.exists()
+    assert not list(output.parent.glob(f".{output.name}-*"))
+
+
+@pytest.mark.parametrize("fault", ["exit", "interrupt", "incomplete"])
+def test_cli_failure_or_interrupt_does_not_publish_partial_output(fixture_bundle, monkeypatch, fault):
+    producer, source, output = fixture_bundle
+
+    def fail_cli(command, **kwargs):
+        staging = Path(command[-1])
+        staging.mkdir()
+        (staging / "partial").write_bytes(b"partial")
+        if fault == "exit":
+            raise subprocess.CalledProcessError(2, command)
+        if fault == "interrupt":
+            raise KeyboardInterrupt
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(producer.subprocess, "run", fail_cli)
+    with pytest.raises((subprocess.CalledProcessError, KeyboardInterrupt, FileNotFoundError)):
         producer.build_bundle(source, output)
     assert not output.exists()
     assert not list(output.parent.glob(f".{output.name}-*"))
 
 
-def test_shared_quantizer_failure_does_not_publish_partial_output(fixture_bundle, monkeypatch):
+@pytest.mark.parametrize("damage", ["runtime", "source-copy", "calibration"])
+def test_rejects_tampered_cli_output(fixture_bundle, monkeypatch, damage):
     producer, source, output = fixture_bundle
+    run = subprocess.run
 
-    def reject_graph(source_path, output_path, calibration_reader):
-        output_path.write_bytes(b"partial")
-        raise ValueError("shared quantizer rejected graph")
+    def tamper_cli(command, **kwargs):
+        result = run(command, **kwargs)
+        staging = Path(command[-1])
+        if damage == "runtime":
+            (staging / "tract/segmentation.onnx").write_bytes(b"tampered")
+        elif damage == "source-copy":
+            (staging / "fp32/plda.json").write_bytes(b"tampered")
+        else:
+            path = staging / "export.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["quantization"]["calibration"]["embedding"][0]["sha256"] = "0" * 64
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+        return result
 
-    monkeypatch.setattr(producer._support, "_quantize_embedding_mixed", reject_graph)
-    with pytest.raises(ValueError, match="shared quantizer rejected graph"):
+    monkeypatch.setattr(producer.subprocess, "run", tamper_cli)
+    with pytest.raises(ValueError, match="(runtime hash|source snapshot hash|calibration provenance) mismatch"):
         producer.build_bundle(source, output)
     assert not output.exists()
     assert not list(output.parent.glob(f".{output.name}-*"))

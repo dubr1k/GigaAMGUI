@@ -1,6 +1,6 @@
 name: Rust Liquid Community-1 INT8 compatibility proof
 
-# This is an isolated proof for one existing candidate, not a release gate.
+# This isolated synthetic-calibration proof is not a release gate.
 # A branch push starts it without requiring workflow_dispatch on the default branch.
 on:
   push:
@@ -121,9 +121,158 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  sources:
+    name: Resolve same-revision candidate and installed-UI evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      candidate_run_id: ${{ steps.resolve.outputs.candidate_run_id }}
+      ui_run_id: ${{ steps.resolve.outputs.ui_run_id }}
+      candidate_artifacts: ${{ steps.resolve.outputs.candidate_artifacts }}
+      attestation_artifacts: ${{ steps.resolve.outputs.attestation_artifacts }}
+    steps:
+      - name: Wait for the unique successful first-attempt push runs
+        id: resolve
+        uses: actions/github-script@v8
+        timeout-minutes: 355
+        with:
+          script: |
+            const sha = context.sha;
+            const branch = context.ref.replace(/^refs\/heads\//, '');
+            const repoId = Number(process.env.GITHUB_REPOSITORY_ID);
+            const repoName = `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+            if (context.eventName !== 'push' || context.ref !== `refs/heads/${branch}` ||
+                branch !== 'feat/rust-liquid-windows-linux' || !/^[0-9a-f]{40}$/.test(sha) ||
+                !Number.isSafeInteger(repoId) || repoId <= 0 || context.payload.repository?.id !== repoId) {
+              throw new Error('Unexpected proof push identity');
+            }
+            const workflows = [
+              {key: 'candidate', file: 'rust-liquid.yml', path: '.github/workflows/rust-liquid.yml'},
+              {key: 'ui', file: 'rust-liquid-ui-proof.yml', path: '.github/workflows/rust-liquid-ui-proof.yml'},
+            ];
+            function validateRun(run, workflow, completed) {
+              if (!Number.isSafeInteger(run.id) || run.id <= 0 || run.path !== workflow.path ||
+                  run.repository?.id !== repoId || run.head_repository?.id !== repoId ||
+                  run.repository?.full_name?.toLowerCase() !== repoName ||
+                  run.head_repository?.full_name?.toLowerCase() !== repoName ||
+                  run.head_branch !== branch || run.head_sha !== sha || run.event !== 'push' ||
+                  run.run_attempt !== 1) {
+                throw new Error(`Untrusted or rerun ${workflow.key} workflow run`);
+              }
+              if (run.status === 'completed' && run.conclusion !== 'success') {
+                throw new Error(`${workflow.key} workflow first attempt completed with ${run.conclusion}`);
+              }
+              if (completed && (run.status !== 'completed' || run.conclusion !== 'success')) {
+                throw new Error(`${workflow.key} workflow is no longer a successful first attempt`);
+              }
+            }
+            const registrationDeadline = Date.now() + 10 * 60 * 1000;
+            const deadline = Date.now() + 350 * 60 * 1000;
+            let selected;
+            while (Date.now() < deadline) {
+              const current = {};
+              for (const workflow of workflows) {
+                const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                  ...context.repo, workflow_id: workflow.file, branch, event: 'push', head_sha: sha, per_page: 100,
+                });
+                const matches = runs.filter(run =>
+                  run.head_sha === sha && run.head_branch === branch && run.event === 'push');
+                if (matches.length > 1) throw new Error(`Ambiguous ${workflow.key} push runs for ${sha}`);
+                if (!matches.length) {
+                  if (Date.now() >= registrationDeadline) {
+                    throw new Error(`No ${workflow.key} push run registered for ${sha}`);
+                  }
+                  continue;
+                }
+                validateRun(matches[0], workflow, false);
+                current[workflow.key] = matches[0];
+              }
+              if (workflows.every(workflow => current[workflow.key]?.status === 'completed')) {
+                selected = current;
+                break;
+              }
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+            if (!selected) throw new Error('Timed out waiting for same-SHA candidate and UI proofs');
+            for (const workflow of workflows) {
+              const {data: run} = await github.rest.actions.getWorkflowRun({
+                ...context.repo, run_id: selected[workflow.key].id,
+              });
+              validateRun(run, workflow, true);
+              selected[workflow.key] = run;
+            }
+
+            async function requireJobs(runId, required) {
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                ...context.repo, run_id: runId, filter: 'latest', per_page: 100,
+              });
+              for (const [name, steps] of required) {
+                const matches = jobs.filter(job => job.name === name);
+                if (matches.length !== 1 || matches[0].status !== 'completed' || matches[0].conclusion !== 'success') {
+                  throw new Error(`Required job is missing, ambiguous, or unsuccessful: ${name}`);
+                }
+                for (const stepName of steps) {
+                  const found = (matches[0].steps || []).filter(step => step.name === stepName);
+                  if (found.length !== 1 || found[0].status !== 'completed' || found[0].conclusion !== 'success') {
+                    throw new Error(`Required step did not succeed in ${name}: ${stepName}`);
+                  }
+                }
+              }
+            }
+            await requireJobs(selected.candidate.id, [
+              ['Build and compare pinned FFmpeg binaries', ['Build twice from signed source in the pinned toolchain']],
+              ['Rust Liquid linux-x64 candidate', ['Upload candidate, not a release asset']],
+              ['Rust Liquid windows-x64 candidate', ['Upload candidate, not a release asset']],
+            ]);
+            await requireJobs(selected.ui.id, ['linux-x64', 'windows-x64'].map(platform => {
+              const os = platform === 'linux-x64' ? 'Linux' : 'Windows';
+              return [`Installed candidate UI (${platform})`, [
+                'Validate the source run before downloading executable artifacts',
+                'Verify the checked-out proof harness revision',
+                'Hash the downloaded candidate package before installation',
+                `Verify automatic Community-1 delivery through the installed ${os} UI`,
+                `Exercise Community-1 through the installed ${os} UI`,
+                'Record the successful installed-UI attestation',
+                'Upload the successful installed-UI attestation',
+              ]];
+            }));
+
+            async function artifactsFor(run, prefix, suffix) {
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                ...context.repo, run_id: run.id, per_page: 100,
+              });
+              const result = {};
+              for (const platform of ['linux-x64', 'windows-x64']) {
+                const name = `${prefix}${platform}${suffix}`;
+                const matches = artifacts.filter(artifact => artifact.name === name);
+                if (matches.length !== 1) throw new Error(`Missing or ambiguous artifact ${name}`);
+                const {data: artifact} = await github.rest.actions.getArtifact({
+                  ...context.repo, artifact_id: matches[0].id,
+                });
+                const source = artifact.workflow_run;
+                if (!Number.isSafeInteger(artifact.id) || artifact.id <= 0 ||
+                    artifact.id !== matches[0].id || artifact.name !== name || artifact.expired !== false ||
+                    !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes <= 0 ||
+                    !/^sha256:[0-9a-f]{64}$/.test(artifact.digest || '') ||
+                    source?.id !== run.id || source.repository_id !== repoId ||
+                    source.head_repository_id !== repoId || source.head_branch !== branch || source.head_sha !== sha) {
+                  throw new Error(`Untrusted artifact metadata: ${name}`);
+                }
+                result[platform] = {id: artifact.id, digest: artifact.digest};
+              }
+              return result;
+            }
+            const candidates = await artifactsFor(selected.candidate, 'rust-liquid-', '-candidate');
+            const attestations = await artifactsFor(selected.ui, 'rust-liquid-ui-attestation-', '');
+            core.setOutput('candidate_run_id', String(selected.candidate.id));
+            core.setOutput('ui_run_id', String(selected.ui.id));
+            core.setOutput('candidate_artifacts', JSON.stringify(candidates));
+            core.setOutput('attestation_artifacts', JSON.stringify(attestations));
+            core.info(`Resolved candidate run ${selected.candidate.id} and UI proof run ${selected.ui.id} for ${sha}`);
+
   installed-ui:
     name: INT8 installed-app proof (${{ matrix.platform }})
-    needs: producer
+    needs: [producer, sources]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -133,87 +282,195 @@ jobs:
           - os: ubuntu-24.04
             platform: linux-x64
             asset: GigaAMGUI-Rust-Liquid-linux-x64.AppImage
-            artifact_id: '15247508485'
-            artifact_digest: sha256:bbc28fdea79c8e4a23aed579ff215f5275b2c5a68b5e060c82654cd372202174
-            asset_sha256: 2c1961c4fd4f021f2d60ffb2910645c5c1ced894467d9ac9b2457d8f27cfe7c9
           - os: windows-2022
             platform: windows-x64
             asset: GigaAMGUI-Rust-Liquid-windows-x64-setup.exe
-            artifact_id: '15248076860'
-            artifact_digest: sha256:70ab743cbe770f8f0545f3f85f971f69dbe26328c78dbee3d5f24b0a2d6a526b
-            asset_sha256: 009903ed041b4a1e49d87995fd565aabd80840a3af6668feb89a9befdc7e29d4
     steps:
-      - name: Validate the exact successful candidate run and artifact
+      - name: Check out the same-revision UI harness and fixture
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the proof harness revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Revalidate and download the exact candidate and UI attestation archives
         uses: actions/github-script@v8
         env:
           PLATFORM: ${{ matrix.platform }}
-          ARTIFACT_ID: ${{ matrix.artifact_id }}
-          ARTIFACT_DIGEST: ${{ matrix.artifact_digest }}
-        with:
-          script: |
-            const runId = 46104707591;
-            const sha = '76d8ad2107fff269cbec0ff5abf04035b3351521';
-            const repo = `${context.repo.owner}/${context.repo.repo}`;
-            if (repo.toLowerCase() !== 'dubr1k/gigaamgui') {
-              throw new Error('The pinned candidate belongs to dubr1k/GigaAMGUI');
-            }
-            const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: runId});
-            if (run.path !== '.github/workflows/rust-liquid.yml' ||
-                run.repository.full_name.toLowerCase() !== repo.toLowerCase() ||
-                run.head_repository?.full_name.toLowerCase() !== repo.toLowerCase() ||
-                run.head_branch !== 'feat/rust-liquid-windows-linux' || run.head_sha !== sha ||
-                run.event !== 'workflow_dispatch' || run.run_attempt !== 1 ||
-                run.status !== 'completed' || run.conclusion !== 'success') {
-              throw new Error('The pinned candidate run is not the expected successful first attempt');
-            }
-            const {data: artifact} = await github.rest.actions.getArtifact({
-              ...context.repo, artifact_id: Number(process.env.ARTIFACT_ID),
-            });
-            if (artifact.id !== Number(process.env.ARTIFACT_ID) || artifact.expired ||
-                artifact.name !== `rust-liquid-${process.env.PLATFORM}-candidate` ||
-                artifact.digest !== process.env.ARTIFACT_DIGEST ||
-                artifact.workflow_run?.id !== runId || artifact.workflow_run?.head_sha !== sha) {
-              throw new Error('The exact pinned candidate artifact is unavailable or changed');
-            }
-            core.info(`Candidate run ${runId}, source ${sha}, artifact ${artifact.id}, ${artifact.digest}`);
-      - name: Check out the candidate's proven UI harness and fixture
-        uses: actions/checkout@v5
-        with:
-          ref: 76d8ad2107fff269cbec0ff5abf04035b3351521
-          persist-credentials: false
-      - name: Download the exact candidate package
-        uses: actions/download-artifact@v7
-        with:
-          artifact-ids: ${{ matrix.artifact_id }}
-          path: candidate-package
-          run-id: 46104707591
-          github-token: ${{ github.token }}
-      - name: Verify the package hash from the previous installed-UI attestation
-        uses: actions/github-script@v8
-        env:
-          ASSET: ${{ matrix.asset }}
-          EXPECTED_SHA256: ${{ matrix.asset_sha256 }}
+          CANDIDATE_RUN_ID: ${{ needs.sources.outputs.candidate_run_id }}
+          UI_RUN_ID: ${{ needs.sources.outputs.ui_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ fromJSON(needs.sources.outputs.candidate_artifacts)[matrix.platform].id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ fromJSON(needs.sources.outputs.candidate_artifacts)[matrix.platform].digest }}
+          ATTESTATION_ARTIFACT_ID: ${{ fromJSON(needs.sources.outputs.attestation_artifacts)[matrix.platform].id }}
+          ATTESTATION_ARTIFACT_DIGEST: ${{ fromJSON(needs.sources.outputs.attestation_artifacts)[matrix.platform].digest }}
         with:
           script: |
             const fs = require('fs');
             const path = require('path');
             const crypto = require('crypto');
-            const directory = path.join(process.env.GITHUB_WORKSPACE, 'candidate-package');
-            const files = await fs.promises.readdir(directory);
-            if (files.length !== 1 || files[0] !== process.env.ASSET) {
-              throw new Error('The candidate artifact must contain exactly the expected package');
+            const {Readable, Transform} = require('stream');
+            const {pipeline} = require('stream/promises');
+            const sha = context.sha;
+            const branch = context.ref.replace(/^refs\/heads\//, '');
+            const repoId = Number(process.env.GITHUB_REPOSITORY_ID);
+            const repoName = `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+            const platform = process.env.PLATFORM;
+            function id(value) {
+              if (!/^[1-9][0-9]*$/.test(value || '') || !Number.isSafeInteger(Number(value))) {
+                throw new Error('Invalid workflow run or artifact ID');
+              }
+              return Number(value);
             }
-            const file = path.join(directory, process.env.ASSET);
-            const stat = await fs.promises.lstat(file);
-            if (!stat.isFile() || stat.size === 0) throw new Error('Candidate package is missing or empty');
-            const hash = crypto.createHash('sha256');
-            for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
-            const actual = hash.digest('hex');
-            if (actual !== process.env.EXPECTED_SHA256) throw new Error('Candidate package SHA-256 mismatch');
-            core.info(`Verified candidate package SHA-256 ${actual}; prior UI attestation run 46107259393`);
+            if (context.eventName !== 'push' || context.ref !== `refs/heads/${branch}` ||
+                branch !== 'feat/rust-liquid-windows-linux' || !/^[0-9a-f]{40}$/.test(sha) ||
+                !Number.isSafeInteger(repoId) || repoId <= 0 || context.payload.repository?.id !== repoId ||
+                !['linux-x64', 'windows-x64'].includes(platform)) {
+              throw new Error('Unexpected proof push identity');
+            }
+            const sources = [
+              {
+                runId: id(process.env.CANDIDATE_RUN_ID), workflow: '.github/workflows/rust-liquid.yml',
+                artifactId: id(process.env.CANDIDATE_ARTIFACT_ID), digest: process.env.CANDIDATE_ARTIFACT_DIGEST,
+                name: `rust-liquid-${platform}-candidate`, archive: 'int8-candidate.zip',
+              },
+              {
+                runId: id(process.env.UI_RUN_ID), workflow: '.github/workflows/rust-liquid-ui-proof.yml',
+                artifactId: id(process.env.ATTESTATION_ARTIFACT_ID), digest: process.env.ATTESTATION_ARTIFACT_DIGEST,
+                name: `rust-liquid-ui-attestation-${platform}`, archive: 'int8-ui-attestation.zip',
+              },
+            ];
+            for (const source of sources) {
+              if (!/^sha256:[0-9a-f]{64}$/.test(source.digest || '')) throw new Error('Invalid artifact digest');
+              const {data: run} = await github.rest.actions.getWorkflowRun({
+                ...context.repo, run_id: source.runId,
+              });
+              if (run.id !== source.runId || run.path !== source.workflow ||
+                  run.repository?.id !== repoId || run.head_repository?.id !== repoId ||
+                  run.repository?.full_name?.toLowerCase() !== repoName ||
+                  run.head_repository?.full_name?.toLowerCase() !== repoName ||
+                  run.head_branch !== branch || run.head_sha !== sha || run.event !== 'push' ||
+                  run.run_attempt !== 1 || run.status !== 'completed' || run.conclusion !== 'success') {
+                throw new Error(`Source run changed or is untrusted: ${source.workflow}`);
+              }
+              const {data: artifact} = await github.rest.actions.getArtifact({
+                ...context.repo, artifact_id: source.artifactId,
+              });
+              const origin = artifact.workflow_run;
+              if (artifact.id !== source.artifactId || artifact.name !== source.name ||
+                  artifact.expired !== false || artifact.digest !== source.digest ||
+                  !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes <= 0 ||
+                  origin?.id !== source.runId || origin.repository_id !== repoId ||
+                  origin.head_repository_id !== repoId || origin.head_branch !== branch || origin.head_sha !== sha) {
+                throw new Error(`Source artifact changed or is untrusted: ${source.name}`);
+              }
+              const {status, headers} = await github.rest.actions.downloadArtifact({
+                ...context.repo, artifact_id: source.artifactId, archive_format: 'zip',
+                request: {redirect: 'manual'},
+              });
+              if (status !== 302 || !headers.location) throw new Error(`No download redirect for ${source.name}`);
+              let url;
+              try {
+                url = new URL(headers.location);
+              } catch {
+                throw new Error(`Invalid download redirect for ${source.name}`);
+              }
+              if (url.protocol !== 'https:' || url.username || url.password) {
+                throw new Error(`Unsafe download redirect for ${source.name}`);
+              }
+              let response;
+              try {
+                response = await fetch(url, {redirect: 'error', signal: AbortSignal.timeout(20 * 60 * 1000)});
+              } catch {
+                throw new Error(`Download failed for ${source.name}`);
+              }
+              if (!response.ok || !response.body) throw new Error(`Download failed for ${source.name}`);
+              const archive = path.join(process.env.RUNNER_TEMP, source.archive);
+              const hash = crypto.createHash('sha256');
+              const hashing = new Transform({
+                transform(chunk, encoding, callback) {
+                  hash.update(chunk);
+                  callback(null, chunk);
+                },
+              });
+              try {
+                await pipeline(Readable.fromWeb(response.body), hashing, fs.createWriteStream(archive, {flags: 'wx'}));
+              } catch {
+                throw new Error(`Download stream failed for ${source.name}`);
+              }
+              if (`sha256:${hash.digest('hex')}` !== source.digest) {
+                throw new Error(`Downloaded artifact digest mismatch for ${source.name}`);
+              }
+              core.info(`Verified ${source.name}: artifact ${source.artifactId}, ${source.digest}`);
+            }
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+      - name: Verify the same-SHA UI attestation and candidate package
+        id: package
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ASSET: ${{ matrix.asset }}
+          CANDIDATE_RUN_ID: ${{ needs.sources.outputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import stat
+          import zipfile
+          from pathlib import Path
+
+          def single_entry(archive, name):
+              entries = archive.infolist()
+              if len(entries) != 1 or entries[0].filename != name or entries[0].is_dir():
+                  raise ValueError(f'Unexpected entries in {name} artifact')
+              entry = entries[0]
+              kind = stat.S_IFMT(entry.external_attr >> 16)
+              if kind not in (0, stat.S_IFREG) or entry.file_size <= 0:
+                  raise ValueError(f'Invalid entry type or size for {name}')
+              return entry
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          platform = os.environ['PLATFORM']
+          asset = os.environ['ASSET']
+          with zipfile.ZipFile(temp / 'int8-ui-attestation.zip') as archive:
+              entry = single_entry(archive, f'{platform}.json')
+              if entry.file_size > 1024 * 1024:
+                  raise ValueError('UI attestation is unexpectedly large')
+              attestation = json.loads(archive.read(entry))
+          fields = {'version', 'platform', 'candidate_run_id', 'candidate_sha', 'asset_name', 'asset_sha256'}
+          if (not isinstance(attestation, dict) or set(attestation) != fields or
+                  type(attestation['version']) is not int or attestation['version'] != 1 or
+                  type(attestation['candidate_run_id']) is not int or
+                  attestation['candidate_run_id'] != int(os.environ['CANDIDATE_RUN_ID']) or
+                  attestation['candidate_sha'] != os.environ['GITHUB_SHA'] or
+                  attestation['platform'] != platform or attestation['asset_name'] != asset or
+                  not isinstance(attestation['asset_sha256'], str) or
+                  not re.fullmatch(r'[0-9a-f]{64}', attestation['asset_sha256'])):
+              raise ValueError('UI attestation does not bind this candidate, revision, platform, and asset')
+          directory = Path(os.environ['GITHUB_WORKSPACE']) / 'candidate-package'
+          directory.mkdir()
+          package = directory / asset
+          digest = hashlib.sha256()
+          with zipfile.ZipFile(temp / 'int8-candidate.zip') as archive:
+              entry = single_entry(archive, asset)
+              with archive.open(entry) as source, package.open('xb') as output:
+                  while block := source.read(1024 * 1024):
+                      digest.update(block)
+                      output.write(block)
+          actual = digest.hexdigest()
+          if actual != attestation['asset_sha256']:
+              raise ValueError('Candidate package SHA-256 does not match the same-SHA UI attestation')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+              output.write(f'asset_sha256={actual}\n')
+          print(f'Verified candidate package SHA-256 {actual} against the same-SHA installed-UI attestation')
+          PY
       - name: Download the producer's exact proof artifact
         uses: actions/download-artifact@v7
         with:
@@ -471,7 +728,14 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           ASSET: ${{ matrix.asset }}
-          ASSET_SHA256: ${{ matrix.asset_sha256 }}
+          ASSET_SHA256: ${{ steps.package.outputs.asset_sha256 }}
+          CANDIDATE_RUN_ID: ${{ needs.sources.outputs.candidate_run_id }}
+          UI_RUN_ID: ${{ needs.sources.outputs.ui_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ fromJSON(needs.sources.outputs.candidate_artifacts)[matrix.platform].id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ fromJSON(needs.sources.outputs.candidate_artifacts)[matrix.platform].digest }}
+          ATTESTATION_ARTIFACT_ID: ${{ fromJSON(needs.sources.outputs.attestation_artifacts)[matrix.platform].id }}
+          ATTESTATION_ARTIFACT_DIGEST: ${{ fromJSON(needs.sources.outputs.attestation_artifacts)[matrix.platform].digest }}
+          PROOF_BUNDLE_ARTIFACT_ID: ${{ needs.producer.outputs.artifact_id }}
           ARCHIVE_SHA256: ${{ needs.producer.outputs.archive_sha256 }}
           EMBEDDING_SHA256: ${{ needs.producer.outputs.embedding_sha256 }}
         run: |
@@ -484,9 +748,17 @@ jobs:
           source = json.loads((Path(os.environ['GITHUB_WORKSPACE']) / 'tests/fixtures/rust_liquid_community_smoke.json').read_text(encoding='utf-8'))
           record = {
               'proof_workflow_sha': os.environ['GITHUB_SHA'],
+              'proof_run_id': int(os.environ['GITHUB_RUN_ID']),
+              'proof_run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'proof_bundle_artifact_id': int(os.environ['PROOF_BUNDLE_ARTIFACT_ID']),
               'platform': os.environ['PLATFORM'],
-              'candidate_run_id': 46104707591,
-              'candidate_sha': '76d8ad2107fff269cbec0ff5abf04035b3351521',
+              'candidate_run_id': int(os.environ['CANDIDATE_RUN_ID']),
+              'candidate_sha': os.environ['GITHUB_SHA'],
+              'candidate_artifact_id': int(os.environ['CANDIDATE_ARTIFACT_ID']),
+              'candidate_artifact_digest': os.environ['CANDIDATE_ARTIFACT_DIGEST'],
+              'ui_proof_run_id': int(os.environ['UI_RUN_ID']),
+              'ui_attestation_artifact_id': int(os.environ['ATTESTATION_ARTIFACT_ID']),
+              'ui_attestation_artifact_digest': os.environ['ATTESTATION_ARTIFACT_DIGEST'],
               'candidate_asset': os.environ['ASSET'],
               'candidate_asset_sha256': os.environ['ASSET_SHA256'],
               'bundle_archive_sha256': os.environ['ARCHIVE_SHA256'],

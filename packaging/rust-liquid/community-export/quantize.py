@@ -17,11 +17,13 @@ Example:
   python quantize.py --model-dir EXPORT --calibration-dir CALIBRATION --output-dir INT8
 
 INT8 contains FP32 segmentation, a mixed-precision embedding graph and an fp32/
-copy of the original export assets. Only embedding Conv operators after the first
-Conv are calibrated and quantized, with per-output-channel INT8 weights and
-UINT8 activations. The first Conv and projection remain FP32. Segmentation
-batches are still required for validation. Calibration arrays are not copied
-into the bundle; their hashes and shapes are recorded in export.json. Validation
+copy of the original export assets. The two root dynamic graphs, if supplied,
+must both be present; the four-file public runtime export does not require them.
+Only embedding Conv operators after the first Conv are calibrated and quantized,
+with per-output-channel INT8 weights and UINT8 activations. The first Conv and
+projection remain FP32. Segmentation batches are still required for validation.
+Calibration arrays are not copied into the bundle; their hashes and shapes are
+recorded in export.json. Validation
 runs both graphs on the supplied arrays with ONNX Runtime CPU, not Tract. No
 quality threshold is imposed and neither diarization quality, parity, speed nor
 target-platform support is established. Evaluate those separately on independent
@@ -443,12 +445,22 @@ def quantize(model_dir, calibration_dir, output_dir):
         fp32.mkdir(parents=True)
         (fp32 / "export.json").write_bytes(manifest_bytes)
         source_files = {"export.json": hashlib.sha256(manifest_bytes).hexdigest()}
-        for name in ("segmentation.onnx", "embedding.onnx", *RUNTIME_FILES):
+        dynamic_files = ("segmentation.onnx", "embedding.onnx")
+        for name in dynamic_files:
+            digest = _copy_asset(
+                model_dir, fp32, name, expected=manifest["runtime_sha256"].get(name), required=False
+            )
+            if digest is not None:
+                source_files[name] = digest
+        if sum(name in source_files for name in dynamic_files) not in (0, len(dynamic_files)):
+            raise ValueError("source export must contain both dynamic graphs or neither")
+        for name in RUNTIME_FILES:
             source_files[name] = _copy_asset(
                 model_dir, fp32, name, expected=manifest["runtime_sha256"].get(name)
             )
-        for kind in CONTRACTS:
-            _load_onnx(fp32 / f"{kind}.onnx")
+        for name in dynamic_files:
+            if name in source_files:
+                _load_onnx(fp32 / name)
         for name, source_name in PROVENANCE_FILES.items():
             expected = manifest["source_sha256"].get(source_name)
             present = (model_dir / name).exists() or (model_dir / name).is_symlink()
