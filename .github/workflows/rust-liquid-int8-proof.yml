@@ -1,0 +1,510 @@
+name: Rust Liquid Community-1 INT8 compatibility proof
+
+# This is an isolated proof for one existing candidate, not a release gate.
+# A branch push starts it without requiring workflow_dispatch on the default branch.
+on:
+  push:
+    branches: [feat/rust-liquid-windows-linux]
+    paths:
+      - .github/workflows/rust-liquid-int8-proof.yml
+      - packaging/rust-liquid/int8_ci_bundle.py
+      - packaging/rust-liquid/community-export/**
+      - packaging/rust-liquid/ui-proof.py
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  producer:
+    name: Produce a proof-only INT8 bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      archive_sha256: ${{ steps.bundle.outputs.archive_sha256 }}
+      embedding_sha256: ${{ steps.bundle.outputs.embedding_sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install the pinned conversion dependencies
+        run: python -m pip install 'numpy==2.2.6' 'onnx==1.19.1' 'onnxruntime==1.23.2'
+      - name: Download and verify the four pinned public FP32 assets
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import importlib.util
+          import os
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          spec = importlib.util.spec_from_file_location('ui_proof', workspace / 'packaging/rust-liquid/ui-proof.py')
+          if spec is None or spec.loader is None:
+              raise ImportError('Cannot load the existing pinned Community-1 asset list')
+          ui = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(ui)
+          expected = (
+              ('export.json', 'export.json', 2882, '99cf740b8093e4a4c7491fcfdd389887941a470ac651887694384940a2dea7ad'),
+              ('plda.json', 'plda.json', 983502, '8cadc0a017fce6e9fc9f1802b40b7a2a367889ec6f6e01b31f7b5b5adeead17a'),
+              ('segmentation.onnx', 'tract/segmentation.onnx', 5984909, '8e8ddc4b066e14bf6fdc0e97a93206326de6346f7b99df9f06a5f9903d3ae2b5'),
+              ('embedding.onnx', 'tract/embedding.onnx', 26553403, '26ce0859c0afd8084e60b3ccd9d9f0a1999785ac18b13e1abf51cca50caea5af'),
+          )
+          if ui.COMMUNITY_ASSETS != expected:
+              raise ValueError('The existing asset pins differ from this proof candidate')
+          source = Path(os.environ['RUNNER_TEMP']) / 'int8-proof-source'
+          (source / 'tract').mkdir(parents=True, exist_ok=False)
+
+          class HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, msg, headers, newurl):
+                  if urllib.parse.urlsplit(newurl).scheme != 'https':
+                      raise ValueError('Community-1 asset redirect is not HTTPS')
+                  return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+          opener = urllib.request.build_opener(HttpsOnlyRedirect())
+          base = 'https://github.com/dubr1k/GigaAMGUI/releases/download/community-1-fp32-v1/'
+          for asset, relative, expected_size, expected_hash in expected:
+              count = 0
+              digest = hashlib.sha256()
+              with opener.open(base + asset, timeout=60) as response, (source / relative).open('xb') as output:
+                  while True:
+                      block = response.read(min(1024 * 1024, expected_size - count + 1))
+                      if not block:
+                          break
+                      count += len(block)
+                      if count > expected_size:
+                          raise ValueError(f'Community-1 asset exceeds its pinned size: {asset}')
+                      digest.update(block)
+                      output.write(block)
+              if count != expected_size or digest.hexdigest() != expected_hash:
+                  raise ValueError(f'Community-1 asset size or SHA-256 mismatch: {asset}')
+              print(f'Verified {asset}: {count} bytes, SHA-256 {digest.hexdigest()}')
+          PY
+      - name: Generate and hash the synthetic-calibrated bundle
+        id: bundle
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/int8-proof-source"
+          bundle="$RUNNER_TEMP/int8-proof-bundle"
+          artifact="$RUNNER_TEMP/int8-proof-artifact"
+          mkdir "$artifact"
+          # Synthetic calibration checks compatibility only, not accuracy or speed.
+          python packaging/rust-liquid/int8_ci_bundle.py --source "$source" --output "$bundle"
+          tar -cf "$artifact/community-int8-proof.tar" -C "$bundle" \
+            export.json plda.json tract/segmentation.onnx tract/embedding.onnx proof-manifest.json
+          archive_sha256="$(sha256sum "$artifact/community-int8-proof.tar" | cut -d ' ' -f1)"
+          embedding_sha256="$(sha256sum "$bundle/tract/embedding.onnx" | cut -d ' ' -f1)"
+          [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ && "$embedding_sha256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s\n' "$archive_sha256" > "$artifact/archive.sha256"
+          printf '%s\n' "$embedding_sha256" > "$artifact/embedding.sha256"
+          printf 'archive_sha256=%s\nembedding_sha256=%s\n' "$archive_sha256" "$embedding_sha256" >> "$GITHUB_OUTPUT"
+          printf 'Proof archive SHA-256: `%s`\n\nINT8 embedding graph SHA-256: `%s`\n\nSynthetic calibration is a compatibility check, not evidence of diarization quality or speed.\n' \
+            "$archive_sha256" "$embedding_sha256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the proof bundle, not a release asset
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-int8-proof-bundle-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/int8-proof-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  installed-ui:
+    name: INT8 installed-app proof (${{ matrix.platform }})
+    needs: producer
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+            asset: GigaAMGUI-Rust-Liquid-linux-x64.AppImage
+            artifact_id: '15247508485'
+            artifact_digest: sha256:bbc28fdea79c8e4a23aed579ff215f5275b2c5a68b5e060c82654cd372202174
+            asset_sha256: 2c1961c4fd4f021f2d60ffb2910645c5c1ced894467d9ac9b2457d8f27cfe7c9
+          - os: windows-2022
+            platform: windows-x64
+            asset: GigaAMGUI-Rust-Liquid-windows-x64-setup.exe
+            artifact_id: '15248076860'
+            artifact_digest: sha256:70ab743cbe770f8f0545f3f85f971f69dbe26328c78dbee3d5f24b0a2d6a526b
+            asset_sha256: 009903ed041b4a1e49d87995fd565aabd80840a3af6668feb89a9befdc7e29d4
+    steps:
+      - name: Validate the exact successful candidate run and artifact
+        uses: actions/github-script@v8
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARTIFACT_ID: ${{ matrix.artifact_id }}
+          ARTIFACT_DIGEST: ${{ matrix.artifact_digest }}
+        with:
+          script: |
+            const runId = 46104707591;
+            const sha = '76d8ad2107fff269cbec0ff5abf04035b3351521';
+            const repo = `${context.repo.owner}/${context.repo.repo}`;
+            if (repo.toLowerCase() !== 'dubr1k/gigaamgui') {
+              throw new Error('The pinned candidate belongs to dubr1k/GigaAMGUI');
+            }
+            const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: runId});
+            if (run.path !== '.github/workflows/rust-liquid.yml' ||
+                run.repository.full_name.toLowerCase() !== repo.toLowerCase() ||
+                run.head_repository?.full_name.toLowerCase() !== repo.toLowerCase() ||
+                run.head_branch !== 'feat/rust-liquid-windows-linux' || run.head_sha !== sha ||
+                run.event !== 'workflow_dispatch' || run.run_attempt !== 1 ||
+                run.status !== 'completed' || run.conclusion !== 'success') {
+              throw new Error('The pinned candidate run is not the expected successful first attempt');
+            }
+            const {data: artifact} = await github.rest.actions.getArtifact({
+              ...context.repo, artifact_id: Number(process.env.ARTIFACT_ID),
+            });
+            if (artifact.id !== Number(process.env.ARTIFACT_ID) || artifact.expired ||
+                artifact.name !== `rust-liquid-${process.env.PLATFORM}-candidate` ||
+                artifact.digest !== process.env.ARTIFACT_DIGEST ||
+                artifact.workflow_run?.id !== runId || artifact.workflow_run?.head_sha !== sha) {
+              throw new Error('The exact pinned candidate artifact is unavailable or changed');
+            }
+            core.info(`Candidate run ${runId}, source ${sha}, artifact ${artifact.id}, ${artifact.digest}`);
+      - name: Check out the candidate's proven UI harness and fixture
+        uses: actions/checkout@v5
+        with:
+          ref: 76d8ad2107fff269cbec0ff5abf04035b3351521
+          persist-credentials: false
+      - name: Download the exact candidate package
+        uses: actions/download-artifact@v7
+        with:
+          artifact-ids: ${{ matrix.artifact_id }}
+          path: candidate-package
+          run-id: 46104707591
+          github-token: ${{ github.token }}
+      - name: Verify the package hash from the previous installed-UI attestation
+        uses: actions/github-script@v8
+        env:
+          ASSET: ${{ matrix.asset }}
+          EXPECTED_SHA256: ${{ matrix.asset_sha256 }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const crypto = require('crypto');
+            const directory = path.join(process.env.GITHUB_WORKSPACE, 'candidate-package');
+            const files = await fs.promises.readdir(directory);
+            if (files.length !== 1 || files[0] !== process.env.ASSET) {
+              throw new Error('The candidate artifact must contain exactly the expected package');
+            }
+            const file = path.join(directory, process.env.ASSET);
+            const stat = await fs.promises.lstat(file);
+            if (!stat.isFile() || stat.size === 0) throw new Error('Candidate package is missing or empty');
+            const hash = crypto.createHash('sha256');
+            for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+            const actual = hash.digest('hex');
+            if (actual !== process.env.EXPECTED_SHA256) throw new Error('Candidate package SHA-256 mismatch');
+            core.info(`Verified candidate package SHA-256 ${actual}; prior UI attestation run 46107259393`);
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Download the producer's exact proof artifact
+        uses: actions/download-artifact@v7
+        with:
+          artifact-ids: ${{ needs.producer.outputs.artifact_id }}
+          path: ${{ runner.temp }}/int8-proof-download
+      - name: Verify archive and graph hashes before preparing the UI fixture
+        shell: bash
+        env:
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.producer.outputs.archive_sha256 }}
+          EXPECTED_EMBEDDING_SHA256: ${{ needs.producer.outputs.embedding_sha256 }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import tarfile
+          import wave
+          import zlib
+          from pathlib import Path, PurePosixPath
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as source:
+                  for block in iter(lambda: source.read(1024 * 1024), b''):
+                      digest.update(block)
+              return digest.hexdigest()
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          download = temp / 'int8-proof-download'
+          archive = download / 'community-int8-proof.tar'
+          archive_hash = os.environ['EXPECTED_ARCHIVE_SHA256']
+          embedding_hash = os.environ['EXPECTED_EMBEDDING_SHA256']
+          if not all(re.fullmatch(r'[0-9a-f]{64}', value or '') for value in (archive_hash, embedding_hash)):
+              raise ValueError('Missing or malformed producer hashes')
+          if ((download / 'archive.sha256').read_text(encoding='ascii').strip() != archive_hash or
+                  (download / 'embedding.sha256').read_text(encoding='ascii').strip() != embedding_hash or
+                  sha256(archive) != archive_hash):
+              raise ValueError('Proof archive or recorded SHA-256 mismatch')
+          # Do not extract until the independently propagated archive hash matches.
+          names = {'export.json', 'plda.json', 'tract/segmentation.onnx', 'tract/embedding.onnx', 'proof-manifest.json'}
+          bundle = temp / 'int8-proof-verified-bundle'
+          bundle.mkdir()
+          with tarfile.open(archive, 'r:') as payload:
+              members = payload.getmembers()
+              if (len(members) != len(names) or {member.name for member in members} != names or
+                      any(not member.isfile() or member.size <= 0 for member in members)):
+                  raise ValueError('Unexpected files or entry types in the proof archive')
+              for member in members:
+                  target = bundle.joinpath(*PurePosixPath(member.name).parts)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  stream = payload.extractfile(member)
+                  if stream is None:
+                      raise ValueError(f'Cannot read archive entry {member.name}')
+                  with stream, target.open('xb') as output:
+                      shutil.copyfileobj(stream, output)
+          if sha256(bundle / 'tract/embedding.onnx') != embedding_hash:
+              raise ValueError('Extracted INT8 embedding graph SHA-256 mismatch')
+
+          # Same attributed 15-second smoke crop and PCM pin as the existing UI proof.
+          source = json.loads((Path(os.environ['GITHUB_WORKSPACE']) / 'tests/fixtures/rust_liquid_community_smoke.json').read_text(encoding='utf-8'))
+          samples = zlib.decompress(base64.b64decode(source['pcm_zlib_base64'], validate=True))
+          fixture_hash = 'd601d90b332f042550f1682214c164c8ea161bb153e01f0ca0af11bc6fce9ff1'
+          if len(samples) != 15 * 16000 * 2 or hashlib.sha256(samples).hexdigest() != fixture_hash:
+              raise ValueError('Community-1 smoke fixture integrity check failed')
+          fixture = temp / 'int8-community-two-speakers.wav'
+          with wave.open(str(fixture), 'wb') as output:
+              output.setnchannels(1)
+              output.setsampwidth(2)
+              output.setframerate(16000)
+              output.writeframes(samples)
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as env:
+              env.write(f'COMMUNITY_PROOF_BUNDLE={bundle}\nCOMMUNITY_PROOF_FIXTURE={fixture}\n')
+          print(f'Verified archive SHA-256 {archive_hash}, embedding SHA-256 {embedding_hash}, fixture PCM SHA-256 {fixture_hash}')
+          PY
+      - name: Check Windows input desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python packaging/rust-liquid/ui-proof.py --check-display
+      - name: Install Linux GUI and packaged-app runtime dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            webkit2gtk-driver xvfb xauth xdotool x11-utils openbox \
+            python3-pyatspi dbus-x11 scrot libpulse0 libegl1 libgles2
+      - name: Install Windows native dialog automation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -m pip install 'pywinauto==0.6.9'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri's WebDriver intermediary
+        shell: bash
+        run: cargo install tauri-driver --version 2.1.0 --locked
+      - name: Extract the Linux AppImage without FUSE
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          image="$GITHUB_WORKSPACE/candidate-package/$ASSET"
+          test -s "$image"
+          chmod +x "$image"
+          mkdir "$RUNNER_TEMP/rust-liquid-package"
+          (cd "$RUNNER_TEMP/rust-liquid-package" && "$image" --appimage-extract > /dev/null)
+          root="$RUNNER_TEMP/rust-liquid-package/squashfs-root"
+          test -x "$root/AppRun"
+          if find "$root" -type f \( -iname 'python' -o -iname 'python[0-9]*' -o -iname 'libpython*.so*' \) -print -quit | grep -q .; then
+            echo 'Unexpected Python runtime in candidate AppImage' >&2; exit 1
+          fi
+          echo "PROOF_APP=$root/AppRun" >> "$GITHUB_ENV"
+      - name: Install the Windows NSIS candidate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:GITHUB_WORKSPACE "candidate-package/$env:ASSET"
+          $install = Join-Path $env:RUNNER_TEMP 'rust-liquid-install'
+          if (!(Test-Path -PathType Leaf $installer)) { throw 'Candidate NSIS installer is missing' }
+          if ($install -match '\s') { throw 'NSIS /D requires a temporary installation path without spaces' }
+          $process = Start-Process -FilePath $installer -ArgumentList "/S /D=$install" -PassThru
+          if (!$process.WaitForExit(300000)) { $process.Kill(); throw 'NSIS installation timed out after 300 seconds' }
+          if ($process.ExitCode -ne 0) { throw "NSIS installer exited with $($process.ExitCode)" }
+          $apps = @(Get-ChildItem $install -Recurse -File -Filter 'gigaam-desktop.exe')
+          if ($apps.Count -ne 1) { throw 'Expected exactly one installed gigaam-desktop.exe' }
+          $python = @(Get-ChildItem $install -Recurse -File | Where-Object {
+            $_.Name -match '^(pythonw?(\d+)?\.(exe|dll)|pyvenv\.cfg)$'
+          })
+          if ($python.Count) { throw 'Unexpected Python runtime in installed candidate' }
+          "PROOF_APP=$($apps[0].FullName)" >> $env:GITHUB_ENV
+      - name: Install the WebDriver matching the installed WebView2 runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $key = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $locations = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$key",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$key"
+          )
+          $versions = @($locations | ForEach-Object {
+            if (Test-Path $_) { (Get-ItemProperty $_ -Name pv -ErrorAction SilentlyContinue).pv }
+          } | Where-Object { $_ -and $_ -ne '0.0.0.0' } | Sort-Object -Unique)
+          if ($versions.Count -ne 1 -or $versions[0] -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+            throw "Cannot determine one installed WebView2 runtime version: $($versions -join ', ')"
+          }
+          $version = $versions[0]
+          $archive = Join-Path $env:RUNNER_TEMP 'edgedriver.zip'
+          $driverDir = Join-Path $env:RUNNER_TEMP 'edgedriver'
+          Invoke-WebRequest -UseBasicParsing "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $driverDir
+          $drivers = @(Get-ChildItem $driverDir -Recurse -File -Filter 'msedgedriver.exe')
+          if ($drivers.Count -ne 1) { throw 'Expected one downloaded msedgedriver.exe' }
+          $signature = Get-AuthenticodeSignature $drivers[0].FullName
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+            throw 'Microsoft Edge WebDriver signature is not valid'
+          }
+          $drivers[0].DirectoryName >> $env:GITHUB_PATH
+          Write-Host "WebView2 and downloaded Edge WebDriver version: $version"
+      - name: Isolate Linux app data
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/rust-liquid-int8-app-data"
+          mkdir "$root"
+          echo "PROOF_APP_DATA=$root" >> "$GITHUB_ENV"
+      - name: Isolate Windows Tauri known folders
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'rust-liquid-int8-app-data'
+          if (Test-Path -LiteralPath $root) { throw 'Proof app-data root already exists' }
+          $roaming = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+          $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+          if (!$roaming -or !$local) { throw 'Windows app-data known folders are unavailable' }
+          $links = @(
+            @{ Name = 'PROOF_ROAMING_LINK'; Path = (Join-Path $roaming 'ru.gigaam.gui.rustliquid'); Target = (Join-Path $root 'roaming/ru.gigaam.gui.rustliquid') },
+            @{ Name = 'PROOF_LOCAL_LINK'; Path = (Join-Path $local 'ru.gigaam.gui.rustliquid'); Target = (Join-Path $root 'local/ru.gigaam.gui.rustliquid') }
+          )
+          foreach ($link in $links) {
+            if (Test-Path -LiteralPath $link.Path) { throw "Tauri app-data path already exists: $($link.Path)" }
+          }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          "PROOF_APP_DATA=$root" >> $env:GITHUB_ENV
+          foreach ($link in $links) {
+            New-Item -ItemType Directory -Path $link.Target -Force | Out-Null
+            New-Item -ItemType Junction -Path $link.Path -Target $link.Target | Out-Null
+            "$($link.Name)=$($link.Path)" >> $env:GITHUB_ENV
+            Write-Host "Tauri known-folder path $($link.Path) -> $($link.Target)"
+          }
+      - name: Exercise the INT8 bundle through the installed Linux UI
+        if: runner.os == 'Linux'
+        timeout-minutes: 40
+        shell: bash
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c '
+            openbox > "$RUNNER_TEMP/rust-liquid-openbox.log" 2>&1 &
+            exec /usr/bin/python3 packaging/rust-liquid/ui-proof.py \
+              --app "$PROOF_APP" --app-data "$PROOF_APP_DATA" --model multilingual_ctc \
+              --community-bundle "$COMMUNITY_PROOF_BUNDLE" --fixture "$COMMUNITY_PROOF_FIXTURE" \
+              --diagnostics "$GITHUB_WORKSPACE/int8-ui-proof-diagnostics" --timeout 1800
+          '
+      - name: Exercise the INT8 bundle through the installed Windows UI
+        if: runner.os == 'Windows'
+        timeout-minutes: 40
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python packaging/rust-liquid/ui-proof.py `
+            --app "$env:PROOF_APP" --app-data "$env:PROOF_APP_DATA" --model multilingual_ctc `
+            --community-bundle "$env:COMMUNITY_PROOF_BUNDLE" --fixture "$env:COMMUNITY_PROOF_FIXTURE" `
+            --diagnostics "$env:GITHUB_WORKSPACE/int8-ui-proof-diagnostics" --timeout 1800
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Remove Windows proof junctions
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $links = @(
+            @{ Path = $env:PROOF_ROAMING_LINK; Target = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'rust-liquid-int8-app-data/roaming/ru.gigaam.gui.rustliquid')) },
+            @{ Path = $env:PROOF_LOCAL_LINK; Target = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'rust-liquid-int8-app-data/local/ru.gigaam.gui.rustliquid')) }
+          )
+          foreach ($link in $links) {
+            if (!$link.Path) { continue }
+            $item = Get-Item -LiteralPath $link.Path -Force
+            if ($item.LinkType -ne 'Junction' -or $item.Target -ne $link.Target) {
+              throw "Refusing to remove changed proof junction: $($link.Path)"
+            }
+            $item.Delete()
+          }
+      - name: Upload failed UI diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-int8-ui-${{ matrix.platform }}-diagnostics-${{ github.run_attempt }}
+          path: int8-ui-proof-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Record successful installed-app evidence
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ASSET: ${{ matrix.asset }}
+          ASSET_SHA256: ${{ matrix.asset_sha256 }}
+          ARCHIVE_SHA256: ${{ needs.producer.outputs.archive_sha256 }}
+          EMBEDDING_SHA256: ${{ needs.producer.outputs.embedding_sha256 }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = json.loads((Path(os.environ['GITHUB_WORKSPACE']) / 'tests/fixtures/rust_liquid_community_smoke.json').read_text(encoding='utf-8'))
+          record = {
+              'proof_workflow_sha': os.environ['GITHUB_SHA'],
+              'platform': os.environ['PLATFORM'],
+              'candidate_run_id': 46104707591,
+              'candidate_sha': '76d8ad2107fff269cbec0ff5abf04035b3351521',
+              'candidate_asset': os.environ['ASSET'],
+              'candidate_asset_sha256': os.environ['ASSET_SHA256'],
+              'bundle_archive_sha256': os.environ['ARCHIVE_SHA256'],
+              'embedding_graph_sha256': os.environ['EMBEDDING_SHA256'],
+              'fixture': {key: source[key] for key in ('dataset', 'revision', 'license', 'source_ids', 'pcm_sha256')},
+              'scope': 'Synthetic calibration and attributed short UI smoke only; not quality, speed, automatic model delivery, or release evidence.',
+          }
+          evidence = Path(os.environ['RUNNER_TEMP']) / 'int8-proof-evidence.json'
+          with evidence.open('x', encoding='utf-8') as output:
+              json.dump(record, output, indent=2)
+              output.write('\n')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as summary:
+              summary.write(f"Installed {record['platform']} candidate from run {record['candidate_run_id']} used bundle `{record['bundle_archive_sha256']}` with embedding `{record['embedding_graph_sha256']}`. The existing UI harness required two distinct numbered speakers and a saved transcript.\n\n{record['scope']}\n")
+          PY
+      - name: Upload successful installed-app evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-liquid-int8-ui-${{ matrix.platform }}-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/int8-proof-evidence.json
+          if-no-files-found: error
+          retention-days: 14
