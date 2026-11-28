@@ -149,6 +149,22 @@ def fixture_bundle(tmp_path, monkeypatch, producer):
     return producer, source, tmp_path / "output"
 
 
+def test_synthetic_reader_rewinds_the_fixed_calibration_batch(producer):
+    batch = producer._synthetic_batch()
+    expected_fbank = np.random.default_rng(0).standard_normal((1, 998, 80), dtype=np.float32)
+    expected_mask = np.ones((1, 589), dtype=np.float32)
+    expected_mask[:, ::3] = 0.0
+    np.testing.assert_array_equal(batch["fbank"], expected_fbank)
+    np.testing.assert_array_equal(batch["mask"], expected_mask)
+
+    reader = producer._SyntheticReader(batch)
+    assert reader.get_next() is batch
+    assert reader.get_next() is None
+    reader.rewind()
+    assert reader.get_next() is batch
+    assert reader.get_next() is None
+
+
 def test_cli_refuses_an_unpinned_source(tmp_path, monkeypatch, producer, capsys):
     source = _make_source(tmp_path, producer)
     output = tmp_path / "output"
@@ -164,6 +180,21 @@ def test_cli_refuses_an_unpinned_source(tmp_path, monkeypatch, producer, capsys)
 def test_cli_converts_synthetic_graph_and_records_integrity(fixture_bundle, monkeypatch, capsys):
     producer, source, output = fixture_bundle
     source_hashes = {name: _hash(source / name) for name in producer.PINNED_ASSETS}
+    shared_quantize = producer._support._quantize_embedding_mixed
+    quantization_calls = []
+
+    def record_quantization(source_path, output_path, reader):
+        assert isinstance(reader, producer._SyntheticReader)
+        assert not reader.used
+        assert source_path != source / "tract/embedding.onnx"
+        assert _hash(source_path) == source_hashes["tract/embedding.onnx"]
+        assert not output_path.exists()
+        inputs = {name: producer._array_record(value) for name, value in reader.batch.items()}
+        count = shared_quantize(source_path, output_path, reader)
+        quantization_calls.append((inputs, count))
+        return count
+
+    monkeypatch.setattr(producer._support, "_quantize_embedding_mixed", record_quantization)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--source", str(source), "--output", str(output)])
     producer.main()
 
@@ -181,7 +212,16 @@ def test_cli_converts_synthetic_graph_and_records_integrity(fixture_bundle, monk
     assert {name: record["sha256"] for name, record in proof["source_files"].items()} == source_hashes
     assert {name: _hash(source / name) for name in producer.PINNED_ASSETS} == source_hashes
     assert manifest["runtime_sha256"] == {name: output_hashes[name] for name in producer._support.RUNTIME_FILES}
-    assert manifest["quantization"]["proof_only"] is True
+    assert manifest["quantization"] == {
+        "proof_only": True,
+        "format": "QOperator",
+        "operators": ["Conv"],
+        "per_channel": True,
+        "activation_type": "QUInt8",
+        "weight_type": "QInt8",
+        "excluded_nodes": ["/resnet/conv1/Conv"],
+        "calibration": "one deterministic synthetic fbank and mask; not representative speech",
+    }
     assert "graph_check" not in manifest
     assert output_hashes["plda.json"] == source_hashes["plda.json"]
     assert output_hashes["tract/segmentation.onnx"] == source_hashes["tract/segmentation.onnx"]
@@ -191,11 +231,13 @@ def test_cli_converts_synthetic_graph_and_records_integrity(fixture_bundle, monk
     assert any(node.name == "/resnet/conv1/Conv" and node.op_type == "Conv" for node in graph.graph.node)
     assert sum(node.op_type == "QLinearConv" for node in graph.graph.node) == 1
     assert any(node.name == "/resnet/projection/Gemm" and node.op_type == "Gemm" for node in graph.graph.node)
-    assert proof["quantization"]["qlinearconv_count"] == 1
+    assert proof["quantization"] == {**manifest["quantization"], "qlinearconv_count": 1}
+    assert quantization_calls == [(proof["calibration"]["inputs"], 1)]
     second = output.parent / "second"
     producer.build_bundle(source, second)
     second_proof = json.loads((second / "proof-manifest.json").read_text(encoding="utf-8"))
     assert second_proof["calibration"] == proof["calibration"]
+    assert quantization_calls == [(proof["calibration"]["inputs"], 1)] * 2
 
 
 @pytest.mark.parametrize("kind", ["file", "empty-directory", "nonempty-directory", "dangling-symlink"])
@@ -281,6 +323,40 @@ def test_rejects_wrong_embedding_contract(tmp_path, monkeypatch, producer, fault
         producer.build_bundle(source, output)
     assert not output.exists()
     assert not list(tmp_path.glob(".output-*"))
+
+
+def test_rejects_embedding_missing_excluded_conv(fixture_bundle, monkeypatch):
+    producer, source, output = fixture_bundle
+    embedding = source / "tract/embedding.onnx"
+    model = onnx.load(str(embedding))
+    first_conv = next(node for node in model.graph.node if node.name == "/resnet/conv1/Conv")
+    first_conv.name = "/renamed/conv1/Conv"
+    onnx.save(model, str(embedding))
+
+    manifest_path = source / "export.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_sha256"]["tract/embedding.onnx"] = _hash(embedding)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _pin_fixture(monkeypatch, producer, source)
+
+    with pytest.raises(ValueError):
+        producer.build_bundle(source, output)
+    assert not output.exists()
+    assert not list(output.parent.glob(f".{output.name}-*"))
+
+
+def test_shared_quantizer_failure_does_not_publish_partial_output(fixture_bundle, monkeypatch):
+    producer, source, output = fixture_bundle
+
+    def reject_graph(source_path, output_path, calibration_reader):
+        output_path.write_bytes(b"partial")
+        raise ValueError("shared quantizer rejected graph")
+
+    monkeypatch.setattr(producer._support, "_quantize_embedding_mixed", reject_graph)
+    with pytest.raises(ValueError, match="shared quantizer rejected graph"):
+        producer.build_bundle(source, output)
+    assert not output.exists()
+    assert not list(output.parent.glob(f".{output.name}-*"))
 
 
 def test_output_inside_source_is_rejected(fixture_bundle):

@@ -19,14 +19,12 @@ import importlib.util
 import json
 import platform
 import tempfile
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import onnx
 import onnxruntime as ort
-from onnx import TensorProto, numpy_helper
-from onnxruntime.quantization import CalibrationDataReader, QuantFormat, QuantType, quantize_static
+from onnxruntime.quantization import CalibrationDataReader
 
 
 # Independently pinned, not taken from the downloaded export.json.
@@ -75,56 +73,6 @@ def _synthetic_batch():
     if np.any(mask < 0) or np.any(mask > 1) or not np.any(mask > 0):
         raise ValueError("invalid synthetic calibration mask")
     return batch
-
-
-def _validate_quantized_graph(source, output):
-    """Verify that the requested mixed per-channel Conv cutover actually occurred."""
-    original = _support._load_onnx(source)
-    graph = _support._load_onnx(output)
-    original_convs = [node for node in original.graph.node if node.op_type == "Conv"]
-    if sum(node.name == FIRST_CONV for node in original_convs) != 1:
-        raise ValueError(f"source embedding must have exactly one {FIRST_CONV}")
-    if len(original_convs) < 2:
-        raise ValueError("source embedding has no other Conv to quantize")
-    first = [node for node in graph.graph.node if node.name == FIRST_CONV and node.op_type == "Conv"]
-    qconvs = [node for node in graph.graph.node if node.op_type == "QLinearConv"]
-    if len(first) != 1 or len(qconvs) != len(original_convs) - 1:
-        raise ValueError("embedding did not preserve the first Conv and quantize every other Conv")
-
-    initializers = {item.name: item for item in graph.graph.initializer}
-    first_weight = initializers.get(first[0].input[1])
-    if first_weight is None or first_weight.data_type != TensorProto.FLOAT:
-        raise ValueError("excluded first Conv does not have FP32 weights")
-    for node in qconvs:
-        if len(node.input) < 8:
-            raise ValueError("invalid QLinearConv inputs")
-        weight = initializers.get(node.input[3])
-        scale = initializers.get(node.input[4])
-        zero_point = initializers.get(node.input[5])
-        if weight is None or weight.data_type != TensorProto.INT8 or len(weight.dims) < 2:
-            raise ValueError("QLinearConv weights are not constant INT8 tensors")
-        channels = weight.dims[0]
-        if (
-            scale is None or scale.data_type != TensorProto.FLOAT
-            or tuple(scale.dims) != (channels,)
-            or zero_point is None or zero_point.data_type != TensorProto.INT8
-            or tuple(zero_point.dims) != (channels,)
-        ):
-            raise ValueError("QLinearConv weights are not quantized per output channel")
-        values = numpy_helper.to_array(scale)
-        if not np.isfinite(values).all() or np.any(values <= 0):
-            raise ValueError("QLinearConv has invalid per-channel scales")
-
-    # Restricting quantization to Conv must also leave the projection FP32.
-    def projection_ops(model):
-        return Counter((node.name, node.op_type) for node in model.graph.node
-                       if node.op_type in {"Gemm", "MatMul"})
-
-    if not projection_ops(original) or projection_ops(original) != projection_ops(graph):
-        raise ValueError("embedding FP32 projection operators changed")
-    if any(node.op_type in {"QLinearMatMul", "MatMulInteger"} for node in graph.graph.node):
-        raise ValueError("embedding contains a quantized projection")
-    return len(qconvs)
 
 
 def _array_record(array):
@@ -183,19 +131,9 @@ def build_bundle(source, output):
         for name in ("plda.json", "tract/segmentation.onnx"):
             _support._copy_asset(fp32, staging, name, expected=source_records[name]["sha256"])
         target = staging / "tract/embedding.onnx"
-        quantize_static(
-            model_input=_support._load_onnx(fp32 / "tract/embedding.onnx"),
-            model_output=str(target),
-            calibration_data_reader=_SyntheticReader(batch),
-            quant_format=QuantFormat.QOperator,
-            activation_type=QuantType.QUInt8,
-            weight_type=QuantType.QInt8,
-            per_channel=True,
-            op_types_to_quantize=["Conv"],
-            nodes_to_exclude=[FIRST_CONV],
-            calibration_providers=["CPUExecutionProvider"],
+        qconv_count = _support._quantize_embedding_mixed(
+            fp32 / "tract/embedding.onnx", target, _SyntheticReader(batch)
         )
-        qconv_count = _validate_quantized_graph(fp32 / "tract/embedding.onnx", target)
         quantized = _support._session(target, "embedding")
         _support._run_and_validate(quantized, "embedding", "INT8 embedding", batch)
 

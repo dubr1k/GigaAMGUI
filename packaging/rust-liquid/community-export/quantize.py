@@ -1,4 +1,4 @@
-"""Calibrate an exported Community-1 bundle into an offline QDQ INT8 bundle.
+"""Calibrate an exported Community-1 bundle into an offline mixed FP32/INT8 bundle.
 
 Dependencies: Python 3.10+, numpy, onnx, and onnxruntime (CPU). No model or
 calibration data is downloaded. Supply one or more .npz files per graph:
@@ -16,12 +16,16 @@ obtained calibration arrays; this tool does not generate them.
 Example:
   python quantize.py --model-dir EXPORT --calibration-dir CALIBRATION --output-dir INT8
 
-INT8 contains the native runtime files and an fp32/ copy of the original export
-assets. Calibration arrays are not copied into the bundle; their hashes and
-shapes are recorded in export.json. Validation runs both graphs on the supplied
-arrays with ONNX Runtime CPU, not Tract. No quality threshold is imposed and
-neither diarization quality, parity, speed nor target-platform support is
-established. Evaluate those separately on independent recordings.
+INT8 contains FP32 segmentation, a mixed-precision embedding graph and an fp32/
+copy of the original export assets. Only embedding Conv operators after the first
+Conv are calibrated and quantized, with per-output-channel INT8 weights and
+UINT8 activations. The first Conv and projection remain FP32. Segmentation
+batches are still required for validation. Calibration arrays are not copied
+into the bundle; their hashes and shapes are recorded in export.json. Validation
+runs both graphs on the supplied arrays with ONNX Runtime CPU, not Tract. No
+quality threshold is imposed and neither diarization quality, parity, speed nor
+target-platform support is established. Evaluate those separately on independent
+recordings.
 """
 
 import argparse
@@ -34,12 +38,13 @@ import os
 import shutil
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import onnx
 import onnxruntime as ort
-from onnx import TensorProto
+from onnx import TensorProto, numpy_helper
 from onnxruntime.quantization import (
     CalibrationDataReader,
     QuantFormat,
@@ -53,6 +58,7 @@ CONTRACTS = {
     "embedding": (("fbank", "mask"), "embedding", ((1, 998, 80), (1, 589))),
 }
 RUNTIME_FILES = ("tract/segmentation.onnx", "tract/embedding.onnx", "plda.json")
+FIRST_CONV = "/resnet/conv1/Conv"
 SOURCE_HASHES = {
     "segmentation/pytorch_model.bin": "7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e",
     "embedding/pytorch_model.bin": "6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929",
@@ -147,28 +153,74 @@ class _NpzReader(CalibrationDataReader):
         return None if path is None else _load_batch(path, self.kind, self.metadata)
 
 
-def _require_int8_weights_and_activations(path):
-    """Reject unchanged or activation-only graphs, even if ORT emitted a file."""
-    graph = onnx.load(str(path), load_external_data=False).graph
-    weights = {
-        item.name for item in graph.initializer if item.data_type == TensorProto.INT8 and len(item.dims) > 0
-    }
-    quantized = {node.output[0] for node in graph.node if node.op_type == "QuantizeLinear" and node.output}
-    activation_inputs, weight_inputs = set(), set()
-    for node in graph.node:
-        if node.op_type != "DequantizeLinear" or not node.input or not node.output:
-            continue
-        if node.input[0] in quantized:
-            activation_inputs.add(node.output[0])
-        if node.input[0] in weights:
-            weight_inputs.add(node.output[0])
-    if not any(
-        node.op_type not in {"QuantizeLinear", "DequantizeLinear"}
-        and any(name in activation_inputs for name in node.input)
-        and any(name in weight_inputs for name in node.input)
-        for node in graph.node
-    ):
-        raise ValueError(f"{path}: no operator with both QDQ activation and INT8 weights was produced")
+def _validate_quantized_graph(source, output):
+    """Verify that the requested mixed per-channel Conv cutover actually occurred."""
+    original = _load_onnx(source)
+    graph = _load_onnx(output)
+    original_convs = [node for node in original.graph.node if node.op_type == "Conv"]
+    if sum(node.name == FIRST_CONV for node in original_convs) != 1:
+        raise ValueError(f"source embedding must have exactly one {FIRST_CONV}")
+    if len(original_convs) < 2:
+        raise ValueError("source embedding has no other Conv to quantize")
+    first = [node for node in graph.graph.node if node.name == FIRST_CONV and node.op_type == "Conv"]
+    qconvs = [node for node in graph.graph.node if node.op_type == "QLinearConv"]
+    if len(first) != 1 or len(qconvs) != len(original_convs) - 1:
+        raise ValueError("embedding did not preserve the first Conv and quantize every other Conv")
+
+    initializers = {item.name: item for item in graph.graph.initializer}
+    first_weight = initializers.get(first[0].input[1])
+    if first_weight is None or first_weight.data_type != TensorProto.FLOAT:
+        raise ValueError("excluded first Conv does not have FP32 weights")
+    for node in qconvs:
+        if len(node.input) < 8:
+            raise ValueError("invalid QLinearConv inputs")
+        activation_zero_points = (initializers.get(node.input[2]), initializers.get(node.input[7]))
+        if any(item is None or item.data_type != TensorProto.UINT8 for item in activation_zero_points):
+            raise ValueError("QLinearConv activation zero points are not UINT8")
+        weight = initializers.get(node.input[3])
+        scale = initializers.get(node.input[4])
+        zero_point = initializers.get(node.input[5])
+        if weight is None or weight.data_type != TensorProto.INT8 or len(weight.dims) < 2:
+            raise ValueError("QLinearConv weights are not constant INT8 tensors")
+        channels = weight.dims[0]
+        if (
+            scale is None or scale.data_type != TensorProto.FLOAT
+            or tuple(scale.dims) != (channels,)
+            or zero_point is None or zero_point.data_type != TensorProto.INT8
+            or tuple(zero_point.dims) != (channels,)
+        ):
+            raise ValueError("QLinearConv weights are not quantized per output channel")
+        values = numpy_helper.to_array(scale)
+        if not np.isfinite(values).all() or np.any(values <= 0):
+            raise ValueError("QLinearConv has invalid per-channel scales")
+
+    # Restricting quantization to Conv must also leave the projection FP32.
+    def projection_ops(model):
+        return Counter((node.name, node.op_type) for node in model.graph.node
+                       if node.op_type in {"Gemm", "MatMul"})
+
+    if not projection_ops(original) or projection_ops(original) != projection_ops(graph):
+        raise ValueError("embedding FP32 projection operators changed")
+    if any(node.op_type in {"QLinearMatMul", "MatMulInteger"} for node in graph.graph.node):
+        raise ValueError("embedding contains a quantized projection")
+    return len(qconvs)
+
+
+def _quantize_embedding_mixed(source_path, output_path, calibration_reader):
+    # A model object keeps ORT's inference scratch files out of the source export.
+    quantize_static(
+        model_input=_load_onnx(source_path),
+        model_output=str(output_path),
+        calibration_data_reader=calibration_reader,
+        quant_format=QuantFormat.QOperator,
+        activation_type=QuantType.QUInt8,
+        weight_type=QuantType.QInt8,
+        per_channel=True,
+        op_types_to_quantize=["Conv"],
+        nodes_to_exclude=[FIRST_CONV],
+        calibration_providers=["CPUExecutionProvider"],
+    )
+    return _validate_quantized_graph(source_path, output_path)
 
 
 def _reject_external_tensors(message, path):
@@ -429,23 +481,18 @@ def quantize(model_dir, calibration_dir, output_dir):
 
         (staging / "tract").mkdir()
         shutil.copyfile(fp32 / "plda.json", staging / "plda.json")
+        _copy_asset(
+            fp32, staging, "tract/segmentation.onnx",
+            expected=source_files["tract/segmentation.onnx"],
+        )
+        _quantize_embedding_mixed(
+            fp32 / "tract" / "embedding.onnx",
+            staging / "tract" / "embedding.onnx",
+            _NpzReader(paths["embedding"], "embedding", sessions["embedding"].get_inputs()),
+        )
         errors, opsets = {}, {}
         for kind in CONTRACTS:
             output = staging / "tract" / f"{kind}.onnx"
-            metadata = sessions[kind].get_inputs()
-            # Loading a model object keeps ORT's inference scratch files out of
-            # the user's original export.
-            quantize_static(
-                model_input=onnx.load(str(fp32 / "tract" / f"{kind}.onnx")),
-                model_output=str(output),
-                calibration_data_reader=_NpzReader(paths[kind], kind, metadata),
-                quant_format=QuantFormat.QDQ,
-                activation_type=QuantType.QUInt8 if kind == "segmentation" else QuantType.QInt8,
-                weight_type=QuantType.QInt8,
-                calibration_providers=["CPUExecutionProvider"],
-                op_types_to_quantize=["MatMul", "Gemm"] if kind == "segmentation" else None,
-            )
-            _require_int8_weights_and_activations(output)
             quantized = _session(output, kind)
             maximum = 0.0
             for path in paths[kind]:
@@ -468,15 +515,17 @@ def quantize(model_dir, calibration_dir, output_dir):
             manifest.pop("opset", None)
         manifest["segmentation"]["input"] = {"waveforms": [1, 1, 160000]}
         manifest["segmentation"]["output"] = {"scores": [1, 589, 7]}
-        manifest["segmentation"]["scores"] = "QDQ-quantized powerset scores"
         manifest["embedding"]["inputs"] = {"fbank": [1, 998, 80], "mask": [1, 589]}
         manifest["embedding"]["output"] = {"embedding": [1, 256]}
         manifest["quantization"] = {
-            "format": "QDQ static",
+            "format": "QOperator",
+            "precision": {"segmentation": "FP32", "embedding": "mixed FP32/INT8"},
             "weight_type": "QInt8",
-            "activation_type": {"segmentation": "QUInt8", "embedding": "QInt8"},
-            "segmentation_operators": ["MatMul", "Gemm"],
-            "embedding_operators": "ONNX Runtime default",
+            "activation_type": {"segmentation": "FP32", "embedding": "QUInt8"},
+            "segmentation_operators": [],
+            "embedding_operators": ["Conv"],
+            "per_channel": True,
+            "excluded_nodes": [FIRST_CONV],
             "opsets": opsets,
             "onnx_version": onnx.__version__,
             "onnxruntime_version": ort.__version__,
@@ -492,7 +541,7 @@ def quantize(model_dir, calibration_dir, output_dir):
             raise ValueError("invalid source export limitations")
         manifest["limitations"] = (
             f"FP32 source: {original_limitations} "
-            "INT8 validation covers only supplied calibration arrays on ONNX Runtime CPU; "
+            "Mixed-precision validation covers only supplied calibration arrays on ONNX Runtime CPU; "
             "no quality threshold or Tract execution was verified. Diarization quality, "
             "parity, speed and target-platform support are not established."
         )
@@ -507,7 +556,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-dir", type=Path, required=True, help="original FP32 exporter bundle")
     parser.add_argument("--calibration-dir", type=Path, required=True, help="directory containing calibration batches")
-    parser.add_argument("--output-dir", type=Path, required=True, help="new native INT8 bundle directory")
+    parser.add_argument("--output-dir", type=Path, required=True, help="new native mixed FP32/INT8 bundle directory")
     args = parser.parse_args()
     try:
         quantize(args.model_dir, args.calibration_dir, args.output_dir)

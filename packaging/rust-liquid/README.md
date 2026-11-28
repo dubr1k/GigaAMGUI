@@ -57,7 +57,7 @@ Those source hashes are self-reported and do not prove the origin of transformed
 graphs; obtain the snapshot through the authorized
 Hugging Face account. This manual preparation is an alternative to automatic delivery.
 
-For experimental INT8, use a new output directory:
+For experimental mixed FP32/INT8, use a new output directory:
 
 ```sh
 python packaging/rust-liquid/community-export/quantize.py --model-dir NEW_EXPORT_DIR --calibration-dir CALIBRATION --output-dir NEW_INT8_DIR
@@ -66,11 +66,17 @@ python packaging/rust-liquid/community-export/quantize.py --model-dir NEW_EXPORT
 Calibration requires representative `.npz` batches in `segmentation/`
 (`waveforms`) and `embedding/` (`fbank`, `mask`); tensor shapes and frontend
 conventions are described in `quantize.py`. The output is a complete local
-runtime bundle with quantized graphs and an `fp32/` copy of the original files.
-Segmentation quantizes linear operators only for Tract compatibility. The
-calibration check uses ONNX Runtime, not the application's Tract runtime; it
-does not establish diarization quality, pipeline parity, speed, or Windows/Linux
-compatibility. Checkpoints are executable trusted inputs.
+runtime bundle with an `fp32/` copy of the original files. Segmentation is
+copied byte-for-byte in FP32 and its batches are used for validation only. In
+the embedding graph, the first Conv, pooling and projection remain FP32; the
+remaining Conv operators use QOperator with per-output-channel INT8 weights and
+UINT8 activations. Only the embedding batches calibrate those operators.
+
+The supplied-batch checks use ONNX Runtime CPU, not the application's Tract
+runtime, and impose no diarization-quality threshold. They do not establish
+diarization quality, pipeline parity, speed, or compatibility of this generated
+bundle on Windows/Linux. Evaluate these separately on independent recordings and
+the target runtime. Checkpoints are executable trusted inputs.
 
 The installed-app UI proof accepts `--community-missing` to verify rejection of
 an incomplete existing bundle, or `--community-bundle PATH` to copy a local export

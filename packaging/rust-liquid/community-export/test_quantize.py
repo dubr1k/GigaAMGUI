@@ -75,16 +75,22 @@ def _embedding(path, *, nonfinite=False, wrong_shape=False, wrong_mask_name=Fals
     output = helper.make_tensor_value_info("embedding", TensorProto.FLOAT, [1, features])
     result = "raw_embedding" if nonfinite else "embedding"
     nodes = [
-        # Deliberately permit different frame counts, as the real mask path does.
+        helper.make_node("Unsqueeze", ["fbank", "unsqueeze_axes"], ["channelized"]),
+        helper.make_node(
+            "Conv", ["channelized", "first_weights"], ["first_output"],
+            name="/resnet/conv1/Conv", strides=[10, 10],
+        ),
+        helper.make_node("Conv", ["first_output", "second_weights"], ["second_output"], name="/resnet/layer1/Conv"),
+        helper.make_node("ReduceMean", ["second_output"], ["pooled"], axes=[2, 3], keepdims=0),
         helper.make_node("ReduceMean", [mask_name], ["mean_mask"], axes=[1], keepdims=1),
-        helper.make_node("Unsqueeze", ["mean_mask", "unsqueeze_axes"], ["mask_scale"]),
-        helper.make_node("Mul", ["fbank", "mask_scale"], ["masked_fbank"]),
-        helper.make_node("MatMul", ["masked_fbank", "weights"], ["projected"]),
-        helper.make_node("ReduceMean", ["projected"], [result], axes=[1], keepdims=0),
+        helper.make_node("Mul", ["pooled", "mean_mask"], ["masked"]),
+        helper.make_node("MatMul", ["masked", "projection_weights"], [result], name="/projection/MatMul"),
     ]
     initializers = [
-        _initializer("unsqueeze_axes", np.array([2], dtype=np.int64)),
-        _initializer("weights", np.linspace(0.002, 0.01, 80 * features, dtype=np.float32).reshape(80, features)),
+        _initializer("unsqueeze_axes", np.array([1], dtype=np.int64)),
+        _initializer("first_weights", np.linspace(0.5, 1.25, 4, dtype=np.float32).reshape(4, 1, 1, 1)),
+        _initializer("second_weights", np.linspace(0.1, 0.4, 16, dtype=np.float32).reshape(4, 4, 1, 1)),
+        _initializer("projection_weights", np.linspace(0.002, 0.01, 4 * features, dtype=np.float32).reshape(4, features)),
     ]
     if nonfinite:
         nodes.append(helper.make_node("Div", [result, "zero"], ["embedding"]))
@@ -176,7 +182,7 @@ class QuantizeTests(unittest.TestCase):
             quantize.quantize(self.models, self.calibration, self.output)
         self.assertFalse(self.output.exists())
 
-    def test_cli_quantizes_both_graphs_and_preserves_mask_input(self):
+    def test_cli_preserves_segmentation_and_quantizes_embedding_with_mask(self):
         np.savez(self.calibration / "embedding" / "ones.npz", fbank=self.fbank, mask=np.ones_like(self.mask))
         source_neighbor = self.models / "segmentation-inferred.onnx"
         source_neighbor.write_bytes(b"preserve")
@@ -208,21 +214,59 @@ class QuantizeTests(unittest.TestCase):
         self.assertNotIn("graph_check", manifest)
         self.assertFalse(manifest["quantization"]["tract_execution_verified"])
         self.assertIsNone(manifest["quantization"]["quality_threshold"])
-        self.assertEqual(manifest["quantization"]["activation_type"], {
-            "segmentation": "QUInt8", "embedding": "QInt8",
+        self.assertEqual(manifest["quantization"]["format"], "QOperator")
+        self.assertEqual(manifest["quantization"]["precision"], {
+            "segmentation": "FP32", "embedding": "mixed FP32/INT8",
         })
+        self.assertEqual(manifest["quantization"]["activation_type"], {
+            "segmentation": "FP32", "embedding": "QUInt8",
+        })
+        self.assertEqual(manifest["quantization"]["weight_type"], "QInt8")
+        self.assertEqual(manifest["quantization"]["segmentation_operators"], [])
+        self.assertEqual(manifest["quantization"]["embedding_operators"], ["Conv"])
+        self.assertTrue(manifest["quantization"]["per_channel"])
+        self.assertEqual(manifest["quantization"]["excluded_nodes"], ["/resnet/conv1/Conv"])
         self.assertEqual(manifest["quantization"]["calibration"]["segmentation"][0]["sha256"],
                          self._hash(self.calibration / "segmentation" / "batch.npz"))
         self.assertEqual(len(manifest["quantization"]["calibration"]["embedding"]), 2)
         self.assertGreaterEqual(manifest["quantization"]["calibration_max_absolute_error"]["embedding"], 0)
+        self.assertEqual(manifest["quantization"]["calibration_max_absolute_error"]["segmentation"], 0.0)
         for name in quantize.RUNTIME_FILES:
             self.assertEqual(manifest["runtime_sha256"][name], self._hash(self.output / name))
         self.assertEqual(list(self.output.rglob("*.npz")), [])
-        for kind in ("segmentation", "embedding"):
-            graph = onnx.load(str(self.output / "tract" / f"{kind}.onnx")).graph
-            self.assertTrue(any(item.data_type == TensorProto.INT8 and item.dims for item in graph.initializer))
-            self.assertTrue(any(node.op_type == "QuantizeLinear" for node in graph.node))
-            self.assertTrue(any(node.op_type == "DequantizeLinear" for node in graph.node))
+        self.assertEqual(
+            (self.output / "tract" / "segmentation.onnx").read_bytes(),
+            (self.models / "tract" / "segmentation.onnx").read_bytes(),
+        )
+        source_graph = onnx.load(str(self.models / "tract" / "embedding.onnx")).graph
+        graph = onnx.load(str(self.output / "tract" / "embedding.onnx")).graph
+        initializers = {item.name: item for item in graph.initializer}
+        first = [node for node in graph.node if node.name == "/resnet/conv1/Conv"]
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0].op_type, "Conv")
+        self.assertEqual(initializers[first[0].input[1]].data_type, TensorProto.FLOAT)
+        source_initializers = {item.name: item for item in source_graph.initializer}
+        np.testing.assert_array_equal(
+            numpy_helper.to_array(initializers[first[0].input[1]]),
+            numpy_helper.to_array(source_initializers["first_weights"]),
+        )
+        qconvs = [node for node in graph.node if node.op_type == "QLinearConv"]
+        self.assertEqual(len(qconvs), 1)
+        qconv = qconvs[0]
+        weight = initializers[qconv.input[3]]
+        scale = initializers[qconv.input[4]]
+        zero_point = initializers[qconv.input[5]]
+        self.assertEqual(weight.data_type, TensorProto.INT8)
+        self.assertEqual(scale.data_type, TensorProto.FLOAT)
+        self.assertEqual(zero_point.data_type, TensorProto.INT8)
+        self.assertEqual(tuple(scale.dims), (weight.dims[0],))
+        self.assertEqual(tuple(zero_point.dims), (weight.dims[0],))
+        self.assertTrue(np.isfinite(numpy_helper.to_array(scale)).all())
+        self.assertTrue(np.all(numpy_helper.to_array(scale) > 0))
+        self.assertEqual(initializers[qconv.input[2]].data_type, TensorProto.UINT8)
+        self.assertEqual(initializers[qconv.input[7]].data_type, TensorProto.UINT8)
+        self.assertTrue(any(node.name == "/projection/MatMul" and node.op_type == "MatMul" for node in graph.node))
+        self.assertFalse(any(node.op_type in {"QLinearMatMul", "MatMulInteger"} for node in graph.node))
 
         segmentation = ort.InferenceSession(
             str(self.output / "tract" / "segmentation.onnx"), providers=["CPUExecutionProvider"]
@@ -323,38 +367,115 @@ class QuantizeTests(unittest.TestCase):
                 self._refresh_runtime_hashes()
                 self._assert_fails_closed("must be finite")
 
-    def test_rejects_graph_without_quantizable_int8_weights(self):
+    def test_preserves_segmentation_without_quantizable_operators(self):
         _segmentation(self.models / "tract" / "segmentation.onnx", unsupported=True)
         self._refresh_runtime_hashes()
-        # Depending on ORT's version, calibration itself can reject a graph with
-        # no quantizable tensors, or it can return an unchanged graph.
-        with self.assertRaises((ValueError, RuntimeError)):
-            quantize.quantize(self.models, self.calibration, self.output)
-        self.assertFalse(self.output.exists())
+        quantize.quantize(self.models, self.calibration, self.output)
+        self.assertEqual(
+            (self.output / "tract" / "segmentation.onnx").read_bytes(),
+            (self.models / "tract" / "segmentation.onnx").read_bytes(),
+        )
 
-    def test_rejects_nonfinite_quantized_output_without_publishing_either_graph(self):
+    def test_rejects_unchanged_or_ineligible_embedding_without_publication(self):
+        path = self.models / "tract" / "embedding.onnx"
+        original = onnx.load(str(path))
+        for defect, message in (
+            ("unchanged", "quantize every other Conv"),
+            ("missing first", "source embedding must have exactly one"),
+            ("missing second", "source embedding has no other Conv"),
+        ):
+            with self.subTest(defect=defect):
+                model = onnx.ModelProto()
+                model.CopyFrom(original)
+                convs = [node for node in model.graph.node if node.op_type == "Conv"]
+                if defect == "missing first":
+                    convs[0].name = "/renamed/Conv"
+                elif defect == "missing second":
+                    for node in model.graph.node:
+                        for index, name in enumerate(node.input):
+                            if name == convs[1].output[0]:
+                                node.input[index] = convs[0].output[0]
+                    model.graph.node.remove(convs[1])
+                onnx.save(model, str(path))
+                self._refresh_runtime_hashes()
+
+                def leave_unchanged(*args, **kwargs):
+                    onnx.save(kwargs["model_input"], kwargs["model_output"])
+
+                with mock.patch.object(quantize, "quantize_static", side_effect=leave_unchanged):
+                    self._assert_fails_closed(message)
+
+    def test_rejects_invalid_mixed_graph_structure(self):
+        quantize.quantize(self.models, self.calibration, self.output)
+        source = self.models / "tract" / "embedding.onnx"
+        original = onnx.load(str(self.output / "tract" / "embedding.onnx"))
+        for defect, message in (
+            ("first Conv", "preserve the first Conv"),
+            ("per-tensor scale", "per output channel"),
+            ("zero scale", "invalid per-channel scales"),
+            ("nonfinite scale", "invalid per-channel scales"),
+            ("activation zero point", "activation zero points are not UINT8"),
+            ("projection", "FP32 projection operators changed"),
+        ):
+            with self.subTest(defect=defect):
+                model = onnx.ModelProto()
+                model.CopyFrom(original)
+                qconv = next(node for node in model.graph.node if node.op_type == "QLinearConv")
+                initializers = {item.name: item for item in model.graph.initializer}
+                if defect == "first Conv":
+                    next(node for node in model.graph.node if node.name == "/resnet/conv1/Conv").name = "/renamed/Conv"
+                elif defect == "projection":
+                    next(node for node in model.graph.node if node.name == "/projection/MatMul").name = "/renamed/MatMul"
+                else:
+                    name = qconv.input[2] if defect == "activation zero point" else qconv.input[4]
+                    tensor = initializers[name]
+                    values = numpy_helper.to_array(tensor).copy()
+                    if defect == "per-tensor scale":
+                        values = np.array(values.flat[0], dtype=np.float32)
+                    elif defect == "zero scale":
+                        values.flat[0] = 0
+                    elif defect == "nonfinite scale":
+                        values.flat[0] = np.nan
+                    else:
+                        values = values.astype(np.int8)
+                    tensor.CopyFrom(numpy_helper.from_array(values, name=name))
+                path = self.root / "invalid-embedding.onnx"
+                onnx.save(model, str(path))
+                with self.assertRaisesRegex(ValueError, message):
+                    quantize._validate_quantized_graph(source, path)
+
+    def test_rejects_nonfinite_quantized_embedding_without_publishing(self):
         real_quantize = quantize.quantize_static
 
-        for kind, output_name in (("segmentation", "scores"), ("embedding", "embedding")):
-            with self.subTest(kind=kind):
-                def poison_output(*args, **kwargs):
-                    real_quantize(*args, **kwargs)
-                    path = Path(kwargs["model_output"])
-                    if path.name != f"{kind}.onnx":
-                        return
-                    model = onnx.load(str(path))
-                    for node in model.graph.node:
-                        for index, name in enumerate(node.output):
-                            if name == output_name:
-                                node.output[index] = "output_before_poison"
-                    model.graph.initializer.append(_initializer("poison_zero", np.array(0, dtype=np.float32)))
-                    model.graph.node.append(
-                        helper.make_node("Div", ["output_before_poison", "poison_zero"], [output_name])
-                    )
-                    onnx.save(model, str(path))
+        def poison_output(*args, **kwargs):
+            real_quantize(*args, **kwargs)
+            path = Path(kwargs["model_output"])
+            model = onnx.load(str(path))
+            for node in model.graph.node:
+                for index, name in enumerate(node.output):
+                    if name == "embedding":
+                        node.output[index] = "output_before_poison"
+            model.graph.initializer.append(_initializer("poison_zero", np.array(0, dtype=np.float32)))
+            model.graph.node.append(
+                helper.make_node("Div", ["output_before_poison", "poison_zero"], ["embedding"])
+            )
+            onnx.save(model, str(path))
 
-                with mock.patch.object(quantize, "quantize_static", side_effect=poison_output):
-                    self._assert_fails_closed("must be finite")
+        with mock.patch.object(quantize, "quantize_static", side_effect=poison_output):
+            self._assert_fails_closed("must be finite")
+
+    def test_rejects_altered_segmentation_copy_without_publishing(self):
+        real_copy = shutil.copyfile
+
+        def corrupt_copy(source, destination, *args, **kwargs):
+            result = real_copy(source, destination, *args, **kwargs)
+            path = Path(destination)
+            if path.name == "segmentation.onnx" and path.parent.parent.name == "bundle":
+                path.write_bytes(b"altered segmentation")
+            return result
+
+        with mock.patch.object(quantize.shutil, "copyfile", side_effect=corrupt_copy):
+            self._assert_fails_closed("source export hash mismatch")
 
     def test_existing_output_is_not_replaced(self):
         self.output.mkdir()
@@ -466,23 +587,25 @@ class QuantizeTests(unittest.TestCase):
         self._assert_fails_closed("external ONNX tensor")
 
     def test_calibration_is_snapshotted_before_quantization(self):
-        original_hash = self._hash(self.calibration / "segmentation" / "batch.npz")
+        original_hashes = {
+            kind: self._hash(self.calibration / kind / "batch.npz")
+            for kind in ("segmentation", "embedding")
+        }
         real_quantize = quantize.quantize_static
-        changed = False
 
         def mutate_calibration(*args, **kwargs):
-            nonlocal changed
-            if not changed:
-                changed = True
-                np.savez(self.calibration / "segmentation" / "batch.npz",
-                         waveforms=np.full_like(self.waveforms, np.nan))
+            np.savez(self.calibration / "segmentation" / "batch.npz",
+                     waveforms=np.full_like(self.waveforms, np.nan))
+            np.savez(self.calibration / "embedding" / "batch.npz",
+                     fbank=np.full_like(self.fbank, np.nan), mask=self.mask)
             return real_quantize(*args, **kwargs)
 
         with mock.patch.object(quantize, "quantize_static", side_effect=mutate_calibration):
             quantize.quantize(self.models, self.calibration, self.output)
         manifest = json.loads((self.output / "export.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["quantization"]["calibration"]["segmentation"][0]["sha256"], original_hash)
-        self.assertNotEqual(self._hash(self.calibration / "segmentation" / "batch.npz"), original_hash)
+        for kind, original_hash in original_hashes.items():
+            self.assertEqual(manifest["quantization"]["calibration"][kind][0]["sha256"], original_hash)
+            self.assertNotEqual(self._hash(self.calibration / kind / "batch.npz"), original_hash)
 
     def test_rejects_output_inside_source_or_calibration(self):
         for parent in (self.models, self.calibration):
