@@ -16,6 +16,7 @@ on:
       - "packaging/rust-liquid/**"
       - ".github/workflows/rust-liquid.yml"
       - ".github/workflows/rust-liquid-ui-proof.yml"
+      - ".github/workflows/rust-liquid-int8-proof.yml"
       - ".github/workflows/build.yml"
       - "tests/fixtures/rust_liquid_long_sources.json"
       - "tests/fixtures/rust_liquid_community_smoke.json"

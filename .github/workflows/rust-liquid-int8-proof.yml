@@ -299,6 +299,7 @@ jobs:
       - name: Revalidate and download the exact candidate and UI attestation archives
         uses: actions/github-script@v8
         env:
+          GH_TOKEN: ${{ github.token }}
           PLATFORM: ${{ matrix.platform }}
           CANDIDATE_RUN_ID: ${{ needs.sources.outputs.candidate_run_id }}
           UI_RUN_ID: ${{ needs.sources.outputs.ui_run_id }}
@@ -366,14 +367,16 @@ jobs:
                   origin.head_repository_id !== repoId || origin.head_branch !== branch || origin.head_sha !== sha) {
                 throw new Error(`Source artifact changed or is untrusted: ${source.name}`);
               }
-              const {status, headers} = await github.rest.actions.downloadArtifact({
-                ...context.repo, artifact_id: source.artifactId, archive_format: 'zip',
-                request: {redirect: 'manual'},
+              const endpoint = `${process.env.GITHUB_API_URL}/repos/${context.repo.owner}/${context.repo.repo}/actions/artifacts/${source.artifactId}/zip`;
+              const redirect = await fetch(endpoint, {
+                headers: {Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json'},
+                redirect: 'manual',
               });
-              if (status !== 302 || !headers.location) throw new Error(`No download redirect for ${source.name}`);
+              const location = redirect.headers.get('location');
+              if (redirect.status !== 302 || !location) throw new Error(`No download redirect for ${source.name} (HTTP ${redirect.status})`);
               let url;
               try {
-                url = new URL(headers.location);
+                url = new URL(location);
               } catch {
                 throw new Error(`Invalid download redirect for ${source.name}`);
               }
