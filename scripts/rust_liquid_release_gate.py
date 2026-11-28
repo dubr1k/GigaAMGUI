@@ -266,10 +266,16 @@ class ReleaseGate:
             "Installed candidate UI (linux-x64)": (
                 "Exercise Linux UI and save a real transcript", "Prepare Linux long-proof models through the installed UI",
                 "Exercise Linux packaged long diarization", "Exercise both new models through the installed Linux UI",
+                "Verify automatic Community-1 delivery through the installed Linux UI",
+                "Verify incomplete Community-1 bundle through the installed Linux UI",
+                "Exercise Community-1 through the installed Linux UI",
             ),
             "Installed candidate UI (windows-x64)": (
                 "Exercise Windows UI and save a real transcript", "Prepare Windows long-proof models through the installed UI",
                 "Exercise Windows packaged long diarization", "Exercise both new models through the installed Windows UI",
+                "Verify automatic Community-1 delivery through the installed Windows UI",
+                "Verify incomplete Community-1 bundle through the installed Windows UI",
+                "Exercise Community-1 through the installed Windows UI",
             ),
         })
         output_dir = Path(output_dir)

@@ -96,10 +96,16 @@ class FakeGitHub(gate.GitHub):
             PROOF: [
                 job(PROOF, "Installed candidate UI (linux-x64)", (
                     "Exercise Linux UI and save a real transcript", "Prepare Linux long-proof models through the installed UI",
-                    "Exercise Linux packaged long diarization", "Exercise both new models through the installed Linux UI")),
+                    "Exercise Linux packaged long diarization", "Exercise both new models through the installed Linux UI",
+                    "Verify automatic Community-1 delivery through the installed Linux UI",
+                    "Verify incomplete Community-1 bundle through the installed Linux UI",
+                    "Exercise Community-1 through the installed Linux UI")),
                 job(PROOF, "Installed candidate UI (windows-x64)", (
                     "Exercise Windows UI and save a real transcript", "Prepare Windows long-proof models through the installed UI",
-                    "Exercise Windows packaged long diarization", "Exercise both new models through the installed Windows UI")),
+                    "Exercise Windows packaged long diarization", "Exercise both new models through the installed Windows UI",
+                    "Verify automatic Community-1 delivery through the installed Windows UI",
+                    "Verify incomplete Community-1 bundle through the installed Windows UI",
+                    "Exercise Community-1 through the installed Windows UI")),
             ],
             BUILD: [job(BUILD, name) for name in (
                 "TUI tests", "Windows x64", "macOS arm64", "Linux x64", "macOS arm64 full app bundle",
@@ -204,6 +210,14 @@ class ReleaseGateTests(unittest.TestCase):
         self.github.jobs[PROOF][1]["steps"][-1]["conclusion"] = "success"
         self.github.jobs[PROOF].pop()
         self.assert_rejected()
+
+    def test_each_community_ui_step_is_required(self):
+        for index in (0, 1):
+            for step in self.github.jobs[PROOF][index]["steps"][-3:]:
+                with self.subTest(step=step["name"]):
+                    step["conclusion"] = "skipped"
+                    self.assert_rejected()
+                    step["conclusion"] = "success"
 
     def test_wrong_attested_candidate_and_hash_rejected(self):
         platform = "linux-x64"
